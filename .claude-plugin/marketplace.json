@@ -8,14 +8,14 @@
     {
       "name": "smart-mcps",
       "source": "./",
-      "description": "AgentMemory, NotebookLM, Perplexity, and Codegraph MCP servers with citation-stripping hooks",
+      "description": "Skills and session hooks for agentmemory, codegraph, NotebookLM, and Perplexity — CLI-based, no MCP context pollution",
       "version": "0.1.0",
       "author": {
         "name": "Giovani Merlin",
         "email": "gbm1996gbm1996@gmail.com"
       },
       "keywords": [
-        "mcp",
+        "skills",
         "agentmemory",
         "notebooklm",
         "perplexity",

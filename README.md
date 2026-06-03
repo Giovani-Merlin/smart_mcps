@@ -1,34 +1,66 @@
-# smart_mcps
+# smart-mcps
 
-A Claude Code plugin that registers four MCP servers — **AgentMemory**, **NotebookLM**, **Perplexity**, and **Codegraph** — with citation-stripping hooks.
+A Claude Code plugin that installs **8 skills** and **session hooks** for agentmemory, codegraph, NotebookLM, and Perplexity. All tools run as CLI commands — no MCP servers, no context-window pollution.
 
-## Installation (Claude Code)
+## Installation
+
+Clone the repo into your project (or anywhere you want the skills to live) so you can edit them:
+
+```bash
+git clone https://github.com/Giovani-Merlin/smart_mcps
+```
+
+Then install the plugin in Claude Code:
 
 ```text
 /plugin marketplace add https://github.com/Giovani-Merlin/smart_mcps
 /plugin install smart-mcps
 ```
 
-That's it. No separate package install needed. The plugin uses `uvx` to fetch and run the agentmemory server on demand (same pattern as `npx` for JS MCPs), so everything is self-contained.
+Skills are registered automatically on install. Restart Claude Code after installation.
 
-### Environment variables
+> **Skills are meant to be edited.** After installing, configure each skill you use — see [Setup](#setup-per-tool) below. The `notebooklm-chat` skill in particular ships with a placeholder notebook map that you must fill in.
 
-Perplexity requires an API key. The MCP server is spawned by the VS Code extension host, so the key must be in that process's environment — not just a terminal session.
+---
 
-**VS Code extension (recommended setup):**
+## Skills
 
-1. Install the [mkhl.direnv](https://marketplace.visualstudio.com/items?itemName=mkhl.direnv) VS Code extension — it reads your project's `.envrc` on workspace open and injects vars into the extension host, which propagates to all spawned MCP servers.
-2. Create a per-project `.envrc`:
+| Skill | Trigger | What it does |
+| ----- | ------- | ------------ |
+| `codegraph` | `/codegraph` | Symbol lookup, call graph tracing, impact analysis via `codegraph` CLI |
+| `notebooklm-chat` | `/notebooklm-chat` | Chat with a notebook by topic — query only, **requires configuring your notebook map** in the skill file |
+| `notebooklm-complete` | `/notebooklm-complete` | Full NotebookLM management: query, create, add sources, audio/video artifacts |
+| `perplexity` | `/perplexity` | Web-grounded search, research, and reasoning via `smart-mcps-perplexity` CLI |
+| `handoff` | `/handoff` | Resume most recent agentmemory session ("where were we") |
+| `recall` | `/recall` | Search past agentmemory observations and lessons |
+| `remember` | `/remember` | Save an insight or decision to agentmemory long-term storage |
+| `recap` | `/recap` | Summarize recent sessions for the current project |
 
-   ```bash
-   cp .envrc.example .envrc   # fill in your key
-   direnv allow
-   ```
+---
 
-**devcontainer:** add to `containerEnv` in `devcontainer.json` (reads from host shell, never committed):
+## Setup (per tool)
 
-```json
-"PERPLEXITY_API_KEY": "${localEnv:PERPLEXITY_API_KEY}"
+### Codegraph
+
+Requires an index built from your project's source. Run once per project:
+
+```bash
+pip install codegraph   # or: uv tool install codegraph
+codegraph init
+codegraph index
+```
+
+The Setup hook runs `codegraph index` automatically on each session start if `codegraph` is installed and an index exists.
+
+### Perplexity
+
+Requires a `PERPLEXITY_API_KEY`. The MCP server is spawned by the VS Code extension host, so the key must be in that process's environment — not just a terminal session.
+
+**Recommended:** Install the [mkhl.direnv](https://marketplace.visualstudio.com/items?itemName=mkhl.direnv) VS Code extension and create a per-project `.envrc`:
+
+```bash
+cp .envrc.example .envrc   # fill in your key
+direnv allow
 ```
 
 **Shell profile fallback** (all projects share the same key):
@@ -37,161 +69,134 @@ Perplexity requires an API key. The MCP server is spawned by the VS Code extensi
 export PERPLEXITY_API_KEY="pplx-..."   # in ~/.bashrc or ~/.profile
 ```
 
-### Codegraph setup (per project)
+### NotebookLM
 
-Codegraph requires an index built from your project's source. Run this once in each project where you use the plugin:
-
-```bash
-pip install codegraph   # or: uv tool install codegraph
-codegraph init
-codegraph index
-```
-
-The file watcher keeps the index up to date as you edit. Re-run `codegraph index` after large changes (e.g. switching branches).
-
-### NotebookLM auth (one-time)
+**Step 1 — one-time browser auth:**
 
 ```bash
-uv tool install notebooklm-mcp-cli   # install the CLI
-nlm login                             # browser OAuth → saves to ~/.notebooklm-mcp-cli/
+uv tool install notebooklm-mcp-cli
+nlm login
 ```
 
 Re-run `nlm login` when cookies expire. Auth state is stored in `~/.notebooklm-mcp-cli/` and persists across projects.
 
+**Step 2 — seed aliases from your notebook titles:**
+
+```bash
+bash scripts/seed-nlm-aliases.sh
+```
+
+This registers each notebook as an `nlm` alias (e.g. `ltx-2-3-engineering-...`). Aliases persist globally across projects. Re-run whenever you create new notebooks. Inspect with `nlm alias list`.
+
+**Step 3 — configure the `notebooklm-chat` skill _(required)_:**
+
+Open `skills/notebooklm-chat/SKILL.md` and fill in the notebook map:
+
+```markdown
+| Topic | Notebook alias or ID |
+| ----- | -------------------- |
+| LTX 2.3 / video generation / cinematography | `ltx-2-3-engineering-and-ic-lora-implementation-guide` |
+| ControlNet / pose / depth                   | `floed-and-comfyui-controlnet-aux-development-summaries` |
+```
+
+Map by **semantic topic** (not just notebook title) so the skill can match natural-language questions. Use the alias slugs from step 2 or raw UUIDs — both work.
+
+Use `/notebooklm-complete` for everything beyond querying: adding sources, creating audio overviews, managing notes.
+
+### AgentMemory
+
+Requires the agentmemory daemon running locally:
+
+```bash
+systemctl --user start agentmemory
+# or
+~/.agentmemory/start.sh
+```
+
+The `recall`, `remember`, `handoff`, and `recap` skills use the `smart-mcps-agentmemory` CLI which talks to this daemon.
+
 ---
 
-## What's included
+## Hooks
 
-| MCP server    | Launched via                                | What it does                                        |
-| ------------- | ------------------------------------------- | --------------------------------------------------- |
-| `agentmemory` | `uvx --from git+... smart-mcps-agentmemory` | 11-tool FastMCP proxy over the agentmemory REST API |
-| `notebooklm`  | `notebooklm-mcp`                            | 39-tool NotebookLM interface                        |
-| `perplexity`  | `npx -y @perplexity-ai/mcp-server`          | Web-grounded search / research                      |
-| `codegraph`   | `codegraph serve --mcp`                     | Sub-millisecond code graph queries                  |
+The plugin installs session hooks that wire agentmemory capture automatically:
 
-Hooks strip citation noise from NotebookLM and Perplexity responses automatically.
+| Hook | What it does |
+| ---- | ------------ |
+| `sessionStart` | Loads session context from agentmemory |
+| `userPromptSubmitted` | Records user intent |
+| `preToolUse` / `postToolUse` | Captures tool calls and results |
+| `postToolUseFailure` | Records failures for learning |
+| `preCompact` | Saves context before compaction |
+| `sessionEnd` / `agentStop` | Closes session and flushes observations |
+| `subagentStart` / `subagentStop` | Tracks sub-agent lifecycle |
+| `notification` | Handles async notifications |
 
 ---
 
-## AgentMemory MCP Proxy
+## Editing skills
 
-A lean FastMCP proxy over the agentmemory REST API, exposing 11 tools optimised for
-the orchestrator → explorer → worker multi-agent pipeline.
+Skills are plain markdown files — edit them directly to customize behaviour for your project. This is intentional: the `notebooklm-chat` notebook map, the perplexity model choices, and any prompt tuning all live in the skill files.
 
-**Design principle:** the MCP is a router and response shaper, not a search engine.
-All relevance ranking is delegated to the agentmemory engine (BM25+vector via
-`/smart-search`, file-graph via `/enrich`). The proxy's only client-side logic is
-`_follow_memories` — a simple set-intersection that links scored observations to their
-unindexed curated memories.
-
-### Two Memory Stores
-
-| Store                | Tool                 | Endpoint         | Semantics                                                                                                                                    |
-| -------------------- | -------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Curated memories** | `memory_save`        | `POST /remember` | Immutable after save. No native query index — GET `/memories?q=` is ignored server-side. Reached by link-following from scored observations. |
-| **Lessons**          | `memory_lesson_save` | `POST /lessons`  | Confidence-scored (0–1). Auto-strengthen when the same insight is re-saved. Dedicated recall endpoint.                                       |
-
-Always choose the right store:
-
-- `memory_save`: one-off facts, decisions, constraints found during a task.
-- `memory_lesson_save`: patterns that repeat, gotchas that recur, wisdom that accumulates.
-
-### Tool Reference
-
-| Tool                     | When to use                                                               | Underlying endpoint                                                      |
-| ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `memory_find`            | General semantic recall — default retrieval tool                          | `POST /smart-search` + `GET /memories` + `POST /enrich`                  |
-| `memory_task_context`    | Full context packet before executing one action                           | `GET /actions` + `POST /smart-search` + `GET /memories` + `GET /lessons` |
-| `memory_save`            | Save curated memory (one-off, immutable)                                  | `POST /remember`                                                         |
-| `memory_lesson_save`     | Save confidence-scored lesson (accumulates strength)                      | `POST /lessons`                                                          |
-| `memory_next`            | Enriched frontier for orchestrators — each action pre-loaded with context | `GET /frontier` (nested envelope)                                        |
-| `memory_update_task`     | Create / update / complete / block / cancel actions                       | `POST /actions` or `POST /actions/update`                                |
-| `memory_sessions_find`   | Recover prior sessions by topic (not UUID)                                | `POST /smart-search` + `GET /sessions`                                   |
-| `memory_profile`         | Project snapshot at session start or before planning                      | `GET /profile` + `GET /lessons` + `GET /insights` + `GET /frontier`      |
-| `memory_session_context` | Get full `<agentmemory-context>` XML block on demand                      | `POST /session/start`                                                    |
-| `memory_crystallize`     | Compress completed action chains into crystal digest via LLM              | `POST /mcp/call` (`mem::crystallize`)                                    |
-| `memory_graph_query`     | Structural causality/dependency traversal (**not in standard flow**)      | `POST /graph/query`                                                      |
-
-### Agent Flow
+Claude Code loads skills from `.claude/skills/` in the project directory. The repo ships with this symlink already in place:
 
 ```text
-Session start
-  └─ memory_profile(project=...)          # snapshot: concepts, files, lessons, frontier
-
-Orchestrator
-  └─ memory_next(project=...)             # enriched frontier — each action has context field
-  └─ memory_update_task(operation="create", ...)
-  └─ memory_update_task(operation="complete", ...)
-
-Explorer (before coding)
-  └─ memory_find(query=..., files=...)    # observations + linked memories + lessons
-  └─ memory_task_context(action_id=...)   # full packet if action_id known
-
-Worker (after implementing)
-  └─ memory_save(...)                     # one-off decisions, constraints found
-  └─ memory_lesson_save(...)              # recurring patterns, gotchas
-
-End of sprint
-  └─ memory_crystallize(action_ids=...)   # compress completed chain into crystal
+.claude/skills -> ../skills
 ```
 
-If the action came from `memory_next`, the `context` field is **already populated** —
-pass it directly to workers without calling `memory_task_context`.
+If you clone fresh and the symlink is missing:
 
-### Known API Quirks
+```bash
+ln -s ../skills .claude/skills
+```
 
-| Quirk                                                                                 | Impact                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /memories?q=` is ignored server-side                                             | Use `POST /smart-search` for text search; `GET /memories` is for link-following only                                                                                                                                                                                                      |
-| `GET /frontier` returns `{frontier: [{action: {...}, score, leased, blockers}], ...}` | Entries are **nested** — `entry["action"]` not `entry`. The proxy extracts and flattens via `_fmt_frontier_entry`.                                                                                                                                                                        |
-| `POST /agentmemory/crystallize` returns 404                                           | Crystallize has no REST endpoint; routes through `POST /mcp/call {name: "memory_crystallize"}`                                                                                                                                                                                            |
-| `POST /smart-search` bundles `lessons: []` in response                                | Field is always present but may be empty. `memory_find` reads `obs_resp.get("lessons", [])` for this.                                                                                                                                                                                     |
-| Observation `facts[]` may be empty                                                    | Many observations were tombstoned by the summarisation pipeline. `_is_useful_observation` keeps semantic types (decision, subagent, other, architecture, bug, pattern, code, error) even when `facts` is empty, and drops pure action records (`command_run`, `file_read`, `file_write`). |
+Edits take effect on the next session start — no reinstall needed.
 
 ---
 
-## Debug Scenario Scripts
+## CLI tools
 
-`scenarios/` holds standalone, synchronous scripts that exercise the raw agentmemory
-REST + MCP surface against the live service (no async, so each step is
-breakpoint-debuggable). Run any one directly:
+Install Python CLIs for local use (needed by the hooks scripts and skills):
 
 ```bash
-python scenarios/scenario_<name>.py
+pip install -e .
+# or
+uv pip install -e .
 ```
 
-They share `scenarios/_client.py` (HTTP helper + endpoint quick-reference). Scripts that
-create live data clean up after themselves. Lessons use stable content — the backend
-auto-strengthens one lesson on re-save instead of leaving orphans per run.
+This installs:
+
+| Command | Source |
+| ------- | ------ |
+| `smart-mcps-agentmemory` | `agentmemory/cli.py` |
+| `smart-mcps-perplexity` | `pplx/cli.py` |
 
 ---
 
-## Running the proxy directly (dev / inspection)
+## Repository layout
 
-```bash
-# Inspect all tools in the MCP inspector
-uvx fastmcp dev agentmemory/proxy.py
+```text
+.claude-plugin/
+  plugin.json          # plugin metadata (skills path, hooks path)
+  marketplace.json     # marketplace listing
 
-# Or via npx inspector
-npx @modelcontextprotocol/inspector python3.12 -m agentmemory.proxy
+skills/
+  codegraph/SKILL.md
+  notebooklm-chat/SKILL.md      # query only, resolves names via nlm aliases
+  notebooklm-complete/SKILL.md  # full management (sources, audio, notes, etc.)
+  perplexity/SKILL.md
+  handoff/SKILL.md
+  recall/SKILL.md
+  remember/SKILL.md
+  recap/SKILL.md
 
-# Environment variable (default shown)
-AGENTMEMORY_URL=http://localhost:3111
+scripts/
+  seed-nlm-aliases.sh  # populate nlm aliases from notebook titles
+
+hooks/
+  hooks.plugin.json    # hook definitions
+  scripts/             # Node.js hook scripts (session-start, stop, etc.)
+
+agentmemory/           # smart-mcps-agentmemory CLI source
+pplx/                  # smart-mcps-perplexity CLI source
 ```
-
----
-
-## Tests
-
-Requires `systemctl --user start agentmemory` (the agentmemory daemon running locally):
-
-```bash
-python -m pytest tests/ -v
-```
-
-| File                        | What it tests                                                                                                                                                              |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/test_agentmemory.py` | Raw REST API endpoints. Snapshot fixtures in `tests/fixtures/` document expected response shapes.                                                                          |
-| `tests/test_mcp_proxy.py`   | Proxy tool functions directly (imported via importlib, fastmcp stubbed with identity decorators). Pure logic helpers tested without HTTP; live tests use the real service. |
-
-To regenerate a fixture: delete the corresponding `.json` from `tests/fixtures/` and re-run.

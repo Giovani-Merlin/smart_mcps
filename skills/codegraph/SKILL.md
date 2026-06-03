@@ -13,10 +13,12 @@ Use the `codegraph` CLI via bash to answer code structure questions.
 | ---- | ------- |
 | Map the area / what matters here? | `codegraph context "<query>"` — always first |
 | Where is symbol X defined? | `codegraph context "<symbol>"` — also handles symbol lookup |
+| Don't know exact symbol name? | `codegraph query "<partial name>"` — fuzzy symbol search |
 | What calls this function? | `codegraph callers "<symbol>"` |
 | What does this call? | `codegraph callees "<symbol>"` |
 | What breaks if I change this? | `codegraph impact "<symbol>"` |
-| What files are in a directory? | `codegraph files [path]` — not `ls` or `find` |
+| What tests cover this file? | `codegraph affected <file> [<file>...]` |
+| What files are in a directory? | `codegraph files --filter <dir>` — not `ls` or `find` |
 | Is the index healthy / empty? | `codegraph status` |
 
 ## Primary command — `context`
@@ -28,6 +30,23 @@ codegraph context "session hooks"
 ```
 
 `context` already composes search + node details + callers + callees in one call. **Do not stack three separate calls when one `context` call covers it.** Only follow up with `callers`/`callees` when context output is truncated or you need to trace a specific edge deeper.
+
+**Empty output**: if `context` returns only the header line and no symbols, the query matched nothing — fall back to `codegraph query` with a shorter or partial name to find the exact symbol first.
+
+Useful options:
+- `--max-nodes <n>` — cap how many nodes are returned (default 50)
+- `--max-code <n>` — cap how many code blocks are shown (default 10)
+- `--no-code` — skip code blocks entirely for a faster overview
+
+## Symbol lookup — `query`
+
+```bash
+codegraph query "_call"
+codegraph query "memory" --kind function
+codegraph query "BASE_URL" --kind constant
+```
+
+Use `query` when you don't know the exact symbol name. It does fuzzy matching and shows signatures and locations. Filter by kind: `function`, `class`, `method`, `variable`, `constant`, `import`.
 
 ## Trace call edges
 
@@ -47,14 +66,24 @@ codegraph impact "BASE_URL"
 
 Run this before modifying any widely-used function or constant — it shows what would break.
 
+## Find affected tests
+
+```bash
+codegraph affected agentmemory/proxy.py
+git diff --name-only HEAD | xargs codegraph affected
+```
+
+Given one or more source files, lists the test files that transitively depend on them. Useful before a focused change to know which tests to run.
+
 ## List indexed files
 
 ```bash
 codegraph files
-codegraph files agentmemory/
+codegraph files --filter agentmemory/
+codegraph files --pattern "**/*.test.*"
 ```
 
-Prefer this over `ls`/`find` when exploring what's in the index.
+Prefer this over `ls`/`find` when exploring what's in the index. Use `--filter <dir>` to scope to a subdirectory — positional path arguments are not supported and will error.
 
 ## Index health
 
@@ -68,5 +97,5 @@ If status shows no index, run `codegraph init && codegraph index` before using a
 
 - **Start with `context`** for any exploration question — it is the richest single call.
 - **Do not use codegraph for files you have already read** — use it for discovery and impact analysis only.
-- **Do not loop**: if `context` returns nothing, try `codegraph search` with a shorter symbol name before assuming the symbol is unindexed.
+- **Do not loop**: if `context` returns nothing, use `codegraph query` with a shorter symbol name before assuming the symbol is unindexed.
 - **Index lag**: changes made during the session are not in the index until the next `codegraph index` run. Read the file directly if you need to see recent edits.
