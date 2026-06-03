@@ -13,20 +13,41 @@ That's it. No separate package install needed. The plugin uses `uvx` to fetch an
 
 ### Environment variables
 
-Perplexity requires an API key. Set it before starting Claude:
+Perplexity requires an API key. The MCP server is spawned by the VS Code extension host, so the key must be in that process's environment — not just a terminal session.
+
+**VS Code extension (recommended setup):**
+
+1. Install the [mkhl.direnv](https://marketplace.visualstudio.com/items?itemName=mkhl.direnv) VS Code extension — it reads your project's `.envrc` on workspace open and injects vars into the extension host, which propagates to all spawned MCP servers.
+2. Create a per-project `.envrc`:
+
+   ```bash
+   cp .envrc.example .envrc   # fill in your key
+   direnv allow
+   ```
+
+**devcontainer:** add to `containerEnv` in `devcontainer.json` (reads from host shell, never committed):
+
+```json
+"PERPLEXITY_API_KEY": "${localEnv:PERPLEXITY_API_KEY}"
+```
+
+**Shell profile fallback** (all projects share the same key):
 
 ```bash
-# Option A — direnv (recommended, per-project)
-cp .envrc.example .envrc   # fill in key
-direnv allow
-
-# Option B — devcontainer
-# Add to containerEnv in devcontainer.json:
-# "PERPLEXITY_API_KEY": "${localEnv:PERPLEXITY_API_KEY}"
-
-# Option C — shell profile
-export PERPLEXITY_API_KEY="pplx-..."
+export PERPLEXITY_API_KEY="pplx-..."   # in ~/.bashrc or ~/.profile
 ```
+
+### Codegraph setup (per project)
+
+Codegraph requires an index built from your project's source. Run this once in each project where you use the plugin:
+
+```bash
+pip install codegraph   # or: uv tool install codegraph
+codegraph init
+codegraph index
+```
+
+The file watcher keeps the index up to date as you edit. Re-run `codegraph index` after large changes (e.g. switching branches).
 
 ### NotebookLM auth (one-time)
 
@@ -93,7 +114,7 @@ Always choose the right store:
 
 ### Agent Flow
 
-```
+```text
 Session start
   └─ memory_profile(project=...)          # snapshot: concepts, files, lessons, frontier
 

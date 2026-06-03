@@ -1,4 +1,18 @@
 {
+  "permissions": {
+    "allow": [
+      "Read(//home/gbm1996/.claude/**)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/home/gbm1996/.claude/settings.json'\\)\\); print\\(json.dumps\\(d.get\\('mcpServers',{}\\), indent=2\\)\\)\")",
+      "mcp__agentmemory__memory_profile",
+      "mcp__codegraph__codegraph_status",
+      "mcp__perplexity__perplexity_search",
+      "mcp__notebooklm__notebook_list",
+      "Bash(codegraph init *)",
+      "Bash(git update-index *)",
+      "Bash(codegraph index *)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
