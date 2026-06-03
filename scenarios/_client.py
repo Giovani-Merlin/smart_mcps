@@ -8,27 +8,49 @@ Requires agentmemory running:
     systemctl --user start agentmemory
 
 ━━━ Endpoint quick-reference (PRACTICAL MINIMAL PAYLOADS) ━━━━━━━━━━━━━━━━━
-  ▓▓▓ DIRECT QUERY ENDPOINTS (session start + primary searches)
+  ▓▓▓ SESSION START (call these once at the beginning of a session)
   GET  /agentmemory/health                 service health check
-  GET  /agentmemory/profile                project snapshot (call once at session start)
-                                             minimal: {project}; returns {topConcepts, topFiles, conventions}
-  POST /agentmemory/smart-search           PRIMARY SCORED ENTRY POINT — observations + lessons
+  GET  /agentmemory/profile                stable project snapshot
+                                             minimal: {project}; optional: refresh=true (re-compute)
+                                             returns: {topConcepts, topFiles, conventions}
+  POST /agentmemory/context                "previously on this project" briefing (recency-based)
+                                             minimal: {sessionId, project}; optional: budget (tokens, default 2000)
+
+  ▓▓▓ PRIMARY RECALL (ordered by typical agent workflow)
+  POST /agentmemory/lessons/search         behavioral rules BEFORE taking actions (REST, not MCP wrapper)
+                                             minimal: {query, project, minConfidence: 0.3, limit: 5}
+                                             scoring: confidence × term_overlap × recency_decay (NOT BM25)
+                                             NOTE: minConfidence and limit must be NUMBERS (not strings)
+  POST /agentmemory/smart-search           PRIMARY SCORED ENTRY POINT — episodic obs + memories
                                              minimal: {query, project, limit}
+                                             optional: includeLessons=true (bundle lesson hits inline)
+                                             optional: expandIds=[...] (direct KV fetch, skips scoring, max 20)
                                              returns: {results: CompressedObservation[], lessons: Lesson[]}
-  POST /agentmemory/mcp/call               call mem::lesson-recall (behavioral rules)
-                                             name="memory_lesson_recall"
-                                             args: {query, project, minConfidence: "0.3", limit: "10"}
-  GET  /agentmemory/insights               synthesized patterns (list-based, not query-scored)
+                                             NOTE: results[] mixes obs AND memories (memories: type="decision")
+                                             NOTE: only CompressedObservations are in BM25/vector indexes
+  POST /agentmemory/search                 session discovery — find related sessions by semantic content
+                                             minimal: {query, project, format: "compact", limit}
+                                             returns obs hits with sessionId anchors
+                                             follow-up: GET /sessions → GET /crystals?project=...
+  POST /agentmemory/graph/query            architectural context (file/function/concept neighbors)
+                                             minimal: {query, project, maxDepth: 2}  (NOT 'depth')
+                                             optional: nodeType ("file"|"function"|"concept"|"decision"|...)
+                                             returns: GraphNode[] — NOT Memory objects (needs second fetch)
+                                             (only useful if GRAPH_EXTRACTION_ENABLED=true)
+  POST /agentmemory/insights/search        high-level synthesized patterns (planning only)
+                                             minimal: {query, project, minConfidence: 0.5, limit: 5}
+                                             NOTE: no query-relevance scorer — keyword filter + confidence sort
+  GET  /agentmemory/insights               list insights without query (alternative to insights/search)
                                              minimal: {project, minConfidence: 0.5, limit: 10}
-  POST /agentmemory/session/start          session briefing + initial context
-                                             minimal: {sessionId, project, cwd}; returns {context: {...}}
 
   ▓▓▓ FOLLOW-UP ENDPOINTS (after finding a scored observation hit)
-  GET  /agentmemory/memories               list all memories for client-side filtering by sourceObservationIds
-                                             use: iterate results, filter by obs hit IDs
-  POST /agentmemory/graph/query            architectural context (neighbors of a file/function/concept)
-                                             minimal: {query, project, depth: 2}
-                                             (only useful if GRAPH_EXTRACTION_ENABLED=true)
+  GET  /agentmemory/memories               list all memories for client-side filtering
+                                             minimal: {project, limit: 100}
+                                             returns Memory[] with sourceObservationIds, files, concepts
+  GET  /agentmemory/sessions               list session records (summary, firstPrompt, status)
+                                             minimal: {limit: 20}
+  GET  /agentmemory/crystals               session narrative summaries (keyOutcomes, filesAffected)
+                                             minimal: {project}; optional: sessionId (filter)
   POST /agentmemory/enrich                 file-scoped bug history + bridging memories
                                              minimal: {sessionId, files: [path], project}
   POST /agentmemory/timeline               chronological observations window around an event
@@ -37,17 +59,29 @@ Requires agentmemory running:
   ▓▓▓ ACTION/TASK MANAGEMENT
   POST /agentmemory/actions                create task (minimal: {title, project})
   POST /agentmemory/actions/update         update action status (minimal: {actionId, status})
-  GET  /agentmemory/frontier               unblocked high-priority tasks
-                                             minimal: {project, limit: 5}
-  GET  /agentmemory/sessions               list session records (minimal: {limit: 20})
+  GET  /agentmemory/frontier               unblocked high-priority tasks (minimal: {project, limit: 5})
 
-  ▓▓▓ WRITE ENDPOINTS (rarely called in agent workflows)
-  POST /agentmemory/remember               save curated memory (minimal: {content, project})
-  POST /agentmemory/mcp/call (memory_lesson_save) save behavioral rule
-                                             args: {content, confidence: "0.7", project}
+  ▓▓▓ WRITE ENDPOINTS
+  POST /agentmemory/remember               save curated memory
+                                             minimal: {content, type, project, concepts, files}
+                                             NOTE: skip sourceObservationIds — consolidation stamps it
+  POST /agentmemory/observe                create observation manually (for testing/logging)
+                                             minimal: {hookType, sessionId, project, cwd, timestamp, data}
+  POST /agentmemory/lessons                save behavioral lesson
+                                             minimal: {content, project, confidence, source: "manual", tags}
+  POST /agentmemory/lessons/strengthen     reinforce a lesson's confidence (prevent decay)
+                                             minimal: {lessonId}
   POST /agentmemory/session/end            end session (minimal: {sessionId})
-  POST /agentmemory/mcp/call (memory_crystallize) digest action chain into crystal
-                                             args: {actionIds: "act_id1,act_id2", project}
+  POST /agentmemory/mcp/call               MCP wrapper (use direct REST endpoints above instead)
+                                             name="memory_crystallize": args: {actionIds, project?, sessionId?}
+
+  ▓▓▓ CLEANUP / GOVERNANCE
+  POST /agentmemory/forget                 remove observations from KV + search indexes (synchronous)
+                                             body: {sessionId} or {observationIds: [...]}
+  DELETE /agentmemory/governance/memories  hard-delete memories with audit trail
+                                             body: {memoryIds: [...], reason: "..."}
+  GET  /agentmemory/export                 full export including tombstoned records
+                                             minimal: {maxSessions: N}; lessons with deleted:true appear here
 
 ━━━ MCP call functions (POST /agentmemory/mcp/call) ━━━━━━━━━━━━━━━━━━━━━━━
   All argument values must be strings (MCP protocol constraint).
@@ -58,6 +92,7 @@ Requires agentmemory running:
   memory_sentinel_trigger args: {sentinelId, result?}
   memory_signal_emit      args: {event, payload? (JSON string)}
   memory_lesson_recall    args: {query, project?, minConfidence?, limit?}
+                          NOTE: prefer POST /lessons/search (direct REST) over this MCP wrapper
   memory_file_history     args: {files (comma-sep paths), sessionId?}
   memory_relations        args: {memoryId, maxHops? (default "2"), minConfidence? (default "0")}
   memory_diagnose         args: {categories? (comma-sep)}
@@ -73,7 +108,10 @@ from typing import Any
 import httpx
 
 BASE_URL = "http://localhost:3111"
-PROJECT = "/home/gbm1996/wksp/gionodes"
+# PROJECT must match the identifier used when sessions were started on this instance.
+# Check with: GET /agentmemory/sessions → look at the 'project' field.
+# This instance uses "smart_mcps". Change to match your target project.
+PROJECT = "smart_mcps"
 
 _http = httpx.Client(base_url=BASE_URL, timeout=30.0)
 
