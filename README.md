@@ -1,4 +1,58 @@
-# AgentMemory MCP Proxy
+# smart_mcps
+
+A Claude Code plugin that registers four MCP servers — **AgentMemory**, **NotebookLM**, **Perplexity**, and **Codegraph** — with citation-stripping hooks.
+
+## Installation (Claude Code)
+
+```text
+/plugin marketplace add https://github.com/Giovani-Merlin/smart_mcps
+/plugin install smart-mcps
+```
+
+That's it. No separate package install needed. The plugin uses `uvx` to fetch and run the agentmemory server on demand (same pattern as `npx` for JS MCPs), so everything is self-contained.
+
+### Environment variables
+
+Perplexity requires an API key. Set it before starting Claude:
+
+```bash
+# Option A — direnv (recommended, per-project)
+cp .envrc.example .envrc   # fill in key
+direnv allow
+
+# Option B — devcontainer
+# Add to containerEnv in devcontainer.json:
+# "PERPLEXITY_API_KEY": "${localEnv:PERPLEXITY_API_KEY}"
+
+# Option C — shell profile
+export PERPLEXITY_API_KEY="pplx-..."
+```
+
+### NotebookLM auth (one-time)
+
+```bash
+uv tool install notebooklm-mcp-cli   # install the CLI
+nlm login                             # browser OAuth → saves to ~/.notebooklm-mcp-cli/
+```
+
+Re-run `nlm login` when cookies expire. Auth state is stored in `~/.notebooklm-mcp-cli/` and persists across projects.
+
+---
+
+## What's included
+
+| MCP server    | Launched via                                | What it does                                        |
+| ------------- | ------------------------------------------- | --------------------------------------------------- |
+| `agentmemory` | `uvx --from git+... smart-mcps-agentmemory` | 11-tool FastMCP proxy over the agentmemory REST API |
+| `notebooklm`  | `notebooklm-mcp`                            | 39-tool NotebookLM interface                        |
+| `perplexity`  | `npx -y @perplexity-ai/mcp-server`          | Web-grounded search / research                      |
+| `codegraph`   | `codegraph serve --mcp`                     | Sub-millisecond code graph queries                  |
+
+Hooks strip citation noise from NotebookLM and Perplexity responses automatically.
+
+---
+
+## AgentMemory MCP Proxy
 
 A lean FastMCP proxy over the agentmemory REST API, exposing 11 tools optimised for
 the orchestrator → explorer → worker multi-agent pipeline.
@@ -9,9 +63,7 @@ All relevance ranking is delegated to the agentmemory engine (BM25+vector via
 `_follow_memories` — a simple set-intersection that links scored observations to their
 unindexed curated memories.
 
----
-
-## Two Memory Stores
+### Two Memory Stores
 
 | Store                | Tool                 | Endpoint         | Semantics                                                                                                                                    |
 | -------------------- | -------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -23,9 +75,7 @@ Always choose the right store:
 - `memory_save`: one-off facts, decisions, constraints found during a task.
 - `memory_lesson_save`: patterns that repeat, gotchas that recur, wisdom that accumulates.
 
----
-
-## Tool Reference
+### Tool Reference
 
 | Tool                     | When to use                                                               | Underlying endpoint                                                      |
 | ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -41,9 +91,7 @@ Always choose the right store:
 | `memory_crystallize`     | Compress completed action chains into crystal digest via LLM              | `POST /mcp/call` (`mem::crystallize`)                                    |
 | `memory_graph_query`     | Structural causality/dependency traversal (**not in standard flow**)      | `POST /graph/query`                                                      |
 
----
-
-## Agent Flow
+### Agent Flow
 
 ```
 Session start
@@ -51,7 +99,7 @@ Session start
 
 Orchestrator
   └─ memory_next(project=...)             # enriched frontier — each action has context field
-  └─ memory_update_task(operation="create", ...)  # add new actions
+  └─ memory_update_task(operation="create", ...)
   └─ memory_update_task(operation="complete", ...)
 
 Explorer (before coding)
@@ -66,15 +114,10 @@ End of sprint
   └─ memory_crystallize(action_ids=...)   # compress completed chain into crystal
 ```
 
-### When `memory_next` beats `memory_task_context`
-
 If the action came from `memory_next`, the `context` field is **already populated** —
-pass it directly to workers without calling `memory_task_context`. Only call
-`memory_task_context` when you have an `action_id` but no pre-loaded context.
+pass it directly to workers without calling `memory_task_context`.
 
----
-
-## Known API Quirks
+### Known API Quirks
 
 | Quirk                                                                                 | Impact                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -88,99 +131,46 @@ pass it directly to workers without calling `memory_task_context`. Only call
 
 ## Debug Scenario Scripts
 
-`mcp/agentmemory/` holds standalone, synchronous scripts that exercise the raw
-agentmemory REST + MCP surface against the live service (no async, so each step
-is breakpoint-debuggable). Each prints a narrated, step-by-step walkthrough of a
-real agent memory pattern. Run any one directly:
+`scenarios/` holds standalone, synchronous scripts that exercise the raw agentmemory
+REST + MCP surface against the live service (no async, so each step is
+breakpoint-debuggable). Run any one directly:
 
 ```bash
-python mcp/agentmemory/scenario_<name>.py
+python scenarios/scenario_<name>.py
 ```
 
-They share `_client.py` (HTTP helper + endpoint quick-reference + output
-formatters). Scripts that create live data clean up after themselves
-(governance-delete, facet-untag, sketch-discard, action-cancel, sentinel-cancel);
-destructive governance ops are always `dryRun`. Lessons have **no delete
-endpoint**, so scenarios that save a lesson use _stable_ content — the backend
-auto-strengthens one lesson on re-save instead of leaving a new orphan per run.
-
-**Recall / read patterns**
-
-| Script                        | Pattern                      | Endpoints exercised                                           |
-| ----------------------------- | ---------------------------- | ------------------------------------------------------------- |
-| `scenario_context_recovery`   | Progressive disclosure       | `smart-search` + `expandIds`                                  |
-| `scenario_queries`            | Targeted topic recall        | `smart-search` (LTX / ComfyUI queries)                        |
-| `scenario_arch_discovery`     | Architectural map            | `graph/query` + `memory_relations`                            |
-| `scenario_bug_recovery`       | Error-recovery loop          | `smart-search`/expand + `lesson-recall` + `enrich` + memories |
-| `scenario_temporal_forensics` | "Why is the code like this?" | `timeline` + `sessions` join + `audit` + `commits`            |
-
-**Task / coordination patterns**
-
-| Script                     | Pattern                 | Endpoints exercised                                       |
-| -------------------------- | ----------------------- | --------------------------------------------------------- |
-| `scenario_task_init`       | Pick up next work       | `frontier` + `frontier/lease` + `actions/update` + recall |
-| `scenario_task_complete`   | Finish & distill        | `actions/update` + `crystallize` + `lessons` + `remember` |
-| `scenario_blocked_handoff` | Gate on external event  | `sentinels` + `signals` + block/`frontier`                |
-| `scenario_design_sketch`   | Speculative exploration | `sketches` create/add/list/`promote`/`discard`/`gc`       |
-
-**Write / lifecycle / governance patterns**
-
-| Script                       | Pattern                   | Endpoints exercised                                                                    |
-| ---------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
-| `scenario_mock_roundtrip`    | Create→retrieve all types | `remember`/`lessons`/`actions`/`crystallize` round-trips                               |
-| `scenario_memory_evolution`  | Knowledge goes stale      | `remember`→`evolve`→`verify`→`cascade-update`→`relations`→`governance/memories`        |
-| `scenario_insight_synthesis` | Meta-cognitive upkeep     | `diagnostics`(+`heal` dry-run) + `reflect` + `insights`(+search)                       |
-| `scenario_facet_governance`  | Dimensional hygiene       | `facet-tag`/`facets`/`facets/stats`/`facets/query` + `governance/bulk-delete` (dryRun) |
-
-> `scenario_insight_synthesis` runs `reflect`, a real LLM synthesis pass (~40s).
-> Set `RUN_REFLECT = False` at the bottom to skip it. Memory **slots** are not
-> covered — that subsystem is gated behind `AGENTMEMORY_SLOTS=true` and returns
-> 503 in this build.
+They share `scenarios/_client.py` (HTTP helper + endpoint quick-reference). Scripts that
+create live data clean up after themselves. Lessons use stable content — the backend
+auto-strengthens one lesson on re-save instead of leaving orphans per run.
 
 ---
 
-## Running
+## Running the proxy directly (dev / inspection)
 
 ```bash
 # Inspect all tools in the MCP inspector
-fastmcp dev mcp/agentmemory_mcp_proxy.py
+uvx fastmcp dev agentmemory/proxy.py
 
 # Or via npx inspector
-npx @modelcontextprotocol/inspector .venv/bin/python mcp/agentmemory_mcp_proxy.py
-```
+npx @modelcontextprotocol/inspector python3.12 -m agentmemory.proxy
 
-Environment variable:
-
-```bash
-AGENTMEMORY_URL=http://localhost:3111  # default
+# Environment variable (default shown)
+AGENTMEMORY_URL=http://localhost:3111
 ```
 
 ---
 
 ## Tests
 
-Two test files, both require `systemctl --user start agentmemory`:
+Requires `systemctl --user start agentmemory` (the agentmemory daemon running locally):
 
 ```bash
-python -m pytest tests/mcp/ -v
+python -m pytest tests/ -v
 ```
 
-| File                            | What it tests                                                                                                                                                                          |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/mcp/test_agentmemory.py` | Raw REST API endpoints. Every endpoint the proxy calls has a test here. Snapshot fixtures in `tests/mcp/fixtures/` document expected response shapes.                                  |
-| `tests/mcp/test_mcp_proxy.py`   | Proxy tool functions directly (imported via importlib, fastmcp stubbed with identity decorators). Pure logic helpers tested without HTTP; live integration tests use the real service. |
+| File                        | What it tests                                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/test_agentmemory.py` | Raw REST API endpoints. Snapshot fixtures in `tests/fixtures/` document expected response shapes.                                                                          |
+| `tests/test_mcp_proxy.py`   | Proxy tool functions directly (imported via importlib, fastmcp stubbed with identity decorators). Pure logic helpers tested without HTTP; live tests use the real service. |
 
-### Snapshot fixture system
-
-On first run, live API responses are saved to `tests/mcp/fixtures/<name>.json`. Subsequent
-runs load the saved fixture and assert structural parity (same top-level keys). This
-documents the "known good" API shape at test-write time without requiring constant API access.
-
-To regenerate a fixture: delete the corresponding `.json` file and re-run the tests.
-
-### Proxy loading in tests
-
-`test_mcp_proxy.py` loads the proxy with a stub fastmcp module (`_FakeFastMCP`) that makes
-`@mcp.tool()` and `@mcp.prompt()` identity decorators. This avoids the `mcp` namespace
-package conflict (the project's `mcp/` directory is on `sys.path` via pytest rootdir and would
-shadow the installed `mcp` PyPI package that fastmcp needs).
+To regenerate a fixture: delete the corresponding `.json` from `tests/fixtures/` and re-run.
