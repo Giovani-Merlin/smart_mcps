@@ -7,80 +7,77 @@ user-invocable: true
 
 Use the `nlm` CLI via bash for all NotebookLM operations.
 
-**Auth prerequisite**: `nlm login` must be run once in the terminal before using these commands.
+**Auth prerequisite**: `nlm login` must be run once in a terminal before using these commands. If any command fails with an auth error, tell the user to run `nlm login` and retry.
 
-## Core operations
+## Decision table — pick the right command
 
-**List notebooks**:
+| Need | Command |
+| ---- | ------- |
+| List all notebooks (get IDs) | `nlm notebook list` — always run this first |
+| Ask a question about notebook content | `nlm notebook query --notebook ID "question"` |
+| Get notebook details | `nlm notebook get ID` or `nlm notebook describe ID` |
+| Create a new notebook | `nlm notebook create "Title"` |
+| Add a source (URL, text, or file) | `nlm source add --notebook ID --url URL` |
+| Describe a source | `nlm source describe --notebook ID --source SOURCE_ID` |
+| Create audio overview | `nlm studio create --notebook ID --type audio` |
+| Check artifact status | `nlm studio status --notebook ID` |
+| Download finished artifact | `nlm download --notebook ID --type audio` |
+| Query across multiple notebooks | `nlm cross query "question" --notebooks ID1,ID2` |
+| Manage notes | `nlm note --notebook ID --action list\|create\|delete` |
+
+## Step 1 — always list notebooks first
 
 ```bash
 nlm notebook list
 ```
 
-**Query a notebook** (chat with its sources):
+This returns IDs. Human names are not accepted directly in most subcommands — you must resolve to an ID first.
+
+## Query a notebook
 
 ```bash
-nlm notebook query --notebook "NOTEBOOK_NAME_OR_ID" "your question here"
+nlm notebook query --notebook "NOTEBOOK_ID" "what are the main themes in this source?"
+nlm notebook query --notebook "NOTEBOOK_ID" "summarize the key findings"
 ```
 
-**Get notebook details**:
+## Add sources
 
 ```bash
-nlm notebook get "NOTEBOOK_NAME_OR_ID"
-nlm notebook describe "NOTEBOOK_NAME_OR_ID"
+nlm source add --notebook "NOTEBOOK_ID" --url "https://example.com/paper"
+nlm source add --notebook "NOTEBOOK_ID" --text "pasted content here"
 ```
 
-**Create a notebook**:
+## Studio artifacts (audio/video)
 
 ```bash
-nlm notebook create "Notebook Title"
-```
-
-## Sources
-
-**Add a source** (url, text, or file):
-
-```bash
-nlm source add --notebook "NOTEBOOK_ID" --url "https://..."
-nlm source add --notebook "NOTEBOOK_ID" --text "content here"
-```
-
-**Describe a source**:
-
-```bash
-nlm source describe --notebook "NOTEBOOK_ID" --source "SOURCE_ID"
-```
-
-## Studio artifacts
-
-**Create audio overview / other artifacts**:
-
-```bash
+# Create — async, returns immediately
 nlm studio create --notebook "NOTEBOOK_ID" --type audio
+
+# Poll until done
 nlm studio status --notebook "NOTEBOOK_ID"
-```
 
-**Download an artifact**:
-
-```bash
+# Download when status shows complete
 nlm download --notebook "NOTEBOOK_ID" --type audio
 ```
+
+`nlm studio create` is async — always follow with `nlm studio status`. Do not assume the artifact is ready immediately.
 
 ## Cross-notebook query
 
 ```bash
-nlm cross query "your question" --notebooks "ID1,ID2"
+nlm cross query "compare the approaches in these two papers" --notebooks "ID1,ID2"
 ```
 
 ## Notes
 
 ```bash
-nlm note --notebook "NOTEBOOK_ID" --action create --content "note text"
 nlm note --notebook "NOTEBOOK_ID" --action list
+nlm note --notebook "NOTEBOOK_ID" --action create --content "key insight"
 ```
 
-## Usage guidelines
+## Usage rules
 
-- Always run `nlm notebook list` first to find the right notebook ID.
-- For long research tasks, prefer `nlm notebook query` over creating new artifacts.
-- `nlm studio create` is async — poll with `nlm studio status` until complete.
+- **Always run `nlm notebook list` first** to resolve a human notebook name to an ID.
+- Do not create new notebooks unless the user explicitly asks.
+- `nlm studio create` is async — never report an artifact as ready without checking `nlm studio status`.
+- If auth fails at any point, stop and tell the user: `nlm login` must be re-run in a terminal.

@@ -7,18 +7,32 @@ user-invocable: true
 
 The user wants to recall past context about: $ARGUMENTS
 
-Run via bash:
-
 ```bash
 smart-mcps-agentmemory find "$ARGUMENTS" --limit 10
 ```
 
-Present the returned JSON to the user in a readable format:
+If the command returns zero observations, retry with `--depth deep` (makes two extra API calls — slower but pulls from all historical data):
 
-- For each observation show its type, title, and key facts
-- Highlight observations with high importance scores
-- Show any linked memories or lessons if present
+```bash
+smart-mcps-agentmemory find "$ARGUMENTS" --limit 10 --depth deep
+```
 
-If you need deeper results (including session crystals and insights), add `--depth deep`.
+## Interpreting results
 
-**Do NOT make up or hallucinate observations.** Only present what the command actually returned. If the command fails with a connection error, the agentmemory backend is not running — tell the user to start it with `~/.agentmemory/start.sh`.
+The output is JSON with three arrays: `observations`, `memories`, `lessons`.
+
+- **observations**: raw captured tool events and session notes, scored 0.0–1.0
+  - Score ≥ 0.7 → high confidence, lead with these
+  - Score 0.5–0.7 → medium confidence, mention as supporting context
+  - Score < 0.5 → low confidence, mention briefly or omit if irrelevant
+- **memories**: curated durable facts (manually saved)
+- **lessons**: confidence-scored learnings extracted across sessions
+
+Present results in readable prose, not raw JSON. Highlight what is most relevant to `$ARGUMENTS`.
+
+## Error handling
+
+- **Connection refused / ECONNREFUSED**: the agentmemory backend is not running. Tell the user to start it: `~/.agentmemory/start.sh` (or `docker compose up -d` if using Docker).
+- **Empty results after `--depth deep`**: no prior context exists for this project/topic yet. Say so clearly — do not hallucinate observations.
+
+**Never invent or infer observations.** Only present what the command actually returned.

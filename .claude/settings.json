@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/*.mjs\")",
+      "Bash(node \"$CLAUDE_PROJECT_DIR/hooks/scripts/*.mjs\")",
       "Bash(smart-mcps-agentmemory *)",
       "Bash(smart-mcps-perplexity *)",
       "Bash(codegraph *)",
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/session-start.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/session-start.mjs\""
           }
         ]
       }
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/pre-tool-use.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/pre-tool-use.mjs\""
           }
         ]
       }
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/post-tool-use.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/post-tool-use.mjs\""
           }
         ]
       },
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/post-tool-failure.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/post-tool-failure.mjs\""
           }
         ]
       }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/stop.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/stop.mjs\""
           }
         ]
       },
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/session-end.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/session-end.mjs\""
           }
         ]
       }
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/prompt-submit.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/prompt-submit.mjs\""
           }
         ]
       }
@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/pre-compact.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/pre-compact.mjs\""
           }
         ]
       }
@@ -99,7 +99,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/subagent-start.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/subagent-start.mjs\""
           }
         ]
       }
@@ -109,7 +109,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/scripts/subagent-stop.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/subagent-stop.mjs\""
           }
         ]
       }

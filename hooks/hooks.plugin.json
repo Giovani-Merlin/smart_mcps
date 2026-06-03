@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/session-start.mjs"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/prompt-submit.mjs"
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "matcher": "edit|write|create|read|view|glob|grep",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/pre-tool-use.mjs"
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/post-tool-use.mjs"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/post-tool-failure.mjs"
+      }
+    ],
+    "preCompact": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/pre-compact.mjs"
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/stop.mjs"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/session-end.mjs"
+      }
+    ],
+    "subagentStart": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/subagent-start.mjs"
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/subagent-stop.mjs"
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "command": "node ${COPILOT_PLUGIN_ROOT}/hooks/scripts/notification.mjs"
+      }
+    ]
+  }
+}

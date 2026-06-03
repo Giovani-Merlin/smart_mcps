@@ -134,7 +134,7 @@ async def _profile(project: str) -> dict:
 
 
 async def _sessions(query: str, project: str, limit: int) -> dict:
-    payload = {"q": query, "limit": limit * 3, "project": project or _DEFAULT_PROJECT}
+    payload = {"query": query, "limit": limit * 3, "format": "full", "project": project or _DEFAULT_PROJECT}
     results = await _call("POST", "/agentmemory/smart-search", json=payload)
     observations = results.get("observations") or results.get("results") or []
 

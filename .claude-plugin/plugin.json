@@ -1,5 +1,7 @@
 {
   "name": "smart-mcps",
   "version": "0.1.0",
-  "description": "AgentMemory, NotebookLM, Perplexity, and Codegraph MCP servers with citation-stripping hooks"
+  "description": "AgentMemory session hooks + CLI skills for codegraph, NotebookLM, Perplexity, and agentmemory — no MCP context pollution",
+  "hooks": "hooks/hooks.plugin.json",
+  "skills": "./skills/"
 }

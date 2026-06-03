@@ -11,15 +11,24 @@ Run these two commands:
 
 ```bash
 smart-mcps-agentmemory profile
-smart-mcps-agentmemory sessions "$ARGUMENTS" --limit 3
+smart-mcps-agentmemory sessions "${ARGUMENTS:-recent work}" --limit 3
 ```
+
+Note: if `$ARGUMENTS` is empty, the sessions command uses `"recent work"` as the default search query so the search is not blank.
+
+## Synthesize the handoff
 
 From the results:
 
-1. If `$ARGUMENTS` is provided, lead with the most relevant recent session that matches the topic.
-2. Otherwise, use the most recent session from `sessions` output.
-3. Summarize: what was being worked on, key files touched, last known state.
-4. If the session ended on an unanswered question, surface that first.
-5. End with a short "next step?" pointer the user can act on.
+1. **Lead with the most relevant recent session** — if `$ARGUMENTS` was provided, pick the session that best matches the topic; otherwise use the most recent session from the `sessions` output.
+2. **Summarize**: what was being worked on, the last known state, key decisions made.
+3. **Surface recently-modified files**: use `profile.recentActivity` if non-empty. If it is empty (common when observations haven't been indexed yet), use the `cwd` field from the matched sessions to at least name the project directory.
+4. **Flag open questions**: if the last session ended on an unanswered question or a TODO, surface that first.
+5. **Close with a "next step" pointer** — one concrete action the user can take to continue.
 
-Do not invent session details. If no sessions are found, say so and offer to start fresh.
+## Error handling
+
+- **No sessions found**: say so clearly and offer to start fresh.
+- **Backend down**: tell the user to start it (`~/.agentmemory/start.sh`) — do not invent session details.
+
+Do not invent or infer session content. Only present what the commands actually returned.

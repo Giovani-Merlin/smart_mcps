@@ -11,7 +11,7 @@ Steps:
 
 1. Analyze what the user wants to remember — extract the core insight, decision, or fact.
 2. Extract 2-5 searchable concepts (lowercased keyword phrases). Prefer specific terms (`"jwt-refresh-rotation"` beats `"auth"`).
-3. Choose a `--type`: `architecture`, `decision`, `workflow`, `bug`, `pattern`, or `code`.
+3. Choose a `--type` — well-tested values: `decision`, `architecture`, `pattern`, `context`. Others (`workflow`, `bug`, `code`) may also work but are less consistently indexed.
 4. Run via bash:
 
 ```bash

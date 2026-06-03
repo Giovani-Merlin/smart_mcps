@@ -1,31 +1,36 @@
 ---
 name: recap
-description: Summarize recent agent sessions for the current project. Use when the user asks "recap", "what have we been doing", "this week", "today", or wants a rollup of recent work.
-argument-hint: "[today | this week | last N]"
+description: Summarize what happened in recent sessions for the current project. Use when the user says "recap", "what happened", "catch me up", or wants a summary of recent activity.
+argument-hint: "[optional topic or timeframe]"
 user-invocable: true
 ---
 
-The user wants a recap. Time window: $ARGUMENTS
-
-Run via bash:
+The user wants a recap of recent work. Topic hint: $ARGUMENTS
 
 ```bash
-smart-mcps-agentmemory sessions "recent work" --limit 10
+smart-mcps-agentmemory sessions "${ARGUMENTS:-recent work}" --limit 10
 smart-mcps-agentmemory profile
 ```
 
-Parse the time window from `$ARGUMENTS`:
+## Summarize the results
 
-- `today` → sessions from the current local date
-- `this week` → sessions from the last 7 days
+From the sessions output, produce a concise recap:
+
+- Group sessions by theme or date if multiple are returned
+- For each session: what was the goal, what was done, what was the outcome
+- Highlight any unresolved issues or open threads
+- End with a one-line total: "N sessions across M days"
+
+Parse any time window from `$ARGUMENTS`:
+- `today` → sessions from the current date
+- `this week` → last 7 days
 - `last N` → most recent N sessions
 - empty → default to last 10
 
-Group surviving sessions by calendar date (YYYY-MM-DD). For each date:
+## Backend down fallback
 
-- List each session: first prompt (truncated), status, startedAt
-- For interesting sessions, run `smart-mcps-agentmemory find "SESSION_TOPIC"` to pull supporting observations
+If the command fails with a connection error (backend not running), fall back to summarizing what is visible in the current conversation context instead. Make clear that the agentmemory backend is not running and the recap is based only on the current session.
 
-End with a one-line total: "N sessions across M days."
+Tell the user to start the backend: `~/.agentmemory/start.sh` (or `docker compose up -d`).
 
-Do not invent sessions. If the window is empty, say so.
+Do not invent session details. Only present what the command or the current conversation actually contains.

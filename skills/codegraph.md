@@ -7,50 +7,66 @@ user-invocable: true
 
 Use the `codegraph` CLI via bash to answer code structure questions.
 
-## Primary commands
+## Decision table — pick the right command
 
-**Explore an area or concept** (start here for most questions):
+| Need | Command |
+| ---- | ------- |
+| Map the area / what matters here? | `codegraph context "<query>"` — always first |
+| Where is symbol X defined? | `codegraph context "<symbol>"` — also handles symbol lookup |
+| What calls this function? | `codegraph callers "<symbol>"` |
+| What does this call? | `codegraph callees "<symbol>"` |
+| What breaks if I change this? | `codegraph impact "<symbol>"` |
+| What files are in a directory? | `codegraph files [path]` — not `ls` or `find` |
+| Is the index healthy / empty? | `codegraph status` |
 
-```bash
-codegraph context "<query or symbol>"
-```
-
-Composes search + node details + callers + callees in one call. Best first step.
-
-**Find a specific symbol**:
-
-```bash
-codegraph search "<symbol name>"
-```
-
-**Trace call flow** — what calls X, what X calls:
+## Primary command — `context`
 
 ```bash
-codegraph callers "<symbol>"
-codegraph callees "<symbol>"
+codegraph context "authentication flow"
+codegraph context "_call"
+codegraph context "session hooks"
 ```
 
-**Assess change impact**:
+`context` already composes search + node details + callers + callees in one call. **Do not stack three separate calls when one `context` call covers it.** Only follow up with `callers`/`callees` when context output is truncated or you need to trace a specific edge deeper.
+
+## Trace call edges
 
 ```bash
-codegraph impact "<symbol>"
+codegraph callers "_call"
+codegraph callees "main"
 ```
 
-**List indexed files**:
+Use only as a follow-up to `context` when you need to trace a specific path that was cut off.
+
+## Assess impact before changes
 
 ```bash
-codegraph files [path]
+codegraph impact "_call"
+codegraph impact "BASE_URL"
 ```
 
-**Check index health**:
+Run this before modifying any widely-used function or constant — it shows what would break.
+
+## List indexed files
+
+```bash
+codegraph files
+codegraph files agentmemory/
+```
+
+Prefer this over `ls`/`find` when exploring what's in the index.
+
+## Index health
 
 ```bash
 codegraph status
 ```
 
-## Usage guidelines
+If status shows no index, run `codegraph init && codegraph index` before using any other command. The Setup hook runs `codegraph index` automatically on session start, but only if codegraph was installed before the session began.
 
-- Always start with `codegraph context` — it is the richest single call.
-- Follow up with `codegraph callers`/`callees` only when you need to trace a specific path not covered by context.
-- Use `codegraph impact` before suggesting changes to a widely-used symbol.
-- The index is kept up to date automatically (Setup hook runs `codegraph index` on session start).
+## Usage rules
+
+- **Start with `context`** for any exploration question — it is the richest single call.
+- **Do not use codegraph for files you have already read** — use it for discovery and impact analysis only.
+- **Do not loop**: if `context` returns nothing, try `codegraph search` with a shorter symbol name before assuming the symbol is unindexed.
+- **Index lag**: changes made during the session are not in the index until the next `codegraph index` run. Read the file directly if you need to see recent edits.

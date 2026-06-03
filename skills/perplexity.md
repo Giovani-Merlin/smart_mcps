@@ -7,41 +7,47 @@ user-invocable: true
 
 Use the `smart-mcps-perplexity` CLI via bash for all web-grounded queries.
 
-**Requires**: `PERPLEXITY_API_KEY` environment variable set.
+**Requires**: `PERPLEXITY_API_KEY` environment variable. If unset, stop immediately and tell the user — do not retry.
 
-## Choose the right subcommand
+## Decision table — pick the right subcommand
 
-| Need | Command |
-| --- | --- |
-| Quick factual Q&A with citations | `ask` |
-| Find specific URLs or recent news | `search` |
-| Deep multi-source investigation (30s+) | `research` |
-| Step-by-step analysis of a complex question | `reason` |
+| Need | Command | Speed | Cost |
+| ---- | ------- | ----- | ---- |
+| Quick factual Q&A with citations | `ask` | Fast (~3 s) | Low |
+| Find specific URLs or recent news | `search` | Fast (~3 s) | Low |
+| Deep multi-source investigation | `research` | Slow (30–60 s) | High (5×) |
+| Step-by-step analysis of a hard question | `reason` | Medium (~10 s) | Medium |
 
-## ask — quick Q&A
+**Default to `ask`.** It handles 80 % of questions and includes citations.
 
-```bash
-smart-mcps-perplexity ask "your question"
-smart-mcps-perplexity ask "latest Claude Code features" --recency week
-smart-mcps-perplexity ask "FastMCP docs" --domains docs.anthropic.com,github.com
-```
-
-Options: `--recency hour|day|week|month|year`, `--domains domain1,domain2` (prefix with `-` to exclude)
-
-## search — find URLs and facts
+## ask — factual Q&A
 
 ```bash
-smart-mcps-perplexity search "Claude Code plugin system"
-smart-mcps-perplexity search "agentmemory rohitg00" --domains github.com
+smart-mcps-perplexity ask "what are Claude Code hooks"
+smart-mcps-perplexity ask "latest FastMCP release" --recency week
+smart-mcps-perplexity ask "agentmemory rohitg00" --domains github.com
 ```
 
-## research — in-depth investigation
+Options:
+- `--recency hour|day|week|month|year` — filter to recent results
+- `--domains domain1,domain2` — restrict sources (prefix with `-` to exclude)
+
+## search — find URLs
 
 ```bash
-smart-mcps-perplexity research "best practices for MCP server design"
+smart-mcps-perplexity search "Claude Code plugin system documentation"
+smart-mcps-perplexity search "agentmemory github" --domains github.com
 ```
 
-Use for complex, multi-source questions. Slow (30s+), but thorough.
+Use when the user explicitly needs URLs, not just an answer. Returns links alongside the answer.
+
+## research — deep investigation
+
+```bash
+smart-mcps-perplexity research "best practices for MCP server design in 2025"
+```
+
+Use for complex, multi-source questions. Takes 30–60 s and costs ~5× more than `ask`. Use sparingly.
 
 ## reason — step-by-step analysis
 
@@ -49,11 +55,24 @@ Use for complex, multi-source questions. Slow (30s+), but thorough.
 smart-mcps-perplexity reason "should I use MCP tools or CLI skills for code intelligence?"
 ```
 
-Use for decisions or analysis that require weighing multiple factors.
+Use for decisions or analysis that requires weighing multiple factors. Returns a chain-of-thought response with a conclusion.
 
-## Usage guidelines
+## Output format
 
-- Default to `ask` for most questions — it is fast and includes citations.
-- Use `search` when you need the actual URLs, not just an answer.
-- Use `research` sparingly — it is expensive and slow.
-- Always show citations from the output to the user so they can verify.
+The CLI prints **plain markdown text** to stdout — the answer followed by numbered source citations at the end, like:
+
+```
+Claude Code hooks are shell commands that run at specific lifecycle events...
+
+Sources:
+1. https://docs.anthropic.com/...
+2. https://github.com/...
+```
+
+**Always show the citations to the user** — do not paraphrase without sources.
+
+## Usage rules
+
+- Do not use `research` unless the user explicitly asks for a deep investigation — it is slow and expensive.
+- Do not loop on failures: if the API returns an error, show it to the user and stop.
+- Do not use perplexity for questions answerable from the local codebase — use `codegraph` or `Read` instead.
