@@ -1,15 +1,16 @@
 [project]
 name = "smart-mcps"
 version = "0.1.0"
-description = "AgentMemory, NotebookLM, Perplexity, and Codegraph MCP servers"
+description = "AgentMemory, NotebookLM, Perplexity, and Codegraph — CLI wrappers and Claude Code skills"
 requires-python = ">=3.12"
-dependencies = ["fastmcp", "httpx"]
+dependencies = ["fastmcp", "httpx", "perplexityai"]
 
 [project.scripts]
-smart-mcps-agentmemory = "agentmemory.proxy:main"
+smart-mcps-agentmemory = "agentmemory.cli:main"
+smart-mcps-perplexity = "pplx.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentmemory"]
+packages = ["agentmemory", "pplx"]
 
 [build-system]
 requires = ["hatchling"]
