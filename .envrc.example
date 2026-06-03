@@ -1,0 +1,10 @@
+# Copy this file to .envrc and run: direnv allow
+# .envrc is gitignored — never commit secrets.
+
+export PERPLEXITY_API_KEY="pplx-your-key-here"
+
+# Optional: override the agentmemory daemon URL (default: http://localhost:3111)
+# export AGENTMEMORY_URL="http://localhost:3111"
+
+# Optional: set the project name for agentmemory context
+# export AGENTMEMORY_PROJECT_NAME="my-project"

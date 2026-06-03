@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__notebooklm__(notebook_query|cross_notebook_query|notebook_query_status)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash hooks/strip_mcp_hook.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__perplexity__(perplexity_ask|perplexity_research|perplexity_reason|perplexity_search)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash hooks/strip_mcp_hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

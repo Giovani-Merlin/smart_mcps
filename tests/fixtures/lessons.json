@@ -1,0 +1,21 @@
+{
+  "lessons": [
+    {
+      "confidence": 0.75,
+      "content": "Proxy test lesson \u2014 frontier key is 'frontier'. Tag: proxy-lesson-900aa5",
+      "context": "test_mcp_proxy",
+      "createdAt": "2026-06-01T11:13:19.696Z",
+      "decayRate": 0.05,
+      "id": "lsn_688ba63c5589bf4b",
+      "project": "/home/gbm1996/wksp/gionodes",
+      "reinforcements": 0,
+      "source": "manual",
+      "sourceIds": [],
+      "tags": [
+        "type:test"
+      ],
+      "updatedAt": "2026-06-01T11:13:19.696Z"
+    }
+  ],
+  "success": true
+}

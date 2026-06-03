@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "agentmemory": {
+      "type": "stdio",
+      "command": "smart-mcps-agentmemory"
+    },
+    "notebooklm": {
+      "type": "stdio",
+      "command": "notebooklm-mcp"
+    },
+    "perplexity": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@perplexity-ai/mcp-server"],
+      "env": {
+        "PERPLEXITY_API_KEY": "${PERPLEXITY_API_KEY}"
+      }
+    },
+    "codegraph": {
+      "type": "stdio",
+      "command": "codegraph",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}

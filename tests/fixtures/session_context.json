@@ -1,0 +1,16 @@
+{
+  "response_keys": [
+    "context",
+    "session"
+  ],
+  "session_keys": [
+    "cwd",
+    "id",
+    "observationCount",
+    "project",
+    "startedAt",
+    "status"
+  ],
+  "context_has_xml_tag": true,
+  "context_references_project": true
+}
