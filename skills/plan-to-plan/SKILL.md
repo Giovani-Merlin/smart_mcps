@@ -29,7 +29,7 @@ Topic/doubt: `$ARGUMENTS`
 
 Read the doubt in `$ARGUMENTS` carefully. Then:
 
-1. **Explore the codebase** briefly using `find`, `grep`, or `codegraph` to locate relevant files, classes, or entry points related to the topic.
+1. **Explore the codebase** briefly, prioritize codegraph, if not enough you can use `find` or `grep` to locate relevant files, classes, or entry points related to the topic.
 2. **Optionally** run 1–2 quick queries (perplexity or notebooklm) to scope what you don't know yet — use these to inform question generation, not to answer the main question yet.
 3. Write a short **Scope block** (3–5 bullets):
    - What is the core question?
@@ -43,20 +43,20 @@ Generate **atomic research questions** — each answerable by a single tool invo
 
 For each question, assign:
 
-| Field | Values |
-|---|---|
-| `SRC` | `code` / `perplexity` / `notebooklm` / `perplexity+notebooklm` |
-| `CAT` | `design_decision` / `implementation_detail` / `risk` / `requirement` / `open_question` |
-| `P` | `P1` (must answer) / `P2` (important) / `P3` (nice to have) |
-| `BLOCKING` | add tag if this must be answered before implementation starts |
-| `DEPENDS_ON` | Q-IDs this depends on, if any |
+| Field        | Values                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------- |
+| `SRC`        | `code` / `perplexity` / `notebooklm` / `perplexity+notebooklm`                         |
+| `CAT`        | `design_decision` / `implementation_detail` / `risk` / `requirement` / `open_question` |
+| `P`          | `P1` (must answer) / `P2` (important) / `P3` (nice to have)                            |
+| `BLOCKING`   | add tag if this must be answered before implementation starts                          |
+| `DEPENDS_ON` | Q-IDs this depends on, if any                                                          |
 
 **Routing rules:**
+
 - Questions about this codebase → `code`
 - Questions about industry practices, libraries, standards, comparisons → `perplexity`
-- Questions about internal design docs, ADRs, prior decisions → `notebooklm`
-- Questions needing both web + internal context → `perplexity+notebooklm`
-- Never route confidential code details to `perplexity`
+- Questions related to an existing notebook → `notebooklm`
+- Questions needing both web + existing notebook (broader and cross-concepts) → `perplexity+notebooklm`
 
 ## Phase 3 — Write the plan file
 
@@ -84,9 +84,9 @@ topic: "<original question from $ARGUMENTS>"
 
 ## Question Summary
 
-| ID    | Summary                          | SRC                   | P  | Blocking |
-|-------|----------------------------------|-----------------------|----|----------|
-| Q-001 | ...                              | perplexity            | P1 | Yes      |
+| ID    | Summary | SRC        | P   | Blocking |
+| ----- | ------- | ---------- | --- | -------- |
+| Q-001 | ...     | perplexity | P1  | Yes      |
 
 ## Questions
 
@@ -122,6 +122,7 @@ Read `research_plan.md`. For each question in order of priority:
 **`code`** — use `grep`, `find`, `Read`, or `codegraph` to search the codebase. Do NOT call external APIs.
 
 **`perplexity`** — call:
+
 ```bash
 smart-mcps-perplexity ask "the question" 
 # or for complex analysis:
@@ -129,6 +130,7 @@ smart-mcps-perplexity reason "the question"
 ```
 
 **`notebooklm`** — match topic to the notebook map, then:
+
 ```bash
 nlm notebook query ALIAS "the question"
 # save conversation_id and thread follow-ups:
@@ -137,7 +139,8 @@ nlm notebook query ALIAS "follow-up" --conversation-id CONV_ID
 
 **`perplexity+notebooklm`** — run both, synthesize answers.
 
-### For each question:
+### For each question
+
 1. Run the query/search.
 2. Write a concise answer (avoid raw tool output dumps — synthesize).
 3. Note the tools used and key sources.
@@ -161,9 +164,9 @@ topic: "<original question>"
 
 ## Status Summary
 
-| ID    | Status     | Confidence | Blocking | Notes |
-|-------|------------|------------|----------|-------|
-| Q-001 | answered   | high       | Yes      | ...   |
+| ID    | Status   | Confidence | Blocking | Notes |
+| ----- | -------- | ---------- | -------- | ----- |
+| Q-001 | answered | high       | Yes      | ...   |
 
 ## Answers
 

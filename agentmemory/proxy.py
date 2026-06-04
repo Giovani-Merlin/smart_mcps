@@ -1,40 +1,28 @@
 #!/usr/bin/env python3
 """
-AgentMemory FastMCP Proxy — 11-tool engine-first interface.
+AgentMemory FastMCP Proxy — 10-tool engine-first interface.
 
 Design principle: the MCP is a router and response shaper, not a search engine.
 All relevance ranking is delegated to the agentmemory engine (BM25+vector via
 /smart-search, file-graph via /enrich). The only client-side filtering is a
-simple concept/file set-intersection to follow observation hits into unindexed
-memory stores that the engine cannot score natively.
+weighted concept/file/lineage set-intersection to follow observation hits into
+unindexed memory stores that the engine cannot score natively.
 
 Tools:
-  memory_find          — general semantic recall (replaces memory_smart_search + memory_enrich)
+  memory_find          — general semantic recall (4-step: compact→expandIds→parallel hydration)
   memory_task_context  — full execution packet for one action
   memory_save          — durable curated memory write → POST /remember
   memory_lesson_save   — confidence-scored lesson write → POST /lessons (different store!)
-  memory_next          — enriched frontier for orchestrators (replaces memory_frontier)
+  memory_next          — enriched frontier for orchestrators
   memory_update_task   — create/update/complete/block/cancel actions
-  memory_sessions_find — semantic session recovery (replaces memory_sessions)
+  memory_sessions_find — semantic session recovery
   memory_profile       — project snapshot with lessons/insights/frontier
-  memory_session_context — on-demand context block (same as session-start hook)
-  memory_crystallize   — compress completed action chains into crystal digests
-
-Advanced (not in standard agent flow):
+  memory_session_context — stateless context block via POST /context (zero mutation)
   memory_graph_query   — knowledge graph structural traversal
-
-Install deps:
-  uv pip install -e ".[mcp]"   (from project root)
-
-Run manually for testing:
-  .venv/bin/python mcp/agentmemory_test.py
-  fastmcp dev inspector mcp/agentmemory_mcp_proxy.py
-  npx @modelcontextprotocol/inspector .venv/bin/python mcp/agentmemory_mcp_proxy.py
 """
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastmcp import FastMCP
@@ -45,17 +33,16 @@ TIMEOUT = 30.0
 mcp = FastMCP(
     "agentmemory-proxy",
     instructions=(
-        "Agentmemory MCP proxy — 11 tools. "
-        "memory_find: general semantic recall via engine BM25+vector; add files= for file-scoped cross-session context. "
+        "Agentmemory MCP proxy — 10 tools. "
+        "memory_find: 4-step retrieval (compact→expandIds→parallel: memories+insights/search+crystals by sessionId+enrich). "
         "memory_task_context: full execution packet for one action (expandIds if sourceMemoryIds exist, else query). "
-        "memory_save: save durable curated memory → POST /remember; distinct from memory_lesson_save. "
+        "memory_save: save durable curated memory → POST /remember; include strength, concepts, files, sourceObservationIds. "
         "memory_lesson_save: save confidence-scored lesson → POST /lessons; strengthens on reinforcement. "
         "memory_next: enriched frontier for orchestrators — each action has a pre-loaded context field. "
         "memory_update_task: create/update/complete/block/cancel actions via operation= dispatch. "
         "memory_sessions_find: recover prior sessions by semantic topic (not UUID). "
         "memory_profile: project snapshot at session start or before planning. "
-        "memory_session_context: get full context block identical to session-start hook injection. "
-        "memory_crystallize: compress completed action chain into compact crystal digest via LLM. "
+        "memory_session_context: stateless POST /context — no session created, no context cleared. "
         "memory_graph_query: advanced structural traversal — not needed in the standard flow."
     ),
 )
@@ -194,35 +181,46 @@ def _is_useful_observation(obs: dict) -> bool:
 def _follow_memories(
     top_obs: list[dict], all_memories: list[dict], limit: int = 6
 ) -> list[dict]:
-    """Follow observation hits into unindexed memory store via link fields.
+    """Follow observation hits into unindexed memory store via weighted link fields.
 
-    agentmemory does not index curated Memories in BM25/vector — they have no
-    query-relevance score. The correct workaround: observations are the scored
-    entry point; memories that share sourceObservationIds, concepts, or files
-    with the top-scored observations inherit their relevance by proxy.
+    Scoring:
+      sourceObservationIds ∩ top_obs_ids → 3pts (lineage — strongest signal)
+      sessionId ∈ memory.sessionIds      → 2pts (episodic)
+      concepts[] ∩ top_concepts          → 1pt  (structural)
+      files[] ∩ top_files                → 1pt  (structural)
 
-    This is a simple set-intersection — no weighted scoring.
+    Only isLatest=true memories are considered (older versions are stale).
+    Sort: weighted_score desc, then strength desc as tiebreaker.
     """
     top_obs_ids = {o.get("id") or o.get("obsId") for o in top_obs if o.get("id") or o.get("obsId")}
     top_session_ids = {o.get("sessionId") for o in top_obs if o.get("sessionId")}
     top_concepts = {c for o in top_obs for c in o.get("concepts", [])}
     top_files = {f for o in top_obs for f in o.get("files", [])}
 
-    linked = []
+    scored: list[tuple[int, float, dict]] = []
     for m in all_memories:
+        if not m.get("isLatest", True):
+            continue
+        pts = 0
         src_obs = set(m.get("sourceObservationIds") or [])
+        m_sessions = set(m.get("sessionIds") or [])
         m_concepts = set(m.get("concepts") or [])
         m_files = set(m.get("files") or [])
-        if (
-            src_obs & top_obs_ids
-            or m_concepts & top_concepts
-            or m_files & top_files
-        ):
-            linked.append(m)
 
-    # Sort by strength as a durability proxy (decay-weighted by the engine)
-    linked.sort(key=lambda m: m.get("strength") or 0.0, reverse=True)
-    return linked[:limit]
+        if src_obs & top_obs_ids:
+            pts += 3
+        if m_sessions & top_session_ids:
+            pts += 2
+        if m_concepts & top_concepts:
+            pts += 1
+        if m_files & top_files:
+            pts += 1
+
+        if pts > 0:
+            scored.append((pts, float(m.get("strength") or 0.0), m))
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [m for _, _, m in scored[:limit]]
 
 
 async def _fetch_lessons(project: str = "", limit: int = 10) -> list:
@@ -258,20 +256,29 @@ async def _fetch_insights(project: str = "", limit: int = 8) -> list:
         return []
 
 
-async def _enrich_files(files: list[str], project: str = "", terms: list[str] | None = None) -> dict:
-    """Call /enrich anchored to the most recent session.
+async def _search_insights(query: str, project: str = "", limit: int = 8) -> list:
+    """BM25 search over insight content via POST /insights/search (separate from GET /insights)."""
+    try:
+        body: dict = {"query": query}
+        if project:
+            body["project"] = project
+        resp = await _call("POST", "/agentmemory/insights/search", json=body)
+        return resp.get("insights", [])[:limit]
+    except Exception:
+        return []
+
+
+async def _enrich_files(
+    files: list[str],
+    project: str = "",
+    terms: list[str] | None = None,
+    session_id: str = "",
+) -> dict:
+    """Call /enrich anchored to session_id ("unknown" fallback — required by API).
 
     Returns the raw enrich response dict (enrichedContext, bugCandidates, bridgingMemories).
     """
-    sessions_resp = await _call("GET", "/agentmemory/sessions", params={"limit": 1})
-    sessions = sessions_resp.get("sessions", [])
-    if not sessions:
-        return {}
-    session_id = sessions[0].get("id") or sessions[0].get("sessionId")
-    if not session_id:
-        return {}
-
-    body: dict = {"sessionId": session_id, "files": files}
+    body: dict = {"sessionId": session_id or "unknown", "files": files}
     if project:
         body["project"] = project
     if terms:
@@ -283,12 +290,7 @@ async def _enrich_files(files: list[str], project: str = "", terms: list[str] | 
 
 
 async def _build_action_context(action: dict, project: str = "") -> dict:
-    """Build memory context for one action — used by memory_next and memory_task_context.
-
-    If the action has sourceMemoryIds, expand them via expandIds (engine-native KV fetch).
-    Otherwise, run a smart-search query on the action title+description.
-    Either way, follow observation hits into memories via link-following (no stopwords).
-    """
+    """Build memory context for one action — used by memory_next and memory_task_context."""
     ids = action.get("sourceMemoryIds") or []
     title = (action.get("title") or "")
     desc = (action.get("description") or "")[:120]
@@ -339,90 +341,94 @@ async def memory_find(
     files: str = "",
     limit: int = 10,
     depth: str = "normal",
+    session_id: str = "",
 ) -> dict:
     """General semantic recall — the default retrieval tool for all agents.
 
-    Uses the agentmemory engine (BM25+vector via /smart-search) as the scored
-    entry point. Memories, which have no native search index, are reached by
-    following sourceObservationIds / concept / file links from the top-scored
-    observation hits (simple set-intersection, no custom scoring).
+    4-step progressive retrieval:
+      Step 1 — Compact discovery: smart-search format=compact → scored hits + bundled lessons
+      Step 2 — Expansion: expandIds on top 3-5 hits → full narrative/facts/concepts/files
+      Step 3 — Parallel hydration: memories (weighted link-follow) + insights/search (BM25)
+                + crystals (filtered by matched sessionIds + crystallizedInto) + enrich (if files)
+      Step 4 — deep only: graph/query for structural neighbors
 
     query: text query (at least one of query or files is required)
-    files: comma-separated file paths — triggers file-scoped cross-session context
-           via /enrich (enrichedContext, bugCandidates, bridgingMemories). More
-           precise than a text query for file-level history.
-    depth: "normal" = observations + lessons + linked memories
-           "deep"   = adds insights + session crystals (slower)
-
-    WHY no client scoring: GET /memories ignores its q param server-side. Rather
-    than reimplementing relevance, we use the engine-scored observation results as
-    pointers into unindexed stores.
+    files: comma-separated file paths — triggers POST /enrich for file-scoped cross-session context
+    depth: "normal" = steps 1-3; "deep" = adds graph traversal (step 4)
+    session_id: current session ID for /enrich anchor (uses "unknown" if omitted)
     """
     file_list = [f.strip() for f in files.split(",") if f.strip()]
-
     if not query and not file_list:
         return {"error": "At least one of query or files is required."}
 
-    # Build parallel tasks
-    tasks = []
-
-    # Task 0: smart-search (BM25+vector+graph on observations, lesson recall bundled)
+    # Step 1 — Compact discovery
+    compact_obs: list[dict] = []
+    bundled_lessons: list[dict] = []
     if query:
-        obs_body: dict = {"limit": limit * 2, "format": "full"}
-        obs_body["query"] = query
+        compact_body: dict = {"query": query, "format": "compact", "limit": limit * 2}
         if project:
-            obs_body["project"] = project
-        tasks.append(_call("POST", "/agentmemory/smart-search", json=obs_body))
-    else:
-        tasks.append(_noop({"results": [], "lessons": []}))
+            compact_body["project"] = project
+        try:
+            compact_resp = await _call("POST", "/agentmemory/smart-search", json=compact_body)
+            compact_obs = [r for r in compact_resp.get("results", []) if _is_useful_observation(r)]
+            bundled_lessons = compact_resp.get("lessons", [])
+        except Exception:
+            pass
 
-    # Task 1: memories list (for link-following)
-    mem_params: dict = {"limit": 80}
-    if project:
-        mem_params["project"] = project
-    tasks.append(_call("GET", "/agentmemory/memories", params=mem_params))
+    # Step 2 — Expand top 3-5 hits for full content
+    top_ids = [o.get("id") or o.get("obsId") for o in compact_obs[:5] if o.get("id") or o.get("obsId")]
+    full_obs = compact_obs
+    if top_ids and query:
+        try:
+            expand_body: dict = {"expandIds": top_ids, "query": query}
+            if project:
+                expand_body["project"] = project
+            expand_resp = await _call("POST", "/agentmemory/smart-search", json=expand_body)
+            expanded = [r for r in expand_resp.get("results", []) if _is_useful_observation(r)]
+            if expanded:
+                expanded_ids = {r.get("id") or r.get("obsId") for r in expanded}
+                remaining = [o for o in compact_obs[5:] if (o.get("id") or o.get("obsId")) not in expanded_ids]
+                full_obs = expanded + remaining
+        except Exception:
+            pass
 
-    # Task 2: file enrich (if files provided)
-    if file_list:
-        tasks.append(_enrich_files(file_list, project))
-    else:
-        tasks.append(_noop({}))
+    # Anchors for step 3
+    matched_session_ids = {o.get("sessionId") for o in compact_obs[:5] if o.get("sessionId")}
+    crystallized_ids = {o.get("crystallizedInto") for o in compact_obs[:5] if o.get("crystallizedInto")}
+    top_obs_for_linking = full_obs[:5]
 
-    # Task 3+4: deep mode extras
-    if depth == "deep":
-        tasks.append(_fetch_insights(project, limit))
-        tasks.append(_fetch_crystals(project, limit))
-    else:
-        tasks.append(_noop([]))
-        tasks.append(_noop([]))
+    # Step 3 — Parallel hydration
+    hydration_tasks = [
+        _call("GET", "/agentmemory/memories", params={"limit": 80, **({"project": project} if project else {})}),
+        _search_insights(query, project, limit) if query else _noop([]),
+        _fetch_crystals(project, 20),
+        _enrich_files(file_list, project, session_id=session_id) if file_list else _noop({}),
+    ]
+    hydration_results = await asyncio.gather(*hydration_tasks, return_exceptions=True)
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    mem_resp = hydration_results[0] if not isinstance(hydration_results[0], Exception) else {"memories": []}
+    raw_insights = hydration_results[1] if not isinstance(hydration_results[1], Exception) else []
+    all_crystals = hydration_results[2] if not isinstance(hydration_results[2], Exception) else []
+    enrich_resp = hydration_results[3] if not isinstance(hydration_results[3], Exception) else {}
 
-    obs_resp = results[0] if not isinstance(results[0], Exception) else {"results": [], "lessons": []}
-    mem_resp = results[1] if not isinstance(results[1], Exception) else {"memories": []}
-    enrich_resp = results[2] if not isinstance(results[2], Exception) else {}
-    raw_insights = results[3] if not isinstance(results[3], Exception) else []
-    raw_crystals = results[4] if not isinstance(results[4], Exception) else []
-
-    # Scored observations from engine
-    raw_obs = [r for r in obs_resp.get("results", []) if _is_useful_observation(r)]
-    observations = [_fmt_observation(r, r.get("score", 0.0)) for r in raw_obs[:limit]]
-
-    # Bundled lessons (scored by engine: confidence × term_overlap × recency)
-    raw_lessons = obs_resp.get("lessons", [])
-
-    # Memory link-following (no custom scoring — set-intersection only)
     all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
-    linked_memories = _follow_memories(raw_obs[:5], all_memories) if raw_obs else []
+    linked_memories = _follow_memories(top_obs_for_linking, all_memories) if top_obs_for_linking else []
 
-    out: dict = {"observations": observations}
+    matched_crystals = [
+        c for c in (all_crystals if isinstance(all_crystals, list) else [])
+        if c.get("sessionId") in matched_session_ids or c.get("id") in crystallized_ids
+    ]
 
+    out: dict = {"observations": [_fmt_observation(o, o.get("score", 0.0)) for o in full_obs[:limit]]}
     if linked_memories:
         out["memories"] = [_fmt_memory(m) for m in linked_memories]
-    if raw_lessons:
-        out["lessons"] = [_fmt_lesson(l) for l in raw_lessons]
+    if bundled_lessons:
+        out["lessons"] = [_fmt_lesson(l) for l in bundled_lessons]
+    if raw_insights:
+        out["insights"] = [_fmt_insight(i) for i in raw_insights]
+    if matched_crystals:
+        out["crystals"] = [_fmt_crystal(c) for c in matched_crystals]
 
-    # File-scoped enrichment results
     if enrich_resp:
         enriched = enrich_resp.get("enrichedContext", [])
         bugs = enrich_resp.get("bugCandidates", [])
@@ -434,10 +440,19 @@ async def memory_find(
         if bridging:
             out["bridging_memories"] = [_fmt_memory(m) for m in bridging]
 
-    if raw_insights:
-        out["insights"] = [_fmt_insight(i) for i in raw_insights]
-    if raw_crystals:
-        out["crystals"] = [_fmt_crystal(c) for c in raw_crystals]
+    # Step 4 — deep only: structural graph traversal
+    if depth == "deep" and query:
+        try:
+            graph_body: dict = {"query": query, "depth": 1}
+            if project:
+                graph_body["project"] = project
+            graph_resp = await _call("POST", "/agentmemory/graph/query", json=graph_body)
+            nodes = graph_resp.get("nodes", [])[:20]
+            edges = graph_resp.get("edges", [])[:30]
+            if nodes or edges:
+                out["graph_neighbors"] = {"nodes": nodes, "edges": edges}
+        except Exception:
+            pass
 
     return out
 
@@ -454,6 +469,7 @@ async def memory_task_context(
     project: str = "",
     files: str = "",
     agent_id: str = "",
+    session_id: str = "",
 ) -> dict:
     """Full context packet for executing one action.
 
@@ -466,13 +482,10 @@ async def memory_task_context(
     task: free-form task description — used as fallback query when no action_id
           is provided, or when the action has no sourceMemoryIds.
     files: comma-separated file paths for additional /enrich context.
-
-    Returns: {objective, relevant_observations, memories, lessons,
-              enriched_file_context?, bug_candidates?}
+    session_id: current session ID for /enrich anchor.
     """
     file_list = [f.strip() for f in files.split(",") if f.strip()]
 
-    # Resolve action record and sourceMemoryIds
     action_record: dict = {}
     source_ids: list = []
     query_text = task
@@ -499,7 +512,6 @@ async def memory_task_context(
     if not query_text and not source_ids and not file_list:
         return {"error": "Provide action_id, task, or files."}
 
-    # Build smart-search body
     obs_body: dict = {"limit": 12, "format": "full"}
     if source_ids:
         obs_body["expandIds"] = source_ids
@@ -514,7 +526,7 @@ async def memory_task_context(
         _fetch_lessons(project, 8),
     ]
     if file_list:
-        tasks_coros.append(_enrich_files(file_list, project))
+        tasks_coros.append(_enrich_files(file_list, project, session_id=session_id))
 
     results = await asyncio.gather(*tasks_coros, return_exceptions=True)
 
@@ -527,9 +539,7 @@ async def memory_task_context(
     all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
     linked_memories = _follow_memories(raw_obs[:6], all_memories)
 
-    out: dict = {
-        "objective": query_text or action_record.get("title", ""),
-    }
+    out: dict = {"objective": query_text or action_record.get("title", "")}
     if action_record:
         out["action"] = _fmt_action(action_record)
     if raw_obs:
@@ -567,24 +577,25 @@ async def memory_save(
     files: str = "",
     project: str = "",
     agent_id: str = "",
+    strength: int = 7,
+    source_observation_ids: str = "",
+    ttl_days: int = 0,
 ) -> dict:
-    """Save a curated memory — for non-obvious decisions, constraints, and lessons.
+    """Save a curated memory — for non-obvious decisions, constraints, and patterns.
 
-    memory_type: architecture | workflow | fact | preference | pattern |
-                 procedure | constraint | bug
-    title: short label for the memory (improves future linkage via concepts)
-    concepts: comma-separated key concepts
-    files: comma-separated file paths this memory relates to
-    agent_id: role identifier, e.g. "gionodes/worker" or "gionodes/researcher"
-
-    Only save non-obvious content: trade-offs, discovered constraints, bugs fixed,
-    patterns established. Do NOT save obvious facts or temporary state.
+    memory_type: architecture | workflow | fact | preference | pattern | procedure | constraint | bug
+    strength: 1-10, default 7. Salience: architecture(9+) > preference(8) > pattern(7) > bug(6) > fact(5)
+    source_observation_ids: comma-separated observation IDs (enables provenance chain)
+    ttl_days: days until expiry (0 = no expiry)
+    concepts: comma-separated key concepts (2-5 specific phrases, e.g. "jwt-refresh-rotation")
+    files: comma-separated exact file paths this memory relates to
     """
     body: dict = {
         "content": content,
         "type": memory_type,
         "concepts": [c.strip() for c in concepts.split(",") if c.strip()],
         "files": [f.strip() for f in files.split(",") if f.strip()],
+        "strength": max(1, min(10, strength)),
     }
     if title:
         body["title"] = title
@@ -592,6 +603,11 @@ async def memory_save(
         body["project"] = project
     if agent_id:
         body["agentId"] = agent_id
+    src_obs_ids = [s.strip() for s in source_observation_ids.split(",") if s.strip()]
+    if src_obs_ids:
+        body["sourceObservationIds"] = src_obs_ids
+    if ttl_days > 0:
+        body["ttlDays"] = ttl_days
     return await _call("POST", "/agentmemory/remember", json=body)
 
 
@@ -647,14 +663,6 @@ async def memory_next(
     Each returned action has a 'context' field pre-loaded with relevant observations
     and memories — pass it directly to workers. No separate memory_find call needed
     per action.
-
-    include_context: when True (default), each action is enriched with engine-native
-                     context — expandIds expansion if sourceMemoryIds exist, else
-                     a smart-search on the action title. All enrichment runs in parallel.
-
-    WHY this replaces memory_frontier: the old approach used GET /memories + client-side
-    stopword scoring. This version uses the engine's smart-search and expandIds paths,
-    so relevance comes from BM25+vector rather than manual term matching.
     """
     params: dict = {"limit": limit}
     if project:
@@ -723,22 +731,21 @@ async def memory_update_task(
     For create:
       title, description, priority (1-10), tags (comma-sep), requires (comma-sep
       action IDs), source_memory_ids (comma-sep memory IDs, optional).
-      Auto-links: runs smart-search on title and follows top observation
-      sourceObservationIds to attach relevant memories automatically.
+      Auto-links: smart-search on title+tags+description[:80] → weighted
+      _follow_memories → sourceMemoryIds (capped at 8, deduped).
 
     For update/complete/block/cancel:
       action_id required. complete sets status=done and attaches result.
-      block sets status=blocked (use for external blockers, not DAG deps).
-      cancel sets status=cancelled.
+      block sets status=blocked. cancel sets status=cancelled.
     """
     if operation == "create":
         if not title:
             return {"error": "title is required for create"}
         explicit_ids = [m.strip() for m in source_memory_ids.split(",") if m.strip()]
 
-        # Engine-native auto-link: smart-search → top obs → sourceObservationIds → memory IDs
         auto_ids: list[str] = []
-        search_q = f"{title} {description[:120]}".strip()
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        search_q = f"{title} {' '.join(tag_list)} {description[:80]}".strip()
         if search_q:
             try:
                 obs_body: dict = {"query": search_q, "limit": 6, "format": "compact"}
@@ -750,18 +757,18 @@ async def memory_update_task(
                 )
                 raw_obs = [r for r in obs_resp.get("results", []) if _is_useful_observation(r)]
                 all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
-                linked = _follow_memories(raw_obs[:4], all_memories, limit=3)
+                linked = _follow_memories(raw_obs[:4], all_memories, limit=5)
                 auto_ids = [m["id"] for m in linked if m.get("id")]
             except Exception:
                 pass  # auto-link failure must never block action creation
 
-        all_ids = list(dict.fromkeys(explicit_ids + auto_ids))  # dedupe, preserve order
+        all_ids = list(dict.fromkeys(explicit_ids + auto_ids))[:8]  # dedupe, cap at 8
 
         body: dict = {
             "title": title,
             "description": description,
             "priority": max(1, min(10, priority)),
-            "tags": [t.strip() for t in tags.split(",") if t.strip()],
+            "tags": tag_list,
             "sourceMemoryIds": all_ids,
         }
         if project:
@@ -777,7 +784,6 @@ async def memory_update_task(
 
         return await _call("POST", "/agentmemory/actions", json=body)
 
-    # update / complete / block / cancel
     if not action_id:
         return {"error": "action_id is required for update/complete/block/cancel"}
 
@@ -818,9 +824,6 @@ async def memory_sessions_find(
     Uses BM25+vector observation search to find sessionId anchors, then joins
     session metadata (summary, firstPrompt, startedAt, cwd) from /sessions.
     Optionally includes session crystal narratives for richer context.
-
-    include_timeline: when True, fetches timeline anchored to the earliest
-                      matched session for temporal reconstruction.
     """
     search_body: dict = {"query": query, "limit": limit * 3, "format": "compact"}
     if project:
@@ -831,15 +834,13 @@ async def memory_sessions_find(
         _call("GET", "/agentmemory/sessions", params={"limit": 100}),
     )
 
-    # Collect matched sessionIds from observation search results
     matched_obs = search_resp.get("results", [])
-    matched_session_ids = {}
+    matched_session_ids: dict = {}
     for obs in matched_obs:
         sid = obs.get("sessionId")
         if sid and sid not in matched_session_ids:
-            matched_session_ids[sid] = obs  # keep the first (highest-scored) hit per session
+            matched_session_ids[sid] = obs
 
-    # Join session records
     all_sessions = sessions_resp.get("sessions", [])
     matched_sessions = []
     for s in all_sessions:
@@ -858,7 +859,6 @@ async def memory_sessions_find(
 
     out: dict = {"sessions": matched_sessions[:limit]}
 
-    # Add crystals for matched sessions
     raw_crystals = await _fetch_crystals(project, 20)
     matched_session_id_set = {s["sessionId"] for s in matched_sessions}
     session_crystals = [
@@ -875,7 +875,7 @@ async def memory_sessions_find(
                 default=None,
             )
             if earliest:
-                anchor = earliest[:10]  # ISO date
+                anchor = earliest[:10]
                 tl_body: dict = {"anchor": anchor}
                 if project:
                     tl_body["project"] = project
@@ -904,9 +904,7 @@ async def memory_profile(
 
     Returns top concepts, top files, recent activity, and session count from
     the profile endpoint, optionally enriched with lessons, insights, and the
-    active action frontier.
-
-    All enrichment calls run in parallel with the profile fetch.
+    active action frontier. All enrichment calls run in parallel.
     """
     params: dict = {}
     if project:
@@ -949,7 +947,7 @@ async def memory_profile(
 
 
 # ---------------------------------------------------------------------------
-# Tool 8: memory_session_context — on-demand context block
+# Tool 8: memory_session_context — stateless context block
 # ---------------------------------------------------------------------------
 
 
@@ -957,100 +955,23 @@ async def memory_profile(
 async def memory_session_context(
     project: str = "",
     session_id: str = "",
+    budget: int = 0,
 ) -> dict:
-    """Get the full project context block — identical to what session-start injects.
+    """Get the full project context block via stateless POST /context.
 
-    Returns the <agentmemory-context> XML block: project profile, lessons, and
-    last 10 session summaries (pre-computed narratives or raw observation fallback).
-    Use when the auto-injected context was not received, or to refresh mid-session.
+    Zero DB mutation — does NOT create or modify any session. Safe to call at
+    any time without side effects (unlike the old temp-session approach).
 
-    session_id: current session ID to anchor context. If omitted, a temporary
-                session is created then immediately ended (no persistent side effect).
-    project: canonical project path (e.g. /home/gbm1996/wksp/gionodes).
-
-    WHY this exists: the session-start hook already injects context automatically,
-    but agents that start mid-flow or in non-hook contexts can call this to get the
-    same token-budgeted XML block without restarting the session.
+    session_id: current session ID (uses "unknown" if omitted)
+    budget: optional token budget hint for the context response
+    project: canonical project path or name
     """
-    import uuid as _uuid
-
-    temp_session = not bool(session_id)
-    if temp_session:
-        session_id = f"ctx-tmp-{_uuid.uuid4().hex[:12]}"
-
-    body: dict = {"sessionId": session_id, "cwd": project or ""}
+    body: dict = {"sessionId": session_id or "unknown"}
     if project:
         body["project"] = project
-
-    context = ""
-    session_meta: dict = {}
-    error: str | None = None
-
-    try:
-        resp = await _call("POST", "/agentmemory/session/start", json=body)
-        context = resp.get("context", "")
-        session_meta = resp.get("session", {})
-    except Exception as exc:
-        error = str(exc)
-    finally:
-        if temp_session:
-            try:
-                await _call("POST", "/agentmemory/session/end", json={"sessionId": session_id})
-            except Exception:
-                pass
-
-    if error:
-        return {"error": error}
-
-    return {
-        "context": context,
-        "project": session_meta.get("project", project),
-        "startedAt": session_meta.get("startedAt"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tool 10: memory_crystallize — compress completed action chains
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def memory_crystallize(
-    action_ids: str,
-    project: str = "",
-    session_id: str = "",
-) -> dict:
-    """Compress a completed action chain into a compact crystal digest via LLM.
-
-    A crystal contains: narrative, keyOutcomes, filesAffected. It becomes
-    searchable future context without raw observation noise. Call after
-    completing a meaningful sprint of actions.
-
-    action_ids: comma-separated list of completed action IDs.
-
-    WHY: completed action chains accumulate noisy observations. Crystallizing
-    distills them into a dense, high-signal summary that enriches future
-    memory_find and memory_task_context results.
-    """
-    ids = [a.strip() for a in action_ids.split(",") if a.strip()]
-    if not ids:
-        return {"error": "action_ids is required (comma-separated action IDs)"}
-    # mem::crystallize has no direct REST endpoint — it's only exposed via MCP call.
-    args: dict = {"actionIds": ",".join(ids)}
-    if project:
-        args["project"] = project
-    if session_id:
-        args["sessionId"] = session_id
-    resp = await _call("POST", "/agentmemory/mcp/call", json={"name": "memory_crystallize", "arguments": args})
-    # MCP call response: {content: [{type: "text", text: "<json>"}]}
-    import json as _json
-    content = resp.get("content", [])
-    if content and content[0].get("type") == "text":
-        try:
-            return _json.loads(content[0]["text"])
-        except Exception:
-            return {"raw": content[0]["text"]}
-    return resp
+    if budget:
+        body["budget"] = budget
+    return await _call("POST", "/agentmemory/context", json=body)
 
 
 # ---------------------------------------------------------------------------
@@ -1069,8 +990,7 @@ async def memory_graph_query(
 
     Advanced tool — not needed in the standard orchestration flow. Use only
     when you need explicit causality chains or dependency traversal that
-    memory_find and memory_task_context do not surface (e.g. "which errors have
-    been caused by changes to SAMSegmentor across all sessions").
+    memory_find and memory_task_context do not surface.
 
     query: concept, file, function name, or free-form description.
     depth: traversal depth (1 = direct neighbors, 2 = two hops).
@@ -1111,8 +1031,7 @@ def pre_action_search(
     """Template for memory context before executing a specific task action.
 
     If the action came from memory_next, the 'context' field is already populated
-    — use it directly and skip this. Only call memory_task_context or memory_find
-    when context is absent.
+    — use it directly and skip this. Only call memory_task_context when context is absent.
     """
     return f"""Before executing: {action_title}
 
