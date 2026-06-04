@@ -31,20 +31,176 @@ import json
 import os
 import sys
 
-from agentmemory.proxy import (
-    _call,
-    _enrich_files,
-    _fetch_crystals,
-    _fetch_lessons,
-    _fmt_crystal,
-    _fmt_insight,
-    _fmt_lesson,
-    _fmt_memory,
-    _fmt_observation,
-    _follow_memories,
-    _is_useful_observation,
-    _search_insights,
-)
+import httpx
+
+BASE_URL = os.environ.get("AGENTMEMORY_URL", "http://localhost:3111").rstrip("/")
+TIMEOUT = 30.0
+
+
+async def _call(method: str, path: str, **kwargs) -> dict:
+    try:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT) as client:
+            resp = await client.request(method, path, **kwargs)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError as exc:
+        raise RuntimeError(
+            f"AgentMemory daemon is unreachable at {BASE_URL}. "
+            "Run: systemctl --user start agentmemory"
+        ) from exc
+
+
+def _fmt_memory(m: dict) -> dict:
+    return {
+        "id": m.get("id"),
+        "type": m.get("type"),
+        "title": (m.get("title") or "")[:80],
+        "content": (m.get("content") or "")[:400],
+        "concepts": m.get("concepts", [])[:8],
+        "files": m.get("files", [])[:5],
+        "strength": m.get("strength"),
+        "sourceObservationIds": m.get("sourceObservationIds", [])[:10],
+    }
+
+
+def _fmt_observation(obs: dict, score: float = 0.0) -> dict:
+    fmt = {
+        "id": obs.get("id") or obs.get("obsId"),
+        "sessionId": obs.get("sessionId"),
+        "type": obs.get("type"),
+        "title": (obs.get("title") or "")[:100],
+        "facts": obs.get("facts", [])[:4],
+        "concepts": obs.get("concepts", [])[:6],
+        "files": obs.get("files", [])[:5],
+        "importance": obs.get("importance"),
+        "score": round(score, 3),
+    }
+    gc = obs.get("graphContext")
+    if gc:
+        fmt["graph_context"] = gc
+    return fmt
+
+
+def _fmt_lesson(lesson: dict) -> dict:
+    return {
+        "id": lesson.get("id"),
+        "content": (lesson.get("content") or "")[:300],
+        "context": (lesson.get("context") or "")[:150],
+        "confidence": lesson.get("confidence"),
+        "tags": lesson.get("tags", []),
+    }
+
+
+def _fmt_crystal(c: dict) -> dict:
+    return {
+        "id": c.get("id"),
+        "sessionId": c.get("sessionId"),
+        "narrative": (c.get("narrative") or "")[:400],
+        "keyOutcomes": c.get("keyOutcomes", [])[:5],
+        "filesAffected": c.get("filesAffected", [])[:5],
+    }
+
+
+def _fmt_insight(ins: dict) -> dict:
+    return {
+        "id": ins.get("id"),
+        "title": (ins.get("title") or "")[:100],
+        "content": (ins.get("content") or "")[:300],
+        "confidence": ins.get("confidence"),
+        "sourceMemoryIds": ins.get("sourceMemoryIds", [])[:5],
+    }
+
+
+_SEMANTIC_OBS_TYPES = {"decision", "conversation", "subagent", "other", "architecture", "bug", "pattern", "code", "error"}
+
+
+def _is_useful_observation(obs: dict) -> bool:
+    facts = obs.get("facts", [])
+    if facts:
+        return True
+    return obs.get("type", "") in _SEMANTIC_OBS_TYPES
+
+
+def _follow_memories(top_obs: list[dict], all_memories: list[dict], limit: int = 6) -> list[dict]:
+    top_obs_ids = {o.get("id") or o.get("obsId") for o in top_obs if o.get("id") or o.get("obsId")}
+    top_session_ids = {o.get("sessionId") for o in top_obs if o.get("sessionId")}
+    top_concepts = {c for o in top_obs for c in o.get("concepts", [])}
+    top_files = {f for o in top_obs for f in o.get("files", [])}
+
+    scored: list[tuple[int, float, dict]] = []
+    for m in all_memories:
+        if not m.get("isLatest", True):
+            continue
+        pts = 0
+        src_obs = set(m.get("sourceObservationIds") or [])
+        m_sessions = set(m.get("sessionIds") or [])
+        m_concepts = set(m.get("concepts") or [])
+        m_files = set(m.get("files") or [])
+
+        if src_obs & top_obs_ids:
+            pts += 3
+        if m_sessions & top_session_ids:
+            pts += 2
+        if m_concepts & top_concepts:
+            pts += 1
+        if m_files & top_files:
+            pts += 1
+
+        if pts > 0:
+            scored.append((pts, float(m.get("strength") or 0.0), m))
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [m for _, _, m in scored[:limit]]
+
+
+async def _fetch_lessons(project: str = "", limit: int = 10) -> list:
+    try:
+        params: dict = {"limit": limit, "minConfidence": 0.1}
+        if project:
+            params["project"] = project
+        resp = await _call("GET", "/agentmemory/lessons", params=params)
+        return resp.get("lessons", [])
+    except Exception:
+        return []
+
+
+async def _fetch_crystals(project: str = "", limit: int = 8) -> list:
+    try:
+        params: dict = {"limit": limit}
+        if project:
+            params["project"] = project
+        resp = await _call("GET", "/agentmemory/crystals", params=params)
+        return resp.get("crystals", [])
+    except Exception:
+        return []
+
+
+async def _search_insights(query: str, project: str = "", limit: int = 8) -> list:
+    try:
+        body: dict = {"query": query}
+        if project:
+            body["project"] = project
+        resp = await _call("POST", "/agentmemory/insights/search", json=body)
+        return resp.get("insights", [])[:limit]
+    except Exception:
+        return []
+
+
+async def _enrich_files(
+    files: list[str],
+    project: str = "",
+    terms: list[str] | None = None,
+    session_id: str = "",
+) -> dict:
+    body: dict = {"sessionId": session_id or "unknown", "files": files}
+    if project:
+        body["project"] = project
+    if terms:
+        body["terms"] = terms
+    try:
+        return await _call("POST", "/agentmemory/enrich", json=body)
+    except Exception:
+        return {}
 
 _CWD = os.getcwd()
 _DEFAULT_PROJECT = os.path.basename(_CWD)
