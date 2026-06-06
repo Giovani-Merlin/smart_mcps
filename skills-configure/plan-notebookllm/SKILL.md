@@ -5,6 +5,20 @@ user-invocable: true
 argument-hint: "[topic or task to plan]"
 ---
 
+<!-- CONFIGURE ME
+     This is the locked-alias version of the plan-notebookllm skill.
+     It uses a hardcoded notebook map so you don't pay the cost of `nlm notebook list`
+     on every planning run.
+
+     To use it:
+       1. Run `nlm notebook list` to see your notebooks and their IDs or aliases.
+       2. Fill in the table below.
+       3. Copy this file over skills/plan-notebookllm/SKILL.md in your project.
+
+     The default skills/plan-notebookllm/SKILL.md uses dynamic discovery (`nlm notebook list`)
+     instead — use that if you prefer no configuration overhead.
+-->
+
 # plan-notebook
 
 **Step 0 — enter plan mode before doing anything else.**
@@ -17,37 +31,32 @@ You are in strict **notebook-first planning mode**. No code is written. No files
 
 Task: `$ARGUMENTS`
 
+## Notebook map
+
+<!-- Add one row per notebook you want accessible. Use the alias (if set) or the UUID. -->
+
+| Topic       | Notebook alias or ID |
+| ----------- | -------------------- |
+| AgentMemory | `agentmemory`        |
+
 ## Process
 
-### Step 1 — discover and identify the notebook
+### Step 1 — identify the notebook
 
-Run:
-
-```bash
-nlm notebook list
-```
-
-Output is a JSON array: `[{"id": "...", "title": "...", "source_count": N, "updated_at": "..."}]`
-
-- If the command fails → tell the user to run `nlm login` and stop.
-- From the list, pick the notebook whose `title` best matches the topic in `$ARGUMENTS`.
-- If only one notebook exists, use it.
-- If multiple are plausible, list their titles and ask the user to choose before continuing.
-
-State your chosen notebook (title + id) before running any queries. All subsequent queries target that notebook using its `id`.
+From `$ARGUMENTS`, determine which notebook row best matches. All subsequent queries target that notebook. State your choice before querying.
 
 ### Step 2 — interrogate the notebook (minimum 4 queries)
 
 Run the first query:
 
 ```bash
-nlm notebook query NOTEBOOK_ID "first question"
+nlm notebook query ALIAS "first question"
 ```
 
 Save the `conversation_id` from the response. Pass it to every follow-up:
 
 ```bash
-nlm notebook query NOTEBOOK_ID "follow-up question" --conversation-id CONV_ID
+nlm notebook query ALIAS "follow-up question" --conversation-id CONV_ID
 ```
 
 Your 4 queries must cover:
@@ -59,16 +68,15 @@ Your 4 queries must cover:
 | 3     | Implementation constraints — what won't work, what has caveats        |
 | 4     | Edge cases / alternatives — what else should be considered            |
 
-After each answer, decide what is still missing and ask a narrower follow-up. If confidence is still low after 4 queries, continue until gaps are closed - you must question it until all of the doubts it can answer are answered. You can send code snippets and specific ideas to notebookllm to confirm beliefs.
+After each answer, decide what is still missing and ask a narrower follow-up. If confidence is still low after 4 queries, continue until gaps are closed.
 
 ### Step 3 — summarize evidence
 
-Before drafting the plan, write a complete  **Evidence gathered** section:
+Before drafting the plan, write a short **Evidence gathered** section:
 
 - What the notebook confirmed
 - What it left ambiguous
 - What is still unknown
-- Watch outs and clear paths
 
 ### Step 4 — produce the plan
 

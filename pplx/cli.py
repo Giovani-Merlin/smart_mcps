@@ -14,6 +14,7 @@ Usage:
   smart-mcps-perplexity ask "agentmemory lib" --domains github.com
   smart-mcps-perplexity research "best practices for FastMCP proxy design"
   smart-mcps-perplexity reason "should I use MCP or CLI for tool integration?"
+  smart-mcps-perplexity reason "compare X vs Y for Z" --context-size high
 
 Requires: PERPLEXITY_API_KEY environment variable
 Output: answer text to stdout (citations stripped)
@@ -26,6 +27,7 @@ import sys
 
 _SONAR_BASE_URL = "https://api.perplexity.ai"
 _SCIENTIFIC_DOMAINS = ["arxiv.org", "huggingface.co", "github.com"]
+_CONTEXT_SIZES = ("low", "medium", "high")
 
 
 def _get_api_key() -> str:
@@ -42,7 +44,10 @@ def _get_sonar_client():
     try:
         from openai import OpenAI
     except ImportError:
-        print("error: openai package not installed. Run: pip install openai", file=sys.stderr)
+        print(
+            "error: openai package not installed. Run: pip install openai",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return OpenAI(api_key=_get_api_key(), base_url=_SONAR_BASE_URL)
 
@@ -63,7 +68,7 @@ def _strip_citations(text: str) -> str:
     keeps the output clean and avoids inflating context when the response is fed back
     into another model.
     """
-    return re.sub(r'(\[\d+\])+', '', text).strip()
+    return re.sub(r"(\[\d+\])+", "", text).strip()
 
 
 def _print_sonar_completion(completion) -> None:
@@ -92,7 +97,22 @@ def _load_question(question: str, file_path: str | None) -> str:
         print(f"error: cannot read file {file_path}: {e}", file=sys.stderr)
         sys.exit(1)
     name = os.path.basename(file_path)
-    return f"<file name=\"{name}\">\n{content}\n</file>\n\n{question}"
+    return f'<file name="{name}">\n{content}\n</file>\n\n{question}'
+
+
+def _add_context_size_arg(parser: argparse.ArgumentParser) -> None:
+    """Attach the shared --context-size flag controlling search_context_size.
+
+    Cost and latency scale with retrieval breadth: medium suits most technical
+    questions, high is for broad/high-stakes investigations, low for narrow
+    factual lookups.
+    """
+    parser.add_argument(
+        "--context-size",
+        choices=_CONTEXT_SIZES,
+        default="medium",
+        help="Search retrieval breadth passed to the API (default: medium)",
+    )
 
 
 def _build_domain_filter(args) -> list[str] | None:
@@ -113,7 +133,7 @@ def _build_domain_filter(args) -> list[str] | None:
 def _cmd_ask(args) -> None:
     """Run a quick factual Q&A against sonar-pro with web search."""
     client = _get_sonar_client()
-    extra: dict = {"search_context_size": "low"}
+    extra: dict = {"search_context_size": args.context_size}
     domain_filter = _build_domain_filter(args)
     if domain_filter:
         extra["search_domain_filter"] = domain_filter
@@ -131,7 +151,7 @@ def _cmd_research(args) -> None:
     completion = client.chat.completions.create(
         model="sonar-deep-research",
         messages=_build_messages(_load_question(args.topic, args.file)),
-        extra_body={"search_context_size": "low"},
+        extra_body={"search_context_size": args.context_size},
     )
     _print_sonar_completion(completion)
 
@@ -142,7 +162,7 @@ def _cmd_reason(args) -> None:
     completion = client.chat.completions.create(
         model="sonar-reasoning-pro",
         messages=_build_messages(_load_question(args.question, args.file)),
-        extra_body={"search_context_size": "low"},
+        extra_body={"search_context_size": args.context_size},
     )
     _print_sonar_completion(completion)
 
@@ -157,24 +177,49 @@ def main() -> None:
     # ask
     p_ask = sub.add_parser("ask", help="Quick factual Q&A with web search (sonar-pro)")
     p_ask.add_argument("question")
-    p_ask.add_argument("--file", default=None, metavar="PATH",
-                       help="Prepend file contents to the question (supports any text/code/markdown file)")
-    p_ask.add_argument("--scientific-research", action="store_true",
-                       help=f"Restrict search to {', '.join(_SCIENTIFIC_DOMAINS)}")
-    p_ask.add_argument("--domains", default=None,
-                       help="Comma-separated domain allowlist, prefix with - to exclude")
+    p_ask.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Prepend file contents to the question (supports any text/code/markdown file)",
+    )
+    p_ask.add_argument(
+        "--scientific-research",
+        action="store_true",
+        help=f"Restrict search to {', '.join(_SCIENTIFIC_DOMAINS)}",
+    )
+    p_ask.add_argument(
+        "--domains",
+        default=None,
+        help="Comma-separated domain allowlist, prefix with - to exclude",
+    )
+    _add_context_size_arg(p_ask)
 
     # research
-    p_research = sub.add_parser("research", help="Deep multi-source investigation (slow, 30s+, expensive)")
+    p_research = sub.add_parser(
+        "research", help="Deep multi-source investigation (slow, 30s+, expensive)"
+    )
     p_research.add_argument("topic")
-    p_research.add_argument("--file", default=None, metavar="PATH",
-                            help="Prepend file contents to the topic")
+    p_research.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Prepend file contents to the topic",
+    )
+    _add_context_size_arg(p_research)
 
     # reason
-    p_reason = sub.add_parser("reason", help="Step-by-step reasoning (sonar-reasoning-pro)")
+    p_reason = sub.add_parser(
+        "reason", help="Step-by-step reasoning (sonar-reasoning-pro)"
+    )
     p_reason.add_argument("question")
-    p_reason.add_argument("--file", default=None, metavar="PATH",
-                          help="Prepend file contents to the question")
+    p_reason.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Prepend file contents to the question",
+    )
+    _add_context_size_arg(p_reason)
 
     args = parser.parse_args()
 

@@ -11,14 +11,17 @@ Use the `smart-mcps-perplexity` CLI via bash for all web-grounded queries.
 
 ## Decision table — pick the right subcommand
 
-| Need | Command | Speed | Cost |
-| ---- | ------- | ----- | ---- |
-| Quick factual Q&A | `ask` | Fast (~3 s) | Low |
-| Step-by-step analysis of a hard question | `reason` | Medium (~10 s) | Medium |
+| Need | Command | Model | Speed | Cost |
+| ---- | ------- | ----- | ----- | ---- |
+| Broad / exploratory / underspecified — discover the landscape | `ask` | sonar-pro | Fast (~3 s) | Low |
+| Specific / constrained — reason precisely over known options | `reason` | sonar-reasoning-pro | Medium (~10 s) | Medium |
 
-**Default to `ask`.** It handles 80 % of questions.
+**Pick by how specific the question already is, not by habit:**
+- Still vague, no stack/model/criteria named yet ("what good pose models are there", "what's a good dev architecture") → `ask`. Wider retrieval and landscape discovery matter most.
+- Already names a concrete model, framework, or pattern and wants a comparison or recommendation ("should I use X or Y for Z", "what FastAPI rule fits this case") → `reason`. Precise reasoning over known constraints matters most.
+- Unsure? Ask: is the missing piece *more context* (→ `ask`) or *better reasoning* (→ `reason`)? Most agent-internal questions already name a stack or pattern, so lean toward `reason`.
 
-## ask — factual Q&A
+## ask — factual Q&A, landscape discovery
 
 ```bash
 smart-mcps-perplexity ask "what are Claude Code hooks"
@@ -31,17 +34,26 @@ Options:
 - `--file PATH` — prepend file contents (code, markdown, any text) to the question; use this instead of copy-pasting large inputs
 - `--scientific-research` — restrict search to `arxiv.org`, `huggingface.co`, `github.com`; suited for longer, descriptive technical asks
 - `--domains domain1,domain2` — custom domain allowlist (prefix with `-` to exclude); combined with `--scientific-research` if both are set
+- `--context-size {low,medium,high}` — see Context size below; default `medium`
 
 **`--scientific-research` is a user-facing mode.** Invoke it when the user asks about papers, models, datasets, or research findings — it is appropriate for full descriptive questions rather than short keyword queries.
 
-## reason — step-by-step analysis
+## reason — step-by-step analysis over a concrete scenario
 
 ```bash
 smart-mcps-perplexity reason "should I use MCP tools or CLI skills for code intelligence?"
-smart-mcps-perplexity reason "compare these two approaches" --file design.md
+smart-mcps-perplexity reason "compare these two approaches" --file design.md --context-size high
 ```
 
-Use for decisions or analysis that requires weighing multiple factors. Returns a chain-of-thought response with a conclusion.
+Use for decisions that require weighing multiple factors over a scenario the question already frames. Returns a chain-of-thought response with a conclusion. Takes the same `--file` and `--context-size` flags as `ask`.
+
+## Context size — `--context-size {low,medium,high}`
+
+Controls how much search material the model retrieves; cost and latency scale with it. All commands default to `medium`.
+
+- **medium** (default) — most technical questions, implementation discussions, targeted comparisons
+- **high** — broad architectural investigations, long or multi-document material, multi-framework comparisons, high-stakes/hard-to-reverse decisions where missing context would hurt the answer
+- **low** — narrow, well-defined factual lookups where minimal retrieval suffices
 
 ## Output format
 

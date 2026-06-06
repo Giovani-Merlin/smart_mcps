@@ -9,35 +9,40 @@ user-invocable: true
 
 Use the `nlm` CLI to answer questions from your NotebookLM notebooks.
 
-**Auth prerequisite**: `nlm login` must be run once. If any command fails with an auth error, tell the user to run `nlm login`.
+**Auth prerequisite**: `nlm login` must be run once. If any command fails
+with an auth error, or if `nlm notebook list` fails, tell the user to run `nlm login`.
 
-## Notebook map
-
-> **After installing this plugin, edit the table below** to match your own notebooks.
-> Run `bash scripts/seed-nlm-aliases.sh` once to list your notebooks and their alias slugs,
-> then fill in the table. Use alias slugs or raw UUIDs — both work as notebook IDs.
-
-| Topic | Notebook alias or ID |
-| ----- | -------------------- |
-| example topic / subtopic / keyword | `your-alias-slug-here` |
-
-## Query
-
-Match the user's question to the closest topic in the map, then run:
+## Step 1 — discover available notebooks
 
 ```bash
-nlm notebook query ALIAS_OR_ID "the user's question"
+nlm notebook list
 ```
 
-To continue a conversation on the same notebook, pass the returned `conversation_id`:
+Output is a JSON array: `[{"id": "...", "title": "...", "source_count": N, "updated_at": "..."}]`
+
+- If the command fails → tell the user to run `nlm login` and stop.
+- If only one notebook is returned → use it without asking.
+- If multiple notebooks are returned → pick the one whose `title` best matches the topic or question in `$ARGUMENTS`. If two or more are equally plausible, list their titles and ask the user to choose.
+
+## Step 2 — query the chosen notebook
 
 ```bash
-nlm notebook query ALIAS_OR_ID "follow-up question" --conversation-id CONV_ID
+nlm notebook query --json NOTEBOOK_ID "the user's question" | jq -r '.value.answer' | sed 's/ *\[[0-9][0-9, -]*\]//g'
+```
+
+Use the `id` field from the list output, not the title.
+
+To continue a conversation on the same notebook, capture and reuse `conversation_id`:
+
+```bash
+RESULT=$(nlm notebook query --json NOTEBOOK_ID "follow-up question" --conversation-id CONV_ID)
+echo "$RESULT" | jq -r '.value.answer' | sed 's/ *\[[0-9][0-9, -]*\]//g'
+CONV_ID=$(echo "$RESULT" | jq -r '.value.conversation_id')
 ```
 
 ## Rules
 
-- Use the map above — no runtime discovery commands.
-- If no topic matches, list what's in the map and ask the user to clarify.
+- Always run `nlm notebook list` first — do not hardcode IDs or aliases.
 - Only query — do not create, delete, or modify anything.
-- For anything beyond querying (add source, create audio, manage notes), tell the user to use `/notebooklm-complete`.
+- For anything beyond querying (add source, create audio, manage notes),
+  tell the user to use `/notebooklm-complete`.

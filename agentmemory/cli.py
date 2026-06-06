@@ -445,6 +445,338 @@ async def _enrich(file_paths: list[str], project: str, session_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Action formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def _fmt_action(a: dict) -> dict:
+    ids = a.get("sourceMemoryIds") or []
+    fmt = {
+        "id": a.get("id"),
+        "title": (a.get("title") or "")[:100],
+        "description": (a.get("description") or "")[:300],
+        "status": a.get("status"),
+        "priority": a.get("priority"),
+        "tags": a.get("tags", []),
+        "createdAt": a.get("createdAt"),
+    }
+    if a.get("result"):
+        fmt["result"] = a["result"]
+    if ids:
+        fmt["sourceMemoryIds"] = ids
+    return fmt
+
+
+def _fmt_frontier_entry(entry: dict) -> dict:
+    fmt = _fmt_action(entry.get("action", {}))
+    fmt["score"] = entry.get("score")
+    fmt["leased"] = entry.get("leased", False)
+    blockers = entry.get("blockers", [])
+    if blockers:
+        fmt["blockers"] = blockers
+    return fmt
+
+
+# ---------------------------------------------------------------------------
+# _build_action_context — enriched context per action (includes crystals)
+# ---------------------------------------------------------------------------
+
+
+async def _build_action_context(action: dict, project: str = "") -> dict:
+    ids = action.get("sourceMemoryIds") or []
+    title = action.get("title") or ""
+    desc = (action.get("description") or "")[:120]
+    query = f"{title} {desc}".strip()
+
+    obs_body: dict = {"limit": 8, "format": "full"}
+    if ids:
+        obs_body["expandIds"] = ids
+        if query:
+            obs_body["query"] = query
+    elif query:
+        obs_body["query"] = query
+    else:
+        return {}
+
+    if project:
+        obs_body["project"] = project
+
+    results = await asyncio.gather(
+        _call("POST", "/agentmemory/smart-search", json=obs_body),
+        _call("GET", "/agentmemory/memories", params={"limit": 60, **({"project": project} if project else {})}),
+        _fetch_crystals(project, 20),
+        return_exceptions=True,
+    )
+
+    obs_resp = results[0] if not isinstance(results[0], Exception) else {}
+    mem_resp = results[1] if not isinstance(results[1], Exception) else {}
+    all_crystals = results[2] if not isinstance(results[2], Exception) else []
+
+    raw_obs = [r for r in (obs_resp.get("results", []) if isinstance(obs_resp, dict) else []) if _is_useful_observation(r)]
+    all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
+    linked_memories = _follow_memories(raw_obs[:5], all_memories)
+
+    matched_session_ids = {o.get("sessionId") for o in raw_obs[:5] if o.get("sessionId")}
+    matched_crystals = [
+        c for c in (all_crystals if isinstance(all_crystals, list) else [])
+        if c.get("sessionId") in matched_session_ids
+    ]
+
+    ctx: dict = {}
+    if raw_obs:
+        ctx["observations"] = [_fmt_observation(o, o.get("score", 0.0)) for o in raw_obs]
+    if linked_memories:
+        ctx["memories"] = [_fmt_memory(m) for m in linked_memories]
+    if matched_crystals:
+        ctx["crystals"] = [_fmt_crystal(c) for c in matched_crystals]
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# next — enriched frontier for orchestrators
+# ---------------------------------------------------------------------------
+
+
+async def _enrich_frontier_entry(entry: dict, project: str) -> dict:
+    fmt = _fmt_frontier_entry(entry)
+    try:
+        ctx = await _build_action_context(entry.get("action", {}), project)
+        if ctx:
+            fmt["context"] = ctx
+    except Exception:
+        pass
+    return fmt
+
+
+async def _next(project: str, limit: int, with_context: bool) -> dict:
+    proj = project or _DEFAULT_PROJECT
+    data = await _call("GET", "/agentmemory/frontier", params={"project": proj, "limit": limit})
+    frontier_entries = data.get("frontier", []) if isinstance(data, dict) else []
+
+    if not frontier_entries:
+        return {"actions": []}
+
+    if with_context:
+        enriched = await asyncio.gather(
+            *[_enrich_frontier_entry(e, proj) for e in frontier_entries],
+            return_exceptions=True,
+        )
+        actions = [e for e in enriched if not isinstance(e, Exception)]
+    else:
+        actions = [_fmt_frontier_entry(e) for e in frontier_entries]
+
+    return {"actions": actions}
+
+
+# ---------------------------------------------------------------------------
+# task-context — full execution packet per action (4-tier hydration)
+# ---------------------------------------------------------------------------
+
+
+async def _task_context(
+    action_id: str,
+    project: str,
+    task: str = "",
+    files: str = "",
+    session_id: str = "",
+) -> dict:
+    proj = project or _DEFAULT_PROJECT
+    file_list = [f.strip() for f in files.split(",") if f.strip()] if files else []
+
+    action_record: dict = {}
+    try:
+        params: dict = {"limit": 100}
+        if proj:
+            params["project"] = proj
+        actions_resp = await _call("GET", "/agentmemory/actions", params=params)
+        for a in actions_resp.get("actions", []):
+            if a.get("id") == action_id:
+                action_record = a
+                break
+    except Exception:
+        pass
+
+    source_ids = action_record.get("sourceMemoryIds") or []
+    title = action_record.get("title", "")
+    desc = (action_record.get("description") or "")[:150]
+    query_text = task if task else f"{title} {desc}".strip()
+
+    tier1_body: dict = {"limit": 12, "format": "full"}
+    if source_ids:
+        tier1_body["expandIds"] = source_ids
+    if query_text:
+        tier1_body["query"] = query_text
+    if proj:
+        tier1_body["project"] = proj
+
+    gather_tasks: list = [
+        _call("POST", "/agentmemory/smart-search", json=tier1_body),
+        _call("GET", "/agentmemory/memories", params={"limit": 80, **({"project": proj} if proj else {})}),
+        _fetch_crystals(proj, 20),
+        _fetch_lessons(proj, 15),
+    ]
+    enrich_idx = None
+    if file_list:
+        enrich_idx = len(gather_tasks)
+        gather_tasks.append(_enrich_files(file_list, proj, session_id=session_id or "unknown"))
+
+    results = await asyncio.gather(*gather_tasks, return_exceptions=True)
+
+    search_resp = results[0] if not isinstance(results[0], Exception) else {}
+    mem_resp = results[1] if not isinstance(results[1], Exception) else {}
+    all_crystals = results[2] if not isinstance(results[2], Exception) else []
+    all_lessons = results[3] if not isinstance(results[3], Exception) else []
+    enrich_resp = results[enrich_idx] if enrich_idx is not None and not isinstance(results[enrich_idx], Exception) else {}
+
+    raw_obs = [r for r in (search_resp.get("results", []) if isinstance(search_resp, dict) else []) if _is_useful_observation(r)]
+    top_obs = raw_obs[:6]
+    all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
+    linked_memories = _follow_memories(top_obs, all_memories) if top_obs else []
+
+    matched_session_ids = {o.get("sessionId") for o in top_obs if o.get("sessionId")}
+    matched_crystals = [
+        c for c in (all_crystals if isinstance(all_crystals, list) else [])
+        if c.get("sessionId") in matched_session_ids
+    ]
+
+    action_fmt: dict = {}
+    if action_record:
+        action_fmt = {
+            "id": action_record.get("id"),
+            "title": (action_record.get("title") or "")[:100],
+            "description": (action_record.get("description") or "")[:300],
+            "status": action_record.get("status"),
+            "priority": action_record.get("priority"),
+            "tags": action_record.get("tags", []),
+        }
+        if action_record.get("result"):
+            action_fmt["result"] = action_record["result"]
+
+    out: dict = {
+        "objective": query_text or title,
+        "action": action_fmt,
+        "relevant_observations": [_fmt_observation(o, o.get("score", 0.0)) for o in top_obs],
+    }
+    if linked_memories:
+        out["memories"] = [_fmt_memory(m) for m in linked_memories]
+    if matched_crystals:
+        out["crystals"] = [_fmt_crystal(c) for c in matched_crystals]
+    if all_lessons and isinstance(all_lessons, list):
+        out["lessons"] = [_fmt_lesson(l) for l in all_lessons]
+    if enrich_resp and isinstance(enrich_resp, dict):
+        enriched = enrich_resp.get("enrichedContext", [])
+        bugs = enrich_resp.get("bugCandidates", [])
+        if enriched:
+            out["enriched_file_context"] = [_fmt_observation(o) for o in enriched]
+        if bugs:
+            out["bug_candidates"] = [_fmt_observation(o) for o in bugs]
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# task create / update / list
+# ---------------------------------------------------------------------------
+
+
+async def _task_create(
+    title: str,
+    description: str,
+    project: str,
+    priority: int,
+    tags: list[str],
+    requires: list[str],
+    source_memory_ids: list[str],
+) -> dict:
+    proj = project or _DEFAULT_PROJECT
+
+    query_parts = [title] + list(tags or [])
+    if description:
+        query_parts.append(description[:80])
+    search_q = " ".join(query_parts).strip()
+
+    auto_ids: list[str] = []
+    if search_q:
+        try:
+            obs_resp, mem_resp = await asyncio.gather(
+                _call("POST", "/agentmemory/smart-search", json={"query": search_q, "format": "compact", "limit": 6, "project": proj}),
+                _call("GET", "/agentmemory/memories", params={"limit": 80, "project": proj}),
+            )
+            raw_obs = [r for r in obs_resp.get("results", []) if _is_useful_observation(r)]
+            all_memories = mem_resp.get("memories", []) if isinstance(mem_resp, dict) else []
+            linked = _follow_memories(raw_obs[:4], all_memories, limit=4)
+            auto_ids = [m["id"] for m in linked if m.get("id")]
+        except Exception:
+            pass
+
+    explicit = list(source_memory_ids or [])
+    combined = explicit + [i for i in auto_ids if i not in explicit]
+    final_source_ids = combined[:8]
+
+    edges = [{"type": "requires", "targetActionId": rid} for rid in (requires or []) if rid]
+
+    payload: dict = {"title": title, "project": proj, "priority": max(1, min(10, priority))}
+    if description:
+        payload["description"] = description
+    if tags:
+        payload["tags"] = tags
+    if final_source_ids:
+        payload["sourceMemoryIds"] = final_source_ids
+    if edges:
+        payload["edges"] = edges
+
+    return await _call("POST", "/agentmemory/actions", json=payload)
+
+
+async def _task_update(
+    action_id: str,
+    project: str,
+    status: str = "",
+    title: str = "",
+    description: str = "",
+    result: str = "",
+    priority: int = 0,
+) -> dict:
+    proj = project or _DEFAULT_PROJECT
+    payload: dict = {"actionId": action_id}
+    if proj:
+        payload["project"] = proj
+    if status:
+        payload["status"] = status
+    if title:
+        payload["title"] = title
+    if description:
+        payload["description"] = description
+    if result:
+        payload["result"] = result
+    if priority:
+        payload["priority"] = max(1, min(10, priority))
+    return await _call("POST", "/agentmemory/actions/update", json=payload)
+
+
+async def _task_list(project: str, status: str, limit: int) -> dict:
+    proj = project or _DEFAULT_PROJECT
+    resp = await _call("GET", "/agentmemory/actions", params={"project": proj, "limit": limit})
+    actions = resp.get("actions", [])
+    if status:
+        actions = [a for a in actions if a.get("status") == status]
+    return {
+        "actions": [
+            {
+                "id": a.get("id"),
+                "title": (a.get("title") or "")[:100],
+                "status": a.get("status"),
+                "priority": a.get("priority"),
+                "tags": a.get("tags", []),
+                **({"result": (a.get("result") or "")[:200]} if a.get("result") else {}),
+                "createdAt": a.get("createdAt"),
+            }
+            for a in actions
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -500,6 +832,42 @@ def main() -> None:
     p_enrich.add_argument("files", nargs="+", help="File paths to enrich")
     p_enrich.add_argument("--session-id", default="", dest="session_id")
 
+    # next
+    p_next = sub.add_parser("next", help="Enriched frontier actions ready to execute")
+    p_next.add_argument("--limit", type=int, default=5)
+    p_next.add_argument("--no-context", action="store_true", dest="no_context", help="Skip memory enrichment per action")
+
+    # task-context
+    p_task_ctx = sub.add_parser("task-context", help="Full execution packet for one action (4-tier hydration)")
+    p_task_ctx.add_argument("action_id")
+    p_task_ctx.add_argument("--task", default="", help="Task description override (fallback query when no sourceMemoryIds)")
+    p_task_ctx.add_argument("--files", default="", help="Comma-separated file paths for /enrich context")
+    p_task_ctx.add_argument("--session-id", default="", dest="session_id")
+
+    # task (nested subcommands: create / update / list)
+    p_task = sub.add_parser("task", help="Task management: create, update, list")
+    task_sub = p_task.add_subparsers(dest="task_op", required=True)
+
+    p_task_create = task_sub.add_parser("create", help="Create a new task with auto-linking")
+    p_task_create.add_argument("--title", required=True, help="Task title")
+    p_task_create.add_argument("--description", default="", help="Plain-text objective (no context dumps)")
+    p_task_create.add_argument("--priority", type=int, default=5, help="Priority 1-10 (default 5)")
+    p_task_create.add_argument("--tags", nargs="*", default=[], help="Domain tags")
+    p_task_create.add_argument("--requires", nargs="*", default=[], help="Action IDs this task depends on")
+    p_task_create.add_argument("--source-memory-ids", nargs="*", default=[], dest="source_memory_ids", help="Explicit memory IDs to link")
+
+    p_task_update = task_sub.add_parser("update", help="Update task status, result, or fields")
+    p_task_update.add_argument("action_id", help="Action ID to update")
+    p_task_update.add_argument("--status", choices=["pending", "active", "done", "blocked", "cancelled"], default="")
+    p_task_update.add_argument("--title", default="")
+    p_task_update.add_argument("--description", default="")
+    p_task_update.add_argument("--result", default="", help="Outcome summary (feeds future task-context enrichment)")
+    p_task_update.add_argument("--priority", type=int, default=0)
+
+    p_task_list = task_sub.add_parser("list", help="List tasks with optional status filter")
+    p_task_list.add_argument("--status", choices=["pending", "active", "done", "blocked", "cancelled"], default="")
+    p_task_list.add_argument("--limit", type=int, default=50)
+
     args = parser.parse_args()
 
     try:
@@ -521,6 +889,17 @@ def main() -> None:
             result = asyncio.run(_session_context(args.project, args.session_id, args.budget))
         elif args.cmd == "enrich":
             result = asyncio.run(_enrich(args.files, args.project, args.session_id))
+        elif args.cmd == "next":
+            result = asyncio.run(_next(args.project, args.limit, not args.no_context))
+        elif args.cmd == "task-context":
+            result = asyncio.run(_task_context(args.action_id, args.project, args.task, args.files, args.session_id))
+        elif args.cmd == "task":
+            if args.task_op == "create":
+                result = asyncio.run(_task_create(args.title, args.description, args.project, args.priority, args.tags, args.requires, args.source_memory_ids))
+            elif args.task_op == "update":
+                result = asyncio.run(_task_update(args.action_id, args.project, args.status, args.title, args.description, args.result, args.priority))
+            elif args.task_op == "list":
+                result = asyncio.run(_task_list(args.project, args.status, args.limit))
         _out(result)
     except RuntimeError as exc:
         _err(str(exc))
