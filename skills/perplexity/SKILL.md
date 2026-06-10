@@ -62,5 +62,5 @@ The CLI prints **plain markdown text** to stdout — citations are stripped from
 ## Usage rules
 
 - Do not loop on failures: if the API returns an error, show it to the user and stop.
-- Do not use perplexity for questions answerable from the local codebase — use `codegraph` or `Read` instead.
+- Do not use perplexity for questions answerable from the local codebase — prioritize `codegraph context` for exploring code (see the codegraph skill: `skills/codegraph/SKILL.md`) or `Read` instead.
 - Pass `--file` instead of copy-pasting large code blocks or documents into the question string.

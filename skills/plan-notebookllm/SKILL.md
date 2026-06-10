@@ -21,6 +21,8 @@ Task: `$ARGUMENTS`
 
 ### Step 1 — discover and identify the notebook
 
+**First, ground the topic in existing code, if relevant.** Prioritize `codegraph context "<topic>"` for exploring code — see the codegraph skill (`skills/codegraph/SKILL.md`). If it surfaces concrete symbols, files, or patterns, carry them into Step 2: ask the notebook about the actual `<symbol>`/`<file>` you found rather than the topic in the abstract — concrete, code-grounded questions get sharper answers than generic ones.
+
 Run:
 
 ```bash

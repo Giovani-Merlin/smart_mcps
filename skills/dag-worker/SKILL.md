@@ -31,6 +31,8 @@ Do not skip `task-context`. Memory context prevents repeating past mistakes.
 
 ## Step 2 — Execute the task
 
+If this task involves editing code or reading code files, map the area yourself first: prioritize `codegraph context "<topic/symbol>"` for exploring code — see the codegraph skill (`skills/codegraph/SKILL.md`). Query it directly — the benefit doesn't carry over if you skip straight to `grep`/`Read` without mapping the area first.
+
 Use available tools (Read, Edit, Write, Bash) to accomplish `title` + `description`.
 
 Apply lessons and bug candidates before making changes. Reference crystals to understand what "done" looked like in similar prior work.
