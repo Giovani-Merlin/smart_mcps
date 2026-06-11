@@ -11,21 +11,21 @@ Use the `smart-mcps-perplexity` CLI via bash for all web-grounded queries.
 
 ## Decision table — pick the right subcommand
 
-| Need | Command | Model | Speed | Cost |
-| ---- | ------- | ----- | ----- | ---- |
-| Broad / exploratory / underspecified — discover the landscape | `ask` | sonar-pro | Fast (~3 s) | Low |
-| Specific / constrained — reason precisely over known options | `reason` | sonar-reasoning-pro | Medium (~10 s) | Medium |
+| Need                                                          | Command  | Model               | Speed          | Cost   |
+| -------------------------------------------------------------- | -------- | ------------------- | -------------- | ------ |
+| Broad / exploratory / underspecified — discover the landscape  | `ask`    | sonar-pro           | Fast (~3 s)    | Low    |
+| Specific / constrained — reason precisely over known options   | `reason` | sonar-reasoning-pro | Medium (~10 s) | Medium |
 
 **Pick by how specific the question already is, not by habit:**
-- Still vague, no stack/model/criteria named yet ("what good pose models are there", "what's a good dev architecture") → `ask`. Wider retrieval and landscape discovery matter most.
-- Already names a concrete model, framework, or pattern and wants a comparison or recommendation ("should I use X or Y for Z", "what FastAPI rule fits this case") → `reason`. Precise reasoning over known constraints matters most.
-- Unsure? Ask: is the missing piece *more context* (→ `ask`) or *better reasoning* (→ `reason`)? Most agent-internal questions already name a stack or pattern, so lean toward `reason`.
+- Still vague, no stack/model/criteria named yet → `ask`. Wider retrieval and landscape discovery matter most.
+- Already names a concrete model, framework, or pattern and wants a comparison or recommendation → `reason`. Precise reasoning over known constraints matters most.
+- Unsure? Ask: is the missing piece *more context* (→ `ask`) or *better reasoning* (→ `reason`)?
+- Both handle recency and domain constraints already. The CLI also has `research` and `agent` subcommands, but they are too slow and expensive for agent loops — never invoke them on your own; mention them to the user only if a question genuinely needs multi-hop research, and let the user run them manually.
 
 ## ask — factual Q&A, landscape discovery
 
 ```bash
 smart-mcps-perplexity ask "what are Claude Code hooks"
-smart-mcps-perplexity ask "latest FastMCP release" --domains github.com
 smart-mcps-perplexity ask "explain this function" --file path/to/script.py
 smart-mcps-perplexity ask "summarize recent findings on LoRA" --scientific-research
 ```
@@ -33,7 +33,6 @@ smart-mcps-perplexity ask "summarize recent findings on LoRA" --scientific-resea
 Options:
 - `--file PATH` — prepend file contents (code, markdown, any text) to the question; use this instead of copy-pasting large inputs
 - `--scientific-research` — restrict search to `arxiv.org`, `huggingface.co`, `github.com`; suited for longer, descriptive technical asks
-- `--domains domain1,domain2` — custom domain allowlist (prefix with `-` to exclude); combined with `--scientific-research` if both are set
 - `--context-size {low,medium,high}` — see Context size below; default `medium`
 
 **`--scientific-research` is a user-facing mode.** Invoke it when the user asks about papers, models, datasets, or research findings — it is appropriate for full descriptive questions rather than short keyword queries.
@@ -49,7 +48,7 @@ Use for decisions that require weighing multiple factors over a scenario the que
 
 ## Context size — `--context-size {low,medium,high}`
 
-Controls how much search material the model retrieves; cost and latency scale with it. All commands default to `medium`.
+Controls how much search material the model retrieves; cost and latency scale with it. Applies to both `ask` and `reason` — defaults to `medium`.
 
 - **medium** (default) — most technical questions, implementation discussions, targeted comparisons
 - **high** — broad architectural investigations, long or multi-document material, multi-framework comparisons, high-stakes/hard-to-reverse decisions where missing context would hurt the answer

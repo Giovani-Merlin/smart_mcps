@@ -5,7 +5,18 @@
       "Bash(smart-mcps-agentmemory *)",
       "Bash(smart-mcps-perplexity *)",
       "Bash(codegraph *)",
-      "Bash(nlm *)"
+      "Bash(nlm *)",
+      "Bash(find /home/gbm1996/.pyenv -path \"*/site-packages/nlm*\" -name \"*.py\" 2>/dev/null | head -20)",
+      "Read(//home/gbm1996/.pyenv/**)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(python3 -c ' *)",
+      "WebFetch(domain:docs.perplexity.ai)",
+      "Bash(find /home/gbm1996/wksp/smart_mcps/docs -type f 2>/dev/null | head -20; echo \"---sidecar check---\"; ls /tmp/.pplx_sidecar_* 2>/dev/null || echo \"no sidecars\")",
+      "Read(//tmp/**)",
+      "Bash(python3 -c \"import nlm; print\\(nlm.__file__\\)\")",
+      "Bash(python3 -c \"import nlm_tools; print\\(nlm_tools.__file__\\)\")",
+      "Bash(python3 -c \"import notebooklm; print\\(notebooklm.__file__\\)\")"
     ]
   },
   "hooks": {
@@ -52,6 +63,23 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/post-tool-failure.mjs\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/scripts/save_research.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "edit|write|multiedit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/scripts/lint_after_edit.py\""
           }
         ]
       }

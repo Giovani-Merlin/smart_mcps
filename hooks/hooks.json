@@ -39,6 +39,23 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/post-tool-use.mjs\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/save_research.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/lint_after_edit.py\""
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
