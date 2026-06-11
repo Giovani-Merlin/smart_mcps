@@ -212,17 +212,6 @@ async def _fetch_crystals(project: str = "", limit: int = 8) -> list:
         return []
 
 
-async def _search_insights(query: str, project: str = "", limit: int = 8) -> list:
-    try:
-        body: dict = {"query": query}
-        if project:
-            body["project"] = project
-        resp = await _call("POST", "/agentmemory/insights/search", json=body)
-        return resp.get("insights", [])[:limit]
-    except Exception:
-        return []
-
-
 async def _enrich_files(
     files: list[str],
     project: str = "",
@@ -271,23 +260,23 @@ async def _find(
     # Step 1 — compact discovery
     compact_obs: list[dict] = []
     bundled_lessons: list[dict] = []
-    try:
-        compact_resp = await _call(
-            "POST",
-            "/agentmemory/smart-search",
-            json={
-                "query": query,
-                "format": "compact",
-                "limit": limit * 2,
-                "project": proj,
-            },
-        )
-        compact_obs = [
-            r for r in compact_resp.get("results", []) if _is_useful_observation(r)
-        ]
-        bundled_lessons = compact_resp.get("lessons", [])
-    except Exception:
-        pass
+
+    compact_resp = await _call(
+        "POST",
+        "/agentmemory/smart-search",
+        json={
+            "query": query,
+            # "format": "compact", # Only for "search" no full! It's the same as search but with lessons with some more scopes
+            # smart is good for expandids mostly
+            # Then with expand it gets the "full"
+            "limit": limit * 2,
+            "project": proj,
+        },
+    )
+    compact_obs = [
+        r for r in compact_resp.get("results", [])  # if _is_useful_observation(r)
+    ]
+    bundled_lessons = compact_resp.get("lessons", [])
 
     # Step 2 — expand top 3-5 hits for full content
     # expandIds must be objects: {obsId, sessionId} — bare strings silently return 0
@@ -298,26 +287,22 @@ async def _find(
     ]
     full_obs = compact_obs
     if top_expand:
-        try:
-            expand_resp = await _call(
-                "POST",
-                "/agentmemory/smart-search",
-                json={"expandIds": top_expand, "query": query, "project": proj},
-            )
-            expanded = [
-                r for r in expand_resp.get("results", []) if _is_useful_observation(r)
+        expand_resp = await _call(
+            "POST",
+            "/agentmemory/smart-search",
+            json={"expandIds": top_expand, "query": query, "project": proj},
+        )
+        expanded = [
+            r for r in expand_resp.get("results", [])  # if _is_useful_observation(r)
+        ]
+        if expanded:
+            expanded_ids = {r.get("id") or r.get("obsId") for r in expanded}
+            remaining = [
+                o
+                for o in compact_obs[5:]
+                if (o.get("id") or o.get("obsId")) not in expanded_ids
             ]
-            if expanded:
-                expanded_ids = {r.get("id") or r.get("obsId") for r in expanded}
-                remaining = [
-                    o
-                    for o in compact_obs[5:]
-                    if (o.get("id") or o.get("obsId")) not in expanded_ids
-                ]
-                full_obs = expanded + remaining
-        except Exception:
-            pass
-
+            full_obs = expanded + remaining
 
     matched_session_ids = {
         o.get("sessionId") for o in compact_obs[:5] if o.get("sessionId")
@@ -448,7 +433,10 @@ async def _save(
 
 
 async def _lesson(
-    content: str, confidence: float = 0.8, project: str = "", tags: list[str] | None = None
+    content: str,
+    confidence: float = 0.8,
+    project: str = "",
+    tags: list[str] | None = None,
 ) -> dict:
     payload = {
         "content": content,
@@ -530,7 +518,9 @@ async def _sessions(query: str, project: str = "", limit: int = 5) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _session_context(project: str = "", session_id: str = "", budget: int = 0) -> dict:
+async def _session_context(
+    project: str = "", session_id: str = "", budget: int = 0
+) -> dict:
     body: dict = {"sessionId": session_id or "unknown"}
     if project:
         body["project"] = project
@@ -544,7 +534,9 @@ async def _session_context(project: str = "", session_id: str = "", budget: int 
 # ---------------------------------------------------------------------------
 
 
-async def _enrich(file_paths: list[str], project: str = "", session_id: str = "") -> dict:
+async def _enrich(
+    file_paths: list[str], project: str = "", session_id: str = ""
+) -> dict:
     return await _enrich_files(
         file_paths, project or _DEFAULT_PROJECT, session_id=session_id
     )
@@ -981,7 +973,7 @@ async def _lessons_search(
         "query": query,
         "project": proj,
         "minConfidence": min_confidence,  # float, not str — gotcha #7
-        "limit": limit,                   # int, not str — gotcha #7
+        "limit": limit,  # int, not str — gotcha #7
     }
     resp = await _call("POST", "/agentmemory/lessons/search", json=body)
     lessons = resp.get("lessons", [])
@@ -1061,28 +1053,6 @@ async def _commits(limit: int = 20) -> dict:
 async def _session_by_commit(sha: str) -> dict:
     resp = await _call("GET", "/agentmemory/session/by-commit", params={"sha": sha})
     return resp
-
-
-# ---------------------------------------------------------------------------
-# crystallize — create a Crystal from completed actions
-# POST /agentmemory/crystallize — returns 404 on this instance (crystallize
-# is configured to run automatically server-side).  The CLI subcommand is kept
-# so callers can trigger it explicitly when needed; 404 is a non-fatal outcome.
-# ---------------------------------------------------------------------------
-
-
-async def _crystallize(
-    action_ids: list[str],
-    project: str = "",
-    session_id: str = "",
-) -> dict:
-    body: dict = {"actionIds": action_ids, "project": project or _DEFAULT_PROJECT}
-    if session_id:
-        body["sessionId"] = session_id
-    try:
-        return await _call("POST", "/agentmemory/crystallize", json=body)
-    except Exception as exc:
-        return {"error": str(exc), "note": "crystallize runs automatically server-side on this instance"}
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1229,9 @@ def main() -> None:
         "graph",
         help="Standalone knowledge-graph traversal via POST /graph/query",
     )
-    p_graph.add_argument("query", help="Concept, file, function, or free-form description")
+    p_graph.add_argument(
+        "query", help="Concept, file, function, or free-form description"
+    )
     p_graph.add_argument(
         "--max-depth",
         type=int,
@@ -1307,7 +1279,10 @@ def main() -> None:
         help="Concept keyword or ISO date to anchor the timeline window",
     )
     p_timeline.add_argument(
-        "--before", type=int, default=4, help="Observations before the anchor (default 4)"
+        "--before",
+        type=int,
+        default=4,
+        help="Observations before the anchor (default 4)",
     )
     p_timeline.add_argument(
         "--after", type=int, default=4, help="Observations after the anchor (default 4)"
@@ -1441,12 +1416,12 @@ def main() -> None:
             )
         elif args.cmd == "lessons-search":
             result = asyncio.run(
-                _lessons_search(args.query, args.project, args.min_confidence, args.limit)
+                _lessons_search(
+                    args.query, args.project, args.min_confidence, args.limit
+                )
             )
         elif args.cmd == "insights-search":
-            result = asyncio.run(
-                _insights_search(args.query, args.project, args.limit)
-            )
+            result = asyncio.run(_insights_search(args.query, args.project, args.limit))
         elif args.cmd == "timeline":
             result = asyncio.run(
                 _timeline(args.anchor, args.project, args.before, args.after)

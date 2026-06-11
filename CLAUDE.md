@@ -11,6 +11,7 @@ This is a **Claude Code plugin repository**. Hooks and skills are distributed to
 | `hooks/hooks.json` | Plugin-level hook registrations (uses `${CLAUDE_PLUGIN_ROOT}`) |
 | `hooks/scripts/` | Hook implementation scripts (`.mjs` and `.py`) |
 | `skills/` | Skill definitions |
+| `agents/` | Subagent definitions (auto-discovered; `.claude/agents` symlinks here for local dev) |
 | `.claude-plugin/plugin.json` | Plugin identity (name, version) |
 | `.claude/settings.json` | Project-level hooks for local development (uses `$CLAUDE_PROJECT_DIR`) |
 

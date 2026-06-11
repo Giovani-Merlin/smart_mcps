@@ -16,7 +16,11 @@
       "Read(//tmp/**)",
       "Bash(python3 -c \"import nlm; print\\(nlm.__file__\\)\")",
       "Bash(python3 -c \"import nlm_tools; print\\(nlm_tools.__file__\\)\")",
-      "Bash(python3 -c \"import notebooklm; print\\(notebooklm.__file__\\)\")"
+      "Bash(python3 -c \"import notebooklm; print\\(notebooklm.__file__\\)\")",
+      "Bash(ln -s ../agents /home/gbm1996/wksp/smart_mcps/.claude/agents)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   },
   "hooks": {
