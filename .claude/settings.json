@@ -1,8 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node \"$CLAUDE_PROJECT_DIR/hooks/scripts/*.mjs\")",
-      "Bash(smart-mcps-agentmemory *)",
       "Bash(smart-mcps-perplexity *)",
       "Bash(codegraph *)",
       "Bash(nlm *)",
@@ -32,44 +30,9 @@
             "command": "command -v codegraph >/dev/null 2>&1 || exit 0; [ -d .codegraph ] || codegraph init; codegraph index"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/session-start.mjs\""
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "edit|write|create|read|view|glob|grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/pre-tool-use.mjs\""
-          }
-        ]
       }
     ],
     "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/post-tool-use.mjs\""
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/post-tool-failure.mjs\""
-          }
-        ]
-      },
       {
         "hooks": [
           {
@@ -84,64 +47,6 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/scripts/lint_after_edit.py\""
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/stop.mjs\""
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/session-end.mjs\""
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/prompt-submit.mjs\""
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/pre-compact.mjs\""
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/subagent-start.mjs\""
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/scripts/subagent-stop.mjs\""
           }
         ]
       }

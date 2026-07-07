@@ -15,7 +15,7 @@ Topic/doubt: `$ARGUMENTS`
 
 | Topic       | Notebook alias or ID |
 | ----------- | -------------------- |
-| AgentMemory | `agentmemory`        |
+| Your topic  | `your-notebook-alias` |
 
 ---
 
@@ -53,7 +53,7 @@ For each question, assign:
 
 ## Phase 3 — Write the plan file
 
-Determine a short slug from the topic (e.g., `rate-limiting`, `auth-flow`, `cache-strategy`). **This slug is the spine of the whole research effort** — `research_plan.md`, `research_answers.md`, and the eventual `implementation_plan.md` all live together in `research/<SLUG>/` and all declare `plan_id: RP-<SLUG>`. Choose it now and do not let it drift across phases — a mismatched folder is exactly what breaks the chain for `/apply-research-plan` and `/dag-orchestrator` downstream.
+Determine a short slug from the topic (e.g., `rate-limiting`, `auth-flow`, `cache-strategy`). **This slug is the spine of the whole research effort** — `research_plan.md`, `research_answers.md`, and the eventual `implementation_plan.md` all live together in `research/<SLUG>/` and all declare `plan_id: RP-<SLUG>`. Choose it now and do not let it drift across phases — a mismatched folder is exactly what breaks the chain for `/apply-research-plan` downstream.
 
 Write the plan to: `research/<SLUG>/research_plan.md`
 
@@ -122,7 +122,7 @@ Call `ExitPlanMode`. The user will review `research_plan.md` — may sharpen the
 
 When telling the user it's ready, be explicit about both the path *and* the slug — they need the exact slug to invoke the next phase, and every later artifact depends on it staying the same:
 
-> Plan written to `research/<SLUG>/research_plan.md`. Once approved, run `/apply-research-plan <SLUG>` in a clean context — it (and later `/dag-orchestrator`) will write its outputs alongside this file in `research/<SLUG>/`.
+> Plan written to `research/<SLUG>/research_plan.md`. Once approved, run `/apply-research-plan <SLUG>` in a clean context — it will write its outputs alongside this file in `research/<SLUG>/`.
 
 ## Non-negotiable rules
 

@@ -1,6 +1,6 @@
 # smart-mcps
 
-A Claude Code plugin that installs skills and session hooks for agentmemory, codegraph, NotebookLM, and Perplexity.
+A Claude Code plugin that installs skills and session hooks for codegraph, NotebookLM, and Perplexity.
 
 ## Plugin structure
 

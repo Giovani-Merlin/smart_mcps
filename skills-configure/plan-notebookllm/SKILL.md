@@ -37,7 +37,7 @@ Task: `$ARGUMENTS`
 
 | Topic       | Notebook alias or ID |
 | ----------- | -------------------- |
-| AgentMemory | `agentmemory`        |
+| Your topic  | `your-notebook-alias` |
 
 ## Process
 

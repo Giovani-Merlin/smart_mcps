@@ -1,13 +1,13 @@
 ---
 name: apply-research-plan
-description: Executes an approved research_plan.md — grouping its questions across subagents to keep context tight — against external-knowledge sources (perplexity/notebooklm), writes a complete research_answers.md, then a concrete implementation_plan.md ready for /dag-orchestrator. Runs in a clean context, separate from /plan-to-plan, for full focus.
+description: Executes an approved research_plan.md — grouping its questions across subagents to keep context tight — against external-knowledge sources (perplexity/notebooklm), writes a complete research_answers.md, then a concrete implementation_plan.md ready to hand to an implementer. Runs in a clean context, separate from /plan-to-plan, for full focus.
 user-invocable: true
 argument-hint: "[slug of the approved research plan]"
 ---
 
 # apply-research-plan
 
-You are in **research execution mode**. The plan was already produced and approved by `/plan-to-plan`. Your job has three parts, in order: (1) get its questions answered against external-knowledge sources via grouped subagents, (2) assemble the complete findings into `research_answers.md`, and (3) translate those findings — together with the plan's objective and resolved context — into a concrete `implementation_plan.md` that `/dag-orchestrator` can pick up next. This phase, and every subagent it spawns, is purely external-knowledge work: do not search this repo's code.
+You are in **research execution mode**. The plan was already produced and approved by `/plan-to-plan`. Your job has three parts, in order: (1) get its questions answered against external-knowledge sources via grouped subagents, (2) assemble the complete findings into `research_answers.md`, and (3) translate those findings — together with the plan's objective and resolved context — into a concrete `implementation_plan.md` that an implementer can pick up next. This phase, and every subagent it spawns, is purely external-knowledge work: do not search this repo's code.
 
 Slug: `$ARGUMENTS`
 
@@ -15,7 +15,7 @@ Slug: `$ARGUMENTS`
 
 | Topic       | Notebook alias or ID |
 | ----------- | -------------------- |
-| AgentMemory | `agentmemory`        |
+| Your topic  | `your-notebook-alias` |
 
 Keep this in sync with the notebook map in `skills/plan-to-plan/SKILL.md`.
 
@@ -50,7 +50,7 @@ You do not run any `perplexity`/`notebooklm` queries directly in this context �
 
 **Spawning:**
 
-- Groups with no dependency relationship between them are independent — spawn them as **parallel** `Agent` calls in a single message (the same pattern `/dag-orchestrator` uses for unblocked workers).
+- Groups with no dependency relationship between them are independent — spawn them as **parallel** `Agent` calls in a single message.
 - Cross-group `DEPENDS_ON` should be rare (step 1 above routes same-cluster questions together) but if it happens: run the upstream group to completion first, fold its returned answer text into the downstream group's prompt, then spawn it.
 - Subagents only **return text** — they never write files. You assemble and write `research_answers.md` yourself in Step 3, which avoids write races between parallel agents and keeps `plan_id`/ID consistency entirely in your hands.
 
@@ -117,7 +117,7 @@ research_answers.md — match it precisely so nothing needs reformatting):
 - ...
 
 CRITICAL — be COMPLETE, not summarized. This is the research record that the implementation
-plan (and eventually DAG-worker tasks) will build on *without re-querying* — a "yes, X is
+plan will build on *without re-querying* — a "yes, X is
 true" one-liner is a failed answer even if it's correct. Capture concrete details: names,
 numbers, code-shape claims, watch-outs, caveats, sources. Synthesize from raw tool output
 (don't dump it raw), but don't compress away the substance that makes an answer actionable.
@@ -177,7 +177,7 @@ Build the `Status Summary` table yourself from what each subagent returned — `
 
 ## Step 4 — Write the implementation plan
 
-This is the artifact `/dag-orchestrator` consumes next — it must stand on its own as a concrete development plan, grounded in the objective, the resolved context, and every answered question, precise enough that someone (or a DAG of worker agents) could build from it without re-deriving any of this research.
+This is the final artifact — it must stand on its own as a concrete development plan, grounded in the objective, the resolved context, and every answered question, precise enough that someone could build from it without re-deriving any of this research.
 
 Write to: `research/<SLUG>/implementation_plan.md`
 
@@ -185,12 +185,12 @@ Structure it as a markdown plan covering:
 
 - **Objective** — restate the plan's objective (carried over from `research_plan.md`), sharpened with what the research surfaced
 - **Grounding** — translate each load-bearing finding into a concrete design/build decision, citing its `Q-ID` inline (e.g. `Q-00X: "..."`) so a reader can trace every decision back to its evidence. Where an answer's framing needs correcting against this codebase's actual reality (a design-intent-vs-actual-behavior mismatch, a renamed field, a missing mechanism) — say so explicitly. A "research says X / the code says Y / so do Z instead" note is *more* trustworthy than silently picking one and hoping
-- **Concrete build steps** — phased, with file paths, code snippets, exact commands, what to watch out for, what's still in doubt — written precisely enough that `/dag-orchestrator` can decompose it into an atomic task DAG without you in the loop
+- **Concrete build steps** — phased, with file paths, code snippets, exact commands, what to watch out for, what's still in doubt — written precisely enough that an implementer can build from it without you in the loop
 - **Open questions / residual risks** — what the research left partial, to resolve empirically during the first implementation pass; carry over the `Residual risks / follow-ups` from `research_answers.md` that still matter
 
 After writing it, tell the user:
 
-> `implementation_plan.md` is ready at `research/<SLUG>/implementation_plan.md` — feed it to `/dag-orchestrator research/<SLUG>/implementation_plan.md` to decompose it into a worker-driven task DAG.
+> `implementation_plan.md` is ready at `research/<SLUG>/implementation_plan.md` — a self-contained development plan ready to implement.
 
 ## Non-negotiable rules
 
@@ -198,8 +198,8 @@ After writing it, tell the user:
 - This phase, and every subagent it spawns, is purely external-knowledge: no `codegraph`/`grep`/`Read` of this repo's source. `research_plan.md`'s `Objective` and `What we already know` sections are the sole grounding in "what this project knows" — treat them as settled, not as something to re-verify.
 - Group questions and delegate to subagents (Step 2) — never run more than one group's worth of external queries serially in this context. Dependency clusters stay together; independent groups run in parallel.
 - `research_answers.md` must reuse the same `plan_id` and question IDs declared in `research_plan.md`.
-- Findings must be **complete**, not summarized to yes/no — substantive enough that neither the implementation plan nor a future DAG-worker task ever needs to re-query to fill a gap.
-- `implementation_plan.md` lives in the **same** `research/<SLUG>/` folder as the plan and answers, and shares the `RP-<SLUG>` lineage — it is the natural last artifact in the chain `/plan-to-plan` → `/apply-research-plan` → `/dag-orchestrator`.
+- Findings must be **complete**, not summarized to yes/no — substantive enough that neither the implementation plan nor its execution ever needs to re-query to fill a gap.
+- `implementation_plan.md` lives in the **same** `research/<SLUG>/` folder as the plan and answers, and shares the `RP-<SLUG>` lineage — it is the natural last artifact in the chain `/plan-to-plan` → `/apply-research-plan`.
 - Never send confidential code or secrets to `perplexity`/`notebooklm` — including inside subagent prompts.
 
 ## Failure conditions
@@ -210,5 +210,5 @@ After writing it, tell the user:
 - Running questions serially in this context instead of grouping and delegating to subagents — the exact context-bloat this phase is designed to avoid
 - Dumping raw tool output, or compressing findings into yes/no one-liners, instead of synthesizing complete answers
 - Skipping `conversation_id` threading in multi-query notebooklm batches
-- Writing `implementation_plan.md` to a different folder or slug than `research_plan.md`/`research_answers.md` — breaks the chain `/dag-orchestrator` depends on
+- Writing `implementation_plan.md` to a different folder or slug than `research_plan.md`/`research_answers.md` — breaks the `RP-<SLUG>` lineage the chain depends on
 - Sending confidential local code to external tools (directly, or via a subagent prompt)

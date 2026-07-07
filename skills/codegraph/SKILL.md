@@ -69,7 +69,7 @@ Run this before modifying any widely-used function or constant — it shows what
 ## Find affected tests
 
 ```bash
-codegraph affected agentmemory/proxy.py
+codegraph affected src/proxy.py
 git diff --name-only HEAD | xargs codegraph affected
 ```
 
@@ -79,7 +79,7 @@ Given one or more source files, lists the test files that transitively depend on
 
 ```bash
 codegraph files
-codegraph files --filter agentmemory/
+codegraph files --filter src/
 codegraph files --pattern "**/*.test.*"
 ```
 

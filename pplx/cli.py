@@ -12,7 +12,7 @@ Usage:
   smart-mcps-perplexity ask "what is the MCP protocol?"
   smart-mcps-perplexity ask "explain this code" --file script.py
   smart-mcps-perplexity ask "summarize recent findings" --scientific-research
-  smart-mcps-perplexity ask "agentmemory lib" --domains github.com
+  smart-mcps-perplexity ask "fastmcp library" --domains github.com
   smart-mcps-perplexity research "best practices for FastMCP proxy design"
   smart-mcps-perplexity reason "should I use MCP or CLI for tool integration?"
   smart-mcps-perplexity reason "compare X vs Y for Z" --context-size high

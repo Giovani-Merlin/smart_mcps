@@ -1,6 +1,6 @@
 # smart-mcps
 
-A Claude Code plugin that installs **8 skills** and **session hooks** for agentmemory, codegraph, NotebookLM, and Perplexity. All tools run as CLI commands — no MCP servers, no context-window pollution.
+A Claude Code plugin that installs **skills** and **session hooks** for codegraph, NotebookLM, and Perplexity. All tools run as CLI commands — no MCP servers, no context-window pollution.
 
 ## Installation
 
@@ -31,10 +31,9 @@ Skills are registered automatically on install. Restart Claude Code after instal
 | `notebooklm-chat` | `/notebooklm-chat` | Chat with a notebook by topic — query only, **requires configuring your notebook map** in the skill file |
 | `notebooklm-complete` | `/notebooklm-complete` | Full NotebookLM management: query, create, add sources, audio/video artifacts |
 | `perplexity` | `/perplexity` | Web-grounded search, research, and reasoning via `smart-mcps-perplexity` CLI |
-| `handoff` | `/handoff` | Resume most recent agentmemory session ("where were we") |
-| `recall` | `/recall` | Search past agentmemory observations and lessons |
-| `remember` | `/remember` | Save an insight or decision to agentmemory long-term storage |
-| `recap` | `/recap` | Summarize recent sessions for the current project |
+| `plan-to-plan` | `/plan-to-plan` | Research planning — decomposes a topic into tagged external-knowledge questions and writes an approved `research_plan.md` |
+| `apply-research-plan` | `/apply-research-plan` | Executes an approved `research_plan.md` via subagents, then writes `research_answers.md` and a concrete `implementation_plan.md` |
+| `plan-notebookllm` | `/plan-notebookllm` | Notebook-grounded planning — queries a NotebookLM notebook before producing a plan |
 
 ---
 
@@ -54,7 +53,7 @@ The Setup hook runs `codegraph index` automatically on each session start if `co
 
 ### Perplexity
 
-Requires a `PERPLEXITY_API_KEY`. The MCP server is spawned by the VS Code extension host, so the key must be in that process's environment — not just a terminal session.
+Requires a `PERPLEXITY_API_KEY`. The CLI is spawned by the VS Code extension host, so the key must be in that process's environment — not just a terminal session.
 
 **Recommended:** Install the [mkhl.direnv](https://marketplace.visualstudio.com/items?itemName=mkhl.direnv) VS Code extension and create a per-project `.envrc`:
 
@@ -103,34 +102,17 @@ Map by **semantic topic** (not just notebook title) so the skill can match natur
 
 Use `/notebooklm-complete` for everything beyond querying: adding sources, creating audio overviews, managing notes.
 
-### AgentMemory
-
-Requires the agentmemory daemon running locally:
-
-```bash
-systemctl --user start agentmemory
-# or
-~/.agentmemory/start.sh
-```
-
-The `recall`, `remember`, `handoff`, and `recap` skills use the `smart-mcps-agentmemory` CLI which talks to this daemon.
-
 ---
 
 ## Hooks
 
-The plugin installs session hooks that wire agentmemory capture automatically:
+The plugin installs a small set of session hooks:
 
 | Hook | What it does |
 | ---- | ------------ |
-| `sessionStart` | Loads session context from agentmemory |
-| `userPromptSubmitted` | Records user intent |
-| `preToolUse` / `postToolUse` | Captures tool calls and results |
-| `postToolUseFailure` | Records failures for learning |
-| `preCompact` | Saves context before compaction |
-| `sessionEnd` / `agentStop` | Closes session and flushes observations |
-| `subagentStart` / `subagentStop` | Tracks sub-agent lifecycle |
-| `notification` | Handles async notifications |
+| `Setup` | Runs `codegraph index` on session start if `codegraph` is installed and an index exists |
+| `postToolUse` (Bash) | Saves NotebookLM query results as markdown under `docs/research/notebooklm/` |
+| `postToolUse` (edit/write) | Auto-fixes Python (ruff) and Markdown (markdownlint-cli2) after edits |
 
 ---
 
@@ -156,7 +138,7 @@ Edits take effect on the next session start — no reinstall needed.
 
 ## CLI tools
 
-Install Python CLIs for local use (needed by the hooks scripts and skills):
+Install the Python CLI for local use (needed by the hooks scripts and skills):
 
 ```bash
 pip install -e .
@@ -168,7 +150,6 @@ This installs:
 
 | Command | Source |
 | ------- | ------ |
-| `smart-mcps-agentmemory` | `agentmemory/cli.py` |
 | `smart-mcps-perplexity` | `pplx/cli.py` |
 
 ---
@@ -185,18 +166,16 @@ skills/
   notebooklm-chat/SKILL.md      # query only, resolves names via nlm aliases
   notebooklm-complete/SKILL.md  # full management (sources, audio, notes, etc.)
   perplexity/SKILL.md
-  handoff/SKILL.md
-  recall/SKILL.md
-  remember/SKILL.md
-  recap/SKILL.md
+  plan-to-plan/SKILL.md         # research planning
+  apply-research-plan/SKILL.md  # research execution + implementation plan
+  plan-notebookllm/SKILL.md     # notebook-grounded planning
 
 scripts/
   seed-nlm-aliases.sh  # populate nlm aliases from notebook titles
 
 hooks/
-  hooks.plugin.json    # hook definitions
-  scripts/             # Node.js hook scripts (session-start, stop, etc.)
+  hooks.json           # hook definitions
+  scripts/             # hook scripts (save_research.py, lint_after_edit.py)
 
-agentmemory/           # smart-mcps-agentmemory CLI source
 pplx/                  # smart-mcps-perplexity CLI source
 ```

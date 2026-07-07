@@ -32,7 +32,7 @@ with an auth error, tell the user to run `nlm login`.
 
 | Topic       | Notebook alias or ID |
 | ----------- | -------------------- |
-| AgentMemory | `agentmemory`        |
+| Your topic  | `your-notebook-alias` |
 
 ## Query
 
