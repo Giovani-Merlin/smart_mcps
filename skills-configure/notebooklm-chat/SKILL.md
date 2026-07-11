@@ -30,9 +30,9 @@ with an auth error, tell the user to run `nlm login`.
 
 <!-- Add one row per notebook you want accessible. Use the alias (if set) or the UUID. -->
 
-| Topic       | Notebook alias or ID |
-| ----------- | -------------------- |
-| Your topic  | `your-notebook-alias` |
+| Topic      | Notebook alias or ID  |
+| ---------- | --------------------- |
+| Your topic | `your-notebook-alias` |
 
 ## Query
 

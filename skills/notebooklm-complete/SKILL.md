@@ -19,22 +19,22 @@ Returns IDs. Notebook names are not accepted directly — resolve to an ID first
 
 ## Decision table
 
-| Need | Command |
-| ---- | ------- |
-| List all notebooks (get IDs) | `nlm notebook list` |
-| Ask a question about notebook content | `nlm notebook query NOTEBOOK_ID "question"` |
-| Get notebook summary | `nlm notebook describe NOTEBOOK_ID` |
-| Create a new notebook | `nlm notebook create "Title"` |
-| Add a URL source | `nlm source add NOTEBOOK_ID --url URL` |
-| Add a text source | `nlm source add NOTEBOOK_ID --text "content"` |
-| Add a local file | `nlm source add NOTEBOOK_ID --file path/to/file.pdf` |
-| Describe a source | `nlm source describe SOURCE_ID` |
-| Create audio overview | `nlm audio create NOTEBOOK_ID` |
-| Check artifact status | `nlm studio status NOTEBOOK_ID` |
-| Download audio artifact | `nlm download audio NOTEBOOK_ID` |
-| Query across multiple notebooks | `nlm cross query "question" --notebooks ID1,ID2` |
-| List notes | `nlm note list NOTEBOOK_ID` |
-| Create a note | `nlm note create NOTEBOOK_ID --content "insight"` |
+| Need                                  | Command                                              |
+| ------------------------------------- | ---------------------------------------------------- |
+| List all notebooks (get IDs)          | `nlm notebook list`                                  |
+| Ask a question about notebook content | `nlm notebook query NOTEBOOK_ID "question"`          |
+| Get notebook summary                  | `nlm notebook describe NOTEBOOK_ID`                  |
+| Create a new notebook                 | `nlm notebook create "Title"`                        |
+| Add a URL source                      | `nlm source add NOTEBOOK_ID --url URL`               |
+| Add a text source                     | `nlm source add NOTEBOOK_ID --text "content"`        |
+| Add a local file                      | `nlm source add NOTEBOOK_ID --file path/to/file.pdf` |
+| Describe a source                     | `nlm source describe SOURCE_ID`                      |
+| Create audio overview                 | `nlm audio create NOTEBOOK_ID`                       |
+| Check artifact status                 | `nlm studio status NOTEBOOK_ID`                      |
+| Download audio artifact               | `nlm download audio NOTEBOOK_ID`                     |
+| Query across multiple notebooks       | `nlm cross query "question" --notebooks ID1,ID2`     |
+| List notes                            | `nlm note list NOTEBOOK_ID`                          |
+| Create a note                         | `nlm note create NOTEBOOK_ID --content "insight"`    |
 
 ## Query a notebook
 

@@ -25,7 +25,7 @@ argument-hint: "[topic or task to plan]"
 
 Call the `EnterPlanMode` tool now. Do not produce any output until plan mode is active.
 
----
+______________________________________________________________________
 
 You are in strict **notebook-first planning mode**. No code is written. No files are edited. Only research and planning happen here.
 
@@ -35,9 +35,9 @@ Task: `$ARGUMENTS`
 
 <!-- Add one row per notebook you want accessible. Use the alias (if set) or the UUID. -->
 
-| Topic       | Notebook alias or ID |
-| ----------- | -------------------- |
-| Your topic  | `your-notebook-alias` |
+| Topic      | Notebook alias or ID  |
+| ---------- | --------------------- |
+| Your topic | `your-notebook-alias` |
 
 ## Process
 

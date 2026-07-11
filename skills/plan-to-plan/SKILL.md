@@ -13,21 +13,21 @@ Topic/doubt: `$ARGUMENTS`
 
 ## Notebook map
 
-| Topic       | Notebook alias or ID |
-| ----------- | -------------------- |
-| Your topic  | `your-notebook-alias` |
+| Topic      | Notebook alias or ID  |
+| ---------- | --------------------- |
+| Your topic | `your-notebook-alias` |
 
----
+______________________________________________________________________
 
 ## Phase 1 — Understand & scope (do this before generating questions)
 
 Read the doubt in `$ARGUMENTS` carefully, then work through these in order — each step builds on the last, and skipping ahead produces vague questions that don't serve anything:
 
 1. **Pin down the final objective — first, before anything else.** What does the user want to *accomplish* once these questions are answered — not the topic itself, but the outcome it's in service of. ("Research caching strategies" is a topic; "decide which caching strategy fits this service and walk away with enough grounding to write its implementation plan" is an objective.) Read this directly off `$ARGUMENTS` if it's explicit; otherwise infer your best reading from the surrounding ask and state it plainly. Ask the user only if you genuinely cannot tell what they're trying to accomplish. Everything downstream — which questions matter, how deep the answers need to go, what the final implementation plan looks like — gets measured against this, so get it right before moving on.
-2. **Explore the codebase** to establish **what we already know** — prioritize `codegraph context` (see the codegraph skill: `skills/codegraph/SKILL.md`); fall back to `find`/`grep` only if it doesn't surface enough. Capture concrete discoveries: file paths, existing behaviors, prior decisions, established patterns — anything a research question would be wasteful to defer externally because the answer is already sitting in this repo.
-3. **Identify what we don't know.** The gap between the objective (step 1) and what we already know (step 2) is exactly the set of candidate research questions — Phase 2 turns this gap into atomic, externally-answerable questions. If the gap turns out to be empty or tiny, say so plainly; not every doubt needs external research.
-4. **Optionally** run 1–2 quick scoping queries (perplexity or notebooklm) to sharpen that gap — use these to refine question generation, not to answer the questions themselves.
-5. Write a short **Scope block** (3–5 bullets): goal, in/out of scope, available sources, what is NOT safe to send externally (secrets, PII, proprietary logic).
+1. **Explore the codebase** to establish **what we already know** — prioritize `codegraph context` (see the codegraph skill: `skills/codegraph/SKILL.md`); fall back to `find`/`grep` only if it doesn't surface enough. Capture concrete discoveries: file paths, existing behaviors, prior decisions, established patterns — anything a research question would be wasteful to defer externally because the answer is already sitting in this repo.
+1. **Identify what we don't know.** The gap between the objective (step 1) and what we already know (step 2) is exactly the set of candidate research questions — Phase 2 turns this gap into atomic, externally-answerable questions. If the gap turns out to be empty or tiny, say so plainly; not every doubt needs external research.
+1. **Optionally** run 1–2 quick scoping queries (perplexity or notebooklm) to sharpen that gap — use these to refine question generation, not to answer the questions themselves.
+1. Write a short **Scope block** (3–5 bullets): goal, in/out of scope, available sources, what is NOT safe to send externally (secrets, PII, proprietary logic).
 
 ## Phase 2 — Decompose into research questions
 

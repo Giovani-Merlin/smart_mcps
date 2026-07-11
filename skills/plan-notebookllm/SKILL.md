@@ -11,7 +11,7 @@ argument-hint: "[topic or task to plan]"
 
 Call the `EnterPlanMode` tool now. Do not produce any output until plan mode is active.
 
----
+______________________________________________________________________
 
 You are in strict **notebook-first planning mode**. No code is written. No files are edited. Only research and planning happen here.
 
@@ -65,7 +65,7 @@ After each answer, decide what is still missing and ask a narrower follow-up. If
 
 ### Step 3 — summarize evidence
 
-Before drafting the plan, write a complete  **Evidence gathered** section:
+Before drafting the plan, write a complete **Evidence gathered** section:
 
 - What the notebook confirmed
 - What it left ambiguous

@@ -12,11 +12,12 @@ Use the `smart-mcps-perplexity` CLI via bash for all web-grounded queries.
 ## Decision table — pick the right subcommand
 
 | Need                                                          | Command  | Model               | Speed          | Cost   |
-| -------------------------------------------------------------- | -------- | ------------------- | -------------- | ------ |
-| Broad / exploratory / underspecified — discover the landscape  | `ask`    | sonar-pro           | Fast (~3 s)    | Low    |
-| Specific / constrained — reason precisely over known options   | `reason` | sonar-reasoning-pro | Medium (~10 s) | Medium |
+| ------------------------------------------------------------- | -------- | ------------------- | -------------- | ------ |
+| Broad / exploratory / underspecified — discover the landscape | `ask`    | sonar-pro           | Fast (~3 s)    | Low    |
+| Specific / constrained — reason precisely over known options  | `reason` | sonar-reasoning-pro | Medium (~10 s) | Medium |
 
 **Pick by how specific the question already is, not by habit:**
+
 - Still vague, no stack/model/criteria named yet → `ask`. Wider retrieval and landscape discovery matter most.
 - Already names a concrete model, framework, or pattern and wants a comparison or recommendation → `reason`. Precise reasoning over known constraints matters most.
 - Unsure? Ask: is the missing piece *more context* (→ `ask`) or *better reasoning* (→ `reason`)?
@@ -31,6 +32,7 @@ smart-mcps-perplexity ask "summarize recent findings on LoRA" --scientific-resea
 ```
 
 Options:
+
 - `--file PATH` — prepend file contents (code, markdown, any text) to the question; use this instead of copy-pasting large inputs
 - `--scientific-research` — restrict search to `arxiv.org`, `huggingface.co`, `github.com`; suited for longer, descriptive technical asks
 - `--context-size {low,medium,high}` — see Context size below; default `medium`

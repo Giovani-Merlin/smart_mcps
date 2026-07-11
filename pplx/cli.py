@@ -263,12 +263,16 @@ def _cmd_agent(args) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _save_result("agent", args.question, {
-        "preset": args.preset,
-        "status": response.status,
-        "raw_text": raw,
-        "answer": result,
-    })
+    _save_result(
+        "agent",
+        args.question,
+        {
+            "preset": args.preset,
+            "status": response.status,
+            "raw_text": raw,
+            "answer": result,
+        },
+    )
     print(result)
 
 
@@ -286,13 +290,17 @@ def _cmd_ask(args) -> None:
     )
     content = completion.choices[0].message.content
     citations = list(getattr(completion, "citations", None) or [])
-    _save_result("ask", args.question, {
-        "model": completion.model,
-        "raw_text": content,
-        "answer": _strip_citations(content),
-        "citations": citations,
-        "usage": completion.usage.model_dump() if completion.usage else None,
-    })
+    _save_result(
+        "ask",
+        args.question,
+        {
+            "model": completion.model,
+            "raw_text": content,
+            "answer": _strip_citations(content),
+            "citations": citations,
+            "usage": completion.usage.model_dump() if completion.usage else None,
+        },
+    )
     print(_strip_citations(content))
 
 
@@ -306,13 +314,17 @@ def _cmd_research(args) -> None:
     )
     content = completion.choices[0].message.content
     citations = list(getattr(completion, "citations", None) or [])
-    _save_result("research", args.topic, {
-        "model": completion.model,
-        "raw_text": content,
-        "answer": _strip_citations(content),
-        "citations": citations,
-        "usage": completion.usage.model_dump() if completion.usage else None,
-    })
+    _save_result(
+        "research",
+        args.topic,
+        {
+            "model": completion.model,
+            "raw_text": content,
+            "answer": _strip_citations(content),
+            "citations": citations,
+            "usage": completion.usage.model_dump() if completion.usage else None,
+        },
+    )
     print(_strip_citations(content))
 
 
@@ -326,13 +338,17 @@ def _cmd_reason(args) -> None:
     )
     content = completion.choices[0].message.content
     citations = list(getattr(completion, "citations", None) or [])
-    _save_result("reason", args.question, {
-        "model": completion.model,
-        "raw_text": content,
-        "answer": _strip_citations(content),
-        "citations": citations,
-        "usage": completion.usage.model_dump() if completion.usage else None,
-    })
+    _save_result(
+        "reason",
+        args.question,
+        {
+            "model": completion.model,
+            "raw_text": content,
+            "answer": _strip_citations(content),
+            "citations": citations,
+            "usage": completion.usage.model_dump() if completion.usage else None,
+        },
+    )
     print(_strip_citations(content))
 
 
@@ -430,9 +446,7 @@ def main() -> None:
     _add_context_size_arg(p_research)
 
     # reason
-    p_reason = sub.add_parser(
-        "reason", help="Step-by-step reasoning (sonar-reasoning-pro)"
-    )
+    p_reason = sub.add_parser("reason", help="Step-by-step reasoning (sonar-reasoning-pro)")
     p_reason.add_argument("question")
     p_reason.add_argument(
         "--file",
