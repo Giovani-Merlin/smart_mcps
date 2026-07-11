@@ -1,7 +1,22 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v codegraph >/dev/null 2>&1 || exit 0; [ -d .codegraph ] || codegraph init; ( codegraph index --force >/dev/null 2>&1 & )"
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ensure_formatters.sh\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",

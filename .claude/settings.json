@@ -22,18 +22,23 @@
     ]
   },
   "hooks": {
-    "Setup": [
+    "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "command -v codegraph >/dev/null 2>&1 || exit 0; [ -d .codegraph ] || codegraph init; codegraph index"
+            "command": "command -v codegraph >/dev/null 2>&1 || exit 0; [ -d .codegraph ] || codegraph init; ( codegraph index --force >/dev/null 2>&1 & )"
+          },
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/hooks/scripts/ensure_formatters.sh\""
           }
         ]
       }
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
@@ -42,7 +47,7 @@
         ]
       },
       {
-        "matcher": "edit|write|multiedit",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",

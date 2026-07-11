@@ -1,0 +1,2 @@
+# Used by the lint_after_edit.py hook — requires mdformat-gfm + mdformat-frontmatter
+wrap = "keep"

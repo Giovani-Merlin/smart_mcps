@@ -9,17 +9,17 @@ Use the `codegraph` CLI via bash to answer code structure questions.
 
 ## Decision table — pick the right command
 
-| Need | Command |
-| ---- | ------- |
-| Map the area / what matters here? | `codegraph context "<query>"` — always first |
-| Where is symbol X defined? | `codegraph context "<symbol>"` — also handles symbol lookup |
-| Don't know exact symbol name? | `codegraph query "<partial name>"` — fuzzy symbol search |
-| What calls this function? | `codegraph callers "<symbol>"` |
-| What does this call? | `codegraph callees "<symbol>"` |
-| What breaks if I change this? | `codegraph impact "<symbol>"` |
-| What tests cover this file? | `codegraph affected <file> [<file>...]` |
-| What files are in a directory? | `codegraph files --filter <dir>` — not `ls` or `find` |
-| Is the index healthy / empty? | `codegraph status` |
+| Need                              | Command                                                     |
+| --------------------------------- | ----------------------------------------------------------- |
+| Map the area / what matters here? | `codegraph context "<query>"` — always first                |
+| Where is symbol X defined?        | `codegraph context "<symbol>"` — also handles symbol lookup |
+| Don't know exact symbol name?     | `codegraph query "<partial name>"` — fuzzy symbol search    |
+| What calls this function?         | `codegraph callers "<symbol>"`                              |
+| What does this call?              | `codegraph callees "<symbol>"`                              |
+| What breaks if I change this?     | `codegraph impact "<symbol>"`                               |
+| What tests cover this file?       | `codegraph affected <file> [<file>...]`                     |
+| What files are in a directory?    | `codegraph files --filter <dir>` — not `ls` or `find`       |
+| Is the index healthy / empty?     | `codegraph status`                                          |
 
 ## Primary command — `context`
 
@@ -34,6 +34,7 @@ codegraph context "session hooks"
 **Empty output**: if `context` returns only the header line and no symbols, the query matched nothing — fall back to `codegraph query` with a shorter or partial name to find the exact symbol first.
 
 Useful options:
+
 - `--max-nodes <n>` — cap how many nodes are returned (default 50)
 - `--max-code <n>` — cap how many code blocks are shown (default 10)
 - `--no-code` — skip code blocks entirely for a faster overview
@@ -91,11 +92,12 @@ Prefer this over `ls`/`find` when exploring what's in the index. Use `--filter <
 codegraph status
 ```
 
-If status shows no index, run `codegraph init && codegraph index` before using any other command. The Setup hook runs `codegraph index` automatically on session start, but only if codegraph was installed before the session began.
+If status shows no index, run `codegraph init && codegraph index` before using any other command. The SessionStart hook runs `codegraph index --force` (detached) automatically on session start, but only if codegraph was installed before the session began.
 
 ## Usage rules
 
 - **Start with `context`** for any exploration question — it is the richest single call.
 - **Do not use codegraph for files you have already read** — use it for discovery and impact analysis only.
 - **Do not loop**: if `context` returns nothing, use `codegraph query` with a shorter symbol name before assuming the symbol is unindexed.
-- **Index lag**: changes made during the session are not in the index until the next `codegraph index` run. Read the file directly if you need to see recent edits.
+- **Index lag**: changes made during the session are not in the index until the next `codegraph index` run. Read the file directly if you need to see recent edits. Deleted files are pruned at session start by `codegraph index --force`; a plain `codegraph index` is incremental and leaves them in the index.
+- **Edit rejected as "not read"**: if an Edit of codegraph-surfaced code is ever rejected because the file was not read, Read only the snippet's line range using `offset`/`limit` (codegraph gives `file:line`) — do not re-read the whole file.

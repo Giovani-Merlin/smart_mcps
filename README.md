@@ -21,21 +21,21 @@ Skills are registered automatically on install. Restart Claude Code after instal
 
 > **Skills are meant to be edited.** After installing, configure each skill you use — see [Setup](#setup-per-tool) below. The `notebooklm-chat` skill in particular ships with a placeholder notebook map that you must fill in.
 
----
+______________________________________________________________________
 
 ## Skills
 
-| Skill | Trigger | What it does |
-| ----- | ------- | ------------ |
-| `codegraph` | `/codegraph` | Symbol lookup, call graph tracing, impact analysis via `codegraph` CLI |
-| `notebooklm-chat` | `/notebooklm-chat` | Chat with a notebook by topic — query only, **requires configuring your notebook map** in the skill file |
-| `notebooklm-complete` | `/notebooklm-complete` | Full NotebookLM management: query, create, add sources, audio/video artifacts |
-| `perplexity` | `/perplexity` | Web-grounded search, research, and reasoning via `smart-mcps-perplexity` CLI |
-| `plan-to-plan` | `/plan-to-plan` | Research planning — decomposes a topic into tagged external-knowledge questions and writes an approved `research_plan.md` |
+| Skill                 | Trigger                | What it does                                                                                                                     |
+| --------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `codegraph`           | `/codegraph`           | Symbol lookup, call graph tracing, impact analysis via `codegraph` CLI                                                           |
+| `notebooklm-chat`     | `/notebooklm-chat`     | Chat with a notebook by topic — query only, **requires configuring your notebook map** in the skill file                         |
+| `notebooklm-complete` | `/notebooklm-complete` | Full NotebookLM management: query, create, add sources, audio/video artifacts                                                    |
+| `perplexity`          | `/perplexity`          | Web-grounded search, research, and reasoning via `smart-mcps-perplexity` CLI                                                     |
+| `plan-to-plan`        | `/plan-to-plan`        | Research planning — decomposes a topic into tagged external-knowledge questions and writes an approved `research_plan.md`        |
 | `apply-research-plan` | `/apply-research-plan` | Executes an approved `research_plan.md` via subagents, then writes `research_answers.md` and a concrete `implementation_plan.md` |
-| `plan-notebookllm` | `/plan-notebookllm` | Notebook-grounded planning — queries a NotebookLM notebook before producing a plan |
+| `plan-notebookllm`    | `/plan-notebookllm`    | Notebook-grounded planning — queries a NotebookLM notebook before producing a plan                                               |
 
----
+______________________________________________________________________
 
 ## Setup (per tool)
 
@@ -49,7 +49,7 @@ codegraph init
 codegraph index
 ```
 
-The Setup hook runs `codegraph index` automatically on each session start if `codegraph` is installed and an index exists.
+The SessionStart hook runs `codegraph index --force` (detached, prunes deleted files) automatically on each session start if `codegraph` is installed, initializing the index first if needed.
 
 ### Perplexity
 
@@ -102,19 +102,20 @@ Map by **semantic topic** (not just notebook title) so the skill can match natur
 
 Use `/notebooklm-complete` for everything beyond querying: adding sources, creating audio overviews, managing notes.
 
----
+______________________________________________________________________
 
 ## Hooks
 
 The plugin installs a small set of session hooks:
 
-| Hook | What it does |
-| ---- | ------------ |
-| `Setup` | Runs `codegraph index` on session start if `codegraph` is installed and an index exists |
-| `postToolUse` (Bash) | Saves NotebookLM query results as markdown under `docs/research/notebooklm/` |
-| `postToolUse` (edit/write) | Auto-fixes Python (ruff) and Markdown (markdownlint-cli2) after edits |
+| Hook                                 | What it does                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `SessionStart` (codegraph)           | Runs `codegraph index --force` detached on session start if `codegraph` is installed |
+| `SessionStart` (formatters)          | Best-effort `uv tool install` of ruff and mdformat (with gfm + frontmatter plugins)  |
+| `PostToolUse` (Bash)                 | Saves NotebookLM query results as markdown under `docs/research/notebooklm/`         |
+| `PostToolUse` (Edit/Write/MultiEdit) | Auto-formats Python (ruff) and Markdown (mdformat) after edits; falls back to `uvx`  |
 
----
+______________________________________________________________________
 
 ## Editing skills
 
@@ -134,7 +135,7 @@ ln -s ../skills .claude/skills
 
 Edits take effect on the next session start — no reinstall needed.
 
----
+______________________________________________________________________
 
 ## CLI tools
 
@@ -148,11 +149,11 @@ uv pip install -e .
 
 This installs:
 
-| Command | Source |
-| ------- | ------ |
+| Command                 | Source        |
+| ----------------------- | ------------- |
 | `smart-mcps-perplexity` | `pplx/cli.py` |
 
----
+______________________________________________________________________
 
 ## Repository layout
 
