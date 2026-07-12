@@ -1,2 +1,5 @@
 # Used by the lint_after_edit.py hook — requires mdformat-gfm + mdformat-frontmatter
 wrap = "keep"
+# Without this, mdformat collapses AI-written incrementing ordered lists
+# (1. 2. 3.) down to all "1." — surprising and hard to review in diffs.
+number = true

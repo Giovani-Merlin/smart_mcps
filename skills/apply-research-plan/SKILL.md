@@ -35,8 +35,8 @@ Read `research/<SLUG>/research_plan.md`. If it doesn't exist, tell the user to r
 Pull out and hold onto three things — they travel verbatim into every subagent prompt and shape the final implementation plan:
 
 1. **Objective** — what the user wants to accomplish once these questions are answered. Every answer, and the implementation plan at the end, gets held up against this; an accurate-but-irrelevant answer is a wasted query.
-1. **What we already know (resolved context)** — treat this as settled. Don't re-derive it, don't contradict it without strong external evidence, and don't burn a query re-confirming it.
-1. **The questions** — with their `SRC`/`CAT`/`P`/`BLOCKING`/`DEPENDS_ON` tags, `Question`, `Expected output`, and `Notes` intact.
+2. **What we already know (resolved context)** — treat this as settled. Don't re-derive it, don't contradict it without strong external evidence, and don't burn a query re-confirming it.
+3. **The questions** — with their `SRC`/`CAT`/`P`/`BLOCKING`/`DEPENDS_ON` tags, `Question`, `Expected output`, and `Notes` intact.
 
 ## Step 2 — Group questions and spawn subagents
 
@@ -45,8 +45,8 @@ You do not run any `perplexity`/`notebooklm` queries directly in this context �
 **Grouping algorithm — dependency clusters first, then topic/SRC affinity:**
 
 1. Build the dependency graph from each question's `DEPENDS_ON`. A question and everything it (transitively) depends on form one **atomic cluster** — they MUST land in the same group, answered in dependency order, so a later question can build on an earlier answer still live in that subagent's context.
-1. Bucket the atomic units (lone questions and dependency clusters alike) into groups small enough to keep each subagent's context tight — typically **2–3 questions per group**, fewer if a single question is expected to need heavy back-and-forth (e.g. several threaded notebooklm follow-ups). Within that constraint, prefer topical/`SRC` affinity: keep the notebooklm design-rationale questions together (they can share one threaded `conversation_id` and cross-reference naturally), keep the perplexity industry-practice questions together.
-1. Aim for balanced groups — don't produce a group of 1 and a group of 6 when a 3/3 split is possible, unless a dependency cluster forces the imbalance.
+2. Bucket the atomic units (lone questions and dependency clusters alike) into groups small enough to keep each subagent's context tight — typically **2–3 questions per group**, fewer if a single question is expected to need heavy back-and-forth (e.g. several threaded notebooklm follow-ups). Within that constraint, prefer topical/`SRC` affinity: keep the notebooklm design-rationale questions together (they can share one threaded `conversation_id` and cross-reference naturally), keep the perplexity industry-practice questions together.
+3. Aim for balanced groups — don't produce a group of 1 and a group of 6 when a 3/3 split is possible, unless a dependency cluster forces the imbalance.
 
 **Spawning:**
 

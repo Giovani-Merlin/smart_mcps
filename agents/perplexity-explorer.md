@@ -29,9 +29,9 @@ Budget: **2–4 codegraph calls, at most 2–3 file reads.** You are gathering e
 Extract exactly these facts:
 
 1. **Stack** — languages, frameworks, and libraries actually involved, with pinned versions from `pyproject.toml` / `package.json` / lockfiles when relevant (versions change the answer; always check when the question touches a library).
-1. **Pattern in use** — the specific API calls, function signatures (one line each), key type names, and imports at the center of the question.
-1. **Intent** — 2–3 sentences on what this code is trying to accomplish and the constraint that motivates the question.
-1. **The precise external question** — restate the caller's question with the ambiguity removed. "Is our retry logic right?" becomes "Is exponential backoff with max 3 retries appropriate for the OpenAI batch API, given httpx 0.27?"
+2. **Pattern in use** — the specific API calls, function signatures (one line each), key type names, and imports at the center of the question.
+3. **Intent** — 2–3 sentences on what this code is trying to accomplish and the constraint that motivates the question.
+4. **The precise external question** — restate the caller's question with the ambiguity removed. "Is our retry logic right?" becomes "Is exponential backoff with max 3 retries appropriate for the OpenAI batch API, given httpx 0.27?"
 
 If Step 1 reveals the question is answerable from the code alone, skip Perplexity and report the answer directly, saying so.
 
