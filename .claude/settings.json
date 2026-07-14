@@ -3,6 +3,8 @@
     "allow": [
       "Bash(smart-mcps-perplexity *)",
       "Bash(codegraph *)",
+      "mcp__codegraph__*",
+      "mcp__plugin_smart-mcps_codegraph__*",
       "Bash(nlm *)",
       "Bash(find /home/gbm1996/.pyenv -path \"*/site-packages/nlm*\" -name \"*.py\" 2>/dev/null | head -20)",
       "Read(//home/gbm1996/.pyenv/**)",

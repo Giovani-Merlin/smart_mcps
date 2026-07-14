@@ -1,6 +1,8 @@
 # smart-mcps
 
-A Claude Code plugin that installs **skills** and **session hooks** for codegraph, NotebookLM, and Perplexity. All tools run as CLI commands — no MCP servers, no context-window pollution.
+A Claude Code plugin that installs **skills** and **session hooks** for codegraph, NotebookLM, and Perplexity. NotebookLM and Perplexity run as CLI commands — no MCP servers, no context-window pollution.
+
+**Codegraph is the one deliberate exception.** Code exploration is the one case where the tool has to be in the model's tool list at the moment it decides how to explore — a skill it must first *think* to reach for loses to Grep every time. MCP is the only mechanism that puts a tool there, so the plugin ships a trimmed FastMCP proxy: 6 tools for ~1,000 tokens, against ~2,400 for upstream's 10. The remaining `codegraph` CLI commands stay reachable via Bash.
 
 ## Installation
 
@@ -27,7 +29,7 @@ ______________________________________________________________________
 
 | Skill                 | Trigger                | What it does                                                                                                                     |
 | --------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `codegraph`           | `/codegraph`           | Symbol lookup, call graph tracing, impact analysis via `codegraph` CLI                                                           |
+| `codegraph`           | `/codegraph`           | Symbol lookup, call graph tracing, impact analysis via the `codegraph` MCP tools                                                 |
 | `notebooklm-chat`     | `/notebooklm-chat`     | Chat with a notebook by topic — query only, **requires configuring your notebook map** in the skill file                         |
 | `notebooklm-complete` | `/notebooklm-complete` | Full NotebookLM management: query, create, add sources, audio/video artifacts                                                    |
 | `perplexity`          | `/perplexity`          | Web-grounded search, research, and reasoning via `smart-mcps-perplexity` CLI                                                     |
@@ -41,15 +43,33 @@ ______________________________________________________________________
 
 ### Codegraph
 
-Requires an index built from your project's source. Run once per project:
+Codegraph is an **npm** package — not PyPI. (`pip install codegraph` installs an unrelated project of the same name.) Run once per project:
 
 ```bash
-pip install codegraph   # or: uv tool install codegraph
+npm install -g @colbymchenry/codegraph
 codegraph init
 codegraph index
 ```
 
 The SessionStart hook runs `codegraph index --force` (detached, prunes deleted files) automatically on each session start if `codegraph` is installed, initializing the index first if needed.
+
+#### MCP tools and permissions
+
+The plugin registers a `codegraph` MCP server (`.mcp.json`) exposing 6 tools: `context`, `explore`, `trace`, `impact`, `files`, and `search`. It is marked `alwaysLoad` so the schemas are resident at the moment Claude chooses how to explore — that residency is the whole point, and it costs ~1,000 tokens per session.
+
+**A plugin cannot ship permissions**, so add this yourself to avoid a prompt on every call — in `.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__plugin_smart-mcps_codegraph__*"]
+  }
+}
+```
+
+Approve the server when prompted, or pre-approve it in `.claude/settings.local.json` with `"enabledMcpjsonServers": ["codegraph"]`.
+
+If you'd rather not pay the tokens, drop `"alwaysLoad": true` from `.mcp.json`: the tools stay reachable but defer to names-only until loaded, which largely recreates the problem this solves.
 
 ### Perplexity
 
@@ -121,6 +141,8 @@ ______________________________________________________________________
 
 Skills are plain markdown files — edit them directly to customize behaviour for your project. This is intentional: the `notebooklm-chat` notebook map, the perplexity model choices, and any prompt tuning all live in the skill files.
 
+The `codegraph` skill is the exception to "skills are prompts you tune freely": it documents the MCP tools rather than duplicating them, because a skill teaching a second, CLI-shaped path to the same data splits attention and bypasses the staleness banner.
+
 Claude Code loads skills from `.claude/skills/` in the project directory. The repo ships with this symlink already in place:
 
 ```text
@@ -149,15 +171,20 @@ uv pip install -e .
 
 This installs:
 
-| Command                 | Source        |
-| ----------------------- | ------------- |
-| `smart-mcps-perplexity` | `pplx/cli.py` |
+| Command                 | Source                    |
+| ----------------------- | ------------------------- |
+| `smart-mcps-perplexity` | `pplx/cli.py`             |
+| `smart-mcps-codegraph`  | `codegraph_mcp/server.py` |
+
+`smart-mcps-codegraph` is the MCP server spawned by `.mcp.json` — you don't run it by hand. Plugin consumers don't need this install step for it either: `.mcp.json` invokes it via `uv run --project ${CLAUDE_PLUGIN_ROOT}`, which resolves dependencies from the plugin's own checkout.
 
 ______________________________________________________________________
 
 ## Repository layout
 
 ```text
+.mcp.json              # codegraph MCP server registration (alwaysLoad)
+
 .claude-plugin/
   plugin.json          # plugin metadata (skills path, hooks path)
   marketplace.json     # marketplace listing
@@ -179,4 +206,7 @@ hooks/
   scripts/             # hook scripts (save_research.py, lint_after_edit.py)
 
 pplx/                  # smart-mcps-perplexity CLI source
+
+codegraph_mcp/
+  server.py            # FastMCP proxy — 6 trimmed tools over `codegraph serve --mcp`
 ```
