@@ -8,9 +8,10 @@ dependencies = ["httpx", "perplexityai", "fastmcp>=3.3", "networkx>=3.6.1", "pyd
 [project.scripts]
 smart-mcps-perplexity = "pplx.cli:main"
 smart-mcps-codegraph = "codegraph_mcp.server:main"
+smart-mcps-orchestrate = "orchestrator.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["pplx", "codegraph_mcp"]
+packages = ["pplx", "codegraph_mcp", "orchestrator"]
 
 [dependency-groups]
 dev = ["pytest", "pytest-asyncio"]

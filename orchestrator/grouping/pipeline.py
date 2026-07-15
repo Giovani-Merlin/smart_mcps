@@ -1,0 +1,202 @@
+"""End-to-end grouping pipeline: plan document in → groups + DAG + base context out.
+
+LLM at the edges (mapper in, speccer out), deterministic core in between (plan U4).
+Partition computation stays strictly separate from execution — CoCoder fused them;
+we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from orchestrator.config import OrchestratorConfig
+from orchestrator.grouping.base_context import compile_base_context
+from orchestrator.grouping.estimator import (
+    DifficultySignals,
+    difficulty_score,
+    estimate_group_tokens,
+    intensity_for,
+    is_over_budget,
+    node_work,
+    partition_budget_cap,
+)
+from orchestrator.grouping.graphing import (
+    CodegraphClient,
+    EdgeWeights,
+    TaskGraph,
+    build_task_graph,
+)
+from orchestrator.grouping.llm import JsonRunner, claude_json_runner
+from orchestrator.grouping.mapper import MapperOutput, map_tasks
+from orchestrator.grouping.partition import (
+    DefaultPartitionStrategy,
+    build_group_dag,
+    canonical_pair,
+    detect_hub_roles,
+)
+from orchestrator.grouping.speccer import write_specs
+from orchestrator.model import Group, GroupingResult
+
+# Affinity given to a region-less task toward its plan-order neighbor, so prose-only
+# tasks cluster near the work they were written next to instead of floating free.
+PROSE_AFFINITY_WEIGHT = 0.5
+
+
+class GrouperError(Exception):
+    """The grouping pipeline could not produce a valid result."""
+
+
+def run_grouping(
+    plan_path: Path,
+    repo_root: Path,
+    config: OrchestratorConfig | None = None,
+    llm_runner: JsonRunner | None = None,
+    client: CodegraphClient | None = None,
+) -> tuple[GroupingResult, str]:
+    """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
+    if not plan_path.is_file():
+        raise GrouperError(f"plan document not found: {plan_path}")
+    config = config or OrchestratorConfig()
+    llm_runner = llm_runner or claude_json_runner
+    client = client or CodegraphClient(repo_root=repo_root)
+    failure_dir = repo_root / ".orchestrator" / "failures"
+
+    plan_text = plan_path.read_text()
+    mapper_out = map_tasks(plan_text, llm_runner, client, failure_dir=failure_dir)
+    if not mapper_out.mappings:
+        raise GrouperError("mapper produced no tasks from the plan document")
+
+    weights = EdgeWeights(
+        shared_file=config.edge_weights.shared_file,
+        call=config.edge_weights.call,
+        impact=config.edge_weights.impact,
+    )
+    graph = build_task_graph(mapper_out.mappings, client, weights)
+    graph = _with_prose_fallback(graph, mapper_out)
+
+    base_context = compile_base_context(repo_root, plan_path, client.files_overview())
+    base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
+
+    strategy = DefaultPartitionStrategy(
+        work_fn=lambda node: node_work(graph.metadata.get(node, {}), config.estimator),
+        budget_cap=partition_budget_cap(base_tokens, config.estimator),
+        hub_threshold=config.partition.hub_threshold,
+        louvain_resolution=config.partition.louvain_resolution,
+    )
+    partition = strategy.partition(graph)
+    dag = build_group_dag(graph, partition)
+
+    def group_id(gid: int) -> str:
+        return f"g{gid + 1}"
+
+    members_by_gid: dict[int, list[str]] = {}
+    for node, gid in partition.items():
+        members_by_gid.setdefault(gid, []).append(node)
+
+    skeletons = {
+        group_id(gid): {
+            "tasks": sorted(members),
+            "descriptions": {t: mapper_out.descriptions.get(t, "") for t in sorted(members)},
+            "files": _union_files(graph, members),
+        }
+        for gid, members in sorted(members_by_gid.items())
+    }
+    specs = write_specs(plan_text, skeletons, llm_runner, failure_dir=failure_dir)
+
+    upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}
+    for up_gid, downs in dag.items():
+        for down_gid in downs:
+            upstream_of[down_gid].append(up_gid)
+
+    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
+    flags = list(mapper_out.flags)
+    groups: list[Group] = []
+    for gid, members in sorted(members_by_gid.items()):
+        gid_str = group_id(gid)
+        spec = specs[gid_str]
+        files = _union_files(graph, members)
+        metas = [graph.metadata.get(node, {}) for node in sorted(members)]
+        source_bytes = sum(int(meta.get("source_bytes", 0) or 0) for meta in metas)
+        estimated = estimate_group_tokens(
+            source_bytes=source_bytes,
+            file_count=len(files),
+            spec_tokens=int(len(spec.spec) / config.estimator.bytes_per_token),
+            base_tokens=base_tokens,
+            config=config.estimator,
+        )
+        if is_over_budget(estimated, config.estimator):
+            flags.append(
+                f"estimator: group {gid_str} estimate {estimated} exceeds budget "
+                f"{config.estimator.token_budget} and cannot be split further"
+            )
+        member_set = set(members)
+        signals = DifficultySignals(
+            files_touched=len(files),
+            max_fan_in=max((int(m.get("max_symbol_fan_in", 0) or 0) for m in metas), default=0),
+            max_fan_out=max((int(m.get("max_symbol_fan_out", 0) or 0) for m in metas), default=0),
+            hub_touches=sum(1 for node in members if roles.get(node) != "core"),
+            cross_group_edges=sum(
+                1 for up, down in graph.dependencies if (up in member_set) != (down in member_set)
+            ),
+            verification_items=len(spec.verification),
+        )
+        difficulty = difficulty_score(signals, config.difficulty)
+        groups.append(
+            Group(
+                id=gid_str,
+                name=spec.name,
+                summary=spec.summary,
+                spec=spec.spec,
+                difficulty=difficulty,
+                intensity=intensity_for(difficulty, config.difficulty),
+                dependencies=sorted(group_id(up) for up in upstream_of[gid]),
+                verification=spec.verification,
+                tasks=sorted(members),
+                files=files,
+                estimated_tokens=estimated,
+            )
+        )
+
+    result = GroupingResult(
+        plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags
+    )
+    return result, base_context
+
+
+def serialize_grouping(result: GroupingResult) -> str:
+    """Canonical groups.json bytes — the determinism contract (plan U4)."""
+    return result.model_dump_json(indent=2) + "\n"
+
+
+def _union_files(graph: TaskGraph, members: list[str]) -> list[str]:
+    files: set[str] = set()
+    for node in members:
+        files.update(graph.metadata.get(node, {}).get("files", ()) or ())
+    return sorted(files)
+
+
+def _with_prose_fallback(graph: TaskGraph, mapper_out: MapperOutput) -> TaskGraph:
+    """Attach region-less tasks to their plan-order neighbor with a small affinity."""
+    order = [m.task_id for m in mapper_out.mappings]
+    regionless = [m.task_id for m in mapper_out.mappings if not m.files and not m.symbols]
+    if not regionless or len(order) < 2:
+        return graph
+    affinity = dict(graph.affinity)
+    for task in regionless:
+        index = order.index(task)
+        neighbor = order[index - 1] if index > 0 else order[1]
+        pair = canonical_pair(task, neighbor)
+        affinity[pair] = affinity.get(pair, 0.0) + PROSE_AFFINITY_WEIGHT
+    return TaskGraph(
+        nodes=graph.nodes,
+        affinity=affinity,
+        dependencies=graph.dependencies,
+        metadata=graph.metadata,
+    )
+
+
+def _portable_path(plan_path: Path, repo_root: Path) -> str:
+    try:
+        return str(plan_path.resolve().relative_to(repo_root.resolve()))
+    except ValueError:
+        return str(plan_path)
