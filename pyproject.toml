@@ -3,7 +3,14 @@ name = "smart-mcps"
 version = "0.1.0"
 description = "NotebookLM, Perplexity, and Codegraph — CLI wrappers and Claude Code skills"
 requires-python = ">=3.12"
-dependencies = ["httpx", "perplexityai", "fastmcp>=3.3", "networkx>=3.6.1", "pydantic>=2.13.4"]
+dependencies = [
+    "openai",
+    "httpx",
+    "perplexityai",
+    "fastmcp>=3.3",
+    "networkx>=3.6.1",
+    "pydantic>=2.13.4",
+]
 
 [project.scripts]
 smart-mcps-perplexity = "pplx.cli:main"
