@@ -25,6 +25,7 @@ from orchestrator.grouping.graphing import (
     EdgeWeights,
     TaskGraph,
     build_task_graph,
+    source_bytes_of,
 )
 from orchestrator.grouping.llm import JsonRunner, claude_json_runner
 from orchestrator.grouping.mapper import MapperOutput, map_tasks
@@ -36,10 +37,6 @@ from orchestrator.grouping.partition import (
 )
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import Group, GroupingResult
-
-# Affinity given to a region-less task toward its plan-order neighbor, so prose-only
-# tasks cluster near the work they were written next to instead of floating free.
-PROSE_AFFINITY_WEIGHT = 0.5
 
 
 class GrouperError(Exception):
@@ -62,19 +59,18 @@ def run_grouping(
     failure_dir = repo_root / ".orchestrator" / "failures"
 
     plan_text = plan_path.read_text()
-    mapper_out = map_tasks(plan_text, llm_runner, client, failure_dir=failure_dir)
+    codegraph_files = client.files_overview()
+    mapper_out = map_tasks(
+        plan_text, llm_runner, client, failure_dir=failure_dir, codegraph_files=codegraph_files
+    )
     if not mapper_out.mappings:
         raise GrouperError("mapper produced no tasks from the plan document")
 
-    weights = EdgeWeights(
-        shared_file=config.edge_weights.shared_file,
-        call=config.edge_weights.call,
-        impact=config.edge_weights.impact,
-    )
+    weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
     graph = build_task_graph(mapper_out.mappings, client, weights)
-    graph = _with_prose_fallback(graph, mapper_out)
+    graph = _with_prose_fallback(graph, mapper_out, config.edge_weights.prose_neighbor)
 
-    base_context = compile_base_context(repo_root, plan_path, client.files_overview())
+    base_context = compile_base_context(repo_root, plan_path, codegraph_files)
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
 
     strategy = DefaultPartitionStrategy(
@@ -116,9 +112,10 @@ def run_grouping(
         spec = specs[gid_str]
         files = _union_files(graph, members)
         metas = [graph.metadata.get(node, {}) for node in sorted(members)]
-        source_bytes = sum(int(meta.get("source_bytes", 0) or 0) for meta in metas)
+        # Size the group from its union of files: a file shared by several member
+        # tasks (the usual reason they clustered) must count once, not once per task.
         estimated = estimate_group_tokens(
-            source_bytes=source_bytes,
+            source_bytes=source_bytes_of(client.repo_root, files),
             file_count=len(files),
             spec_tokens=int(len(spec.spec) / config.estimator.bytes_per_token),
             base_tokens=base_tokens,
@@ -175,18 +172,24 @@ def _union_files(graph: TaskGraph, members: list[str]) -> list[str]:
     return sorted(files)
 
 
-def _with_prose_fallback(graph: TaskGraph, mapper_out: MapperOutput) -> TaskGraph:
-    """Attach region-less tasks to their plan-order neighbor with a small affinity."""
+def _with_prose_fallback(graph: TaskGraph, mapper_out: MapperOutput, weight: float) -> TaskGraph:
+    """Attach region-less tasks to their plan-order neighbor with a small affinity.
+
+    Pairs are collected first and weighted once each: two adjacent region-less
+    tasks nominate the same pair from both sides, which must not double its weight.
+    """
     order = [m.task_id for m in mapper_out.mappings]
     regionless = [m.task_id for m in mapper_out.mappings if not m.files and not m.symbols]
-    if not regionless or len(order) < 2:
+    if not regionless or len(order) < 2 or weight <= 0:
         return graph
-    affinity = dict(graph.affinity)
+    fallback_pairs = set()
     for task in regionless:
         index = order.index(task)
         neighbor = order[index - 1] if index > 0 else order[1]
-        pair = canonical_pair(task, neighbor)
-        affinity[pair] = affinity.get(pair, 0.0) + PROSE_AFFINITY_WEIGHT
+        fallback_pairs.add(canonical_pair(task, neighbor))
+    affinity = dict(graph.affinity)
+    for pair in sorted(fallback_pairs):
+        affinity[pair] = affinity.get(pair, 0.0) + weight
     return TaskGraph(
         nodes=graph.nodes,
         affinity=affinity,

@@ -12,7 +12,9 @@ import pytest
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.base_context import compile_base_context
 from orchestrator.grouping.graphing import CodegraphClient
+from orchestrator.grouping.estimator import estimate_group_tokens
 from orchestrator.grouping.llm import LlmError, call_llm_json
+from orchestrator.grouping.mapper import MapperOutput
 from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
 
 PLAN_TEXT = """# feat: toy plan
@@ -200,6 +202,34 @@ class TestMapperVerification:
         with pytest.raises(GrouperError, match="no tasks"):
             grouping(tmp_path, llm=StubLlm(mapper=json.dumps({"tasks": []})))
 
+    def test_mapper_nonlist_files_triggers_validation_retry(self, tmp_path):
+        """A bare string for 'files' must hit the retry path, not be iterated
+        character by character."""
+        bad = json.dumps(
+            {"tasks": [{"task_id": "t", "description": "d", "files": "server.py", "symbols": []}]}
+        )
+        llm = StubLlm(mapper=bad)
+        with pytest.raises(LlmError):
+            grouping(tmp_path, llm=llm)
+        mapper_prompts = [p for title, p in llm.prompts if title == "mapper_output"]
+        assert len(mapper_prompts) >= 2
+        assert "failed validation" in mapper_prompts[1]
+
+    def test_adjacent_regionless_tasks_do_not_double_prose_affinity(self):
+        """Two adjacent region-less tasks nominate the same pair from both sides;
+        the fallback weight must be applied once."""
+        from orchestrator.grouping.graphing import TaskMapping
+        from orchestrator.grouping.partition import TaskGraph
+        from orchestrator.grouping.pipeline import _with_prose_fallback
+
+        mapper_out = MapperOutput(
+            mappings=[TaskMapping("t1"), TaskMapping("t2"), TaskMapping("t3", files=("a.py",))],
+            descriptions={},
+        )
+        graph = TaskGraph(nodes=frozenset({"t1", "t2", "t3"}))
+        patched = _with_prose_fallback(graph, mapper_out, weight=0.5)
+        assert patched.affinity == {("t1", "t2"): 0.5}
+
 
 class TestPipeline:
     def test_ae1_cohesive_plan_yields_exactly_one_group(self, tmp_path):
@@ -241,6 +271,30 @@ class TestPipeline:
         speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
         assert len(speccer_prompts) >= 2
         assert "failed validation" in speccer_prompts[1]
+
+    def test_group_estimate_counts_shared_file_once(self, tmp_path):
+        """A file shared by several member tasks is sized once for the group
+        estimate, not once per task."""
+        mapper = json.dumps(
+            {
+                "tasks": [
+                    {"task_id": "t1", "description": "a", "files": ["server.py"], "symbols": []},
+                    {"task_id": "t2", "description": "b", "files": ["server.py"], "symbols": []},
+                ]
+            }
+        )
+        result, base_context = grouping(tmp_path, llm=StubLlm(mapper=mapper))
+        assert len(result.groups) == 1
+        group = result.groups[0]
+        config = OrchestratorConfig().estimator
+        expected = estimate_group_tokens(
+            source_bytes=(tmp_path / "repo" / "server.py").stat().st_size,
+            file_count=1,
+            spec_tokens=int(len(group.spec) / config.bytes_per_token),
+            base_tokens=int(len(base_context) / config.bytes_per_token),
+            config=config,
+        )
+        assert group.estimated_tokens == expected
 
     def test_determinism_byte_identical_output(self, tmp_path):
         """Plan U4 scenario: same plan + fixtures → byte-identical groups.json and
@@ -299,6 +353,21 @@ class TestDryRunCli:
         assert exit_code == 0
         assert (repo / ".orchestrator" / "groups.json").is_file()
         assert (repo / ".orchestrator" / "base-context.md").is_file()
+
+    def test_malformed_config_fails_cleanly(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text('[estimator]\ntoken_budget = "lots"\n')
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--dry-run"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 1
+        assert "invalid config" in capsys.readouterr().err
 
     def test_unknown_plan_path_fails_actionably(self, tmp_path, capsys):
         from orchestrator.cli import main

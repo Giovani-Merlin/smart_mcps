@@ -52,9 +52,15 @@ def _validate_payload(payload: dict) -> list[dict]:
     if not isinstance(tasks, list):
         raise ValueError("'tasks' must be a list")
     for entry in tasks:
-        for key in ("task_id", "description", "files", "symbols"):
-            if key not in entry:
-                raise ValueError(f"task entry missing {key!r}")
+        if not isinstance(entry, dict):
+            raise ValueError("each task entry must be an object")
+        for key in ("task_id", "description"):
+            if not isinstance(entry.get(key), str) or not entry[key]:
+                raise ValueError(f"task entry needs a non-empty string {key!r}")
+        for key in ("files", "symbols"):
+            value = entry.get(key)
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise ValueError(f"task {entry['task_id']!r} {key!r} must be a list of strings")
     ids = [entry["task_id"] for entry in tasks]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate task_id values")
@@ -67,10 +73,11 @@ def map_tasks(
     client: CodegraphClient,
     max_retries: int = 2,
     failure_dir: Path | None = None,
+    codegraph_files: str | None = None,
 ) -> MapperOutput:
     prompt = Template(load_template("mapper")).substitute(
         plan_text=plan_text,
-        codegraph_files=client.files_overview(),
+        codegraph_files=codegraph_files if codegraph_files is not None else client.files_overview(),
     )
     tasks = call_llm_json(
         runner,

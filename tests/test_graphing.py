@@ -24,6 +24,10 @@ REPO_ROOT = Path(__file__).parent.parent
 
 
 def empty_response(command, symbol):
+    if command == "query":
+        return "[]"
+    if command == "files":
+        return "files overview"
     key = {"callers": "callers", "callees": "callees", "impact": "affected"}[command]
     return json.dumps({"symbol": symbol, key: []})
 
@@ -37,7 +41,8 @@ class FakeRunner:
 
     def __call__(self, args):
         self.calls.append(list(args))
-        command, symbol = args[0], args[1]
+        command = args[0]
+        symbol = args[1] if len(args) > 1 else None
         response = self.responses.get((command, symbol))
         if response is None:
             return empty_response(command, symbol)
@@ -201,6 +206,23 @@ class TestFailureModes:
         with pytest.raises(GraphBuildError, match="duplicate task ids"):
             build_task_graph([TaskMapping("t"), TaskMapping("t")], client)
 
+    def test_symbol_not_found_plain_text_is_empty_result_not_error(self):
+        """The live CLI prints `ℹ Symbol "X" not found` with exit 0 and no JSON;
+        that is a legitimate empty result, not malformed output."""
+        not_found = '\x1b[34mℹ\x1b[0m Symbol "ghost_fn" not found\n'
+        client, _ = client_with(
+            {
+                ("callers", "ghost_fn"): not_found,
+                ("callees", "ghost_fn"): not_found,
+                ("impact", "ghost_fn"): not_found,
+                ("query", "ghost_fn"): not_found,
+            }
+        )
+        graph = build_task_graph([TaskMapping("t", symbols=("ghost_fn",))], client)
+        assert graph.affinity == {}
+        assert client.query("ghost_fn") == []
+        assert client.symbol_exists("ghost_fn") is False
+
 
 class TestQueriesAndMetadata:
     def test_call_queries_pass_explicit_high_limit(self):
@@ -233,6 +255,26 @@ class TestQueriesAndMetadata:
         assert meta["fan_in"] == 3
         assert meta["max_symbol_fan_in"] == 3
         assert meta["fan_out"] == 0
+
+    def test_files_overview_strips_ansi_escapes(self):
+        """`codegraph files` colorizes even when piped; the summary feeds LLM
+        prompts and the human-readable base-context document."""
+        client, runner = client_with({})
+        runner.responses[("files", None)] = "\x1b[1mProject Structure\x1b[0m\n├── a.py\n"
+        assert client.files_overview() == "Project Structure\n├── a.py\n"
+
+    def test_identical_queries_are_memoized(self):
+        """A hub symbol mapped by many tasks must not respawn the CLI per task."""
+        client, runner = client_with({})
+        build_task_graph(
+            [
+                TaskMapping("t1", files=("a.py",), symbols=("shared_fn",)),
+                TaskMapping("t2", files=("b.py",), symbols=("shared_fn",)),
+            ],
+            client,
+        )
+        caller_calls = [args for args in runner.calls if args[0] == "callers"]
+        assert len(caller_calls) == 1
 
     def test_regionless_task_is_isolated_node(self):
         """Unmappable plan tasks ride along as region-less nodes (plan U4 contract)."""

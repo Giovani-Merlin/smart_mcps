@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from orchestrator.config import load_config
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
@@ -51,7 +54,11 @@ def _cmd_group(
 ) -> int:
     repo_root = args.repo.resolve()
     config_path = args.config or repo_root / ".orchestrator" / "config.toml"
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except (ValidationError, tomllib.TOMLDecodeError) as exc:
+        print(f"error: invalid config {config_path}: {exc}", file=sys.stderr)
+        return 1
     try:
         result, base_context = run_grouping(
             plan_path=args.plan,

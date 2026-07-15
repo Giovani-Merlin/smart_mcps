@@ -14,11 +14,17 @@ from pydantic import BaseModel, Field
 
 
 class EdgeWeightsConfig(BaseModel):
-    """Affinity weights for the three codegraph signals (plan R3)."""
+    """Affinity weights for the codegraph signals (plan R3) and the prose fallback.
+
+    ``prose_neighbor`` is not a codegraph signal: it is the affinity a region-less
+    task gets toward its plan-order neighbor so unmappable tasks cluster near the
+    work they were written next to.
+    """
 
     shared_file: float = 1.0
     call: float = 2.0
     impact: float = 1.5
+    prose_neighbor: float = 0.5
 
 
 class PartitionConfig(BaseModel):

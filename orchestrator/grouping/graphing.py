@@ -11,6 +11,7 @@ task's write surface impacts depends on that task.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -25,6 +26,11 @@ IMPACT_DEPTH = 2
 
 # Full CLI argv → stdout. Injected in tests to replay captured fixture output.
 Runner = Callable[[Sequence[str]], str]
+
+_ANSI_ESCAPES = re.compile(r"\x1b\[[0-9;]*m")
+# Verified against the live CLI (2026-07-15): a symbol with no exact index match
+# prints `ℹ Symbol "<name>" not found` to stdout and exits 0 — no JSON.
+_NOT_FOUND = re.compile(r"Symbol \".*\" not found")
 
 
 class GraphBuildError(Exception):
@@ -57,30 +63,26 @@ class CodegraphClient:
     runner: Runner | None = None
     call_limit: int = CALL_QUERY_LIMIT
     impact_depth: int = IMPACT_DEPTH
+    # The CLI is a fresh subprocess per call and its output is stable within a run,
+    # so identical queries (a hub symbol mapped by many tasks) are memoized.
+    _cache: dict[tuple[str, ...], str] = field(default_factory=dict)
 
     def callers(self, symbol: str) -> list[dict]:
         args = ["callers", symbol, "-j", "-l", str(self.call_limit)]
-        return self._query(args, expect_key="callers")
+        return self._parsed(args, expect_key="callers")
 
     def callees(self, symbol: str) -> list[dict]:
         args = ["callees", symbol, "-j", "-l", str(self.call_limit)]
-        return self._query(args, expect_key="callees")
+        return self._parsed(args, expect_key="callees")
 
     def impact(self, symbol: str) -> list[dict]:
         args = ["impact", symbol, "-j", "-d", str(self.impact_depth)]
-        return self._query(args, expect_key="affected")
+        return self._parsed(args, expect_key="affected")
 
     def query(self, search: str) -> list[dict]:
         """Symbol search; the CLI returns a JSON *array* of {node, score} entries."""
-        raw = self._run(["query", search, "-j", "-l", str(self.call_limit)])
-        if not raw.strip():
-            raise GraphBuildError(f"codegraph query {search!r} produced empty output")
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise GraphBuildError(
-                f"codegraph query {search!r} produced invalid JSON: {exc}"
-            ) from exc
+        args = ["query", search, "-j", "-l", str(self.call_limit)]
+        payload = self._json(args)
         if not isinstance(payload, list):
             raise GraphBuildError(f"codegraph query {search!r} output is not a list")
         return payload
@@ -90,19 +92,12 @@ class CodegraphClient:
         return any(entry.get("node", {}).get("name") == name for entry in self.query(name))
 
     def files_overview(self) -> str:
-        """Raw `codegraph files` output — the architecture summary for base context."""
-        return self._run(["files"])
+        """`codegraph files` output, ANSI-stripped — the architecture summary for
+        base context and the mapper prompt (the CLI colorizes even when piped)."""
+        return _ANSI_ESCAPES.sub("", self._run(["files"]))
 
-    def _query(self, args: Sequence[str], expect_key: str) -> list[dict]:
-        raw = self._run(args)
-        if not raw.strip():
-            raise GraphBuildError(f"codegraph {args[0]} {args[1]!r} produced empty output")
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise GraphBuildError(
-                f"codegraph {args[0]} {args[1]!r} produced invalid JSON: {exc}"
-            ) from exc
+    def _parsed(self, args: Sequence[str], expect_key: str) -> list[dict]:
+        payload = self._json(args)
         if not isinstance(payload, dict) or expect_key not in payload:
             raise GraphBuildError(
                 f"codegraph {args[0]} {args[1]!r} output is missing the {expect_key!r} key"
@@ -112,19 +107,40 @@ class CodegraphClient:
             raise GraphBuildError(f"codegraph {args[0]} {args[1]!r} {expect_key!r} is not a list")
         return entries
 
-    def _run(self, args: Sequence[str]) -> str:
-        if self.runner is not None:
-            return self.runner(args)
-        result = subprocess.run(
-            ["codegraph", *args, "-p", str(self.repo_root)],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+    def _json(self, args: Sequence[str]) -> object:
+        raw = self._run(args)
+        if not raw.strip():
+            raise GraphBuildError(f"codegraph {args[0]} {args[1]!r} produced empty output")
+        if _NOT_FOUND.search(raw):
+            # Exit code 0 + plain-text "Symbol ... not found": a legitimate empty
+            # result (the index has no exact match), not malformed output.
+            return {"callers": [], "callees": [], "affected": []} if args[0] != "query" else []
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
             raise GraphBuildError(
-                f"codegraph {args[0]} failed ({result.returncode}): {result.stderr.strip()}"
+                f"codegraph {args[0]} {args[1]!r} produced invalid JSON: {exc}"
+            ) from exc
+
+    def _run(self, args: Sequence[str]) -> str:
+        key = tuple(args)
+        if key in self._cache:
+            return self._cache[key]
+        if self.runner is not None:
+            output = self.runner(args)
+        else:
+            result = subprocess.run(
+                ["codegraph", *args, "-p", str(self.repo_root)],
+                capture_output=True,
+                text=True,
             )
-        return result.stdout
+            if result.returncode != 0:
+                raise GraphBuildError(
+                    f"codegraph {args[0]} failed ({result.returncode}): {result.stderr.strip()}"
+                )
+            output = result.stdout
+        self._cache[key] = output
+        return output
 
 
 @dataclass
@@ -222,7 +238,7 @@ def build_task_graph(
         metadata[task] = {
             "files": sorted(mapping.files),
             "symbols": sorted(mapping.symbols),
-            "source_bytes": _source_bytes(client.repo_root, mapping.files),
+            "source_bytes": source_bytes_of(client.repo_root, mapping.files),
             "symbol_count": len(mapping.symbols),
             "fan_in": fan_in,
             "fan_out": fan_out,
@@ -238,8 +254,12 @@ def build_task_graph(
     )
 
 
-def _source_bytes(repo_root: Path, files: tuple[str, ...]) -> int:
-    """Total on-disk size of a task's mapped files; missing files count zero."""
+def source_bytes_of(repo_root: Path, files: Sequence[str]) -> int:
+    """Total on-disk size of a set of mapped files; missing files count zero.
+
+    Also used by the pipeline to size a whole group from its *union* of files, so
+    a file shared by several member tasks is counted once, not once per task.
+    """
     total = 0
     for file in files:
         path = repo_root / file
