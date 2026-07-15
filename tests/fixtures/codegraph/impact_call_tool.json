@@ -1,0 +1,110 @@
+{
+  "symbol": "call_tool",
+  "depth": 2,
+  "nodeCount": 17,
+  "edgeCount": 16,
+  "affected": [
+    {
+      "name": "call_tool",
+      "kind": "method",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 35
+    },
+    {
+      "name": "_forward",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 66
+    },
+    {
+      "name": "context",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 93
+    },
+    {
+      "name": "explore",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 109
+    },
+    {
+      "name": "trace",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 130
+    },
+    {
+      "name": "impact",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 148
+    },
+    {
+      "name": "files",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 160
+    },
+    {
+      "name": "search",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 174
+    },
+    {
+      "name": "server.py",
+      "kind": "file",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 1
+    },
+    {
+      "name": "_FakeBackend",
+      "kind": "class",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 25
+    },
+    {
+      "name": "__init__",
+      "kind": "method",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 28
+    },
+    {
+      "name": "is_connected",
+      "kind": "method",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 32
+    },
+    {
+      "name": "test_codegraph_server.py",
+      "kind": "file",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 1
+    },
+    {
+      "name": "_Down",
+      "kind": "class",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 123
+    },
+    {
+      "name": "backend",
+      "kind": "function",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 41
+    },
+    {
+      "name": "test_backend_text_is_returned_verbatim",
+      "kind": "function",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 100
+    },
+    {
+      "name": "test_empty_backend_text_raises_rather_than_returning_nothing",
+      "kind": "function",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 113
+    }
+  ]
+}

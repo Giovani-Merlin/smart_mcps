@@ -1,0 +1,56 @@
+{
+  "symbol": "_forward",
+  "depth": 2,
+  "nodeCount": 8,
+  "edgeCount": 7,
+  "affected": [
+    {
+      "name": "_forward",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 66
+    },
+    {
+      "name": "context",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 93
+    },
+    {
+      "name": "server.py",
+      "kind": "file",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 1
+    },
+    {
+      "name": "explore",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 109
+    },
+    {
+      "name": "trace",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 130
+    },
+    {
+      "name": "impact",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 148
+    },
+    {
+      "name": "files",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 160
+    },
+    {
+      "name": "search",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 174
+    }
+  ]
+}
