@@ -299,21 +299,7 @@ def lift_independent(graph: TaskGraph, partition: Partition) -> Partition:
                 for dep in internal_deps.get(node, set()):
                     adjacency[node].add(dep)
                     adjacency[dep].add(node)
-            visited: set[str] = set()
-            for node in sorted(members):
-                if node in visited:
-                    continue
-                component = []
-                queue = [node]
-                while queue:
-                    current = queue.pop(0)
-                    if current in visited:
-                        continue
-                    visited.add(current)
-                    component.append(current)
-                    queue.extend(
-                        nb for nb in sorted(adjacency.get(current, ())) if nb not in visited
-                    )
+            for component in _connected_components(member_set, adjacency):
                 for member in component:
                     new_partition[member] = next_gid
                 next_gid += 1
@@ -379,31 +365,36 @@ def split_over_budget(
     return new_partition
 
 
+def _connected_components(nodes: set[str], adjacency: dict[str, set[str]]) -> list[list[str]]:
+    """Deterministic undirected components: sorted seeds, sorted neighbors, sorted output."""
+    components: list[list[str]] = []
+    visited: set[str] = set()
+    for node in sorted(nodes):
+        if node in visited:
+            continue
+        component = []
+        queue = [node]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            queue.extend(nb for nb in sorted(adjacency.get(current, ())) if nb not in visited)
+        components.append(sorted(component))
+    return components
+
+
 def _components_after_cut(
     nodes: set[str], weighted_edges: list[tuple[float, Pair]]
 ) -> list[list[str]]:
     """Drop edges weakest-first until the node set splits; return the components."""
     for cut_index in range(len(weighted_edges) + 1):
-        kept = weighted_edges[cut_index:]
         adjacency: dict[str, set[str]] = defaultdict(set)
-        for _w, (a, b) in kept:
+        for _w, (a, b) in weighted_edges[cut_index:]:
             adjacency[a].add(b)
             adjacency[b].add(a)
-        components: list[list[str]] = []
-        visited: set[str] = set()
-        for node in sorted(nodes):
-            if node in visited:
-                continue
-            component = []
-            queue = [node]
-            while queue:
-                current = queue.pop(0)
-                if current in visited:
-                    continue
-                visited.add(current)
-                component.append(current)
-                queue.extend(nb for nb in sorted(adjacency.get(current, ())) if nb not in visited)
-            components.append(sorted(component))
+        components = _connected_components(nodes, adjacency)
         if len(components) > 1:
             return components
     return [sorted(nodes)]
