@@ -5,5 +5,7 @@ __pycache__/
 dist/
 .venv/
 
-docs/research
+# Auto-saved query dumps stay out of git; curated research docs are tracked.
+docs/research/perplexity/
+docs/research/manual/
 research/** */
