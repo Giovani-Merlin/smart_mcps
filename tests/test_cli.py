@@ -108,6 +108,14 @@ class TestRunEarlyExits:
         assert exit_code == 1
         assert "no run state" in capsys.readouterr().err
 
+    def test_run_refuses_to_overwrite_an_existing_run(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path)
+        paths = RunPaths(tmp_path, "r1")
+        atomic_write_text(paths.state_path, RunState(run_id="r1", groups={}).model_dump_json())
+        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r1"])
+        assert exit_code == 1
+        assert "already exists" in capsys.readouterr().err
+
     def test_preflight_failure_names_the_missing_flag(self, tmp_path, capsys, monkeypatch):
         write_run_artifacts(tmp_path)
         (tmp_path / ".orchestrator" / "config.toml").write_text(

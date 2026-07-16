@@ -244,6 +244,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             file=sys.stderr,
         )
         return 1
+    if not resume and paths.state_path.is_file():
+        print(
+            f"error: run {run_id} already exists — `resume {run_id}` to continue it, "
+            "or pick another --run-id",
+            file=sys.stderr,
+        )
+        return 1
 
     session = config.session
     runner = SessionRunner(
