@@ -1,0 +1,330 @@
+"""claude CLI wrapper: fork-first sessions, blocking print-mode rounds, reports.
+
+Mechanics pinned by the plan's Key Technical Decisions and verified by the U5 spike
+(2026-07-16, CLI 2.1.211 — docs/research/design-deviations.md):
+
+- One base session per run; every coder/reviewer session forks from it so the
+  shared prefix is byte-identical. Print-mode forking honors ``--session-id`` and
+  leaves the base reusable. Fork calls are serialized behind a lock (the session
+  store has no documented concurrency guarantees).
+- Rounds are blocking ``claude -p`` calls; process exit is round completion.
+- The final message must carry a ``<run-report>`` block; a missing/invalid report
+  gets a bounded re-nudge, then fails the round (CoCoder's silent-exit lesson,
+  docs/research/cocoder-analysis.md §8 point 5).
+- Usage comes from the JSON envelope. The breaker's context signal is the latest
+  round's input + cache_read + cache_creation + output — ``input_tokens`` alone
+  counts only non-cached input and grossly understates context.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+REQUIRED_CLI_FLAGS = (
+    "--print",
+    "--output-format",
+    "--resume",
+    "--fork-session",
+    "--session-id",
+    "--name",
+    "--json-schema",
+)
+
+DEFAULT_MAX_NUDGES = 2
+
+_NUDGE_PROMPT = (
+    "Your previous message did not end with a valid report block ({error}). "
+    'Reply now with ONLY a <run-report status="..."> block whose body is valid JSON '
+    "for the expected report schema — no other text."
+)
+
+M = TypeVar("M", bound=BaseModel)
+
+
+class SessionError(Exception):
+    """A claude CLI call failed at the process/envelope level."""
+
+
+class PreflightError(SessionError):
+    """The installed CLI does not support the flags this design pins."""
+
+
+class RoundTimeout(SessionError):
+    """A round exceeded the per-round subprocess timeout."""
+
+
+class ReportError(SessionError):
+    """The round's final message never produced a valid report block."""
+
+
+@dataclass(frozen=True)
+class RoundUsage:
+    """Token usage of one round, from the CLI JSON envelope."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    @property
+    def context_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_input_tokens
+            + self.cache_creation_input_tokens
+        )
+
+    @classmethod
+    def from_envelope(cls, envelope: dict) -> RoundUsage:
+        usage = envelope.get("usage") or {}
+        return cls(
+            input_tokens=int(usage.get("input_tokens", 0) or 0),
+            output_tokens=int(usage.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        )
+
+
+@dataclass
+class SessionUsage:
+    """Cumulative usage for one session across rounds (breaker input, plan U5)."""
+
+    rounds: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    last_context_tokens: int = 0
+
+    def add(self, usage: RoundUsage) -> None:
+        self.rounds += 1
+        self.total_input_tokens += usage.input_tokens + usage.cache_creation_input_tokens
+        self.total_output_tokens += usage.output_tokens
+        self.last_context_tokens = usage.context_tokens
+
+
+@dataclass(frozen=True)
+class RoundResult:
+    session_id: str
+    text: str
+    usage: RoundUsage
+    envelope: dict = field(repr=False)
+
+
+def session_display_name(run_id: str, group_id: str, role: str, generation: int) -> str:
+    """The convention pinned on ``SessionEntry.name``: <run_id>-<group_id>-<role>-g<gen>."""
+    return f"{run_id}-{group_id}-{role}-g{generation}"
+
+
+class SessionRunner:
+    """Owns every claude subprocess call; the only module that shells the CLI."""
+
+    def __init__(
+        self,
+        *,
+        claude_bin: str | Sequence[str] = "claude",
+        timeout_s: float = 1800.0,
+        model: str | None = None,
+        permission_mode: str | None = "acceptEdits",
+        allowed_tools: Sequence[str] | None = None,
+        transcript_root: Path | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
+        self.timeout_s = timeout_s
+        self.model = model
+        self.permission_mode = permission_mode
+        self.allowed_tools = list(allowed_tools) if allowed_tools else None
+        self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
+        self._env = {**os.environ, **env} if env is not None else None
+        self._fork_lock = threading.Lock()
+        self._usage: dict[str, SessionUsage] = {}
+
+    def preflight(self) -> None:
+        """Fail fast with a versioned message if the CLI lacks a pinned flag."""
+        help_text = self._capture(["--help"])
+        missing = [flag for flag in REQUIRED_CLI_FLAGS if flag not in help_text]
+        if missing:
+            version = self._capture(["--version"]).strip() or "unknown version"
+            raise PreflightError(
+                f"claude CLI ({version}) does not support required flags: "
+                f"{', '.join(missing)} — upgrade to a version that does"
+            )
+
+    def start_base(self, *, run_id: str, base_context: str, cwd: Path) -> RoundResult:
+        """Create the run's base session loading the compiled base context."""
+        prompt = (
+            "Internalize the following shared context for an orchestrated run. "
+            "It applies to every task you will be given in this session and its forks. "
+            f"Reply with just: OK\n\n{base_context}"
+        )
+        session_id = str(uuid.uuid4())
+        return self._call(
+            prompt,
+            cwd=cwd,
+            extra=["--session-id", session_id, "--name", f"{run_id}-base"],
+        )
+
+    def start_fork(
+        self,
+        *,
+        base_id: str,
+        prompt: str,
+        name: str,
+        cwd: Path,
+        json_schema: dict | None = None,
+    ) -> RoundResult:
+        """Fork the base session and run the first round in one blocking call.
+
+        Serialized: the session store has no documented locking (plan Key Technical
+        Decisions); forking is fast, so this never serializes the groups themselves.
+        """
+        session_id = str(uuid.uuid4())
+        with self._fork_lock:
+            return self._call(
+                prompt,
+                cwd=cwd,
+                extra=[
+                    "--resume",
+                    base_id,
+                    "--fork-session",
+                    "--session-id",
+                    session_id,
+                    "--name",
+                    name,
+                ],
+                json_schema=json_schema,
+            )
+
+    def resume(
+        self, *, session_id: str, prompt: str, cwd: Path, json_schema: dict | None = None
+    ) -> RoundResult:
+        """One warm round against an existing session."""
+        return self._call(prompt, cwd=cwd, extra=["--resume", session_id], json_schema=json_schema)
+
+    def usage_of(self, session_id: str) -> SessionUsage:
+        return self._usage.get(session_id, SessionUsage())
+
+    def transcript_path(self, session_id: str) -> Path | None:
+        """Locate the session transcript by UUID — exact regardless of cwd encoding."""
+        matches = sorted(self.transcript_root.glob(f"*/{session_id}.jsonl"))
+        return matches[0] if matches else None
+
+    def _capture(self, args: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                [*self._bin, *args], capture_output=True, text=True, env=self._env, timeout=60
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PreflightError(f"cannot run {self._bin[0]} {args[0]}: {exc}") from exc
+        return result.stdout + result.stderr
+
+    def _call(
+        self, prompt: str, *, cwd: Path, extra: list[str], json_schema: dict | None = None
+    ) -> RoundResult:
+        argv = [*self._bin, "-p", prompt, "--output-format", "json", *extra]
+        if self.permission_mode:
+            argv += ["--permission-mode", self.permission_mode]
+        if self.allowed_tools:
+            argv += ["--allowedTools", ",".join(self.allowed_tools)]
+        if self.model:
+            argv += ["--model", self.model]
+        if json_schema is not None:
+            argv += ["--json-schema", json.dumps(json_schema)]
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                env=self._env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RoundTimeout(
+                f"round exceeded {self.timeout_s}s ({_argv_context(extra)})"
+            ) from exc
+        if result.returncode != 0:
+            raise SessionError(
+                f"claude exited {result.returncode} ({_argv_context(extra)}): "
+                f"{result.stderr.strip()[:500]}"
+            )
+        try:
+            envelope = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise SessionError(f"claude emitted a non-JSON envelope: {exc}") from exc
+        if not isinstance(envelope, dict) or "result" not in envelope:
+            raise SessionError("claude envelope is missing the 'result' field")
+        if envelope.get("is_error"):
+            raise SessionError(f"claude reported an error result: {str(envelope['result'])[:500]}")
+        session_id = str(envelope.get("session_id", ""))
+        usage = RoundUsage.from_envelope(envelope)
+        self._usage.setdefault(session_id, SessionUsage()).add(usage)
+        return RoundResult(
+            session_id=session_id, text=str(envelope["result"]), usage=usage, envelope=envelope
+        )
+
+
+def _argv_context(extra: list[str]) -> str:
+    """Session context for error messages without echoing whole prompts."""
+    for flag in ("--session-id", "--resume"):
+        if flag in extra:
+            return f"{flag} {extra[extra.index(flag) + 1]}"
+    return "new session"
+
+
+_REPORT_RE = re.compile(r"<run-report\b[^>]*>(.*?)</run-report>", re.DOTALL)
+_FENCE_RE = re.compile(r"\A```(?:json)?\s*(.*?)\s*```\Z", re.DOTALL)
+
+
+def parse_report(text: str, model_cls: type[M]) -> M:
+    """Extract and validate the last ``<run-report>`` block of a final message."""
+    matches = _REPORT_RE.findall(text)
+    if not matches:
+        raise ReportError("no <run-report> block in the final message")
+    body = matches[-1].strip()
+    fenced = _FENCE_RE.match(body)
+    if fenced:
+        body = fenced.group(1)
+    try:
+        return model_cls.model_validate_json(body)
+    except ValidationError as exc:
+        raise ReportError(f"report body failed validation: {exc}") from exc
+
+
+def nudge_until_report(
+    runner: SessionRunner,
+    first: RoundResult,
+    model_cls: type[M],
+    *,
+    cwd: Path,
+    max_nudges: int = DEFAULT_MAX_NUDGES,
+) -> tuple[M, RoundResult]:
+    """Parse the round's report, re-nudging the session a bounded number of times.
+
+    Exactly ``max_nudges`` corrective resumes are attempted before the round fails
+    (plan U5 test scenario; CoCoder's silent-exit lesson).
+    """
+    result = first
+    for attempt in range(max_nudges + 1):
+        try:
+            return parse_report(result.text, model_cls), result
+        except ReportError as exc:
+            if attempt == max_nudges:
+                raise ReportError(f"round failed after {max_nudges} re-nudges: {exc}") from exc
+            result = runner.resume(
+                session_id=result.session_id,
+                prompt=_NUDGE_PROMPT.format(error=exc),
+                cwd=cwd,
+            )
+    raise AssertionError("unreachable")

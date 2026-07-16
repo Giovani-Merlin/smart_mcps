@@ -51,6 +51,27 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
+## U5 spike findings (2026-07-16, claude CLI 2.1.211)
+
+No deviation needed — every pinned mechanic works as designed:
+
+- **Print-mode forking works and honors pre-assigned IDs.** `claude -p --resume <base-id> --fork-session --session-id <uuid>` returns the pre-assigned UUID as `session_id`, the
+  fork inherits base-session context, and the base survives — repeated forks from the same
+  base each produce their own transcript file. The identical-compiled-head fallback is not
+  needed.
+- **JSON envelope usage fields** (top level of `--output-format json`): `usage` with
+  `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`
+  (plus nested `cache_creation.ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens`),
+  alongside `session_id`, `result`, `is_error`, `num_turns`, `total_cost_usd`,
+  `stop_reason`, `permission_denials`, and per-model `modelUsage`. The breaker's
+  context-size signal is the latest round's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens` — `input_tokens` alone counts only
+  non-cached input and grossly understates context.
+- **`--json-schema` combines with `--resume`** — same session ID, structured JSON in
+  `result`, no degraded mode needed for the speccer re-invocation path.
+- **Transcript paths are deterministic:** `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
+  where `<encoded-cwd>` is the worker's cwd with `/` → `-`. The manifest records them
+  directly.
+
 ## Future improvements parked here
 
 - **InfoMap / Leiden partition strategies** behind the strategy interface, if real-world
