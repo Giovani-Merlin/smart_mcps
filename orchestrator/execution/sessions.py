@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -126,6 +126,15 @@ def session_display_name(run_id: str, group_id: str, role: str, generation: int)
     return f"{run_id}-{group_id}-{role}-g{generation}"
 
 
+class SubprocessTracker(Protocol):
+    """Observes worker subprocess lifetimes so the run state can record live PIDs
+    (plan U6: resume terminates orphans before re-entering a session)."""
+
+    def spawned(self, pid: int, context: str) -> None: ...
+
+    def exited(self, pid: int) -> None: ...
+
+
 class SessionRunner:
     """Owns every claude subprocess call; the only module that shells the CLI."""
 
@@ -139,6 +148,7 @@ class SessionRunner:
         allowed_tools: Sequence[str] | None = None,
         transcript_root: Path | None = None,
         env: dict[str, str] | None = None,
+        tracker: SubprocessTracker | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.timeout_s = timeout_s
@@ -147,6 +157,7 @@ class SessionRunner:
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
         self._env = {**os.environ, **env} if env is not None else None
+        self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
 
@@ -241,26 +252,12 @@ class SessionRunner:
             argv += ["--model", self.model]
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
+        context = _argv_context(extra)
+        returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context)
+        if returncode != 0:
+            raise SessionError(f"claude exited {returncode} ({context}): {stderr.strip()[:500]}")
         try:
-            result = subprocess.run(
-                argv,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-                env=self._env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RoundTimeout(
-                f"round exceeded {self.timeout_s}s ({_argv_context(extra)})"
-            ) from exc
-        if result.returncode != 0:
-            raise SessionError(
-                f"claude exited {result.returncode} ({_argv_context(extra)}): "
-                f"{result.stderr.strip()[:500]}"
-            )
-        try:
-            envelope = json.loads(result.stdout)
+            envelope = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise SessionError(f"claude emitted a non-JSON envelope: {exc}") from exc
         if not isinstance(envelope, dict) or "result" not in envelope:
@@ -273,6 +270,30 @@ class SessionRunner:
         return RoundResult(
             session_id=session_id, text=str(envelope["result"]), usage=usage, envelope=envelope
         )
+
+    def _spawn(self, argv: list[str], *, cwd: Path, context: str) -> tuple[int, str, str]:
+        """One tracked subprocess: the tracker sees the PID for the round's lifetime,
+        so a crashed orchestrator's resume can reap surviving workers (plan U6)."""
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._env,
+        )
+        if self.tracker is not None:
+            self.tracker.spawned(proc.pid, context)
+        try:
+            stdout, stderr = proc.communicate(timeout=self.timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()
+            raise RoundTimeout(f"round exceeded {self.timeout_s}s ({context})") from exc
+        finally:
+            if self.tracker is not None:
+                self.tracker.exited(proc.pid)
+        return proc.returncode, stdout, stderr
 
 
 def _argv_context(extra: list[str]) -> str:
