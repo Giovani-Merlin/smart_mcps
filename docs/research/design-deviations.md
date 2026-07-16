@@ -72,6 +72,19 @@ No deviation needed — every pinned mechanic works as designed:
   where `<encoded-cwd>` is the worker's cwd with `/` → `-`. The manifest records them
   directly.
 
+## Phase B implementation notes (2026-07-16)
+
+- **Rewrite loops get their own bound.** The plan bounds respawns (generation cap) but
+  not the rewriting cycle; a perpetual `too_hard` verdict would loop forever. Added
+  `ExecutionConfig.max_rewrites` (default 2) — exceeding it fails the group like the
+  generation cap does.
+- **Every new coder session increments the generation counter** (breaker respawns and
+  post-rewrite relaunches alike) so manifest session names stay unique; the *cap* is
+  enforced only on breaker respawns, per the plan's wording.
+- **Escalation rewrites carry context.** blocked/too_hard/structural/merge-conflict
+  rewrites synthesize a `Surprise` describing the trigger so the speccer re-run sees why
+  the spec failed, not just that it did.
+
 ## Future improvements parked here
 
 - **InfoMap / Leiden partition strategies** behind the strategy interface, if real-world

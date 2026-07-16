@@ -174,7 +174,10 @@ class _GroupExecution:
             )
             self._spread(report.surprises)
             if report.status != "completed":
-                await self._rewrite(f"coder reported status {report.status}")
+                await self._rewrite(
+                    f"coder reported status {report.status}",
+                    extra=[_context_surprise(self.gid, f"coder {report.status}: {report.summary}")],
+                )
                 return False
 
             verdict, verdict_path = await self._review_round(report_path, rounds)
@@ -186,7 +189,12 @@ class _GroupExecution:
                     return False
                 return await self._merge()
             if verdict.status in ("too_hard", "structural"):
-                await self._rewrite(f"reviewer verdict: {verdict.status}")
+                await self._rewrite(
+                    f"reviewer verdict: {verdict.status}",
+                    extra=[
+                        _context_surprise(self.gid, f"reviewer {verdict.status}: {verdict.notes}")
+                    ],
+                )
                 return False
 
             # changes_required — breaker gate before the next warm round
@@ -274,24 +282,19 @@ class _GroupExecution:
         try:
             await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
         except MergeConflict as exc:
-            self._spread(
-                [
-                    Surprise(
-                        kind="merge_conflict",
-                        description=str(exc),
-                        affected_groups=exc.affected_groups,
-                    )
-                ]
+            conflict = Surprise(
+                kind="merge_conflict", description=str(exc), affected_groups=exc.affected_groups
             )
-            await self._rewrite(f"merge conflict: {exc}")
+            self._spread([conflict])
+            await self._rewrite(f"merge conflict: {exc}", extra=[conflict])
             return False
         return True
 
-    async def _rewrite(self, why: str) -> None:
+    async def _rewrite(self, why: str, extra: list[Surprise] | None = None) -> None:
         self.ctx.set_state(GroupState.REWRITING)
         if self.rewrites >= self.deps.execution.max_rewrites:
             raise GroupFailure(f"rewrite cap ({self.deps.execution.max_rewrites}) exhausted: {why}")
-        surprises = self.deps.board.consume(self.gid)
+        surprises = self.deps.board.consume(self.gid) + list(extra or [])
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
         self.rewrites += 1
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
@@ -365,3 +368,9 @@ class _GroupExecution:
 def _transcript_str(runner: SessionRunner, session_id: str) -> str | None:
     path = runner.transcript_path(session_id)
     return str(path) if path is not None else None
+
+
+def _context_surprise(group_id: str, description: str) -> Surprise:
+    """Escalation context handed to the speccer when the group itself triggered
+    the rewrite (blocked/too_hard/structural) and no upstream surprise exists."""
+    return Surprise(kind="other", description=description, affected_groups=[group_id])
