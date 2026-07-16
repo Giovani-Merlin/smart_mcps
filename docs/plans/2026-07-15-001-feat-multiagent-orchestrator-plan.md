@@ -328,6 +328,20 @@ ______________________________________________________________________
   - Each scripted failure scenario (rejection, breaker, surprise, conflict) ends in the documented terminal state.
 - **Verification:** E2E suite green offline; one manual live smoke run on a small real plan before calling the phase done.
 
+### Phase D — Human-in-the-loop escalation
+
+Added after Phases A–C shipped (2026-07-16). A run gains an **escalation channel** and an **intensity policy**, threaded through the review loop as an optional injected seam — absent it, behavior is identical to Phase C. Full design in the Phase D plan; summary of units:
+
+- **U11. Escalation contracts, config, policy.** `CoderReport` gains `needs_input` status + `question` (validated); `EscalationKind`/`HumanAction`/`EscalationRequest`/`EscalationResponse` models; `EscalationConfig` (off by default) on `OrchestratorConfig`; pure `EscalationPolicy.should_escalate` tier matrix (`autonomous` < `on_failure` < `on_stuck` < `interactive`; `orchestrator_only` suppresses the coder-question channel).
+
+- **U12. Broker + event log.** `EscalationBroker.raise_escalation` writes `escalations/request-<id>.json` (atomic), polls for the response, unblocks promptly on a run-wide abort, and falls back on timeout per `on_timeout`. `RunPaths.escalations_dir`, `log_event` to `logs/run.log`, `pending_escalations`.
+
+- **U13. Review-loop wiring.** `ReviewDeps.broker`/`policy` (defaulted `None` → the 15 existing review-loop tests unchanged). Trigger points wrapped: `needs_input`→coder-question (answer resumes warm, uncounted by the breaker), `blocked`/`failed`→coder-blocked, reviewer `too_hard`/`structural`, merge conflict, and the generation/rewrite cap→`caps_exhausted` (answer grants one more, guided). `answer` folds guidance into rewrites as an `[operator]` surprise; `skip`→`GroupFailure`; `abort`→new `RunAbort`. `interactive` adds group-start/respawn/merge approval gates. `render_coder_answer_prompt` + `prompts/answer`.
+
+- **U14. CLI, supervision, E2E, docs.** `--hitl`/`--intensity`/`--escalation-source`/`--escalation-timeout`; broker+policy wired into `_cmd_run`; `RunAbort` → resumable non-zero exit; new `answer` subcommand; `status` lists pending escalations. E2E HITL scenario (scripted operator answers a coder question, skips a `too_hard` group) plus an autonomous-stays-headless guard. README HITL section, deviations doc, this append.
+
+- **Verification:** `uv run pytest` green offline (190 pre-Phase-D tests unchanged as the injected-seam regression guard, plus `test_escalation.py`, extended `test_review_loop.py`/`test_cli.py`/`test_e2e_stub.py`); `--hitl` off ⇒ byte-identical autonomous behavior; `uv build` succeeds. Live smoke: a small real plan under `run --hitl --sequential`, driving one genuine coder `needs_input` (answer) and one reviewer `too_hard` (skip) through the main-session supervision loop.
+
 ______________________________________________________________________
 
 ## Scope Boundaries

@@ -111,6 +111,44 @@ No deviation needed — every pinned mechanic works as designed:
   uses a scripted `delay_s` on a *resume* round — never on a fork round, which would
   stall every sibling behind the runner's fork lock.
 
+## Phase D implementation notes (2026-07-16) — human-in-the-loop
+
+- **Headless workers cannot pause mid-run → report-then-resume is the only channel.**
+  `claude -p` has no supported way to block mid-turn and ask a free-form question:
+  `--permission-prompt-tool` is strictly tool-permission (allow/deny/updatedInput), not
+  Q&A. So the coder-question channel reuses the existing report→resume loop — a coder
+  ends its turn with `status: needs_input` + a `question`, the orchestrator escalates,
+  and `runner.resume(...)` feeds the answer back (Perplexity research 2026-07-16).
+  `--permission-prompt-tool` is deliberately **not** repurposed for this.
+- **`workers_via_orchestrator`, not `workers_direct`.** Workers *request* escalation; the
+  orchestrator owns the single, curated, auditable human channel. `workers_direct` (each
+  worker talks to the human on its own line) is an anti-pattern at multi-worker scale and,
+  for headless workers, not even buildable. `orchestrator_only` is also supported and
+  downgrades a coder question to the blocked/rewrite path.
+- **HITL is an optional injected seam, off by default.** `ReviewDeps.broker`/`policy`
+  default to `None`; absent them the review loop is byte-identical to Phase C (the 190
+  pre-Phase-D tests are unchanged, and an autonomous run creates no `escalations/` or
+  `logs/run.log`). Reconciliation of the two locked defaults (`on_stuck` + block
+  indefinitely): out of the box the CLI stays autonomous, so an unattended run never
+  hangs; `--hitl` (or `[escalation] enabled`) turns the defaults on.
+- **The orchestrator process stays alive during a pause**, so we sidestep the
+  LangGraph/Temporal replay hazards a persisted-checkpoint design would face — a blocked
+  group's coroutine just `await`s a `to_thread` poll while siblings run. The crash-resume
+  edge is unchanged: mid-flight groups restart from `ready` (existing scheduler behavior)
+  and re-raise the escalation; an unanswered `request-<id>.json` left on crash is still
+  readable. Acceptable for v1 (workers are idempotent report emitters, worktrees are
+  per-group), noted here.
+- **`RunAbort` propagates rather than failing one group.** Unlike `GroupFailure` (→ one
+  group `FAILED`, dependents strand, run continues), an operator abort raises `RunAbort`
+  (a `SchedulerError` subclass) which `_run_group` re-raises instead of swallowing;
+  `run()`'s `finally` cancels in-flight tasks and the CLI reports a clean, resumable stop.
+  The broker's abort event — set where `RunAbort` is raised, since the broker is shared by
+  every group — releases sibling waiters promptly so their tasks can cancel.
+- **`interactive` tier is implemented but secondary.** Its approve-before-launch /
+  approve-before-respawn / approve-before-merge gates reuse the same action set
+  (answer=proceed, skip, abort) and are kept minimal; the `on_stuck` default is the
+  primary path.
+
 ## Future improvements parked here
 
 - **InfoMap / Leiden partition strategies** behind the strategy interface, if real-world

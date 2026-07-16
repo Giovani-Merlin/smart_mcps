@@ -12,8 +12,11 @@ no API client anywhere, and the orchestrator itself spends zero tokens.
 smart-mcps-orchestrate group <plan.md> [--repo DIR] [--dry-run] [--token-budget N]
 smart-mcps-orchestrate run   [--repo DIR] [--run-id ID] [--sequential] [--concurrency N]
                              [--permission-mode MODE] [--review-intensity TIER]
+                             [--hitl] [--intensity TIER] [--escalation-source SRC]
+                             [--escalation-timeout S]
 smart-mcps-orchestrate status [RUN_ID] [--repo DIR]
 smart-mcps-orchestrate resume RUN_ID [--repo DIR] [...same execution flags as run]
+smart-mcps-orchestrate answer RUN_ID ESC_ID [--action answer|skip|abort] [--text ...] [--repo DIR]
 ```
 
 - **`group`** — LLM-maps plan tasks to code regions, partitions them into
@@ -33,6 +36,51 @@ smart-mcps-orchestrate resume RUN_ID [--repo DIR] [...same execution flags as ru
   base session, and never relaunches completed groups. A `failed` group is
   terminal; to retry one after fixing the cause, edit its entry in the run's
   `state.json` back to `"ready"` and resume.
+- **`answer`** — resolves a pending human-in-the-loop escalation (see below) by
+  writing its response file: `--action answer` (with `--text` guidance) resumes
+  or guides the blocked group, `--action skip` fails it, `--action abort` stops
+  the run. The blocked group's coroutine picks the answer up by correlation id.
+
+## Human-in-the-loop (HITL)
+
+By default a `run` is fully autonomous — every hard moment (a coder reporting
+`blocked`, a reviewer `too_hard`/`structural`, a merge conflict, an exhausted
+generation/rewrite cap) is auto-resolved or, at the terminal cap, marked
+`failed`. `--hitl` opts the run into escalating those moments to **you** instead.
+
+Because headless `claude -p` workers cannot pause mid-turn to ask a question, the
+only channel is **report-then-resume**: a coder that needs a human decision ends
+its turn with `status: needs_input` + a `question`; the orchestrator escalates,
+blocks that group, and resumes it with your answer — sibling groups keep running.
+
+**How you drive it.** Launch `run --hitl` in the background with its output going
+to a log you tail; watch `escalations/request-*.json` for a request with no
+matching `response-*.json`; answer with `smart-mcps-orchestrate answer <run_id> <esc_id> ...` (or `status <run_id>`, which lists pending escalations). The
+orchestrator process stays alive the whole time — a pause is just an `await`.
+
+**Intensity tiers** (`--intensity`, or `[escalation] intensity`):
+
+| Tier          | Escalates                                                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `autonomous`  | nothing (identical to a no-`--hitl` run)                                                                               |
+| `on_failure`  | only a generation/rewrite cap about to fail a group                                                                    |
+| `on_stuck`    | *(the `--hitl` default)* coder `blocked`/`needs_input`, reviewer `too_hard`/`structural`, merge conflict, terminal cap |
+| `interactive` | additionally approve before group launch, before each respawn, and before each merge                                   |
+
+Routine `changes_required` review rounds and routine breaker respawns stay
+autonomous under `on_stuck` — only genuinely stuck moments pause.
+
+**Escalation source** (`--escalation-source`): `workers_via_orchestrator`
+(default) surfaces a coder's `needs_input` question to you; `orchestrator_only`
+downgrades it to a blocked-style rewrite (no direct worker→human channel).
+
+**Unanswered escalations** block indefinitely by default (a live operator is
+expected). Set `--escalation-timeout <s>` (or `[escalation] timeout_s`) to fall
+back after a wait — per `[escalation] on_timeout` = `autonomous` | `skip` |
+`abort`.
+
+`--hitl` is opt-in: with no flag the CLI stays autonomous and unattended runs
+never hang, so `--intensity autonomous` and a plain `run` behave identically.
 
 ## Configuration
 
@@ -64,6 +112,14 @@ transcript_root = ""          # default: ~/.claude/projects
 [difficulty]                  # review-tier thresholds
 d_review = 0.35               # below: self_verify (no reviewer session)
 d_hard = 0.65                 # above: paired_plus (mandatory extra pass)
+
+[escalation]                  # human-in-the-loop (off by default)
+enabled = false               # true, or pass --hitl
+intensity = "on_stuck"        # autonomous | on_failure | on_stuck | interactive
+source = "workers_via_orchestrator"  # or orchestrator_only
+# timeout_s = 30.0            # omit to block indefinitely; else on_timeout fires
+on_timeout = "autonomous"     # autonomous | skip | abort (when timeout_s is set)
+poll_interval_s = 1.0         # response-file poll cadence
 ```
 
 `--review-intensity self_verify|paired|paired_plus` overrides the computed tier
@@ -84,6 +140,8 @@ All run state lives in the target repo, never under `~/.claude`:
       manifest.json           # run → groups → sessions join (the analyzer contract)
       state.json              # crash-resumable scheduler state + live worker PIDs
       groups/<gid>/           # report-g<G>-r<R>.json / verdict-g<G>-r<R>.json
+      logs/run.log            # HITL event log — the live log the main session tails
+      escalations/            # HITL request-<id>.json / response-<id>.json (correlation ids)
   .worktrees/
     run-<run_id>-integration/ # the integration branch's worktree
     <gid>-<name>/             # per-group worktrees (removed after a clean merge)
