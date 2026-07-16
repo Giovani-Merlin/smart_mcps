@@ -84,6 +84,21 @@ class ExecutionConfig(BaseModel):
     max_rewrites: int = 2
 
 
+class SessionConfig(BaseModel):
+    """How the run command shells the claude CLI (plan U9).
+
+    ``claude_bin`` accepts a list so tests point it at the stub interpreter
+    (``["python", "tests/fake_claude.py"]``); ``transcript_root`` overrides the
+    ``~/.claude/projects`` default for the same reason.
+    """
+
+    claude_bin: str | list[str] = "claude"
+    timeout_s: float = 1800.0
+    model: str | None = None
+    allowed_tools: list[str] = Field(default_factory=list)
+    transcript_root: str | None = None
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -91,6 +106,7 @@ class OrchestratorConfig(BaseModel):
     difficulty: DifficultyConfig = Field(default_factory=DifficultyConfig)
     breaker: BreakerConfig = Field(default_factory=BreakerConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    session: SessionConfig = Field(default_factory=SessionConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:
