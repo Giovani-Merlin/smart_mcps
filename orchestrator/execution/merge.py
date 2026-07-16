@@ -1,0 +1,93 @@
+"""Integration-branch merges: approved groups land in dependency order (plan U8).
+
+Each run owns ``orchestrator/run-<run_id>``, created from the launch ref and
+checked out in its own worktree so the operator's checkout is never disturbed.
+Approved group branches merge with ``--no-ff`` (one merge commit per group — the
+audit trail). A conflict aborts cleanly, leaves the integration branch untouched,
+and escalates as a MergeConflict surprise naming the incoming group and the
+already-merged groups whose files collide; the review loop routes the group to
+rewriting and dependents stay paused (plan Key Technical Decisions). The final
+merge to the main branch is manual — this module never touches it.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from orchestrator.execution.review import MergeConflict
+from orchestrator.execution.worktrees import (
+    WorktreeError,
+    _git,
+    _git_ok,
+    create_worktree,
+    integration_branch,
+    remove_worktree,
+)
+from orchestrator.model import Group
+
+
+class MergeError(Exception):
+    """A git operation failed for a reason other than a content conflict."""
+
+
+class IntegrationMerger:
+    """Owns the per-run integration branch; matches the ReviewDeps.merge_group seam."""
+
+    def __init__(self, repo_root: Path, run_id: str, launch_ref: str = "HEAD"):
+        self.repo_root = repo_root
+        self.run_id = run_id
+        self.launch_ref = launch_ref
+        self.branch = integration_branch(run_id)
+        self.merged: list[Group] = []
+        # Approvals of independent groups can land concurrently; merges serialize.
+        self._lock = threading.Lock()
+
+    def ensure(self) -> Path:
+        """Create (or reuse) the integration branch and its worktree. Idempotent."""
+        return create_worktree(
+            self.repo_root,
+            group_id=f"run-{self.run_id}",
+            name="integration",
+            branch=self.branch,
+            start_point=self.launch_ref,
+        )
+
+    def tip(self) -> str:
+        """Current integration-branch commit — the branch point for a group's
+        worktree at its ready→running transition, and the reviewer's diff base."""
+        with self._lock:
+            self.ensure()
+            return _git_ok(self.repo_root, "rev-parse", self.branch).strip()
+
+    def merge_group(self, group: Group, worktree: Path) -> None:
+        """Merge an approved group's branch; raises MergeConflict on collision."""
+        with self._lock:
+            integration_wt = self.ensure()
+            branch = _git_ok(worktree, "branch", "--show-current").strip()
+            if not branch:
+                raise MergeError(f"worktree {worktree} is not on a branch")
+            message = f"merge({self.run_id}): {group.id} {group.name}"
+            result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
+            if result.returncode != 0:
+                conflicted = _git_ok(
+                    integration_wt, "diff", "--name-only", "--diff-filter=U"
+                ).splitlines()
+                _git(integration_wt, "merge", "--abort")
+                raise MergeConflict(
+                    f"merging {group.id} ({branch}) conflicted on: "
+                    f"{', '.join(conflicted) or 'unknown files'}",
+                    affected_groups=[group.id, *self._groups_owning(conflicted)],
+                )
+            self.merged.append(group)
+            try:
+                # Cleanup only after a clean merge; a dirty worktree (uncommitted
+                # leftovers) is left in place for inspection rather than forced.
+                remove_worktree(self.repo_root, worktree)
+            except WorktreeError:
+                pass
+
+    def _groups_owning(self, paths: list[str]) -> list[str]:
+        """Already-merged groups whose declared files collide with the conflict."""
+        conflicted = set(paths)
+        return [g.id for g in self.merged if conflicted.intersection(g.files)]
