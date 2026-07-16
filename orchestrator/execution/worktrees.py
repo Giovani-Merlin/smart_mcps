@@ -95,6 +95,14 @@ def is_dirty(worktree: Path) -> bool:
     return bool(_git_ok(worktree, "status", "--porcelain").strip())
 
 
+def diff_stat(worktree: Path, base_ref: str) -> str:
+    """Best-effort diff summary for generation handoffs (plan U7); never raises."""
+    committed = _git(worktree, "diff", "--stat", base_ref)
+    if committed.returncode != 0:
+        return "(diff unavailable)"
+    return committed.stdout.strip() or "(no changes yet)"
+
+
 def remove_worktree(repo_root: Path, path: Path, *, force: bool = False) -> None:
     """Remove a worktree. Idempotent on a missing path; refuses a dirty worktree
     unless ``force`` is explicit (plan U5 test scenario)."""

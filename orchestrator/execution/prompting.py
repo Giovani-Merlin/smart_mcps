@@ -61,6 +61,22 @@ def render_reviewer_prompt(run_id: str, group: Group, *, report_path: str, base_
     )
 
 
+def render_revision_prompt(verdict_path: str, required_changes: list[str]) -> str:
+    """Resume trigger for a changes_required verdict — a pointer, not the payload."""
+    changes = "\n".join(f"- {change}" for change in required_changes) or "- see the verdict file"
+    return Template(load_template("revision")).substitute(
+        verdict_path=verdict_path, required_changes=changes
+    )
+
+
+def render_re_review_prompt(report_path: str) -> str:
+    return Template(load_template("re_review")).substitute(report_path=report_path)
+
+
+def render_extra_pass_prompt() -> str:
+    return load_template("extra_pass")
+
+
 def render_handoff_prompt(
     run_id: str,
     group: Group,

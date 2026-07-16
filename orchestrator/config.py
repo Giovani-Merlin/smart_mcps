@@ -79,6 +79,9 @@ class ExecutionConfig(BaseModel):
     concurrency: int = 3
     sequential: bool = False  # R25: deterministic one-at-a-time first-debug mode
     permission_mode: str = "acceptEdits"
+    # Spec rewrites per group before it fails. The plan bounds respawns via the
+    # generation cap but leaves the rewrite loop bound to implementation (U7).
+    max_rewrites: int = 2
 
 
 class OrchestratorConfig(BaseModel):
