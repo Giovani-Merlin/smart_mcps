@@ -5,6 +5,10 @@ __pycache__/
 dist/
 .venv/
 
+# Orchestrator run artifacts (see orchestrator/README.md)
+.orchestrator/
+.worktrees/
+
 # Auto-saved query dumps stay out of git; curated research docs are tracked.
 docs/research/perplexity/
 docs/research/manual/

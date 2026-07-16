@@ -85,6 +85,32 @@ No deviation needed — every pinned mechanic works as designed:
   rewrites synthesize a `Surprise` describing the trigger so the speccer re-run sees why
   the spec failed, not just that it did.
 
+## Phase C implementation notes (2026-07-16)
+
+- **A group's diff base is the merge-base, not the captured tip.** U9's wiring captures
+  the integration tip once per group at ready→running, but `base_ref_for` returns
+  `git merge-base <tip> <group-branch>`: on a fresh launch that is the tip itself, and on
+  `resume` (branch already exists) it is the branch's original fork point — the tip may
+  have advanced past it via sibling merges, and diffing against the moved tip would
+  under-report the group's work to its reviewer.
+- **Rewritten specs are not persisted.** Spec rewrites live in run memory only; a
+  `resume` relaunches groups from the specs in `groups.json`. Acceptable in v1 because a
+  resumed group restarts its review loop anyway (its surprises re-fan-out if still
+  relevant); revisit if resumed rewrites prove lossy in practice.
+- **`failed` is terminal across resume — by design, with an operator escape hatch.**
+  `resume` restarts only mid-flight groups; retrying a failed group means editing its
+  entry in `state.json` back to `"ready"` (documented in orchestrator/README.md). An
+  explicit `retry` command was deferred until real runs show it is wanted.
+- **`--review-intensity` overrides every group uniformly.** Per-group overrides would
+  need a selector syntax nobody has asked for yet; the flag exists for forcing paired
+  review on a run you don't trust (or self_verify on one you do).
+- **Stub growth for E2E (test infra, not product):** `tests/fake_claude.py` gained
+  per-session script queues keyed by `--name` (bound at fork, followed by resumes) and
+  scripted side effects (`files` writes + a real `git commit` in the worker's cwd) so
+  merge scenarios exercise real git add/add conflicts. Deterministic conflict ordering
+  uses a scripted `delay_s` on a *resume* round — never on a fork round, which would
+  stall every sibling behind the runner's fork lock.
+
 ## Future improvements parked here
 
 - **InfoMap / Leiden partition strategies** behind the strategy interface, if real-world
