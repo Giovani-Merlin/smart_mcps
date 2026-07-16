@@ -1,0 +1,455 @@
+"""U10 E2E: the full loop against the scripted claude stub, entirely offline.
+
+Every scenario drives the real CLI (``main``) on a toy git fixture repo with
+``tests/fake_claude.py`` as the claude binary (via ``[session] claude_bin`` in the
+fixture's config.toml) and per-name session scripts — zero live CLI calls, zero
+tokens (plan R24). The happy path goes plan → group (stubbed LLM + codegraph) →
+run → merge and asserts the analyzer contract (origin AE6); the failure scenarios
+(rejection/breaker, surprise, merge conflict, reject-forever) each end in their
+documented terminal state.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from orchestrator.cli import main
+from orchestrator.grouping.graphing import CodegraphClient
+from orchestrator.model import ReviewIntensity
+from test_cli import make_group, write_run_artifacts
+from test_grouper_pipeline import PLAN_TEXT, StubLlm, codegraph_response
+
+FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
+REPO_DIR_NAME = "toyrepo"
+
+
+# ------------------------------------------------------------------ fixtures
+
+
+def git(repo: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    assert done.returncode == 0, f"git {' '.join(args)}: {done.stderr}"
+    return done.stdout
+
+
+@pytest.fixture
+def fake_home(tmp_path: Path, monkeypatch) -> Path:
+    home = tmp_path / "fake-home"
+    (home / "sessions").mkdir(parents=True)
+    (home / "scripts").mkdir()
+    monkeypatch.setenv("FAKE_CLAUDE_HOME", str(home))
+    monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+    return home
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """Toy target repo: a real git repo whose files match the canned codegraph
+    responses reused from test_grouper_pipeline (server.py / test_server.py)."""
+    repo = tmp_path / REPO_DIR_NAME
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "e2e@test")
+    git(repo, "config", "user.name", "e2e")
+    (repo / "CLAUDE.md").write_text("# Conventions\n\nUse ruff line 100.\n")
+    (repo / "server.py").write_bytes(b"def real_fn():\n    pass\n" * 20)
+    (repo / "test_server.py").write_bytes(b"def test_real_fn():\n    pass\n" * 10)
+    (repo / "plan.md").write_text(PLAN_TEXT)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
+    (repo / ".orchestrator").mkdir(exist_ok=True)
+    (repo / ".orchestrator" / "config.toml").write_text(
+        "[session]\n"
+        f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        f'transcript_root = "{fake_home}/projects"\n'
+        "timeout_s = 30.0\n"
+        f"{extra}"
+    )
+
+
+# ------------------------------------------------------------------ scripting
+
+
+def name_of(run_id: str, gid: str, role: str, generation: int = 1) -> str:
+    return f"{run_id}-{gid}-{role}-g{generation}"
+
+
+def script_session(fake_home: Path, name: str, *entries: dict) -> None:
+    with (fake_home / "scripts" / f"{name}.jsonl").open("a") as fh:
+        for entry in entries:
+            fh.write(json.dumps(entry) + "\n")
+
+
+def coder_entry(
+    status: str = "completed",
+    surprises: list[dict] | None = None,
+    files: dict[str, str] | None = None,
+    commit: str | None = None,
+    **extra,
+) -> dict:
+    body = {
+        "status": status,
+        "summary": "scripted round",
+        "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
+        "surprises": surprises or [],
+    }
+    entry: dict = {
+        "result": f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>',
+        **extra,
+    }
+    if files:
+        entry["files"] = files
+    if commit:
+        entry["commit"] = commit
+    return entry
+
+
+def verdict_entry(status: str = "approved", changes: list[str] | None = None, **extra) -> dict:
+    body = {"status": status, "required_changes": changes or [], "surprises": [], "notes": ""}
+    return {
+        "result": f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>',
+        **extra,
+    }
+
+
+def calls_of(fake_home: Path) -> list[dict]:
+    path = fake_home / "calls.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def named_calls(fake_home: Path, name: str) -> list[dict]:
+    return [c for c in calls_of(fake_home) if _flag(c["argv"], "--name") == name]
+
+
+def _flag(argv: list[str], flag: str) -> str | None:
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+def state_of(repo: Path, run_id: str) -> dict:
+    return json.loads((repo / ".orchestrator" / "runs" / run_id / "state.json").read_text())
+
+
+def manifest_of(repo: Path, run_id: str) -> dict:
+    return json.loads((repo / ".orchestrator" / "runs" / run_id / "manifest.json").read_text())
+
+
+# ------------------------------------------------------------------ scenarios
+
+
+def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
+    """plan → group → run → merge, with one reviewer reject-then-approve warm
+    round; asserts AE6 (manifest↔transcript join) and the identity-block contract."""
+    write_config(repo, fake_home)
+    exit_code = main(
+        ["group", str(repo / "plan.md"), "--repo", str(repo)],
+        llm_runner=StubLlm(),
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert exit_code == 0
+    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    gids = [group["id"] for group in grouping["groups"]]
+    assert gids  # the toy plan produced at least one group
+
+    run_id = "r1"
+    for index, gid in enumerate(gids):
+        commit = {"files": {f"{gid}.out": f"work of {gid}\n"}, "commit": f"{gid}: scripted work"}
+        if index == 0:  # first group: reviewer rejects once, then approves warm
+            script_session(
+                fake_home, name_of(run_id, gid, "coder"), coder_entry(**commit), coder_entry()
+            )
+            script_session(
+                fake_home,
+                name_of(run_id, gid, "reviewer"),
+                verdict_entry("changes_required", ["tighten the tests"]),
+                verdict_entry("approved"),
+            )
+        else:
+            script_session(fake_home, name_of(run_id, gid, "coder"), coder_entry(**commit))
+            script_session(fake_home, name_of(run_id, gid, "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--review-intensity", "paired"],
+        llm_runner=StubLlm(),
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "all groups completed" in out
+
+    # every group completed at generation 1; the warm reject never respawned
+    state = state_of(repo, run_id)
+    assert all(entry["state"] == "completed" for entry in state["groups"].values())
+    assert all(entry["generation"] == 1 for entry in state["groups"].values())
+    assert state["live_pids"] == {}
+
+    # AE6: the manifest joins every session to a transcript the stub produced,
+    # with names and summaries present
+    manifest = manifest_of(repo, run_id)
+    assert manifest["base_session_id"]
+    assert set(manifest["groups"]) == set(gids)
+    for gid in gids:
+        entry = manifest["groups"][gid]
+        assert entry["group_name"] and entry["summary"]
+        roles = [session["role"] for session in entry["sessions"]]
+        assert roles == ["coder", "reviewer"]
+        for session in entry["sessions"]:
+            assert session["name"].startswith(f"{run_id}-{gid}-")
+            assert session["transcript_path"] is not None
+            assert Path(session["transcript_path"]).is_file()
+        assert all(session["retirement_reason"] is None for session in entry["sessions"])
+
+    # identity-block contract: every worker fork's first prompt opens with the
+    # <run-manifest> block (never an injected-looking prefix), and workers ran in
+    # worktrees whose paths keep the repo dir name as a substring
+    forks = [call for call in calls_of(fake_home) if "--fork-session" in call["argv"]]
+    assert len(forks) == 2 * len(gids)
+    for call in forks:
+        assert call["prompt"].startswith(f'<run-manifest run_id="{run_id}"')
+        assert REPO_DIR_NAME in call["cwd"] and ".worktrees" in call["cwd"]
+
+    # the base session was created once, from the repo root, named <run_id>-base
+    base_calls = named_calls(fake_home, f"{run_id}-base")
+    assert len(base_calls) == 1
+    assert "--fork-session" not in base_calls[0]["argv"]
+
+    # one --no-ff merge commit per group on the integration branch; clean group
+    # worktrees were removed after merging
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    for gid in gids:
+        assert f"merge({run_id}): {gid}" in log
+    remaining = [p.name for p in (repo / ".worktrees").iterdir()]
+    assert remaining == [f"run-{run_id}-integration"]
+
+    # verdict artifacts of the warm loop persisted round-by-round
+    group_dir = repo / ".orchestrator" / "runs" / run_id / "groups" / gids[0]
+    assert (group_dir / "verdict-g1-r1.json").is_file()
+    assert (group_dir / "verdict-g1-r2.json").is_file()
+
+    # status reports the finished run
+    exit_code = main(["status", run_id, "--repo", str(repo)])
+    assert exit_code == 0
+    status_out = capsys.readouterr().out
+    assert f"{gids[0]}: completed" in status_out
+    assert name_of(run_id, gids[0], "coder") in status_out
+
+
+def test_breaker_trip_respawns_generation_two_and_completes(repo, fake_home, capsys):
+    run_id = "r2"
+    write_run_artifacts(repo, [make_group("g1")])
+    write_config(repo, fake_home, "[breaker]\nmax_rounds_per_generation = 1\nmax_generations = 2\n")
+    script_session(fake_home, name_of(run_id, "g1", "coder"), coder_entry())
+    script_session(
+        fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("changes_required", ["fix y"])
+    )
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder", generation=2),
+        coder_entry(files={"g1.out": "done\n"}, commit="g1: generation-2 work"),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g1", "reviewer", generation=2), verdict_entry("approved")
+    )
+
+    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    assert state["groups"]["g1"]["generation"] == 2
+
+    manifest = manifest_of(repo, run_id)
+    sessions = {session["name"]: session for session in manifest["groups"]["g1"]["sessions"]}
+    retired = sessions[name_of(run_id, "g1", "coder")]
+    assert retired["retirement_reason"] and "round threshold" in retired["retirement_reason"]
+    # the generation-2 coder was forked fresh from base with a condensed handoff
+    handoff = named_calls(fake_home, name_of(run_id, "g1", "coder", generation=2))[0]
+    assert "generation 2" in handoff["prompt"]
+    assert "fix y" in handoff["prompt"]
+
+
+def test_surprise_rewrites_dependent_group_before_launch(repo, fake_home):
+    run_id = "r3"
+    write_run_artifacts(
+        repo,
+        [
+            make_group("g1", files=["g1.txt"]),
+            make_group("g2", dependencies=["g1"]),
+        ],
+    )
+    write_config(repo, fake_home)
+    surprise = {
+        "kind": "interface_mismatch",
+        "description": "g1 renamed the shared helper API",
+        "affected_groups": ["g2"],
+    }
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(surprises=[surprise], files={"g1.txt": "one\n"}, commit="g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.txt": "two\n"}, commit="g2: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g2", "reviewer"), verdict_entry("approved"))
+
+    stub = StubLlm()
+    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=stub)
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g2"]["state"] == "completed"
+    assert state["groups"]["g2"]["generation"] == 1  # rewritten before launch, no respawn
+
+    # the speccer rewrite saw the surprise as context, and the relaunched coder
+    # got the rewritten spec
+    speccer_prompts = [prompt for title, prompt in stub.prompts if title == "speccer_output"]
+    assert len(speccer_prompts) == 1
+    assert "g1 renamed the shared helper API" in speccer_prompts[0]
+    coder_prompt = named_calls(fake_home, name_of(run_id, "g2", "coder"))[0]["prompt"]
+    assert "Full spec for g2." in coder_prompt
+
+
+def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_home):
+    run_id = "r4"
+    write_run_artifacts(
+        repo,
+        [
+            make_group("g1", files=["conflict.txt"]),
+            make_group("g2", files=["conflict.txt"]),
+        ],
+    )
+    write_config(repo, fake_home)
+    # g1 races ahead and merges conflict.txt first; g2's revision round is delayed
+    # so its (approved) merge attempt happens strictly after g1's merge landed
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"conflict.txt": "g1 version\n"}, commit="g1: claim the file"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"conflict.txt": "g2 version\n"}, commit="g2: claim the file"),
+        coder_entry(delay_s=1.5),
+    )
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "reviewer"),
+        verdict_entry("changes_required", ["stall one round"]),
+        verdict_entry("approved"),
+    )
+    # after the conflict the rewritten g2 respawns at generation 2 and lands a
+    # version identical to the integration side (add/add resolves cleanly)
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder", generation=2),
+        coder_entry(
+            files={"conflict.txt": "g1 version\n", "g2.out": "g2 done\n"},
+            commit="g2: align with integration",
+        ),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g2", "reviewer", generation=2), verdict_entry("approved")
+    )
+
+    stub = StubLlm()
+    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=stub)
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    assert state["groups"]["g2"]["state"] == "completed"
+    assert state["groups"]["g2"]["generation"] == 2
+
+    # the rewrite saw the conflict as escalation context
+    speccer_prompts = [prompt for title, prompt in stub.prompts if title == "speccer_output"]
+    assert len(speccer_prompts) == 1
+    assert "merge_conflict" in speccer_prompts[0] and "conflict.txt" in speccer_prompts[0]
+
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
+    integration = git(repo, "show", f"orchestrator/run-{run_id}:conflict.txt")
+    assert integration == "g1 version\n"
+
+
+def test_reject_forever_fails_group_and_strands_dependent(repo, fake_home, capsys):
+    run_id = "r5"
+    write_run_artifacts(repo, [make_group("g1"), make_group("g2", dependencies=["g1"])])
+    write_config(repo, fake_home, "[breaker]\nmax_rounds_per_generation = 1\nmax_generations = 1\n")
+    script_session(fake_home, name_of(run_id, "g1", "coder"), coder_entry())
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "reviewer"),
+        verdict_entry("changes_required", ["never good enough"]),
+    )
+
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--sequential"], llm_runner=StubLlm()
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "did not complete" in err
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "failed"
+    assert "generation cap" in state["groups"]["g1"]["failure"]
+    assert state["groups"]["g2"]["state"] == "pending"  # stranded, never launched
+    assert named_calls(fake_home, name_of(run_id, "g2", "coder")) == []
+
+
+def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_home):
+    run_id = "r6"
+    groups = [
+        make_group("g1", intensity=ReviewIntensity.SELF_VERIFY),
+        make_group("g2", intensity=ReviewIntensity.SELF_VERIFY),
+    ]
+    write_run_artifacts(repo, groups)
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
+    )
+    # g2's coder dies at fork — the executor records the failure and exits nonzero
+    script_session(
+        fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
+    assert exit_code == 1
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    assert state["groups"]["g2"]["state"] == "failed"
+
+    # operator intervention: mark g2 ready again and give its coder a fresh script
+    state["groups"]["g2"] = {"state": "ready", "generation": 1, "failure": None}
+    state_path = repo / ".orchestrator" / "runs" / run_id / "state.json"
+    state_path.write_text(json.dumps(state))
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.out": "two\n"}, commit="g2: work"),
+    )
+
+    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    assert state["groups"]["g2"]["state"] == "completed"
+
+    # the resumed run reused the original base session instead of starting one
+    base_calls = named_calls(fake_home, f"{run_id}-base")
+    assert len(base_calls) == 1
+    manifest = manifest_of(repo, run_id)
+    assert manifest["base_session_id"]
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log

@@ -12,9 +12,17 @@ State lives under ``$FAKE_CLAUDE_HOME``:
 - ``calls.jsonl``   — one line per invocation: argv, prompt, cwd, start/end times.
 - ``script.jsonl``  — response queue, popped front-first under an flock. Each line
   may set ``result``, ``usage``, ``is_error``, ``exit_code``, ``stderr``,
-  ``delay_s``. An empty/missing queue yields a default OK response.
-- ``sessions/<id>.json`` — known sessions ({"parent": ...}); ``--resume`` of an
-  unknown id fails like the real CLI.
+  ``delay_s``, plus side effects performed in the caller's cwd before replying:
+  ``files`` ({relative path: content} writes) and ``commit`` (git add -A +
+  commit) — a scripted coder that actually produces commits for merge scenarios.
+  An empty/missing queue yields a default OK response.
+- ``scripts/<name>.jsonl`` — per-session queues keyed by ``--name``. A session
+  started or forked with a name that has a script file is bound to it (recorded
+  in its session file); its resumes pop from that queue instead of the global
+  one. Lets E2E tests script concurrent sessions deterministically, mirroring
+  the in-process StubRunner's fork_scripts.
+- ``sessions/<id>.json`` — known sessions ({"parent": ..., "script": ...});
+  ``--resume`` of an unknown id fails like the real CLI.
 - ``projects/<encoded-cwd>/<sid>.jsonl`` — transcript stub mirroring
   ``~/.claude/projects`` layout, for transcript-discovery and analyzer-join tests.
 - ``fork.lock`` / ``fork_overlaps.log`` — overlap detector: concurrent in-flight
@@ -32,6 +40,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -104,8 +113,8 @@ def _parse(args: list[str]) -> tuple[dict[str, str], set[str], str]:
     return opts, bools, " ".join(positionals)
 
 
-def _pop_script(home: Path) -> dict:
-    path = home / "script.jsonl"
+def _pop_script(home: Path, script_path: Path | None = None) -> dict:
+    path = script_path or home / "script.jsonl"
     if not path.exists():
         return {}
     with path.open("r+") as fh:
@@ -150,8 +159,6 @@ def main() -> int:
     (home / "sessions").mkdir(parents=True, exist_ok=True)
     opts, bools, prompt = _parse(args)
     started = time.time()
-    scripted = _pop_script(home)
-    delay = float(scripted.get("delay_s", os.environ.get("FAKE_CLAUDE_DEFAULT_DELAY_S", 0)) or 0)
     forking = "--fork-session" in bools
 
     fork_lock: Path | None = None
@@ -164,8 +171,6 @@ def main() -> int:
             with (home / "fork_overlaps.log").open("a") as fh:
                 fh.write(f"{os.getpid()} overlapped at {started}\n")
     try:
-        if delay:
-            time.sleep(delay)
 
         def finish(code: int) -> int:
             _log_call(
@@ -194,13 +199,46 @@ def main() -> int:
         else:
             session_id = opts.get("--session-id") or str(uuid.uuid4())
             parent = None
-        if not resume_id or forking:
-            _session_file(home, session_id).write_text(json.dumps({"parent": parent}))
+
+        # Per-name script binding: a named session whose scripts/<name>.jsonl
+        # exists pops from that queue for its whole lifetime (resumes included);
+        # everything else falls back to the shared front-popped queue.
+        name = opts.get("--name") or opts.get("-n")
+        if resume_id and not forking:
+            binding = json.loads(_session_file(home, resume_id).read_text()).get("script")
+        else:
+            binding = name if name and (home / "scripts" / f"{name}.jsonl").exists() else None
+            _session_file(home, session_id).write_text(
+                json.dumps({"parent": parent, "script": binding})
+            )
+        script_path = (home / "scripts" / f"{binding}.jsonl") if binding else None
+        scripted = _pop_script(home, script_path)
+
+        delay = float(
+            scripted.get("delay_s", os.environ.get("FAKE_CLAUDE_DEFAULT_DELAY_S", 0)) or 0
+        )
+        if delay:
+            time.sleep(delay)
 
         exit_code = int(scripted.get("exit_code", 0))
         if exit_code:
             print(scripted.get("stderr", "scripted failure"), file=sys.stderr)
             return finish(exit_code)
+
+        # Side effects a scripted "coder" performs in its cwd (the group worktree):
+        # file writes and a real git commit, so merge scenarios exercise real git.
+        for rel_path, content in (scripted.get("files") or {}).items():
+            target = Path.cwd() / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        if scripted.get("commit"):
+            subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
+            done = subprocess.run(
+                ["git", "commit", "-m", str(scripted["commit"])], capture_output=True, text=True
+            )
+            if done.returncode != 0:
+                print(f"scripted commit failed: {done.stderr}", file=sys.stderr)
+                return finish(1)
 
         result_text = scripted.get("result", "OK")
         _write_transcript(home, os.getcwd(), session_id, result_text)
