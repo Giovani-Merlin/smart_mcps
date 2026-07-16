@@ -17,9 +17,12 @@ from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_writ
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.grouping.pipeline import serialize_grouping
 from orchestrator.model import (
+    EscalationRequest,
+    EscalationResponse,
     Group,
     GroupingResult,
     GroupManifestEntry,
+    HumanAction,
     ReviewIntensity,
     RunManifest,
     SessionEntry,
@@ -86,6 +89,115 @@ class TestPrecedence:
         merged = apply_overrides(load_config(config_file), args)
         assert merged.execution.concurrency == 5
         assert merged.execution.sequential is True  # store_true absence never un-sets the file
+
+
+class TestEscalationOverrides:
+    def _args(self, **overrides) -> argparse.Namespace:
+        base = dict(
+            sequential=False,
+            concurrency=None,
+            permission_mode=None,
+            token_budget=None,
+            hitl=False,
+            intensity=None,
+            escalation_source=None,
+            escalation_timeout=None,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_default_is_disabled_autonomous(self):
+        merged = apply_overrides(load_config(None), self._args())
+        assert merged.escalation.enabled is False
+        assert merged.escalation.intensity == "on_stuck"
+
+    def test_hitl_flag_enables_with_default_tier(self):
+        merged = apply_overrides(load_config(None), self._args(hitl=True))
+        assert merged.escalation.enabled is True
+        assert merged.escalation.intensity == "on_stuck"
+
+    def test_intensity_flag_implies_enabled(self):
+        merged = apply_overrides(load_config(None), self._args(intensity="interactive"))
+        assert merged.escalation.enabled is True
+        assert merged.escalation.intensity == "interactive"
+
+    def test_autonomous_intensity_forces_off_even_over_config_file(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[escalation]\nenabled = true\nintensity = "on_stuck"\n')
+        merged = apply_overrides(load_config(config_file), self._args(intensity="autonomous"))
+        assert merged.escalation.enabled is False
+        assert merged.escalation.intensity == "autonomous"
+
+    def test_source_and_timeout_flags_layer_in(self):
+        merged = apply_overrides(
+            load_config(None),
+            self._args(hitl=True, escalation_source="orchestrator_only", escalation_timeout=45.0),
+        )
+        assert merged.escalation.source == "orchestrator_only"
+        assert merged.escalation.timeout_s == 45.0
+
+    def test_absent_flags_keep_config_file_escalation(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[escalation]\nenabled = true\nintensity = "on_failure"\n')
+        merged = apply_overrides(load_config(config_file), self._args())
+        assert merged.escalation.enabled is True
+        assert merged.escalation.intensity == "on_failure"
+
+
+class TestAnswerCommand:
+    def _write_request(self, tmp_path, esc_id="e1", kind="coder_question"):
+        paths = RunPaths(tmp_path, "r1")
+        request = EscalationRequest(
+            id=esc_id, run_id="r1", group_id="g1", generation=1, kind=kind, prompt="decide"
+        )
+        atomic_write_text(
+            paths.escalations_dir / f"request-{esc_id}.json", request.model_dump_json()
+        )
+        return paths
+
+    def test_answer_writes_a_response_file(self, tmp_path, capsys):
+        paths = self._write_request(tmp_path)
+        exit_code = main(
+            [
+                "answer",
+                "r1",
+                "e1",
+                "--action",
+                "answer",
+                "--text",
+                "use JWT",
+                "--repo",
+                str(tmp_path),
+            ]
+        )
+        assert exit_code == 0
+        response_path = paths.escalations_dir / "response-e1.json"
+        assert response_path.is_file()
+        response = EscalationResponse.model_validate_json(response_path.read_text())
+        assert response.action == HumanAction.ANSWER and response.answer == "use JWT"
+        assert "answered e1" in capsys.readouterr().out
+
+    def test_answer_unknown_escalation_is_actionable(self, tmp_path, capsys):
+        exit_code = main(["answer", "r1", "nope", "--repo", str(tmp_path)])
+        assert exit_code == 1
+        assert "no escalation nope" in capsys.readouterr().err
+
+    def test_skip_and_abort_actions_round_trip(self, tmp_path):
+        paths = self._write_request(tmp_path, esc_id="e2", kind="reviewer_too_hard")
+        assert main(["answer", "r1", "e2", "--action", "skip", "--repo", str(tmp_path)]) == 0
+        response = EscalationResponse.model_validate_json(
+            (paths.escalations_dir / "response-e2.json").read_text()
+        )
+        assert response.action == HumanAction.SKIP
+
+    def test_status_lists_pending_escalations(self, tmp_path, capsys):
+        paths = self._write_request(tmp_path, esc_id="e9", kind="merge_conflict")
+        atomic_write_text(paths.state_path, RunState(run_id="r1", groups={}).model_dump_json())
+        exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "pending escalations" in out
+        assert "e9" in out and "merge_conflict" in out
 
 
 class TestRunEarlyExits:

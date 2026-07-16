@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Downstream session titles derived from summaries cap at 120 chars
 # (docs/research/infinity-skills-analysis.md); validated here, never truncated later.
@@ -108,12 +108,26 @@ class VerificationResult(BaseModel):
 
 
 class CoderReport(BaseModel):
-    """Structured final message of every coder round (origin R11, R19)."""
+    """Structured final message of every coder round (origin R11, R19).
 
-    status: Literal["completed", "blocked", "failed"]
+    ``needs_input`` is the coder-question channel (plan Phase D): a coder that
+    cannot proceed without a human decision ends its turn with this status and a
+    non-empty ``question``; the orchestrator escalates and resumes it with the
+    answer. Headless ``claude -p`` workers cannot pause mid-turn to ask, so the
+    only supported channel is report-then-resume (docs/research/design-deviations.md).
+    """
+
+    status: Literal["completed", "blocked", "failed", "needs_input"]
     summary: str = ""
+    question: str = ""  # required when status == "needs_input"
     verification_results: list[VerificationResult] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _needs_input_requires_question(self) -> CoderReport:
+        if self.status == "needs_input" and not self.question.strip():
+            raise ValueError("status 'needs_input' requires a non-empty 'question'")
+        return self
 
 
 class ReviewerVerdict(BaseModel):
@@ -123,3 +137,67 @@ class ReviewerVerdict(BaseModel):
     required_changes: list[str] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
     notes: str = ""
+
+
+# --------------------------------------------------------------- escalation (Phase D)
+
+
+class EscalationKind(StrEnum):
+    """Every hard moment a run can escalate to the operator (plan Phase D).
+
+    The first six are *decision* points (a rewrite/respawn/fail would otherwise
+    happen autonomously); the last three are *approval gates* only the
+    ``interactive`` tier raises before an otherwise-automatic step.
+    """
+
+    CODER_QUESTION = "coder_question"  # coder emitted needs_input + a question
+    CODER_BLOCKED = "coder_blocked"  # coder reported blocked/failed
+    REVIEWER_TOO_HARD = "reviewer_too_hard"
+    REVIEWER_STRUCTURAL = "reviewer_structural"
+    MERGE_CONFLICT = "merge_conflict"
+    CAPS_EXHAUSTED = "caps_exhausted"  # generation/rewrite cap about to FAIL the group
+    GROUP_START = "group_start"  # interactive: approve before launch
+    RESPAWN = "respawn"  # interactive: approve a breaker respawn
+    MERGE_APPROVE = "merge_approve"  # interactive: approve before merge
+
+
+class HumanAction(StrEnum):
+    """What the operator decides for an escalation (plan Phase D v1 action set)."""
+
+    ANSWER = "answer"  # free-text guidance: resume/rewrite guided by it, or "proceed"
+    SKIP = "skip"  # fail this group; dependents strand, the run continues
+    ABORT = "abort"  # stop the whole run cleanly; state stays resumable
+
+
+class EscalationContext(BaseModel):
+    """Pointers (not payloads) the operator opens to decide — the orchestrator's
+    ferry-control-not-content rule extended to the human channel."""
+
+    report_path: str | None = None
+    verdict_path: str | None = None
+    diff_summary: str = ""
+    surprises: list[Surprise] = Field(default_factory=list)
+
+
+class EscalationRequest(BaseModel):
+    """One curated question on the run's single human channel (plan Phase D:
+    ``workers_via_orchestrator``). Written as ``escalations/request-<id>.json``."""
+
+    id: str
+    run_id: str
+    group_id: str
+    generation: int
+    kind: EscalationKind
+    prompt: str  # human-readable summary of the decision to make
+    context: EscalationContext = Field(default_factory=EscalationContext)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class EscalationResponse(BaseModel):
+    """The operator's answer, written as ``escalations/response-<id>.json``; the
+    blocked group's coroutine picks it up by correlation ``id`` and resumes."""
+
+    id: str
+    action: HumanAction
+    answer: str = ""
+    answered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

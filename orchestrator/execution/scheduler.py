@@ -36,6 +36,13 @@ class NoProgressError(SchedulerError):
     """Nothing running, nothing ready, run not complete — a wedged run."""
 
 
+class RunAbort(SchedulerError):
+    """The operator aborted the whole run (plan Phase D). Unlike a group failure
+    it is not swallowed into ``FAILED``: it propagates out of ``_run_group`` and
+    ``run()`` (whose ``finally`` cancels in-flight tasks) so the CLI can report a
+    clean, resumable stop rather than a wedge."""
+
+
 class GroupState(StrEnum):
     """Group lifecycle (scheduler-owned; plan state diagram)."""
 
@@ -219,7 +226,9 @@ class Scheduler:
                 done, _ = await asyncio.wait(in_flight.keys(), return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     gid = in_flight.pop(task)
-                    final = task.result()  # _run_group never raises
+                    # _run_group only ever raises RunAbort (operator abort); that
+                    # propagates to the finally below, cancelling in-flight tasks.
+                    final = task.result()
                     if final == GroupState.COMPLETED:
                         for dependent in sorted(self._dependents[gid]):
                             remaining[dependent] -= 1
@@ -244,6 +253,11 @@ class Scheduler:
         )
         try:
             final = await self.executor(context)
+        except RunAbort:
+            # An operator abort stops the run, not just this group; let it
+            # propagate. The broker's abort event (set where RunAbort was raised)
+            # has already released any blocked siblings so their tasks can cancel.
+            raise
         except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
             self.set_state(gid, GroupState.FAILED, failure=f"{type(exc).__name__}: {exc}")
             return GroupState.FAILED

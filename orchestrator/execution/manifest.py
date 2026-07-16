@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -54,8 +55,30 @@ class RunPaths:
     def logs_dir(self) -> Path:
         return self.run_dir / "logs"
 
+    @property
+    def event_log_path(self) -> Path:
+        """The live human-readable event log the main session tails (plan Phase D)."""
+        return self.logs_dir / "run.log"
+
+    @property
+    def escalations_dir(self) -> Path:
+        """Correlation-ID request/response files for the human channel (plan Phase D)."""
+        return self.run_dir / "escalations"
+
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
+
+
+def log_event(paths: RunPaths, text: str) -> None:
+    """Append one timestamped line to the run's event log (plan Phase D).
+
+    O_APPEND makes single small writes atomic across the process's group threads,
+    so concurrent group transitions interleave line-by-line rather than tearing.
+    """
+    paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    line = f"{datetime.now(UTC).isoformat(timespec='seconds')}  {text}\n"
+    with paths.event_log_path.open("a") as fh:
+        fh.write(line)
 
 
 class ManifestStore:

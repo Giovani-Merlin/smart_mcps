@@ -20,12 +20,23 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from orchestrator.config import OrchestratorConfig, load_config
-from orchestrator.execution.manifest import ManifestStore, RunPaths
+from orchestrator.execution.escalation import (
+    EscalationBroker,
+    EscalationPolicy,
+    pending_escalations,
+)
+from orchestrator.execution.manifest import (
+    ManifestStore,
+    RunPaths,
+    atomic_write_text,
+    log_event,
+)
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    RunAbort,
     RunState,
     Scheduler,
     SchedulerError,
@@ -42,7 +53,15 @@ from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
 from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
 from orchestrator.grouping.speccer import write_specs
-from orchestrator.model import Group, GroupingResult, ReviewIntensity, RunManifest, Surprise
+from orchestrator.model import (
+    EscalationResponse,
+    Group,
+    GroupingResult,
+    HumanAction,
+    ReviewIntensity,
+    RunManifest,
+    Surprise,
+)
 
 
 def main(
@@ -80,6 +99,18 @@ def main(
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
     status_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    answer_cmd = subparsers.add_parser("answer", help="answer a pending escalation (HITL)")
+    answer_cmd.add_argument("run_id", help="the run holding the escalation")
+    answer_cmd.add_argument("esc_id", help="the escalation id (see `status`)")
+    answer_cmd.add_argument(
+        "--action",
+        default="answer",
+        choices=[action.value for action in HumanAction],
+        help="answer (resume/guide) | skip (fail the group) | abort (stop the run)",
+    )
+    answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
+    answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
     args = parser.parse_args(argv)
     if args.command == "group":
         return _cmd_group(args, llm_runner, client)
@@ -89,6 +120,8 @@ def main(
         return _cmd_run(args, llm_runner, resume=True)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "answer":
+        return _cmd_answer(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 
@@ -112,6 +145,29 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         choices=[intensity.value for intensity in ReviewIntensity],
         help="override the computed review intensity for every group",
     )
+    cmd.add_argument(
+        "--hitl",
+        action="store_true",
+        help="enable human-in-the-loop escalation (default tier: on_stuck)",
+    )
+    cmd.add_argument(
+        "--intensity",
+        default=None,
+        choices=["autonomous", "on_failure", "on_stuck", "interactive"],
+        help="escalation tier; a non-autonomous tier implies --hitl",
+    )
+    cmd.add_argument(
+        "--escalation-source",
+        default=None,
+        choices=["orchestrator_only", "workers_via_orchestrator"],
+        help="who may request escalation (default: workers_via_orchestrator)",
+    )
+    cmd.add_argument(
+        "--escalation-timeout",
+        type=float,
+        default=None,
+        help="seconds to wait for an answer before the on_timeout fallback (default: block)",
+    )
 
 
 def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> OrchestratorConfig:
@@ -126,11 +182,27 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
+    escalation_updates: dict = {}
+    intensity = getattr(args, "intensity", None)
+    if intensity:
+        escalation_updates["intensity"] = intensity
+    # --hitl enables; a non-autonomous --intensity implies it; --intensity
+    # autonomous forces it off (an explicit "run unattended" even over a config file).
+    if getattr(args, "hitl", False) or (intensity and intensity != "autonomous"):
+        escalation_updates["enabled"] = True
+    if intensity == "autonomous":
+        escalation_updates["enabled"] = False
+    if getattr(args, "escalation_source", None):
+        escalation_updates["source"] = args.escalation_source
+    if getattr(args, "escalation_timeout", None) is not None:
+        escalation_updates["timeout_s"] = args.escalation_timeout
     updates: dict = {}
     if execution_updates:
         updates["execution"] = config.execution.model_copy(update=execution_updates)
     if estimator_updates:
         updates["estimator"] = config.estimator.model_copy(update=estimator_updates)
+    if escalation_updates:
+        updates["escalation"] = config.escalation.model_copy(update=escalation_updates)
     return config.model_copy(update=updates) if updates else config
 
 
@@ -321,6 +393,21 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         store.save(manifest)
 
+    if config.escalation.enabled:
+        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
+        policy: EscalationPolicy | None = EscalationPolicy(
+            config.escalation.intensity, config.escalation.source
+        )
+        log_event(
+            paths,
+            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
+            f"source={config.escalation.source}, "
+            f"timeout={config.escalation.timeout_s}",
+        )
+    else:
+        broker = None
+        policy = None
+
     workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger)
     deps = ReviewDeps(
         run_id=run_id,
@@ -337,15 +424,26 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             plan_text, llm_runner or claude_json_runner, orch_dir / "failures"
         ),
         base_ref_for=base_ref_for,
+        broker=broker,
+        policy=policy,
     )
     executor_slot.append(make_executor(deps))
 
     print(
         f"run {run_id}: {len(groups)} group(s), concurrency "
         f"{1 if config.execution.sequential else config.execution.concurrency}"
+        + (f", HITL={config.escalation.intensity}" if config.escalation.enabled else "")
     )
     try:
         asyncio.run(scheduler.run())
+    except RunAbort as exc:
+        # The operator stopped the run; state stays resumable (mid-flight groups
+        # restart from ready on `resume`).
+        print(f"run aborted by operator: {exc}", file=sys.stderr)
+        log_event(paths, f"run {run_id} aborted by operator: {exc}")
+        _print_outcomes(scheduler.state)
+        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+        return 2
     except SchedulerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         _print_outcomes(scheduler.state)
@@ -472,6 +570,36 @@ def _cmd_status(args: argparse.Namespace) -> int:
                     f" (retired: {session.retirement_reason})" if session.retirement_reason else ""
                 )
                 print(f"  session {session.name} [{session.role.value}]{retired}")
+
+    pending = pending_escalations(paths)
+    if pending:
+        print("\npending escalations (answer with `answer <run_id> <esc_id> ...`):")
+        for request in pending:
+            print(f"  {request.id} [{request.kind.value}] {request.group_id}: {request.prompt}")
+    return 0
+
+
+# --------------------------------------------------------------------- answer
+
+
+def _cmd_answer(args: argparse.Namespace) -> int:
+    """Write a response file the run's blocked coroutine picks up by correlation id.
+
+    A clean, testable channel for the main session (or a foreground operator) to
+    resolve an escalation without touching the running process."""
+    paths = RunPaths(args.repo.resolve(), args.run_id)
+    request_path = paths.escalations_dir / f"request-{args.esc_id}.json"
+    if not request_path.is_file():
+        print(
+            f"error: no escalation {args.esc_id} for run {args.run_id} "
+            f"(check `status {args.run_id}`)",
+            file=sys.stderr,
+        )
+        return 1
+    response = EscalationResponse(id=args.esc_id, action=HumanAction(args.action), answer=args.text)
+    response_path = paths.escalations_dir / f"response-{args.esc_id}.json"
+    atomic_write_text(response_path, response.model_dump_json(indent=2) + "\n")
+    print(f"answered {args.esc_id}: {args.action}")
     return 0
 
 

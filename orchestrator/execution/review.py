@@ -17,13 +17,21 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
-from orchestrator.execution.manifest import ManifestStore, artifact_name, record_session
+from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
+from orchestrator.execution.manifest import (
+    ManifestStore,
+    artifact_name,
+    log_event,
+    record_session,
+)
 from orchestrator.execution.prompting import (
+    render_coder_answer_prompt,
     render_coder_prompt,
     render_extra_pass_prompt,
     render_handoff_prompt,
@@ -31,8 +39,9 @@ from orchestrator.execution.prompting import (
     render_reviewer_prompt,
     render_revision_prompt,
 )
-from orchestrator.execution.scheduler import Executor, GroupContext, GroupState
+from orchestrator.execution.scheduler import Executor, GroupContext, GroupState, RunAbort
 from orchestrator.execution.sessions import (
+    RoundResult,
     SessionRunner,
     nudge_until_report,
     session_display_name,
@@ -40,7 +49,12 @@ from orchestrator.execution.sessions import (
 from orchestrator.execution.worktrees import diff_stat
 from orchestrator.model import (
     CoderReport,
+    EscalationContext,
+    EscalationKind,
+    EscalationRequest,
+    EscalationResponse,
     Group,
+    HumanAction,
     ReviewerVerdict,
     ReviewIntensity,
     RunManifest,
@@ -104,6 +118,9 @@ class ReviewDeps:
     merge_group: Callable[[Group, Path], None]  # raises MergeConflict
     rewrite_spec: Callable[[Group, list[Surprise]], Group]
     base_ref_for: Callable[[Group], str]
+    # HITL seam (plan Phase D): both None ⇒ byte-identical autonomous behavior.
+    broker: EscalationBroker | None = None
+    policy: EscalationPolicy | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -132,14 +149,21 @@ class _GroupExecution:
         self.coder_sid = ""
         self.coder_entry: SessionEntry | None = None
         self.reviewer_sid: str | None = None
+        self._questions = 0  # needs_input rounds this generation (uncounted vs the breaker)
+        self._grant_notes: list[str] = []  # operator guidance for an over-cap generation
 
     async def run(self) -> GroupState:
+        # interactive tier only: approve before anything is launched.
+        await self._approve_gate(
+            EscalationKind.GROUP_START, f"launch group {self.gid} ({self.group.name})?"
+        )
         if self.deps.board.pending_for(self.gid):
             await self._rewrite("upstream surprise named this group before launch")
         self.workspace = self.deps.workspace_for(self.group)
         while True:
             merged = await self._run_generation()
             if merged:
+                self._log(f"group {self.gid}: completed")
                 return GroupState.COMPLETED
             # a rewrite or a retirement happened inside; loop spawns the next session
 
@@ -161,6 +185,7 @@ class _GroupExecution:
         self.coder_sid = first.session_id
         self.coder_entry = self._record(SessionRole.CODER, first.session_id)
         self.reviewer_sid = None
+        self._log(f"group {self.gid} generation {self.generation}: coder launched")
         rounds = 0
         result = first
 
@@ -168,16 +193,24 @@ class _GroupExecution:
             report, result = await asyncio.to_thread(
                 nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
             )
+
+            if report.status == "needs_input":
+                # The coder-question channel: escalate, and on an answer resume the
+                # same coder warm without counting a revision round (clarifications
+                # never trip the breaker; token usage still accumulates).
+                resumed = await self._resolve_needs_input(report)
+                if resumed is None:
+                    return False  # downgraded / unescalated → a rewrite already happened
+                result = resumed
+                continue
+
             rounds += 1
             report_path = self.deps.store.save_group_artifact(
                 self.gid, artifact_name("report", self.generation, rounds), report
             )
             self._spread(report.surprises)
             if report.status != "completed":
-                await self._rewrite(
-                    f"coder reported status {report.status}",
-                    extra=[_context_surprise(self.gid, f"coder {report.status}: {report.summary}")],
-                )
+                await self._on_coder_stuck(report, report_path)
                 return False
 
             verdict, verdict_path = await self._review_round(report_path, rounds)
@@ -187,20 +220,18 @@ class _GroupExecution:
                     # pending approval is not accepted (plan U7 scenario).
                     await self._rewrite("surprise named this group during review")
                     return False
+                await self._approve_gate(
+                    EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
+                )
                 return await self._merge()
             if verdict.status in ("too_hard", "structural"):
-                await self._rewrite(
-                    f"reviewer verdict: {verdict.status}",
-                    extra=[
-                        _context_surprise(self.gid, f"reviewer {verdict.status}: {verdict.notes}")
-                    ],
-                )
+                await self._on_reviewer_hard(verdict, verdict_path)
                 return False
 
             # changes_required — breaker gate before the next warm round
             reason = self._breaker_reason(rounds)
             if reason:
-                self._retire(reason)
+                await self._retire(reason)
                 self._prepare_handoff(report, verdict)
                 return False
             assert verdict_path is not None
@@ -286,15 +317,39 @@ class _GroupExecution:
                 kind="merge_conflict", description=str(exc), affected_groups=exc.affected_groups
             )
             self._spread([conflict])
-            await self._rewrite(f"merge conflict: {exc}", extra=[conflict])
+            response = await self._escalate(
+                EscalationKind.MERGE_CONFLICT,
+                prompt=f"merge conflict for {self.gid}: {exc}",
+                surprises=[conflict],
+            )
+            extra = [conflict]
+            if response is not None:
+                extra.append(_operator_surprise(self.gid, response.answer))
+            await self._rewrite(f"merge conflict: {exc}", extra=extra)
             return False
+        self._log(f"group {self.gid}: merged into the integration branch")
         return True
 
     async def _rewrite(self, why: str, extra: list[Surprise] | None = None) -> None:
         self.ctx.set_state(GroupState.REWRITING)
+        extra = list(extra or [])
         if self.rewrites >= self.deps.execution.max_rewrites:
-            raise GroupFailure(f"rewrite cap ({self.deps.execution.max_rewrites}) exhausted: {why}")
-        surprises = self.deps.board.consume(self.gid) + list(extra or [])
+            # Terminal give-up: escalate before failing. An answer grants one more
+            # (guided) rewrite; None (unescalated / autonomous timeout) fails as before.
+            response = await self._escalate(
+                EscalationKind.CAPS_EXHAUSTED,
+                prompt=(
+                    f"group {self.gid}: rewrite cap ({self.deps.execution.max_rewrites}) "
+                    f"exhausted — {why}"
+                ),
+                want_diff=True,
+            )
+            if response is None:
+                raise GroupFailure(
+                    f"rewrite cap ({self.deps.execution.max_rewrites}) exhausted: {why}"
+                )
+            extra.append(_operator_surprise(self.gid, response.answer))
+        surprises = self.deps.board.consume(self.gid) + extra
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
         self.rewrites += 1
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
@@ -311,19 +366,40 @@ class _GroupExecution:
             )
         return None
 
-    def _retire(self, reason: str) -> None:
+    async def _retire(self, reason: str) -> None:
         assert self.coder_entry is not None
         self.coder_entry.retirement_reason = reason
         self.deps.store.save(self.deps.manifest)
         if self.generation >= self.deps.breaker.max_generations:
-            raise GroupFailure(
-                f"generation cap ({self.deps.breaker.max_generations}) exhausted: {reason}"
+            # Terminal give-up: escalate before failing. An answer grants one more
+            # (guided) generation; None fails as before.
+            response = await self._escalate(
+                EscalationKind.CAPS_EXHAUSTED,
+                prompt=(
+                    f"group {self.gid}: generation cap ({self.deps.breaker.max_generations}) "
+                    f"exhausted — {reason}"
+                ),
+                want_diff=True,
+            )
+            if response is None:
+                raise GroupFailure(
+                    f"generation cap ({self.deps.breaker.max_generations}) exhausted: {reason}"
+                )
+            self._grant_notes.append(f"[operator] {response.answer}")
+        else:
+            # interactive tier only: approve the breaker respawn.
+            await self._approve_gate(
+                EscalationKind.RESPAWN,
+                f"respawn group {self.gid} at generation {self.generation + 1}?",
             )
         self._advance_generation()
 
     def _prepare_handoff(self, report: CoderReport, verdict: ReviewerVerdict) -> None:
         assert self.workspace is not None
-        outstanding = "\n".join(f"- {change}" for change in verdict.required_changes)
+        items = [f"- {change}" for change in verdict.required_changes]
+        items += [f"- {note}" for note in self._grant_notes]  # operator guidance, if any
+        self._grant_notes = []
+        outstanding = "\n".join(items)
         self.handoff_prompt = render_handoff_prompt(
             self.deps.run_id,
             self.group,
@@ -333,6 +409,136 @@ class _GroupExecution:
             outstanding=outstanding,
             diff_summary=diff_stat(self.workspace, self.deps.base_ref_for(self.group)),
         )
+
+    # ------------------------------------------------------------ escalation
+
+    async def _resolve_needs_input(self, report: CoderReport) -> RoundResult | None:
+        """Coder ended its turn with a question. Returns the resumed RoundResult so
+        the warm loop continues, or None when the generation is abandoned (an
+        operator answer folded into a rewrite, or the question treated as a block
+        when no human answered)."""
+        assert self.workspace is not None
+        self._questions += 1
+        report_path = self.deps.store.save_group_artifact(
+            self.gid, f"report-g{self.generation}-q{self._questions}.json", report
+        )
+        self._spread(report.surprises)
+        question = report.question or report.summary or "(no question text)"
+        # orchestrator_only owns the human channel: downgrade the question to the
+        # blocked/rewrite path instead of a warm coder resume.
+        downgraded = self.deps.policy is not None and self.deps.policy.source == "orchestrator_only"
+        kind = EscalationKind.CODER_BLOCKED if downgraded else EscalationKind.CODER_QUESTION
+        response = await self._escalate(
+            kind,
+            prompt=f'coder for {self.gid} needs input: "{question}"',
+            report_path=str(report_path),
+        )
+        if response is not None and not downgraded:
+            self.ctx.set_state(GroupState.RUNNING)
+            return await asyncio.to_thread(
+                self.deps.runner.resume,
+                session_id=self.coder_sid,
+                prompt=render_coder_answer_prompt(response.answer),
+                cwd=self.workspace,
+            )
+        extra = [_context_surprise(self.gid, f"coder needs_input: {question}")]
+        if response is not None:
+            extra.append(_operator_surprise(self.gid, response.answer))
+        await self._rewrite(f"coder needs input: {question}", extra=extra)
+        return None
+
+    async def _on_coder_stuck(self, report: CoderReport, report_path: Path) -> None:
+        """A blocked/failed coder report: escalate, then rewrite (guided if answered)."""
+        response = await self._escalate(
+            EscalationKind.CODER_BLOCKED,
+            prompt=f"coder for {self.gid} reported {report.status}: {report.summary}",
+            report_path=str(report_path),
+            want_diff=True,
+        )
+        extra = [_context_surprise(self.gid, f"coder {report.status}: {report.summary}")]
+        if response is not None:
+            extra.append(_operator_surprise(self.gid, response.answer))
+        await self._rewrite(f"coder reported status {report.status}", extra=extra)
+
+    async def _on_reviewer_hard(self, verdict: ReviewerVerdict, verdict_path: Path | None) -> None:
+        """A too_hard/structural verdict: escalate, then rewrite (guided if answered)."""
+        kind = (
+            EscalationKind.REVIEWER_TOO_HARD
+            if verdict.status == "too_hard"
+            else EscalationKind.REVIEWER_STRUCTURAL
+        )
+        response = await self._escalate(
+            kind,
+            prompt=f"reviewer for {self.gid} returned {verdict.status}: {verdict.notes}",
+            verdict_path=str(verdict_path) if verdict_path is not None else None,
+            want_diff=True,
+        )
+        extra = [_context_surprise(self.gid, f"reviewer {verdict.status}: {verdict.notes}")]
+        if response is not None:
+            extra.append(_operator_surprise(self.gid, response.answer))
+        await self._rewrite(f"reviewer verdict: {verdict.status}", extra=extra)
+
+    async def _escalate(
+        self,
+        kind: EscalationKind,
+        *,
+        prompt: str,
+        report_path: str | None = None,
+        verdict_path: str | None = None,
+        surprises: list[Surprise] | None = None,
+        want_diff: bool = False,
+    ) -> EscalationResponse | None:
+        """Escalate ``kind`` to the operator if the policy dictates.
+
+        Returns the operator's ``answer`` response, or ``None`` when the caller must
+        run its autonomous path — escalation is off for this kind, or a timeout with
+        ``on_timeout = autonomous`` fired. ``skip`` (→ GroupFailure) and ``abort``
+        (→ RunAbort) are raised here and never returned. When broker/policy are
+        absent the check short-circuits with zero side effects, so an autonomous run
+        is byte-identical to pre-Phase-D."""
+        policy, broker = self.deps.policy, self.deps.broker
+        if broker is None or policy is None or not policy.should_escalate(kind):
+            return None
+        context = EscalationContext(
+            report_path=report_path,
+            verdict_path=verdict_path,
+            diff_summary=self._diff() if want_diff else "",
+            surprises=list(surprises or []),
+        )
+        request = EscalationRequest(
+            id=uuid.uuid4().hex[:12],
+            run_id=self.deps.run_id,
+            group_id=self.gid,
+            generation=self.generation,
+            kind=kind,
+            prompt=prompt,
+            context=context,
+        )
+        response = await asyncio.to_thread(broker.raise_escalation, request)
+        if response is None:
+            return None  # timeout → autonomous fallback
+        if response.action == HumanAction.ABORT:
+            broker.trigger_abort()  # release every sibling waiter before we unwind
+            raise RunAbort(f"operator aborted the run at group {self.gid} ({kind.value})")
+        if response.action == HumanAction.SKIP:
+            raise GroupFailure(f"operator skipped group {self.gid} ({kind.value})")
+        return response
+
+    async def _approve_gate(self, kind: EscalationKind, prompt: str) -> None:
+        """Interactive-tier approval gate: an ``answer`` (or a non-escalating tier)
+        means proceed; ``skip``/``abort`` raise inside ``_escalate``."""
+        await self._escalate(kind, prompt=prompt)
+
+    def _diff(self) -> str:
+        if self.workspace is None:
+            return ""
+        return diff_stat(self.workspace, self.deps.base_ref_for(self.group))
+
+    def _log(self, text: str) -> None:
+        """Append to the run's event log — only when HITL is wired, so autonomous
+        runs create no new artifacts."""
+        if self.deps.broker is not None:
+            log_event(self.deps.store.paths, text)
 
     # ------------------------------------------------------------ bookkeeping
 
@@ -374,3 +580,9 @@ def _context_surprise(group_id: str, description: str) -> Surprise:
     """Escalation context handed to the speccer when the group itself triggered
     the rewrite (blocked/too_hard/structural) and no upstream surprise exists."""
     return Surprise(kind="other", description=description, affected_groups=[group_id])
+
+
+def _operator_surprise(group_id: str, answer: str) -> Surprise:
+    """Fold an operator's free-text guidance into the next rewrite as a surprise —
+    no ``rewrite_spec`` signature change (plan Phase D)."""
+    return Surprise(kind="other", description=f"[operator] {answer}", affected_groups=[group_id])

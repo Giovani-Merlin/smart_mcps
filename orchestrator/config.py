@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -99,6 +100,28 @@ class SessionConfig(BaseModel):
     transcript_root: str | None = None
 
 
+class EscalationConfig(BaseModel):
+    """Human-in-the-loop escalation surface (plan Phase D).
+
+    ``enabled`` is off by default: an unattended ``run`` stays fully autonomous
+    (all 190 pre-Phase-D tests unchanged). When on, the ``intensity`` tier decides
+    which hard moments pause for the operator (``autonomous`` < ``on_failure`` <
+    ``on_stuck`` < ``interactive``) and ``source`` decides whether a coder's
+    ``needs_input`` question reaches the operator (``workers_via_orchestrator``)
+    or is downgraded to a blocked-style rewrite (``orchestrator_only``).
+
+    ``timeout_s = None`` blocks indefinitely (the HITL default — a live operator
+    is expected); when set, an unanswered escalation falls back per ``on_timeout``.
+    """
+
+    enabled: bool = False
+    intensity: Literal["autonomous", "on_failure", "on_stuck", "interactive"] = "on_stuck"
+    source: Literal["orchestrator_only", "workers_via_orchestrator"] = "workers_via_orchestrator"
+    timeout_s: float | None = None
+    on_timeout: Literal["autonomous", "skip", "abort"] = "autonomous"
+    poll_interval_s: float = 1.0
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -107,6 +130,7 @@ class OrchestratorConfig(BaseModel):
     breaker: BreakerConfig = Field(default_factory=BreakerConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:

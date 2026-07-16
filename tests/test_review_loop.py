@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
+from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import ManifestStore, RunPaths
 from orchestrator.execution.review import (
     GroupFailure,
@@ -21,10 +22,14 @@ from orchestrator.execution.review import (
     SurpriseBoard,
     make_executor,
 )
-from orchestrator.execution.scheduler import GroupContext, GroupState
+from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
 from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionUsage
 from orchestrator.model import (
+    EscalationKind,
+    EscalationRequest,
+    EscalationResponse,
     Group,
+    HumanAction,
     ReviewIntensity,
     RunManifest,
     Surprise,
@@ -32,13 +37,17 @@ from orchestrator.model import (
 )
 
 
-def coder_report(status: str = "completed", surprises: list[dict] | None = None) -> str:
-    body = {
+def coder_report(
+    status: str = "completed", surprises: list[dict] | None = None, question: str = ""
+) -> str:
+    body: dict = {
         "status": status,
         "summary": "round done",
         "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
         "surprises": surprises or [],
     }
+    if question:
+        body["question"] = question
     return f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>'
 
 
@@ -106,10 +115,48 @@ def make_group(gid: str = "g1", intensity=ReviewIntensity.PAIRED, **overrides) -
     return Group(**defaults)
 
 
+class StubBroker:
+    """Canned operator: returns a scripted response keyed by escalation kind, or
+    None (→ autonomous fallback). Records every request it was asked to raise."""
+
+    def __init__(self, responses: dict[EscalationKind, EscalationResponse | None] | None = None):
+        self.responses = responses or {}
+        self.raised: list[EscalationRequest] = []
+        self.aborted = False
+
+    def raise_escalation(self, request: EscalationRequest) -> EscalationResponse | None:
+        self.raised.append(request)
+        return self.responses.get(request.kind)
+
+    def trigger_abort(self) -> None:
+        self.aborted = True
+
+
+def answer(text: str = "") -> EscalationResponse:
+    return EscalationResponse(id="x", action=HumanAction.ANSWER, answer=text)
+
+
+def skip() -> EscalationResponse:
+    return EscalationResponse(id="x", action=HumanAction.SKIP)
+
+
+def abort() -> EscalationResponse:
+    return EscalationResponse(id="x", action=HumanAction.ABORT)
+
+
 class Harness:
     """Deps + context wiring shared by every scenario."""
 
-    def __init__(self, tmp_path: Path, runner: StubRunner, *, breaker=None, execution=None):
+    def __init__(
+        self,
+        tmp_path: Path,
+        runner: StubRunner,
+        *,
+        breaker=None,
+        execution=None,
+        broker: StubBroker | None = None,
+        policy: EscalationPolicy | None = None,
+    ):
         self.runner = runner
         self.store = ManifestStore(RunPaths(tmp_path, "r1"))
         self.manifest = RunManifest(run_id="r1", plan_path="p.md", base_session_id="base-0")
@@ -144,6 +191,8 @@ class Harness:
             merge_group=merge_group,
             rewrite_spec=rewrite_spec,
             base_ref_for=lambda group: "main",
+            broker=broker,
+            policy=policy,
         )
 
     def context(self, group: Group) -> GroupContext:
@@ -428,4 +477,142 @@ async def test_blocked_coder_report_escalates_to_rewriting(tmp_path):
     harness = Harness(tmp_path, runner)
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
+    assert len(harness.rewritten) == 1
+
+
+# ------------------------------------------------------------ HITL escalation (Phase D)
+
+
+def on_stuck(source: str = "workers_via_orchestrator") -> EscalationPolicy:
+    return EscalationPolicy("on_stuck", source)
+
+
+@pytest.mark.asyncio
+async def test_needs_input_answer_resumes_the_coder_warm_and_completes(tmp_path):
+    # The coder-question channel: escalate → answer → resume the SAME session with
+    # the answer, no extra manifest entry, clarification uncounted by the breaker.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [
+                coder_report("needs_input", question="Which cache?"),
+                coder_report(),
+            ],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CODER_QUESTION: answer("use the LRU")})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+
+    # exactly one escalation, of the question kind
+    assert [req.kind for req in broker.raised] == [EscalationKind.CODER_QUESTION]
+    # no extra session was recorded for the warm resume
+    assert [s.name for s in harness.manifest.groups["g1"].sessions] == [
+        "r1-g1-coder-g1",
+        "r1-g1-reviewer-g1",
+    ]
+    # the coder's second prompt carried the operator's answer
+    assert "use the LRU" in runner.prompts["sess-1"][1]
+    # the question report persisted as a q-artifact, distinct from round artifacts
+    assert (harness.store.paths.group_dir("g1") / "report-g1-q1.json").is_file()
+    assert harness.rewritten == []  # a clarification never rewrites the spec
+
+
+@pytest.mark.asyncio
+async def test_reviewer_too_hard_skip_fails_the_group(tmp_path):
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("too_hard")]}
+    )
+    broker = StubBroker({EscalationKind.REVIEWER_TOO_HARD: skip()})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    with pytest.raises(GroupFailure, match="operator skipped"):
+        await harness.run(make_group())
+    assert [req.kind for req in broker.raised] == [EscalationKind.REVIEWER_TOO_HARD]
+    assert harness.rewritten == []  # skip fails outright, no rewrite
+
+
+@pytest.mark.asyncio
+async def test_blocked_coder_abort_raises_run_abort_and_trips_the_broker(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report("blocked")]})
+    broker = StubBroker({EscalationKind.CODER_BLOCKED: abort()})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    with pytest.raises(RunAbort):
+        await harness.run(make_group())
+    assert broker.aborted is True  # siblings' waiters were released before unwinding
+
+
+@pytest.mark.asyncio
+async def test_caps_exhausted_answer_grants_one_more_generation(tmp_path):
+    # generation cap of 1 would fail the group; the operator's answer grants gen-2.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("changes_required", ["again"])],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CAPS_EXHAUSTED: answer("try a smaller diff")})
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(max_rounds_per_generation=1, max_generations=1),
+        broker=broker,
+        policy=on_stuck(),
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.generations == [2]
+    assert [req.kind for req in broker.raised] == [EscalationKind.CAPS_EXHAUSTED]
+    # the grant's guidance rode into the generation-2 handoff
+    assert "try a smaller diff" in runner.prompts["sess-3"][0]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_only_downgrades_needs_input_to_the_rewrite_path(tmp_path):
+    # With orchestrator_only, a coder question never becomes a warm resume: it is
+    # escalated as coder_blocked and the answer guides a rewrite instead.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report("needs_input", question="Which cache?")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CODER_BLOCKED: answer("use the LRU")})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck("orchestrator_only"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    # downgraded: the question surfaced as coder_blocked, never coder_question
+    assert [req.kind for req in broker.raised] == [EscalationKind.CODER_BLOCKED]
+    # no warm resume happened (the first coder ran exactly one prompt)
+    assert len(runner.prompts["sess-1"]) == 1
+    # the operator's guidance folded into the rewrite
+    assert len(harness.rewritten) == 1
+    descriptions = [s.description for s in harness.rewritten[0]]
+    assert any("[operator] use the LRU" in d for d in descriptions)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_policy_never_consults_the_broker(tmp_path):
+    # Regression guard: a broker is present but the policy is autonomous, so the
+    # blocked/too_hard/conflict paths run exactly as they did pre-Phase-D.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report("blocked")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CODER_BLOCKED: abort()})  # would abort if consulted
+    harness = Harness(
+        tmp_path,
+        runner,
+        broker=broker,
+        policy=EscalationPolicy("autonomous", "workers_via_orchestrator"),
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED  # autonomous rewrite → gen-2 → approved
+    assert broker.raised == []  # the policy short-circuited before any escalation
     assert len(harness.rewritten) == 1

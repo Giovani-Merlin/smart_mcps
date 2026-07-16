@@ -69,6 +69,12 @@ def render_revision_prompt(verdict_path: str, required_changes: list[str]) -> st
     )
 
 
+def render_coder_answer_prompt(answer: str) -> str:
+    """Resume trigger feeding an operator's answer back to a coder that ended its
+    turn with ``needs_input`` (plan Phase D)."""
+    return Template(load_template("answer")).substitute(answer=answer)
+
+
 def render_re_review_prompt(report_path: str) -> str:
     return Template(load_template("re_review")).substitute(report_path=report_path)
 

@@ -14,13 +14,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from orchestrator.cli import main
+from orchestrator.execution.escalation import pending_escalations
+from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.grouping.graphing import CodegraphClient
-from orchestrator.model import ReviewIntensity
+from orchestrator.model import EscalationResponse, HumanAction, ReviewIntensity
 from test_cli import make_group, write_run_artifacts
 from test_grouper_pipeline import PLAN_TEXT, StubLlm, codegraph_response
 
@@ -94,14 +98,17 @@ def coder_entry(
     surprises: list[dict] | None = None,
     files: dict[str, str] | None = None,
     commit: str | None = None,
+    question: str = "",
     **extra,
 ) -> dict:
-    body = {
+    body: dict = {
         "status": status,
         "summary": "scripted round",
         "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
         "surprises": surprises or [],
     }
+    if question:
+        body["question"] = question
     entry: dict = {
         "result": f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>',
         **extra,
@@ -453,3 +460,121 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     assert manifest["base_session_id"]
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
+
+
+# ------------------------------------------------------------------ HITL (Phase D)
+
+
+def _drive_escalations(
+    paths: RunPaths, thread: threading.Thread, plan: dict[str, tuple[str, str]]
+) -> list[str]:
+    """Background 'operator' mirroring the main-session supervision loop: while the
+    run thread is alive, answer each new pending escalation per `plan` (keyed by
+    escalation kind → (action, text))."""
+    handled: list[str] = []
+    seen: set[str] = set()
+    deadline = time.monotonic() + 20.0
+    while (thread.is_alive() or pending_escalations(paths)) and time.monotonic() < deadline:
+        for request in pending_escalations(paths):
+            if request.id in seen:
+                continue
+            action, text = plan.get(request.kind.value, ("answer", ""))
+            atomic_write_text(
+                paths.escalations_dir / f"response-{request.id}.json",
+                EscalationResponse(
+                    id=request.id, action=HumanAction(action), answer=text
+                ).model_dump_json(),
+            )
+            seen.add(request.id)
+            handled.append(request.kind.value)
+        time.sleep(0.02)
+    return handled
+
+
+def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
+    """The live supervision loop, driven deterministically: a coder `needs_input`
+    question is answered (coder resumes and completes) and a reviewer `too_hard`
+    group is skipped (fails, run continues)."""
+    run_id = "rh"
+    write_run_artifacts(repo, [make_group("g1"), make_group("g2")])
+    write_config(repo, fake_home, "[escalation]\npoll_interval_s = 0.02\n")
+
+    # g1: coder asks a question, then after the answer-resume, commits and completes
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(status="needs_input", question="Which serializer should I use?"),
+        coder_entry(files={"g1.out": "done\n"}, commit="g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    # g2: coder completes, reviewer says too_hard → operator skips the group
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.out": "done\n"}, commit="g2: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g2", "reviewer"), verdict_entry("too_hard"))
+
+    paths = RunPaths(repo, run_id)
+    outcome: dict = {}
+
+    def run() -> None:
+        outcome["code"] = main(
+            ["run", "--repo", str(repo), "--run-id", run_id, "--hitl", "--sequential"],
+            llm_runner=StubLlm(),
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    handled = _drive_escalations(
+        paths,
+        thread,
+        {
+            "coder_question": ("answer", "use the JSON serializer"),
+            "reviewer_too_hard": ("skip", ""),
+        },
+    )
+    thread.join(timeout=25)
+    assert not thread.is_alive()
+
+    # g1 completed after the answer; g2 failed after the skip; run continued
+    assert outcome["code"] == 1
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    assert state["groups"]["g2"]["state"] == "failed"
+    assert "operator skipped" in state["groups"]["g2"]["failure"]
+    assert set(handled) == {"coder_question", "reviewer_too_hard"}
+
+    # the coder was resumed warm with the operator's answer (resume rounds carry no
+    # --name, so search every call's prompt), and no extra session was forked
+    assert any("use the JSON serializer" in call["prompt"] for call in calls_of(fake_home))
+    g1_sessions = manifest_of(repo, run_id)["groups"]["g1"]["sessions"]
+    assert [s["role"] for s in g1_sessions] == ["coder", "reviewer"]
+
+    # the request/response artifacts and the event log are readable
+    esc_dir = repo / ".orchestrator" / "runs" / run_id / "escalations"
+    assert list(esc_dir.glob("request-*.json")) and list(esc_dir.glob("response-*.json"))
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    assert "ESCALATION" in run_log and "answered" in run_log
+
+
+def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
+    """`--intensity autonomous` runs exactly like a no-flag run: no escalation
+    channel, no event log — the injected seam is fully absent."""
+    run_id = "ra"
+    write_run_artifacts(repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)])
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "x\n"}, commit="g1: work"),
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--intensity", "autonomous"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    assert not (run_dir / "escalations").exists()
+    assert not (run_dir / "logs" / "run.log").exists()

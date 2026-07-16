@@ -13,8 +13,12 @@ End your final message with EXACTLY ONE report block, after any prose:
 
 Rules for the block:
 
-- The `status` attribute is one of completed | blocked | failed and must match the
-  JSON body's "status" field.
+- The `status` attribute is one of completed | blocked | failed | needs_input and
+  must match the JSON body's "status" field.
+- Use `needs_input` only when a decision only a human can make blocks you (an
+  ambiguous requirement, a product trade-off, missing access). Put the single
+  specific question in a top-level "question" field; the run pauses and resumes you
+  with the operator's answer. Do not use it for anything you can resolve yourself.
 - Every verification item you were given must appear in "verification_results"
   with status pass | fail | skipped.
 - A surprise is a finding that likely invalidates another group's assignment — an
