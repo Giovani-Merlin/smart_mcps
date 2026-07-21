@@ -504,6 +504,31 @@ It is the wrong default here because **the worktree survives with every commit i
 generation rather than requiring the operator to know the file format. As shipped, the
 orchestrator throws away a recoverable situation and asks a human to repair it by hand.
 
+**This is not a rare edge — it is the common case.** The Claude subscription usage limit
+(the 5-hour session cap) will be hit mid-run routinely on any real plan. When it is, the
+`claude -p` worker fails at the envelope level, the scheduler records the group as
+`FAILED`, and — because `FAILED` is terminal (`scheduler.py:177` only resets non-terminal,
+non-pending groups to `READY` on resume) — a plain `resume` will **not** pick that group
+back up. Every usage-limit interruption therefore currently requires hand-editing
+`state.json`. Since the interruption is expected to recur often, `resume` should treat a
+group whose branch has commits ahead of its fork point as re-enterable by default, and
+should special-case a usage-limit envelope error distinctly from a genuine work failure.
+
+**Verified resume mechanics (so the fix preserves them):**
+
+- The **base session** (shared context) is reused on resume, not recompiled — `_cmd_run`
+  reads `base_session_id` from the manifest (`cli.py:374`).
+- The per-group **worktree and its branch are reused**, not recreated — `create_worktree`
+  is called with the group's existing branch, and the diff base becomes its original
+  fork-point merge-base (`cli.py:459` docstring). So committed work is never lost on resume.
+- A re-entered group starts a **fresh coder generation forked from base**, which re-orients
+  itself from the git state of the worktree (where prior units are already committed)
+  rather than from the timed-out session's conversation. Within a generation, rounds
+  resume the same coder session (`review.py:240`); only a new generation forks fresh.
+- The **new `session.timeout_s` is picked up on resume** — the `SessionRunner` is rebuilt
+  from config on every `run`/`resume` invocation (`cli.py:328`), so bumping the timeout and
+  resuming takes effect immediately.
+
 ### D10 — A unit that adds a dependency cannot install it (Medium)
 
 U1's job included adding `fastapi` to `pyproject.toml`, and it did. But the venv lives at
@@ -555,5 +580,28 @@ target repo sets `sequential = true` and `timeout_s = 900.0`, and config beats d
 won. Worth noting as an operator trap: the run banner does print `concurrency 1`, but only
 *after* launch, and the value that mattered — a 900s timeout on an 87.7k-token group — is
 never surfaced at all.
+
+### Config change applied after `obs1` (2026-07-22)
+
+In response to D8, the target repo's `.orchestrator/config.toml` now sets
+`session.timeout_s = 7200.0` (2h/round) and `estimator.token_budget = 200000`. The timeout
+is a stopgap until D8's root fix (timeout that scales with group work) lands; the operator
+flagged it as temporary.
+
+**Token-budget semantics, confirmed from the estimator** (`estimator.py:52`):
+
+```python
+def partition_budget_cap(base_tokens, config):
+    head = (base_tokens + config.spec_tokens_allowance) * config.slack_multiplier
+    return max(config.token_budget - head, 0.0)
+```
+
+`token_budget` is the **total** per-group context budget — it is *inclusive* of the shared
+base context, not on top of it. The partitioner does not let a group's summed *task* work
+(`node_work`: source bytes + per-file allowances) exceed `token_budget` **minus** the
+slacked head, where the head is the base context plus the spec allowance. So at
+`token_budget = 200000` with a ~11k-token base context and default 3k spec allowance and
+1.3 slack, the cap on a group's own task work is roughly `200000 − (11000 + 3000) × 1.3 ≈ 182000`. Raising the budget makes groups **larger and fewer**, which is exactly why it must
+travel with the D8 timeout bump — bigger groups need longer rounds.
 
 *(Append further findings here as the run progresses.)*
