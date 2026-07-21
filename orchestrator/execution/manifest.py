@@ -61,6 +61,12 @@ class RunPaths:
         return self.logs_dir / "run.log"
 
     @property
+    def groups_path(self) -> Path:
+        """This run's DAG snapshot. ``.orchestrator/groups.json`` is shared and every
+        planning cycle overwrites it, so a run keeps its own copy (ADR 0002)."""
+        return self.run_dir / "groups.json"
+
+    @property
     def escalations_dir(self) -> Path:
         """Correlation-ID request/response files for the human channel (plan Phase D)."""
         return self.run_dir / "escalations"

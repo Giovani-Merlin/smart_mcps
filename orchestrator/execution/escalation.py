@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 from orchestrator.config import EscalationConfig
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
@@ -130,6 +131,37 @@ class EscalationBroker:
         if action == "autonomous":
             return None
         return EscalationResponse(id=request.id, action=HumanAction(action))
+
+
+class EscalationError(RuntimeError):
+    """The escalation cannot be answered as asked — unknown id, or already answered."""
+
+
+def answer_escalation(
+    paths: RunPaths,
+    esc_id: str,
+    action: HumanAction | str,
+    text: str = "",
+) -> Path:
+    """Write ``response-<esc_id>.json``; the blocked coroutine picks it up by id.
+
+    Lives beside ``pending_escalations`` because the two share one rule — a
+    request is open exactly until its response file exists — and both the CLI's
+    ``answer`` subcommand and the Observatory's write endpoint call it, so that
+    rule has a single implementation.
+    """
+    directory = paths.escalations_dir
+    request_path = directory / f"request-{esc_id}.json"
+    response_path = directory / f"response-{esc_id}.json"
+    if not request_path.is_file():
+        raise EscalationError(f"no escalation {esc_id} for run {paths.run_id}")
+    if response_path.is_file():
+        # Answering twice would race the waiting group against two different
+        # decisions; the first answer stands.
+        raise EscalationError(f"escalation {esc_id} was already answered")
+    response = EscalationResponse(id=esc_id, action=HumanAction(action), answer=text)
+    atomic_write_text(response_path, response.model_dump_json(indent=2) + "\n")
+    return response_path
 
 
 def pending_escalations(paths: RunPaths) -> list[EscalationRequest]:
