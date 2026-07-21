@@ -49,8 +49,9 @@ def install_run(repo: Path, run_id: str, source: Path = FIXTURE) -> Path:
 
 def route_paths(routes) -> set[str]:
     """Flatten a route list to its paths. Included routers appear as wrapper
-    objects carrying their own ``routes``, so this recurses rather than assuming
-    one flat level."""
+    objects — depending on the FastAPI version either carrying their own
+    ``routes`` or holding the sub-router as ``original_router`` — so this
+    recurses through both rather than assuming one flat level."""
     paths: set[str] = set()
     for route in routes:
         path = getattr(route, "path", None)
@@ -59,6 +60,9 @@ def route_paths(routes) -> set[str]:
         nested = getattr(route, "routes", None)
         if nested:
             paths |= route_paths(nested)
+        included = getattr(route, "original_router", None)
+        if included is not None and getattr(included, "routes", None):
+            paths |= route_paths(included.routes)
     return paths
 
 
