@@ -29,6 +29,11 @@ from orchestrator.model import GroupingResult, RunManifest
 from orchestrator.observatory.registry import Project, find_project, load_registry
 
 
+# Every run-scoped endpoint hangs off this prefix, so the SPA's client can build
+# one URL from (project, run_id) and append the resource.
+RUN_PREFIX = "/api/projects/{project}/runs/{run_id}"
+
+
 class ObservatoryContext(BaseModel):
     """What ``create_app`` was configured with; lives on ``app.state``."""
 
