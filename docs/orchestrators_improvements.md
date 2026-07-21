@@ -1,12 +1,92 @@
-# Slice dissolution and group-DAG cycles — findings, and a study plan
+# Orchestrator — known defects and improvements
 
-Written 2026-07-21, from the session that produced
-`docs/plans/2026-07-21-001-feat-orchestrator-observatory-plan.md`. That plan shipped and
-groups cleanly; **this document is about what went wrong on the way there**, and is the
-brief for a following session that improves the grouper. Nothing here proposes changing
-the Observatory plan.
+**The register of everything wrong with, or worth improving in, the orchestrator
+system.** Living document: append findings as they surface, and delete entries when the
+fix lands. Started 2026-07-21 from the session that produced
+`docs/plans/2026-07-21-001-feat-orchestrator-observatory-plan.md`, and extended with
+findings from executing that plan through the orchestrator itself.
 
-## TL;DR
+Each defect carries a severity and, where known, a citation. Re-verify citations before
+acting — they drift.
+
+| #   | Defect                                                                  | Severity   | Status |
+| --- | ----------------------------------------------------------------------- | ---------- | ------ |
+| D1  | Codegraph index readiness is never checked — symbols silently dropped   | **High**   | Open   |
+| D2  | Slice contraction is undone by the budget splitter                      | High       | Open   |
+| D3  | Group-DAG cycles fail the run instead of being repaired                 | High       | Open   |
+| D4  | Greenfield work estimation is file-count-driven                         | Medium     | Open   |
+| D5  | No way to ask "how would this plan group?" without paying for specs     | Medium     | Open   |
+| D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee      | Low (docs) | Open   |
+| D7  | `run.log` too sparse to be a live event log; content varies by run mode | **High**   | Open   |
+
+______________________________________________________________________
+
+## D1 — Codegraph index readiness is never checked (silent, high severity)
+
+**The single most dangerous defect here, because it corrupts grouping quality without
+failing anything.**
+
+Found 2026-07-21 while running the Observatory plan through the orchestrator. The first
+`group --dry-run` after merging the HITL work reported:
+
+```
+task map: task u1-orchestrator-seams mapped unknown symbol pending_escalations — dropped
+task map: task u1-orchestrator-seams mapped unknown symbol _cmd_answer — dropped
+task map: task u1-orchestrator-seams mapped unknown symbol EscalationResponse — dropped
+task map: task u1-orchestrator-seams mapped unknown symbol HumanAction — dropped
+task map: task u6-escalation-api mapped unknown symbol EscalationRequest — dropped
+task map: task u4-sse-endpoints mapped unknown symbol log_event — dropped
+```
+
+Every one of those symbols exists. `codegraph query pending_escalations` resolved it to
+`orchestrator/execution/escalation.py:135`, and an immediate re-run of the identical
+command dropped **nothing**. The codegraph daemon had been cold-starting its index
+*during* the first run.
+
+**Mechanism.** `CodegraphClient.symbol_exists` (`orchestrator/grouping/graphing.py:122`)
+is `any(entry.get("node", {}).get("name") == name for entry in self.query(name))`, and
+`CodegraphClient._run` (`graphing.py:157`) shells out to `codegraph` with **no
+readiness gate**. An index that is empty, mid-build, or unsynced returns no results —
+which is indistinguishable from a symbol that genuinely does not exist. The symbol is
+dropped with a flag and grouping proceeds on a weaker affinity signal.
+
+**Why it stays invisible.** On a greenfield plan the flag list is already dozens of lines
+of entirely expected `does not exist yet — retained as prospective` notices. Six real
+drops scroll past inside that wall. The command exits 0, writes `groups.json`, and the
+run proceeds — with silently worse groups than the plan author specified.
+
+**Aggravating factor.** These worktrees run with `CODEGRAPH_NO_WATCH=1` (visible in
+`.codegraph/daemon.log`), so the index does *not* auto-update on file change. It refreshes
+only on explicit `codegraph sync`. Any `group` run shortly after a merge, a branch switch,
+or a fresh worktree is therefore exposed.
+
+**Workaround until fixed.** Run `codegraph sync` before any `group` invocation, and treat
+an unexpected `mapped unknown symbol` flag as an index problem, not a plan problem.
+
+**Candidate fixes**, roughly in increasing order of cost:
+
+1. Gate `run_grouping` on `codegraph status` reporting a non-zero node count, and fail
+   loudly if the index is empty. Cheap, catches the fully-cold case, misses the partial one.
+2. Have `parse_task_map` treat "the plan named a symbol the index cannot see" as a
+   *warning that fails the run by default* (`--allow-unknown-symbols` to override). A plan
+   with a verified task map should be asserting the symbol exists; if it does not, either
+   the index is stale or the plan is wrong, and **both deserve a stop**.
+3. Separate "index says no" from "index cannot answer" at the `CodegraphClient` layer, so
+   the caller can distinguish absence from unavailability. Most correct, most invasive.
+
+(2) is probably the right default: it converts a silent quality regression into a loud,
+actionable one, and the escape hatch keeps foreign plans working.
+
+______________________________________________________________________
+
+## D2–D6 — Slice dissolution and group-DAG cycles
+
+Everything below is the original slice-dissolution study, from writing the Observatory
+plan. That plan shipped and groups cleanly; this section is about what went wrong on the
+way there, and is the brief for a session that improves the grouper. Nothing here proposes
+changing the Observatory plan.
+
+### TL;DR
 
 Writing one greenfield plan took **five `group --dry-run` rounds**, three of which failed
 with `dependency cycle across groups`. Each round costs ~5 minutes, almost all of it the
@@ -29,7 +109,7 @@ Two findings matter more than the cycles:
    listing a 400-line module. Group sizing on a greenfield plan is therefore driven by how
    granularly the planner enumerated files, not by how much work there is.
 
-## What happened, round by round
+### What happened, round by round
 
 Plan: 10 units, 3 slices of 2, ~50 files, nearly all prospective (greenfield front-end +
 new backend package).
@@ -55,11 +135,11 @@ Slice `live-board` = {u4, u5} → split g1/g2. Slice `hitl` = {u6, u7} → split
 `drill-in` = {u8, u9} → split g1/g4. **Three for three dissolved.** What came out is four
 horizontal layers: one backend group and three front-end groups.
 
-## Why — the mechanism
+### Why — the mechanism
 
 All citations are current as of this commit; re-verify before acting on them.
 
-### The expensive stage runs last, and the failing stage runs first
+#### D5 — The expensive stage runs last, and the failing stage runs first
 
 `run_grouping` (`orchestrator/grouping/pipeline.py:47`) is:
 
@@ -74,7 +154,7 @@ is fully deterministic and reachable in about a second**, and every *success* pa
 minutes for specs I did not need while iterating on structure. This is the single biggest
 lever: there is no way today to ask "how would this plan group?" without paying for specs.
 
-### Slice contraction is soft, and the softening is what breaks it
+#### D2 / D6 — Slice contraction is soft, and the softening is what breaks it
 
 `DefaultPartitionStrategy.partition` (`partition.py:166-186`):
 
@@ -104,7 +184,7 @@ one node** before Louvain — a hard must-link"* — is accurate only through Lo
 **not** an invariant of the pipeline output. That gap is arguably a documentation bug on
 its own.
 
-### Why a split slice becomes a cycle
+#### D3 — Why a split slice becomes a cycle
 
 `depends_on` edges are directed and preserved. Once `u4` lands in g1 and `u5` in g2, the
 edge `u4 → u5` becomes `g1 → g2`. Cycles appear when a *different* split puts an edge back
@@ -114,7 +194,7 @@ only the quotient graph cycles. `build_group_dag` then fails the whole run.
 So the cycles were never a defect in the plans I wrote. They were the budget splitter
 cutting slice supernodes in a direction that happened to invert an edge.
 
-### Greenfield work estimation is file-count-driven
+#### D4 — Greenfield work estimation is file-count-driven
 
 `node_work` (`estimator.py:36`):
 
@@ -143,7 +223,7 @@ on summed node work is `100_000 - (base_tokens + 3_000) × 1.3` — meaningfully
 once the base context is counted. *(Worth verifying whether the per-group `est. tokens`
 printed in the report includes that head; I did not confirm this and did not rely on it.)*
 
-### `depends_on` carries no affinity — by design, but it has a consequence
+#### `depends_on` carries no affinity — by design, but it has a consequence
 
 `docs/orchestrator-task-map.md`: *"Directed dependency edges only — never affinity."* True
 in the code. The consequence is that **a unit whose only relationships are dependencies has
@@ -158,7 +238,7 @@ anchored u4/u6/u8 to u2 — and that is precisely *why* the whole backend collap
 87.7k group. The thing that made the plan groupable is the same thing that destroyed the
 verticals.
 
-### Cross-stack verticals are structurally impossible right now
+#### Cross-stack verticals are structurally impossible right now
 
 A `live-board` slice is meant to hold `events.py` (Python) and `GroupBoard.tsx` (TS). There
 is no codegraph edge between them, they share no files, and `depends_on` contributes no
@@ -166,7 +246,7 @@ affinity. The only cross-stack signal is the `implements`/`consumes` route tag. 
 *only* force holding a cross-stack slice together is slice contraction — the one thing
 `split_over_budget` is free to undo. When it does, nothing is left.
 
-## The real question to study
+### The real question to study
 
 I do not think this is settled, and I would not want the next session to start from my
 guess. The plausible positions, with what each would cost:
@@ -206,9 +286,9 @@ then H1, with H5 as an independent robustness fix. But H3 deserves a genuine hea
 "the feature did nothing in 2/2 successful runs" is evidence, and I would rather delete a
 feature than keep one that only appears to work.
 
-## Proposed harness — stop paying 5 minutes per question
+### Proposed harness — stop paying 5 minutes per question
 
-### 1. A partition-only entry point (prerequisite for everything else)
+#### 1. A partition-only entry point (prerequisite for everything else)
 
 Everything deterministic already precedes `write_specs`. Expose that:
 
@@ -222,7 +302,7 @@ This turns a 5-minute question into a sub-second one and is what makes the rest 
 is also directly useful to planning sessions: "will this plan group?" without burning
 tokens.
 
-### 2. Deterministic fixture plans (no LLM)
+#### 2. Deterministic fixture plans (no LLM)
 
 `tests/fixtures/grouping/*.md` — small plans, each isolating one behaviour, asserted
 through the partition-only path:
@@ -249,7 +329,7 @@ Property assertions worth encoding regardless of which hypothesis wins:
   discrepancy — worth re-testing now that the mapper LLM is skipped for task-map plans).
 - Under H1: no group contains a strict subset of a slice.
 
-### 3. LLM-in-the-loop scenarios (few, explicit, opt-in)
+#### 3. LLM-in-the-loop scenarios (few, explicit, opt-in)
 
 Marked `@pytest.mark.llm` and excluded from the default run, since the suite is currently
 zero-token:
@@ -259,7 +339,7 @@ zero-token:
   has the known "drops nonexistent-file mappings" behaviour and is not covered by the
   deterministic fixtures.
 
-### 4. Suggested order for the next session
+#### 4. Suggested order for the next session
 
 1. Build `--no-spec`. Everything else is gated on it.
 2. Port the five fixture plans; record current behaviour as a baseline (expect failures —
@@ -269,7 +349,7 @@ zero-token:
 5. If H1: make `split_over_budget` / `merge_small_groups` slice-aware, and fix
    `docs/orchestrator-task-map.md`, which currently overstates the must-link guarantee.
 
-## Process note for planning sessions, until this is fixed
+### Process note for planning sessions, until this is fixed
 
 Do not iterate on a plan document to satisfy the partitioner. If `group` reports a cycle,
 the useful response is to record the shape that caused it (here) and pick a plan structure
@@ -280,3 +360,104 @@ Related: `docs/orchestrator-task-map.md` (the contract), `orchestrator/grouping/
 (hub roles, contraction, splitting), `orchestrator/grouping/estimator.py` (work and cap),
 `docs/handoffs/2026-07-16-multiagent-orchestrator-phase-d-and-grouping-next.md` (the
 grouping-quality items already queued).
+
+______________________________________________________________________
+
+## Live-run observations — `obs1` (Observatory plan, 2026-07-21)
+
+The first execution of a task-map plan through the full orchestrator, on
+`test/orchestrator-frontend` with `--hitl --intensity on_stuck`. Recorded as it ran;
+findings are promoted to numbered defects above once understood.
+
+**Setup.** Four groups from the task map, matching the plan's own prediction almost
+exactly:
+
+```
+g1  observatory-backend   u1,u2,u4,u6,u8,u10   87,725 tok  paired_plus  28 items  (root)
+g2  spa-shell-and-board   u3,u5                54,111 tok  self_verify           (← g1)
+g3  escalation-panel-ui   u7                   19,059 tok  self_verify           (← g1,g2)
+g4  group-drill-in-ui     u9                   19,034 tok  self_verify           (← g1,g2)
+```
+
+Confirms the D2 finding independently: all three vertical slices dissolved again
+(`live-board` split g1/g2, `hitl` split g1/g3, `drill-in` split g1/g4), and the result is
+four horizontal layers. Second run, same outcome — this is the grouper's stable behaviour
+on cross-stack plans, not a fluke.
+
+### Observations
+
+- **D1 reproduced here** — see above. Found on this run's very first `group` invocation.
+- **The DAG is shared, not per-run (ADR 0002), and it bit immediately.** Running `group`
+  for the Observatory plan overwrote `.orchestrator/groups.json`, which still described
+  the earlier `smoke1` run. `smoke1` is the fixture U2 needs for its post-mortem tests, so
+  its DAG had to be hand-copied into `runs/smoke1/groups.json` *before* grouping, or it
+  would have silently acquired the Observatory's DAG. U1 fixes this going forward, but it
+  confirms the ADR's premise with a concrete loss: **any run predating the snapshot feature
+  has an unrecoverable DAG once a new `group` runs.**
+
+### D7 — `run.log` is far too sparse to be a live event log (High)
+
+**Found mid-`obs1`, and it directly undermines the Observatory being built by this very
+run.**
+
+After **18 minutes** of g1 executing — a coder session that had already committed U1 and
+was midway through U2 — `runs/obs1/logs/run.log` contained exactly **one line**:
+
+```
+2026-07-21T14:25:57+00:00  run obs1 started with HITL: intensity=on_stuck, source=…
+```
+
+There are only **six `log_event` call sites in the entire orchestrator**
+(`escalation.py` ×3, `cli.py` ×2, `review.py` ×1). Over a group's whole lifetime the log
+receives roughly four lines:
+
+```
+group <gid> generation <n>: coder launched     review.py:188
+group <gid>: completed                          review.py:166
+group <gid>: merged into the integration branch review.py:330
+ESCALATION <id> …                               escalation.py (only if one fires)
+```
+
+Nothing is logged for: round starts and ends, reviewer verdicts, `changes_required`
+cycles, breaker respawns, worktree creation, merge attempts, test runs, or any coder
+activity whatsoever. The long pole — a coder session that can run for tens of minutes —
+is completely silent.
+
+**Consequence for the Observatory.** U5's requirement is *"`EventLog` renders lines from
+`/events/log` in arrival order and appends new lines as they stream, keeping the view
+pinned to the newest line."* It will do exactly that, correctly, against a stream that
+emits ~4 events per group. **The live board will look frozen for 20+ minutes at a time**,
+which is precisely the experience R18's live-HITL gate is supposed to validate. The
+front-end groups will build and verify a component whose backing data is too thin for it
+to be useful — and no unit's verification will catch that, because every unit's criteria
+are met.
+
+**Second, worse wrinkle: the log's content depends on the run mode.** `_log`
+(`review.py:539`) is:
+
+```python
+def _log(self, text: str) -> None:
+    """Append to the run's event log — only when HITL is wired, so autonomous
+    runs create no new artifacts."""
+    if self.deps.broker is not None:
+        log_event(self.deps.store.paths, text)
+```
+
+So in an **autonomous** run the review loop logs *nothing* — the event log holds a single
+run-start line, forever. The Observatory therefore renders materially different data for
+the same work depending on a flag the viewer cannot see. `obs1` only has any group events
+at all because it was launched `--hitl`.
+
+**Fix direction.** Decouple event logging from the escalation broker — the "autonomous
+runs create no new artifacts" rationale is thin, since the run directory is already being
+written continuously — and add call sites for round boundaries, verdicts, respawns, and
+merges. This is orchestrator work, not Observatory work: the SSE endpoint and the UI
+component are both correct as specified, and neither can compensate for events that were
+never emitted.
+
+**Open question for the operator:** whether to widen `obs1`'s scope to fix this now (it
+would mean a new unit and re-grouping mid-run) or ship the Observatory against the sparse
+log and fix the emitter afterwards. Deferred — not a decision to make unilaterally
+mid-run.
+
+*(Append further findings here as the run progresses.)*
