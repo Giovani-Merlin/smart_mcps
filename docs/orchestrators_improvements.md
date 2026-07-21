@@ -18,6 +18,10 @@ acting — they drift.
 | D5  | No way to ask "how would this plan group?" without paying for specs     | Medium     | Open   |
 | D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee      | Low (docs) | Open   |
 | D7  | `run.log` too sparse to be a live event log; content varies by run mode | **High**   | Open   |
+| D8  | Round timeout unrelated to the group size the partitioner chose         | **High**   | Open   |
+| D9  | Timed-out group terminally failed despite committed work                | High       | Open   |
+| D10 | A unit that adds a dependency cannot install it (venv outside worktree) | Medium     | Open   |
+| D11 | Verification items that introspect framework internals are fragile      | Low        | Open   |
 
 ______________________________________________________________________
 
@@ -459,5 +463,97 @@ never emitted.
 would mean a new unit and re-grouping mid-run) or ship the Observatory against the sparse
 log and fix the emitter afterwards. Deferred — not a decision to make unilaterally
 mid-run.
+
+### D8 — The round timeout is unrelated to the group size the partitioner chose (High)
+
+**`obs1`'s g1 was killed by a 900s round timeout while healthy and making committed
+progress.** Final state:
+
+```
+g1: failed — RoundTimeout: round exceeded 900.0s (--session-id 72d01831-…)
+```
+
+Nothing was wrong with the work. In those 15 minutes the coder had committed **four of its
+six units** — U1 seams, U2 app core, U6 escalation API, U8 transcript API — 952 lines of
+source and 878 of tests, and was mid-way through U4 when the axe fell.
+
+The defect is that **two independent knobs decide whether a group can possibly succeed,
+and nothing reconciles them**:
+
+- `estimator.token_budget` (100k) sizes groups. It gave g1 six units, 87.7k tokens, 28
+  verification items, and a `paired_plus` review tier.
+- `session.timeout_s` caps a **single round**. Here it was 900s.
+
+A group large enough to be classified `paired_plus` is essentially guaranteed to need more
+than one 15-minute round, but the partitioner has no idea the timeout exists. The failure
+mode is silent until it fires, and then it discards a mostly-successful session.
+
+**Fix direction.** At minimum, `group` should warn when a group's estimated tokens imply a
+round longer than `session.timeout_s`. Better: make the timeout scale with estimated group
+work, or make a round timeout a *checkpoint* rather than a fatal error — the coder commits
+as it goes, so a timed-out round has usually banked real progress.
+
+### D9 — A timed-out group is terminally failed despite committed work (High)
+
+Related to D8 but separately fixable. `failed` is terminal: per `orchestrator/README.md`,
+recovering means hand-editing `state.json` back to `"ready"` before `resume`. That is
+manual surgery on a state file the orchestrator otherwise owns exclusively.
+
+It is the wrong default here because **the worktree survives with every commit intact**.
+`resume` could observe that the group's branch has advanced and re-enter it as a new
+generation rather than requiring the operator to know the file format. As shipped, the
+orchestrator throws away a recoverable situation and asks a human to repair it by hand.
+
+### D10 — A unit that adds a dependency cannot install it (Medium)
+
+U1's job included adding `fastapi` to `pyproject.toml`, and it did. But the venv lives at
+`<repo>/.venv` — **outside** the per-group worktree — and belongs to the parent checkout,
+whose `pyproject.toml` does not have the new dependency. So:
+
+- The coder could not `uv sync` its own new dependency into a usable environment.
+- Every later unit in the same group (U2/U4/U6/U8, all of which `import fastapi`) wrote
+  code and tests it could not execute.
+- Verification item `[g1-ui-subcommand-and-dep]` requires `uv run python -c "import fastapi"` to succeed — **unsatisfiable from inside the worktree**.
+
+Confirmed by running g1's suite after the fact: it collapsed at import with
+`ModuleNotFoundError: No module named 'fastapi'` until `uv pip install fastapi` was run
+manually against the shared venv. After that, **328 passed, 1 failed**.
+
+**Fix direction.** Either give each group worktree its own environment, or have the
+orchestrator run `uv sync` in the worktree after the coder reports, or declare dependency
+changes out of scope for workers and hoist them to a pre-run step. Any of the three; the
+current arrangement quietly makes a whole class of unit unverifiable.
+
+### D11 — Verification items that introspect framework internals are fragile (Low)
+
+The one genuine test failure in g1's suite is **a test bug, not a product bug**, and it is
+instructive. `test_the_four_slice_routers_are_included` walks `app.routes` looking for
+each slice router's paths, via a helper that recurses through `.routes`:
+
+```python
+nested = getattr(route, "routes", None)
+if nested:
+    paths |= route_paths(nested)
+```
+
+That is thoughtful code — the coder anticipated wrapper objects. But FastAPI 0.139.2 wraps
+an included router in `_IncludedRouter`, which exposes `original_router`, **not** `routes`.
+The helper cannot see through it, so the assertion fails even though every route is live:
+the OpenAPI schema lists all nine endpoints, and `/api/projects` answers 200.
+
+Root cause is the plan pinning `fastapi>=0.115` and resolving to 0.139.2, whose internals
+differ. The lesson for plan authors: a verification item phrased as *"the router is
+registered on the app object"* invites introspection of private framework structure. The
+same requirement expressed behaviourally — *"`GET /openapi.json` lists these paths"* — is
+both stronger and version-proof.
+
+### Correction to this run's recorded setup
+
+`obs1` ran **sequentially**, not at concurrency 3. `.orchestrator/config.toml` in the
+target repo sets `sequential = true` and `timeout_s = 900.0`, and config beats defaults
+(CLI flags > config file > defaults). No `--concurrency` flag was passed, so the config
+won. Worth noting as an operator trap: the run banner does print `concurrency 1`, but only
+*after* launch, and the value that mattered — a 900s timeout on an 87.7k-token group — is
+never surfaced at all.
 
 *(Append further findings here as the run progresses.)*
