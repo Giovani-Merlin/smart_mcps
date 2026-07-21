@@ -583,12 +583,33 @@ never surfaced at all.
 
 ### Config change applied after `obs1` (2026-07-22)
 
-In response to D8, the target repo's `.orchestrator/config.toml` now sets
-`session.timeout_s = 7200.0` (2h/round) and `estimator.token_budget = 200000`. The timeout
-is a stopgap until D8's root fix (timeout that scales with group work) lands; the operator
-flagged it as temporary.
+In response to D8, the target repo's `.orchestrator/config.toml` sets
+`session.timeout_s = 7200.0` (2h/round) as a stopgap until D8's root fix (timeout that
+scales with group work) lands. The operator flagged it as temporary.
 
-**Token-budget semantics, confirmed from the estimator** (`estimator.py:52`):
+`estimator.token_budget` was **left at the default 100k**. It was briefly bumped to 200k
+and reverted once the two budgets below were disentangled — 200k is the wrong lever for the
+problem it was reached for.
+
+### Two budgets are easy to confuse — and they are not the same knob
+
+The operator asked, correctly, whether `token_budget` governs the grouper or the
+worker-hits-limit-and-respawns behaviour. It is the **former only**. There are two
+independent token budgets:
+
+| Knob                            | Default | Scope                   | What it controls                                                                                                                                                           |
+| ------------------------------- | ------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[estimator] token_budget`      | 100k    | **plan time** (`group`) | How large a group the partitioner builds. Read only by `run_grouping`; never consulted during a run.                                                                       |
+| `[breaker] context_token_limit` | 120k    | **run time** (worker)   | The latest-round context size at which a coder session is **retired and a fresh generation is forked** from base. This is the "hit the limit → spawn a new one" threshold. |
+
+To let a worker session run longer before it respawns, raise **`context_token_limit`**, not
+`token_budget`. Raising `token_budget` only makes the grouper pack more into each group,
+which — absent a matching `context_token_limit` bump — would make workers hit the retirement
+threshold *sooner*, not later. That is why the 200k experiment was the wrong move and was
+reverted.
+
+**Token-budget semantics, confirmed from the estimator** (`estimator.py:52`) — for the
+grouper knob specifically:
 
 ```python
 def partition_budget_cap(base_tokens, config):
@@ -596,12 +617,38 @@ def partition_budget_cap(base_tokens, config):
     return max(config.token_budget - head, 0.0)
 ```
 
-`token_budget` is the **total** per-group context budget — it is *inclusive* of the shared
-base context, not on top of it. The partitioner does not let a group's summed *task* work
+`token_budget` is the **total** per-group context budget — *inclusive* of the shared base
+context, not on top of it. The partitioner does not let a group's summed *task* work
 (`node_work`: source bytes + per-file allowances) exceed `token_budget` **minus** the
-slacked head, where the head is the base context plus the spec allowance. So at
-`token_budget = 200000` with a ~11k-token base context and default 3k spec allowance and
-1.3 slack, the cap on a group's own task work is roughly `200000 − (11000 + 3000) × 1.3 ≈ 182000`. Raising the budget makes groups **larger and fewer**, which is exactly why it must
-travel with the D8 timeout bump — bigger groups need longer rounds.
+slacked head (base context + spec allowance).
+
+### Design discussion — compact the worker instead of respawning it
+
+Raised by the operator, 2026-07-22, for later discussion — **not a defect, an open design
+question.**
+
+Today, when a coder crosses `context_token_limit`, the breaker **retires the session and
+forks a fresh generation from base with a condensed handoff** (`review.py:9`,
+`_advance_generation`). The retired session's live working memory is discarded; the new
+fork re-orients from git and a short summary.
+
+The alternative is to **compact the worker in place** — summarize the session's own
+conversation and keep going in the same session, the way Claude Code's `/compact` does —
+rather than throwing the session away and re-forking.
+
+- **For compaction:** preserves the coder's in-flight reasoning and local context (which
+  file it was mid-edit on, why it chose an approach), instead of forcing a cold re-orient
+  from git each respawn. Fewer wasted rounds re-discovering state.
+- **The operator's own caveat:** the fork model shares **one** base session across all
+  coders — the base context is compiled once and inherited by every fork, so it is not
+  re-paid per generation. A compacted standalone session may **duplicate the base context**
+  (it is already inside that session's window, and compaction could re-summarize or re-embed
+  it) and loses the cross-coder base sharing. So compaction may trade re-orient cost for
+  base-context duplication cost.
+- **Open questions to resolve before deciding:** does the CLI expose programmatic
+  compaction on a `-p` session at all? Can a forked session be compacted without collapsing
+  the shared-base KV benefit? Is the win (continuity) worth losing the single-base-session
+  economy the current design is built around? Worth measuring both on a real over-limit
+  group before committing either way.
 
 *(Append further findings here as the run progresses.)*
