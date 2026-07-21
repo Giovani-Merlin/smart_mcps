@@ -1,0 +1,43 @@
+{
+  "status": "completed",
+  "summary": "Implemented T2 (ui/src/types.ts with GroupState/GroupRunState/RunState/Manifest/Escalation types, plus ui/src/sample-run.ts with a typed RunState spanning all 8 states, a matching Manifest, an event-log line array, and one pending Escalation) and T3 (GroupBoard.tsx and EventLog.tsx components, wired into App.tsx replacing the scaffolded placeholder, with per-state color CSS added to styles.css). Types were grounded against the real orchestrator models in scheduler.py and model.py to keep field names accurate. Committed as two conventional commits (T2, then T3). No npm/build commands were run.",
+  "question": "",
+  "verification_results": [
+    {
+      "item_id": "g1-types-groupstate",
+      "status": "pass",
+      "notes": "ui/src/types.ts GroupState is exactly the 8-value union in the spec's order"
+    },
+    {
+      "item_id": "g1-types-other-shapes",
+      "status": "pass",
+      "notes": "GroupRunState{state,generation,failure?}, RunState{run_id,groups:Record<string,GroupRunState>}, Manifest{run_id,base_session_id,groups:Record<string,{group_id,group_name,sessions:{name,role}[]}>}, Escalation{id,kind,group_id,prompt} all present"
+    },
+    {
+      "item_id": "g1-sample-run",
+      "status": "pass",
+      "notes": "sampleRunState has 8 groups covering every GroupState value; sampleManifest matches those group ids; sampleEventLog has 16 lines; sampleEscalations has 1 entry"
+    },
+    {
+      "item_id": "g1-group-board",
+      "status": "pass",
+      "notes": "GroupBoard.tsx renders one .group-card per group with id, generation, state label, and a `group-card--<state>` class mapped to a distinct color in styles.css"
+    },
+    {
+      "item_id": "g1-event-log",
+      "status": "pass",
+      "notes": "EventLog.tsx renders lines in array order via a <pre>, and lists escalations with kind/group_id/prompt"
+    },
+    {
+      "item_id": "g1-app-composition",
+      "status": "pass",
+      "notes": "App.tsx now renders a header, <GroupBoard runState={sampleRunState}/>, and <EventLog lines={sampleEventLog} escalations={sampleEscalations}/>, all imported from sample-run.ts"
+    },
+    {
+      "item_id": "g1-no-build-artifacts",
+      "status": "pass",
+      "notes": "No npm install, dev server, or build was run; verified by file inspection only"
+    }
+  ],
+  "surprises": []
+}

@@ -1,0 +1,16 @@
+{
+  "run_id": "smoke1",
+  "groups": {
+    "g1": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null
+    },
+    "g2": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null
+    }
+  },
+  "live_pids": {}
+}
