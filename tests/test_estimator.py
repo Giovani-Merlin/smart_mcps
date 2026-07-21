@@ -54,6 +54,15 @@ class TestTokenEstimate:
         meta = {"source_bytes": 400, "files": ["a.py", "b.py"]}
         assert node_work(meta, config) == 100 + 200
 
+    def test_node_work_counts_prospective_files_in_allowance(self):
+        """Prospective files bring zero bytes but full per-file allowance —
+        pricing them at zero would let merging over-merge greenfield groups."""
+        config = EstimatorConfig(
+            bytes_per_token=4.0, slack_multiplier=1.0, per_file_tool_allowance=100
+        )
+        meta = {"source_bytes": 0, "files": [], "prospective_files": ["new1.py", "new2.py"]}
+        assert node_work(meta, config) == 200
+
     def test_partition_budget_cap_subtracts_slacked_head(self):
         config = EstimatorConfig(
             token_budget=100_000, slack_multiplier=1.0, spec_tokens_allowance=3_000

@@ -141,12 +141,20 @@ def _renumber(partition: Partition) -> Partition:
 
 @dataclass
 class DefaultPartitionStrategy:
-    """CoCoder's pipeline, ported: hub isolation → Louvain → lift → split → merge.
+    """CoCoder's pipeline, ported: hub isolation → slice contraction → Louvain →
+    lift → split → merge.
 
     ``work_fn`` and ``budget_cap`` are the injected estimator hooks: work is the
     relative size of one task node and the cap bounds a group's summed work. With
     the defaults (work 1.0, no cap) size policies degrade to CoCoder's file-count
     behavior with an unlimited group size.
+
+    Slice labels (task-map must-links, docs/orchestrator-task-map.md) enter as
+    deterministic node contraction: hub roles are detected first (a hub is never
+    absorbed into a slice), each slice's core members contract into one supernode
+    for clustering and lifting, then membership expands. Softness comes after
+    expansion: ``split_over_budget`` may still break an oversized slice at its
+    weakest internal edges and ``merge_small_groups`` may combine small ones.
     """
 
     work_fn: WorkFn = lambda node: 1.0
@@ -158,8 +166,18 @@ class DefaultPartitionStrategy:
         if not graph.nodes:
             return {}
         roles = detect_hub_roles(graph, threshold=self.hub_threshold)
-        partition = _hub_isolated_clustering(graph, roles, self.louvain_resolution)
-        partition = lift_independent(graph, partition)
+        atoms = _slice_atoms(graph, roles)
+        if atoms:
+            unit_graph, self_loops, unit_of = _contract_slices(graph, atoms)
+            unit_roles = {unit_of[node]: role for node, role in roles.items()}
+            unit_partition = _hub_isolated_clustering(
+                unit_graph, unit_roles, self.louvain_resolution, self_loops
+            )
+            unit_partition = lift_independent(unit_graph, unit_partition)
+            partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
+        else:
+            partition = _hub_isolated_clustering(graph, roles, self.louvain_resolution)
+            partition = lift_independent(graph, partition)
         if self.budget_cap is not None:
             partition = split_over_budget(graph, partition, self.work_fn, self.budget_cap)
         partition = merge_small_groups(graph, partition, self.work_fn, self.budget_cap)
@@ -198,13 +216,75 @@ def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD)
     return roles
 
 
-def _louvain(graph: TaskGraph, nodes: set[str], resolution: float) -> Partition:
+def _slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]:
+    """Slice label → sorted core members with 2+ tasks (the real must-links).
+
+    Reads the ``slice`` node metadata the task map supplies. Hub-role nodes are
+    excluded — hubs are isolated before slices contract and are never absorbed
+    into a feature slice.
+    """
+    atoms: dict[str, list[str]] = defaultdict(list)
+    for node in sorted(graph.nodes):
+        if roles.get(node) != "core":
+            continue
+        label = graph.metadata.get(node, {}).get("slice")
+        if isinstance(label, str) and label:
+            atoms[label].append(node)
+    return {label: members for label, members in sorted(atoms.items()) if len(members) >= 2}
+
+
+def _contract_slices(
+    graph: TaskGraph, atoms: dict[str, list[str]]
+) -> tuple[TaskGraph, dict[str, float], dict[str, str]]:
+    """Contract each slice into a ``slice::<label>`` supernode (Rey et al. 2022:
+    contracted-graph modularity ≡ constraint-respecting original modularity).
+
+    Sorted iteration for byte-stability; parallel edge weights summed. Intra-slice
+    affinity becomes self-loop weight returned separately — ``TaskGraph`` forbids
+    self-loops, but Louvain must still see the supernode's internal mass. Intra-
+    slice dependency edges vanish (ordering inside one group is the worker's job).
+    Returns ``(unit graph, self-loop weights, node → unit mapping)``.
+    """
+    unit_of = {node: node for node in graph.nodes}
+    for label, members in sorted(atoms.items()):
+        for node in members:
+            unit_of[node] = f"slice::{label}"
+
+    affinity: dict[Pair, float] = {}
+    self_loops: dict[str, float] = {}
+    for (a, b), w in sorted(graph.affinity.items()):
+        ua, ub = unit_of[a], unit_of[b]
+        if ua == ub:
+            self_loops[ua] = self_loops.get(ua, 0.0) + w
+            continue
+        pair = canonical_pair(ua, ub)
+        affinity[pair] = affinity.get(pair, 0.0) + w
+    dependencies: dict[Pair, float] = {}
+    for (up, down), w in sorted(graph.dependencies.items()):
+        uu, ud = unit_of[up], unit_of[down]
+        if uu == ud:
+            continue
+        dependencies[(uu, ud)] = dependencies.get((uu, ud), 0.0) + w
+
+    unit_graph = TaskGraph(
+        nodes=frozenset(unit_of.values()), affinity=affinity, dependencies=dependencies
+    )
+    return unit_graph, self_loops, unit_of
+
+
+def _louvain(
+    graph: TaskGraph,
+    nodes: set[str],
+    resolution: float,
+    self_loops: Mapping[str, float] | None = None,
+) -> Partition:
     """Seeded directed Louvain over the affinity weights restricted to ``nodes``.
 
     Dependency direction is preserved on edges that have one (CoCoder kept import
     direction for its clustering); pure-affinity pairs get both directions.
-    networkx shuffles node order by default — the pinned seed plus deterministic
-    community numbering keep the result stable across runs.
+    ``self_loops`` carries contracted supernodes' internal mass. networkx shuffles
+    node order by default — the pinned seed plus deterministic community numbering
+    keep the result stable across runs.
     """
     import networkx as nx
 
@@ -219,6 +299,9 @@ def _louvain(graph: TaskGraph, nodes: set[str], resolution: float) -> Partition:
             g.add_edge(a, b, weight=w)
         if backward or not forward:
             g.add_edge(b, a, weight=w)
+    for node, w in sorted((self_loops or {}).items()):
+        if node in nodes and w > 0:
+            g.add_edge(node, node, weight=w)
     if g.number_of_edges() == 0:
         return {node: i for i, node in enumerate(sorted(nodes))}
     communities = nx.community.louvain_communities(
@@ -229,7 +312,10 @@ def _louvain(graph: TaskGraph, nodes: set[str], resolution: float) -> Partition:
 
 
 def _hub_isolated_clustering(
-    graph: TaskGraph, roles: dict[str, str], resolution: float
+    graph: TaskGraph,
+    roles: dict[str, str],
+    resolution: float,
+    self_loops: Mapping[str, float] | None = None,
 ) -> Partition:
     """CoCoder ``role_grouping`` (post_processing.py:13-33): cluster only the core.
 
@@ -239,7 +325,7 @@ def _hub_isolated_clustering(
     utility_hubs = sorted(n for n, r in roles.items() if r == "utility_hub")
     aggregator_hubs = sorted(n for n, r in roles.items() if r == "aggregator_hub")
     core = {n for n, r in roles.items() if r == "core"}
-    core_partition = _louvain(graph, core, resolution)
+    core_partition = _louvain(graph, core, resolution, self_loops)
 
     partition: Partition = {}
     gid = 0

@@ -286,6 +286,131 @@ class TestQueriesAndMetadata:
         assert graph.metadata["prose_only"]["source_bytes"] == 0
 
 
+class TestPlanTimeSignals:
+    """Task-map signals (plan U3/U4): prospective files, depends_on, route tags."""
+
+    def test_shared_prospective_file_produces_affinity(self):
+        """The greenfield fix: a pair sharing a planned-but-nonexistent file
+        clusters like an editing pair sharing a real one."""
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [
+                TaskMapping("t1", prospective_files=("app/new.py",)),
+                TaskMapping("t2", prospective_files=("app/new.py", "app/other.py")),
+            ],
+            client,
+            EdgeWeights(shared_file=1.0),
+        )
+        assert graph.affinity[("t1", "t2")] == 1.0
+        assert graph.metadata["t2"]["prospective_files"] == ["app/new.py", "app/other.py"]
+        assert graph.metadata["t2"]["source_bytes"] == 0
+
+    def test_depends_on_yields_directed_dependency_without_affinity(self):
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [
+                TaskMapping("scaffold", prospective_files=("app/main.py",)),
+                TaskMapping("consumer", prospective_files=("app/c.py",), depends_on=("scaffold",)),
+            ],
+            client,
+        )
+        assert graph.dependencies == {("scaffold", "consumer"): 1.0}
+        assert graph.affinity == {}
+
+    def test_scaffold_everyone_depends_on_becomes_utility_hub(self):
+        """The smoke1 shape: a scaffold task everything depends on is isolated as
+        its own group, scheduled first."""
+        from orchestrator.grouping.partition import detect_hub_roles
+
+        client, _ = client_with({})
+        mappings = [TaskMapping("scaffold", prospective_files=("app/main.py",))] + [
+            TaskMapping(f"t{i}", prospective_files=(f"app/f{i}.py",), depends_on=("scaffold",))
+            for i in range(1, 4)
+        ]
+        graph = build_task_graph(mappings, client)
+        assert detect_hub_roles(graph)["scaffold"] == "utility_hub"
+
+    def test_matched_route_tags_produce_symmetric_semantic_edge(self):
+        """The cross-stack fix: a TS task consuming what a Python task implements
+        gets an affinity edge codegraph could never see. Affinity only — route
+        tags carry no dependency direction."""
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [
+                TaskMapping(
+                    "py-route", prospective_files=("app/items.py",), implements=("/api/items",)
+                ),
+                TaskMapping(
+                    "ts-page", prospective_files=("web/items.tsx",), consumes=("/api/items",)
+                ),
+            ],
+            client,
+            EdgeWeights(semantic=1.5, semantic_floor=0.5, semantic_ceil=3.0),
+        )
+        # Pure greenfield: Σstruct = 0 → the clamp floors the scale at 0.5.
+        assert graph.affinity == {("py-route", "ts-page"): 1.5 * 0.5}
+        assert graph.dependencies == {}
+
+    def test_unmatched_tags_produce_no_edge(self):
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [
+                TaskMapping("a", implements=("/api/x",)),
+                TaskMapping("b", consumes=("/api/y",)),
+                TaskMapping(
+                    "c", implements=("/api/y",)
+                ),  # implements twice, never consumed+implemented pair with a
+            ],
+            client,
+        )
+        assert ("a", "b") not in graph.affinity
+        assert graph.affinity == {("b", "c"): pytest.approx(1.5 * 0.5)}
+
+    def test_normalization_caps_semantics_on_edit_heavy_plans(self):
+        """Σstruct ≫ Σsem → the clamp ceiling stops the semantic boost, so
+        semantics refine but never override real reference edges."""
+        client, _ = client_with({})
+        shared = tuple(f"f{i}.py" for i in range(10))
+        graph = build_task_graph(
+            [
+                TaskMapping("e1", files=shared),
+                TaskMapping("e2", files=shared),
+                TaskMapping("s1", implements=("/api/z",)),
+                TaskMapping("s2", consumes=("/api/z",)),
+            ],
+            client,
+            EdgeWeights(shared_file=1.0, semantic=1.5, semantic_ceil=3.0),
+        )
+        # Σstruct = 10 shared files × 1.0; Σsem = 1.5 → ratio 6.67 clamps to 3.0.
+        assert graph.affinity[("s1", "s2")] == pytest.approx(1.5 * 3.0)
+
+    def test_normalization_lands_between_bounds_on_mixed_plans(self):
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [
+                TaskMapping("e1", files=("a.py", "b.py", "c.py")),
+                TaskMapping("e2", files=("a.py", "b.py", "c.py")),
+                TaskMapping("s1", prospective_files=("new1.py",), implements=("/api/m",)),
+                TaskMapping("s2", prospective_files=("new2.py",), consumes=("/api/m",)),
+            ],
+            client,
+            EdgeWeights(shared_file=1.0, semantic=1.5, semantic_floor=0.5, semantic_ceil=3.0),
+        )
+        # Σstruct = 3.0, Σsem = 1.5 → scale exactly 2.0, inside the clamp.
+        assert graph.affinity[("s1", "s2")] == pytest.approx(1.5 * 2.0)
+
+    def test_metadata_carries_slice_and_route_tags(self):
+        client, _ = client_with({})
+        graph = build_task_graph(
+            [TaskMapping("t", slice="items", implements=("/api/items",), consumes=("Evt",))],
+            client,
+        )
+        meta = graph.metadata["t"]
+        assert meta["slice"] == "items"
+        assert meta["implements"] == ["/api/items"]
+        assert meta["consumes"] == ["Evt"]
+
+
 class TestCapturedFixtures:
     """Real codegraph CLI output from this repo, captured 2026-07-15."""
 
