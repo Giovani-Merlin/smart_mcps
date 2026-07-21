@@ -17,6 +17,7 @@ smart-mcps-orchestrate run   [--repo DIR] [--run-id ID] [--sequential] [--concur
 smart-mcps-orchestrate status [RUN_ID] [--repo DIR]
 smart-mcps-orchestrate resume RUN_ID [--repo DIR] [...same execution flags as run]
 smart-mcps-orchestrate answer RUN_ID ESC_ID [--action answer|skip|abort] [--text ...] [--repo DIR]
+smart-mcps-orchestrate ui    [--registry PATH] [--port N] [--repo DIR]
 ```
 
 - **`group`** — LLM-maps plan tasks to code regions, partitions them into
@@ -40,6 +41,11 @@ smart-mcps-orchestrate answer RUN_ID ESC_ID [--action answer|skip|abort] [--text
   writing its response file: `--action answer` (with `--text` guidance) resumes
   or guides the blocked group, `--action skip` fails it, `--action abort` stops
   the run. The blocked group's coroutine picks the answer up by correlation id.
+- **`ui`** — serves the **Observatory**, a local web tool for watching runs across
+  registered projects and answering HITL escalations from the browser. Binds
+  `127.0.0.1:8765`, no auth. See [docs/observatory.md](../docs/observatory.md) for
+  the registry format, the dev and build-and-serve recipes, every endpoint, and
+  the R18 live HITL runbook.
 
 ## Human-in-the-loop (HITL)
 
@@ -139,6 +145,9 @@ All run state lives in the target repo, never under `~/.claude`:
     runs/<run_id>/
       manifest.json           # run → groups → sessions join (the analyzer contract)
       state.json              # crash-resumable scheduler state + live worker PIDs
+      groups.json             # this run's DAG snapshot — copied from .orchestrator/groups.json
+                              #   at run start, so the Observatory renders the DAG this run
+                              #   actually used even after a later planning cycle rewrites the shared file
       groups/<gid>/           # report-g<G>-r<R>.json / verdict-g<G>-r<R>.json
       logs/run.log            # HITL event log — the live log the main session tails
       escalations/            # HITL request-<id>.json / response-<id>.json (correlation ids)

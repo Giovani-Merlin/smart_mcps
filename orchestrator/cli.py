@@ -22,7 +22,9 @@ from pydantic import ValidationError
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.execution.escalation import (
     EscalationBroker,
+    EscalationError,
     EscalationPolicy,
+    answer_escalation,
     pending_escalations,
 )
 from orchestrator.execution.manifest import (
@@ -54,7 +56,6 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import (
-    EscalationResponse,
     Group,
     GroupingResult,
     HumanAction,
@@ -62,6 +63,11 @@ from orchestrator.model import (
     RunManifest,
     Surprise,
 )
+
+
+DEFAULT_REGISTRY_PATH = "~/.orchestrator-ui.yaml"
+DEFAULT_UI_PORT = 8765
+OBSERVATORY_HOST = "127.0.0.1"
 
 
 def main(
@@ -111,6 +117,23 @@ def main(
     answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    ui_cmd = subparsers.add_parser("ui", help="serve the Observatory web UI (local, no auth)")
+    ui_cmd.add_argument(
+        "--registry",
+        type=Path,
+        default=None,
+        help=f"project registry YAML (default: {DEFAULT_REGISTRY_PATH})",
+    )
+    ui_cmd.add_argument(
+        "--port", type=int, default=DEFAULT_UI_PORT, help=f"port (default: {DEFAULT_UI_PORT})"
+    )
+    ui_cmd.add_argument(
+        "--repo",
+        type=Path,
+        default=Path.cwd(),
+        help="target repo root; served as a fallback project when no registry file exists",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "group":
         return _cmd_group(args, llm_runner, client)
@@ -122,6 +145,8 @@ def main(
         return _cmd_status(args)
     if args.command == "answer":
         return _cmd_answer(args)
+    if args.command == "ui":
+        return _cmd_ui(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 
@@ -392,6 +417,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             run_id=run_id, plan_path=grouping.plan_path, base_session_id=base_session_id
         )
         store.save(manifest)
+        # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
+        # shared across runs and every planning cycle overwrites it, so without
+        # this a post-mortem reader renders whatever DAG is on disk today
+        # (ADR 0002). Resume keeps the snapshot its run started with.
+        atomic_write_text(paths.groups_path, groups_path.read_text())
 
     if config.escalation.enabled:
         broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
@@ -586,20 +616,38 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     """Write a response file the run's blocked coroutine picks up by correlation id.
 
     A clean, testable channel for the main session (or a foreground operator) to
-    resolve an escalation without touching the running process."""
+    resolve an escalation without touching the running process. The write itself
+    lives in ``escalation.answer_escalation`` so the CLI and the Observatory's
+    HTTP endpoint share one implementation of the contract."""
     paths = RunPaths(args.repo.resolve(), args.run_id)
-    request_path = paths.escalations_dir / f"request-{args.esc_id}.json"
-    if not request_path.is_file():
-        print(
-            f"error: no escalation {args.esc_id} for run {args.run_id} "
-            f"(check `status {args.run_id}`)",
-            file=sys.stderr,
-        )
+    try:
+        answer_escalation(paths, args.esc_id, args.action, args.text)
+    except EscalationError as exc:
+        print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1
-    response = EscalationResponse(id=args.esc_id, action=HumanAction(args.action), answer=args.text)
-    response_path = paths.escalations_dir / f"response-{args.esc_id}.json"
-    atomic_write_text(response_path, response.model_dump_json(indent=2) + "\n")
     print(f"answered {args.esc_id}: {args.action}")
+    return 0
+
+
+# ------------------------------------------------------------------------- ui
+
+
+def _cmd_ui(args: argparse.Namespace) -> int:
+    """Serve the Observatory: read-only run views plus the one HITL write path.
+
+    Local single-user tool — bound to 127.0.0.1 with no auth, per the plan."""
+    try:
+        import uvicorn
+
+        from orchestrator.observatory.app import create_app
+    except ImportError as exc:  # pragma: no cover - dependency smoke path
+        print(f"error: the Observatory needs fastapi and uvicorn installed: {exc}", file=sys.stderr)
+        return 1
+
+    registry = args.registry.expanduser() if args.registry else None
+    app = create_app(registry_path=registry, fallback_repo=args.repo.resolve())
+    print(f"Observatory on http://{OBSERVATORY_HOST}:{args.port}")
+    uvicorn.run(app, host=OBSERVATORY_HOST, port=args.port, log_level="info")
     return 0
 
 

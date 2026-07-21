@@ -24,7 +24,12 @@ from orchestrator.cli import main
 from orchestrator.execution.escalation import pending_escalations
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.grouping.graphing import CodegraphClient
-from orchestrator.model import EscalationResponse, HumanAction, ReviewIntensity
+from orchestrator.model import (
+    EscalationResponse,
+    GroupingResult,
+    HumanAction,
+    ReviewIntensity,
+)
 from test_cli import make_group, write_run_artifacts
 from test_grouper_pipeline import PLAN_TEXT, StubLlm, codegraph_response
 
@@ -241,6 +246,13 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     group_dir = repo / ".orchestrator" / "runs" / run_id / "groups" / gids[0]
     assert (group_dir / "verdict-g1-r1.json").is_file()
     assert (group_dir / "verdict-g1-r2.json").is_file()
+
+    # the run snapshotted its DAG (ADR 0002): `.orchestrator/groups.json` is shared
+    # and rewritten by every planning cycle, so the Observatory reads this copy
+    snapshot_path = repo / ".orchestrator" / "runs" / run_id / "groups.json"
+    assert snapshot_path.is_file()
+    snapshot = GroupingResult.model_validate_json(snapshot_path.read_text())
+    assert [group.id for group in snapshot.groups] == gids
 
     # status reports the finished run
     exit_code = main(["status", run_id, "--repo", str(repo)])

@@ -1,0 +1,7 @@
+2026-07-16T20:29:32+00:00  run smoke1 started with HITL: intensity=on_stuck, source=workers_via_orchestrator, timeout=None
+2026-07-16T20:31:16+00:00  group g2 generation 1: coder launched
+2026-07-16T20:31:49+00:00  group g2: merged into the integration branch
+2026-07-16T20:31:49+00:00  group g2: completed
+2026-07-16T20:33:55+00:00  group g1 generation 1: coder launched
+2026-07-16T20:34:28+00:00  group g1: merged into the integration branch
+2026-07-16T20:34:28+00:00  group g1: completed

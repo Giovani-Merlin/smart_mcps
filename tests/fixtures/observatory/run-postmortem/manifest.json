@@ -1,0 +1,54 @@
+{
+  "run_id": "smoke1",
+  "plan_path": "frontend-plan.md",
+  "created_at": "2026-07-16T20:29:32.588182Z",
+  "base_session_id": "3cede97b-336c-4a54-9d39-809890cb0d50",
+  "groups": {
+    "g2": {
+      "group_id": "g2",
+      "group_name": "scaffold-vite-project",
+      "summary": "Scaffold the Vite + React + TypeScript project skeleton under ui/ (config, entry, base styles).",
+      "sessions": [
+        {
+          "session_id": "04b22720-cf20-4305-870f-645739694708",
+          "role": "coder",
+          "generation": 1,
+          "name": "smoke1-g2-coder-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g2-scaffold-vite-project/04b22720-cf20-4305-870f-645739694708.jsonl"
+        },
+        {
+          "session_id": "77d92f6a-0b5d-428f-9c27-23006ac0d0cd",
+          "role": "reviewer",
+          "generation": 1,
+          "name": "smoke1-g2-reviewer-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g2-scaffold-vite-project/77d92f6a-0b5d-428f-9c27-23006ac0d0cd.jsonl"
+        }
+      ]
+    },
+    "g1": {
+      "group_id": "g1",
+      "group_name": "types-sample-and-views",
+      "summary": "Define shared TS types + sample fixture, then build GroupBoard/EventLog and wire into App.tsx.",
+      "sessions": [
+        {
+          "session_id": "0c92ac57-2e9f-4e02-b7dc-acc1f154c872",
+          "role": "coder",
+          "generation": 1,
+          "name": "smoke1-g1-coder-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g1-types-sample-and-views/0c92ac57-2e9f-4e02-b7dc-acc1f154c872.jsonl"
+        },
+        {
+          "session_id": "a4aa1be9-1a36-4aea-a52f-3757afee6c30",
+          "role": "reviewer",
+          "generation": 1,
+          "name": "smoke1-g1-reviewer-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g1-types-sample-and-views/a4aa1be9-1a36-4aea-a52f-3757afee6c30.jsonl"
+        }
+      ]
+    }
+  }
+}

@@ -11,6 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import pytest
+
 from orchestrator.cli import apply_overrides, main
 from orchestrator.config import load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
@@ -190,6 +192,22 @@ class TestAnswerCommand:
         )
         assert response.action == HumanAction.SKIP
 
+    def test_answer_rejects_an_already_answered_escalation(self, tmp_path, capsys):
+        """The stale check `_cmd_answer` gained by delegating to answer_escalation:
+        a second answer must not race the waiting group against a new decision."""
+        paths = self._write_request(tmp_path, esc_id="e3")
+        assert main(["answer", "r1", "e3", "--text", "first", "--repo", str(tmp_path)]) == 0
+        response_path = paths.escalations_dir / "response-e3.json"
+        first = response_path.read_bytes()
+        capsys.readouterr()
+
+        exit_code = main(
+            ["answer", "r1", "e3", "--action", "skip", "--text", "second", "--repo", str(tmp_path)]
+        )
+        assert exit_code == 1
+        assert "already answered" in capsys.readouterr().err
+        assert response_path.read_bytes() == first
+
     def test_status_lists_pending_escalations(self, tmp_path, capsys):
         paths = self._write_request(tmp_path, esc_id="e9", kind="merge_conflict")
         atomic_write_text(paths.state_path, RunState(run_id="r1", groups={}).model_dump_json())
@@ -290,3 +308,24 @@ class TestStatus:
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out and "r2" in out
+
+
+class TestUiCommand:
+    """`ui` only has to parse here — serving is exercised through create_app in
+    tests/test_observatory_api.py, which needs no running uvicorn."""
+
+    def test_ui_help_lists_the_operator_flags(self, capsys):
+        with pytest.raises(SystemExit) as exit_info:
+            main(["ui", "--help"])
+        assert exit_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--registry" in out
+        assert "--port" in out
+        assert "--repo" in out
+
+    def test_ui_defaults_match_the_documented_local_tool(self):
+        from orchestrator.cli import DEFAULT_REGISTRY_PATH, DEFAULT_UI_PORT, OBSERVATORY_HOST
+
+        assert DEFAULT_REGISTRY_PATH == "~/.orchestrator-ui.yaml"
+        assert DEFAULT_UI_PORT == 8765
+        assert OBSERVATORY_HOST == "127.0.0.1"

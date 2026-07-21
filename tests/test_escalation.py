@@ -18,7 +18,9 @@ from pydantic import ValidationError
 from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
 from orchestrator.execution.escalation import (
     EscalationBroker,
+    EscalationError,
     EscalationPolicy,
+    answer_escalation,
     pending_escalations,
 )
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
@@ -288,3 +290,54 @@ class TestEscalationBroker:
 
     def test_pending_escalations_empty_when_no_directory(self, tmp_path):
         assert pending_escalations(RunPaths(tmp_path, "nope")) == []
+
+
+# ------------------------------------------------------- answer_escalation (U1)
+
+
+class TestAnswerEscalation:
+    """The one implementation of the answer contract, shared by the CLI's
+    ``answer`` subcommand and the Observatory's write endpoint (plan U1)."""
+
+    def _with_request(self, tmp_path: Path, esc_id: str = "e1") -> RunPaths:
+        paths = RunPaths(tmp_path, "r1")
+        atomic_write_text(
+            paths.escalations_dir / f"request-{esc_id}.json",
+            _request(esc_id).model_dump_json(),
+        )
+        return paths
+
+    def test_writes_the_response_file_and_returns_its_path(self, tmp_path):
+        paths = self._with_request(tmp_path)
+        written = answer_escalation(paths, "e1", HumanAction.ANSWER, "use JWT")
+        assert written == paths.escalations_dir / "response-e1.json"
+        response = EscalationResponse.model_validate_json(written.read_text())
+        assert response.id == "e1"
+        assert response.action == HumanAction.ANSWER
+        assert response.answer == "use JWT"
+
+    def test_the_answered_escalation_stops_being_pending(self, tmp_path):
+        paths = self._with_request(tmp_path)
+        assert [req.id for req in pending_escalations(paths)] == ["e1"]
+        answer_escalation(paths, "e1", HumanAction.ANSWER)
+        assert pending_escalations(paths) == []
+
+    def test_a_plain_string_action_is_accepted(self, tmp_path):
+        paths = self._with_request(tmp_path, "e-str")
+        written = answer_escalation(paths, "e-str", "skip")
+        response = EscalationResponse.model_validate_json(written.read_text())
+        assert response.action == HumanAction.SKIP
+
+    def test_unknown_escalation_id_raises(self, tmp_path):
+        paths = RunPaths(tmp_path, "r1")
+        with pytest.raises(EscalationError, match="no escalation nope"):
+            answer_escalation(paths, "nope", HumanAction.ANSWER)
+        assert not (paths.escalations_dir / "response-nope.json").exists()
+
+    def test_answering_twice_raises_and_leaves_the_first_answer_intact(self, tmp_path):
+        paths = self._with_request(tmp_path, "e-twice")
+        written = answer_escalation(paths, "e-twice", HumanAction.ANSWER, "first")
+        first = written.read_bytes()
+        with pytest.raises(EscalationError, match="already answered"):
+            answer_escalation(paths, "e-twice", HumanAction.SKIP, "second")
+        assert written.read_bytes() == first
