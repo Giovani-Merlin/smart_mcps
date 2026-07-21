@@ -24,11 +24,12 @@ from orchestrator.grouping.partition import (
 )
 
 
-def graph(nodes, affinity=None, dependencies=None):
+def graph(nodes, affinity=None, dependencies=None, slices=None):
     return TaskGraph(
         nodes=frozenset(nodes),
         affinity={canonical_pair(*k): v for k, v in (affinity or {}).items()},
         dependencies=dict(dependencies or {}),
+        metadata={node: {"slice": label} for node, label in (slices or {}).items()},
     )
 
 
@@ -207,6 +208,78 @@ class TestGroupDag:
         )
         with pytest.raises(GroupCycleError):
             DefaultPartitionStrategy().partition(g)
+
+
+class TestSliceContraction:
+    """Task-map slice labels enter Louvain as must-link node contraction (plan U5)."""
+
+    def test_slice_mates_co_group_even_when_affinity_pulls_apart(self):
+        """The hard guarantee: contraction beats structure. Control first — the
+        same graph without slice labels separates the pair."""
+        shape = dict(
+            affinity={("a1", "x"): 10.0, ("b1", "y"): 10.0, ("a1", "b1"): 0.1},
+        )
+        unsliced = DefaultPartitionStrategy().partition(graph("a1 b1 x y".split(), **shape))
+        assert unsliced["a1"] != unsliced["b1"]
+        sliced = DefaultPartitionStrategy().partition(
+            graph("a1 b1 x y".split(), **shape, slices={"a1": "s", "b1": "s"})
+        )
+        assert sliced["a1"] == sliced["b1"]
+
+    def test_slice_mates_with_no_edges_at_all_still_co_group(self):
+        """Pure-greenfield regime: no structural or semantic edge survives, the
+        slice label alone must keep the pair together."""
+        partition = DefaultPartitionStrategy().partition(
+            graph("a b z".split(), slices={"a": "s", "b": "s"})
+        )
+        assert partition["a"] == partition["b"]
+        assert partition["z"] != partition["a"]
+
+    def test_oversized_slice_still_splits_on_budget_at_weakest_internal_edge(self):
+        """Softness comes after expansion: the must-link yields to the token cap."""
+        g = graph(
+            "a1 a2 a3".split(),
+            affinity={("a1", "a2"): 5.0, ("a2", "a3"): 1.0},
+            slices={"a1": "s", "a2": "s", "a3": "s"},
+        )
+        partition = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0).partition(g)
+        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
+
+    def test_hub_is_never_absorbed_into_its_slice(self):
+        """Hub isolation runs before contraction: a hub carrying a slice label
+        stays its own group; the remaining slice-mates still contract."""
+        g = graph(
+            "hub a b c".split(),
+            dependencies={("hub", n): 1.0 for n in "abc"},
+            slices={"hub": "s", "a": "s", "b": "s"},
+        )
+        partition = DefaultPartitionStrategy(budget_cap=2.0).partition(g)
+        assert partition["a"] == partition["b"]
+        assert partition["hub"] != partition["a"]
+
+    def test_contraction_is_deterministic_across_runs(self):
+        g = graph(
+            "a1 a2 b1 b2 x".split(),
+            affinity={("a1", "x"): 3.0, ("b1", "x"): 3.0, ("a1", "b1"): 0.5},
+            dependencies={("a1", "b1"): 1.0},
+            slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
+        )
+        results = {tuple(sorted(DefaultPartitionStrategy().partition(g).items())) for _ in range(5)}
+        assert len(results) == 1
+
+    def test_slice_induced_group_cycle_fails_loudly_naming_the_edges(self):
+        """Contraction can close a cycle absent at task level: slice s1 feeds s2
+        through one task while s2 feeds s1 through another. The chain guard
+        refuses to merge them away, and the DAG build names both task edges."""
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+            slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
+        )
+        with pytest.raises(GroupCycleError) as exc:
+            DefaultPartitionStrategy().partition(g)
+        assert ("a1", "b1") in exc.value.offending_edges
+        assert ("b2", "a2") in exc.value.offending_edges
 
 
 class TestDefaultStrategyEndToEnd:

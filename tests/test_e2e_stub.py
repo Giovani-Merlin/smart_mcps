@@ -250,6 +250,41 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     assert name_of(run_id, gids[0], "coder") in status_out
 
 
+def test_group_cli_premapped_greenfield_plan_skips_mapper_and_orders_groups(repo, capsys):
+    """The smoke1 scenario, automated: `group` on a pre-mapped greenfield plan
+    produces dependency-ordered groups.json with the mapper LLM skipped — no
+    hand-editing of groups.json required."""
+    from test_grouper_pipeline import GREENFIELD_PLAN as greenfield_plan
+
+    plan = repo / "greenfield-plan.md"
+    plan.write_text(greenfield_plan)
+    llm = StubLlm()
+    exit_code = main(
+        ["group", str(plan), "--repo", str(repo)],
+        llm_runner=llm,
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert exit_code == 0
+    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+
+    # the flags record the deterministic fast path and the prospective files
+    assert any("mapper LLM skipped" in flag for flag in grouping["flags"])
+    assert any("retained as prospective" in flag for flag in grouping["flags"])
+    assert [title for title, _ in llm.prompts if title == "mapper_output"] == []
+
+    # groups.json dependencies realize the plan's depends_on: every group not
+    # holding the scaffold depends on the scaffold's group
+    by_task = {task: group for group in grouping["groups"] for task in group["tasks"]}
+    assert by_task["t2-items-api"]["id"] == by_task["t3-items-ui"]["id"]
+    scaffold_gid = by_task["t1-scaffold"]["id"]
+    for group in grouping["groups"]:
+        if group["id"] != scaffold_gid:
+            assert scaffold_gid in group["dependencies"]
+
+    # prospective files ship in Group.files so workers create them
+    assert "app/items.py" in by_task["t2-items-api"]["files"]
+
+
 def test_breaker_trip_respawns_generation_two_and_completes(repo, fake_home, capsys):
     run_id = "r2"
     write_run_artifacts(repo, [make_group("g1")])

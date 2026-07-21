@@ -25,6 +25,61 @@ PLAN_TEXT = """# feat: toy plan
 - T2: cover the proxy with tests
 """
 
+GREENFIELD_PLAN = """# feat: greenfield service
+
+## Units
+
+- t1-scaffold: create the app skeleton
+- t2-items-api: items API routes
+- t3-items-ui: items admin page
+- t4-docs: usage docs
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: t1-scaffold
+    description: create the app skeleton
+    files: [app/main.py]
+  - task_id: t2-items-api
+    description: items API routes
+    slice: items
+    files: [app/items.py]
+    depends_on: [t1-scaffold]
+    implements: ["/api/items"]
+  - task_id: t3-items-ui
+    description: items admin page
+    slice: items
+    files: [web/items.tsx]
+    depends_on: [t1-scaffold]
+    consumes: ["/api/items"]
+  - task_id: t4-docs
+    description: usage docs
+    files: [docs/usage.md]
+    depends_on: [t1-scaffold]
+```
+"""
+
+MIXED_PLAN = """# feat: cross-stack feature on the existing server
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: t1-api
+    description: extend the existing server with the items route
+    files: [server.py]
+    symbols: [real_fn]
+    implements: ["/api/items"]
+  - task_id: t2-ui
+    description: new admin page consuming the items route
+    files: [web/items.tsx]
+    consumes: ["/api/items"]
+```
+"""
+
 
 def make_repo(tmp_path):
     repo = tmp_path / "repo"
@@ -224,6 +279,94 @@ class TestMapperVerification:
 
         mapper_out = MapperOutput(
             mappings=[TaskMapping("t1"), TaskMapping("t2"), TaskMapping("t3", files=("a.py",))],
+            descriptions={},
+        )
+        graph = TaskGraph(nodes=frozenset({"t1", "t2", "t3"}))
+        patched = _with_prose_fallback(graph, mapper_out, weight=0.5)
+        assert patched.affinity == {("t1", "t2"): 0.5}
+
+
+class TestTaskMapRegimes:
+    """The two live smoke1 failures plus the compatibility regimes, now assertable
+    (plan U6): greenfield keeps structure, cross-stack halves co-group, foreign
+    plans keep the mapper, malformed maps fail loudly before any LLM call."""
+
+    def run_plan(self, tmp_path, plan_text, llm=None):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(plan_text)
+        llm = llm or StubLlm()
+        result, base_context = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=llm, client=make_client(repo)
+        )
+        return result, llm
+
+    def test_pure_greenfield_yields_ordered_groups_not_independents(self, tmp_path):
+        """Regime (a): all-prospective plan with scaffold→consumer deps produces
+        clustered, dependency-ordered groups — the smoke1 hand-edit, automated."""
+        result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
+        by_task = {task: group for group in result.groups for task in group.tasks}
+        # slice-mates co-grouped (contraction + the semantic route-tag edge)
+        assert by_task["t2-items-api"].id == by_task["t3-items-ui"].id
+        # ordered groups, not N independents: everything hangs off the scaffold
+        assert len(result.groups) >= 2
+        scaffold_gid = by_task["t1-scaffold"].id
+        for group in result.groups:
+            if group.id != scaffold_gid:
+                assert scaffold_gid in group.dependencies
+        # prospective files reach Group.files — workers must create them
+        assert "app/items.py" in by_task["t2-items-api"].files
+        assert any("retained as prospective" in flag for flag in result.flags)
+
+    def test_premapped_plan_invokes_runner_only_for_the_speccer(self, tmp_path):
+        """Regime (d): the mapper LLM is skipped and flagged."""
+        result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
+        assert result.flags[0] == "task map: parsed from plan — mapper LLM skipped"
+        titles = [title for title, _ in llm.prompts]
+        assert titles and set(titles) == {"speccer_output"}
+
+    def test_plan_without_task_map_keeps_the_mapper_path(self, tmp_path):
+        """Regime (b): foreign plans work unchanged — mapper called, no skip flag."""
+        result, llm = self.run_plan(tmp_path, PLAN_TEXT)
+        assert any(title == "mapper_output" for title, _ in llm.prompts)
+        assert not any(flag.startswith("task map:") for flag in result.flags)
+
+    def test_mixed_plan_co_groups_cross_stack_halves(self, tmp_path):
+        """Regime (c): an existing-code task and a greenfield task joined only by
+        route tags land in one group; structural and semantic layers coexist."""
+        result, _ = self.run_plan(tmp_path, MIXED_PLAN)
+        by_task = {task: group for group in result.groups for task in group.tasks}
+        assert by_task["t1-api"].id == by_task["t2-ui"].id
+        files = by_task["t1-api"].files
+        assert "server.py" in files and "web/items.tsx" in files
+
+    def test_malformed_task_map_fails_loudly_with_zero_llm_calls(self, tmp_path):
+        """Regime (e): a broken block must never silently fall back to the mapper
+        (that would hide prose↔map drift)."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text("# feat: x\n\n```yaml\n# orchestrator-task-map v1\ntasks: [unclosed\n```\n")
+        llm = StubLlm()
+        with pytest.raises(GrouperError, match="task map"):
+            run_grouping(plan_path=plan, repo_root=repo, llm_runner=llm, client=make_client(repo))
+        assert llm.prompts == []
+
+    def test_premapped_output_is_byte_deterministic(self, tmp_path):
+        result_a, _ = self.run_plan(tmp_path, GREENFIELD_PLAN)
+        result_b, _ = self.run_plan(tmp_path, GREENFIELD_PLAN)
+        assert serialize_grouping(result_a) == serialize_grouping(result_b)
+
+    def test_prospective_file_task_gets_no_prose_fallback(self):
+        """A task with prospective files is not region-less — its planned files
+        already carry real shared-file affinity."""
+        from orchestrator.grouping.graphing import TaskMapping
+        from orchestrator.grouping.partition import TaskGraph
+        from orchestrator.grouping.pipeline import _with_prose_fallback
+
+        mapper_out = MapperOutput(
+            mappings=[
+                TaskMapping("t1", prospective_files=("new.py",)),
+                TaskMapping("t2"),
+                TaskMapping("t3", files=("a.py",)),
+            ],
             descriptions={},
         )
         graph = TaskGraph(nodes=frozenset({"t1", "t2", "t3"}))

@@ -1277,6 +1277,7 @@ dependencies = [
     { name = "openai" },
     { name = "perplexityai" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -1293,6 +1294,7 @@ requires-dist = [
     { name = "openai" },
     { name = "perplexityai" },
     { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

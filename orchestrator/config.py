@@ -20,12 +20,21 @@ class EdgeWeightsConfig(BaseModel):
     ``prose_neighbor`` is not a codegraph signal: it is the affinity a region-less
     task gets toward its plan-order neighbor so unmappable tasks cluster near the
     work they were written next to.
+
+    ``semantic`` weights one matched task-map route-tag edge
+    (``implements``/``consumes``, docs/orchestrator-task-map.md); the layer is then
+    scaled by ``clamp(Σw_struct / Σw_sem, semantic_floor, semantic_ceil)`` so
+    semantics dominate only when the structural layer is near-empty (greenfield)
+    and never override real reference edges on edit-heavy plans.
     """
 
     shared_file: float = 1.0
     call: float = 2.0
     impact: float = 1.5
     prose_neighbor: float = 0.5
+    semantic: float = 1.5
+    semantic_floor: float = 0.5
+    semantic_ceil: float = 3.0
 
 
 class PartitionConfig(BaseModel):

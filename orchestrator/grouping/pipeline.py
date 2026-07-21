@@ -35,6 +35,7 @@ from orchestrator.grouping.partition import (
     canonical_pair,
     detect_hub_roles,
 )
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import Group, GroupingResult
 
@@ -60,9 +61,19 @@ def run_grouping(
 
     plan_text = plan_path.read_text()
     codegraph_files = client.files_overview()
-    mapper_out = map_tasks(
-        plan_text, llm_runner, client, failure_dir=failure_dir, codegraph_files=codegraph_files
-    )
+    # Deterministic fast path: a plan carrying a task map already answered what
+    # the mapper LLM would have to guess. Malformed maps fail hard (silent
+    # fallback would hide prose↔map drift); absent maps keep foreign plans working.
+    try:
+        mapper_out = parse_task_map(plan_text, client)
+    except TaskMapError as exc:
+        raise GrouperError(f"task map: {exc}") from exc
+    if mapper_out is None:
+        mapper_out = map_tasks(
+            plan_text, llm_runner, client, failure_dir=failure_dir, codegraph_files=codegraph_files
+        )
+    else:
+        mapper_out.flags.insert(0, "task map: parsed from plan — mapper LLM skipped")
     if not mapper_out.mappings:
         raise GrouperError("mapper produced no tasks from the plan document")
 
@@ -166,9 +177,12 @@ def serialize_grouping(result: GroupingResult) -> str:
 
 
 def _union_files(graph: TaskGraph, members: list[str]) -> list[str]:
+    """Existing plus prospective files: workers create the prospective ones."""
     files: set[str] = set()
     for node in members:
-        files.update(graph.metadata.get(node, {}).get("files", ()) or ())
+        meta = graph.metadata.get(node, {})
+        files.update(meta.get("files", ()) or ())
+        files.update(meta.get("prospective_files", ()) or ())
     return sorted(files)
 
 
@@ -179,7 +193,13 @@ def _with_prose_fallback(graph: TaskGraph, mapper_out: MapperOutput, weight: flo
     tasks nominate the same pair from both sides, which must not double its weight.
     """
     order = [m.task_id for m in mapper_out.mappings]
-    regionless = [m.task_id for m in mapper_out.mappings if not m.files and not m.symbols]
+    # A task with prospective files is no longer region-less: its planned files
+    # already give it real shared-file affinity.
+    regionless = [
+        m.task_id
+        for m in mapper_out.mappings
+        if not m.files and not m.symbols and not m.prospective_files
+    ]
     if not regionless or len(order) < 2 or weight <= 0:
         return graph
     fallback_pairs = set()

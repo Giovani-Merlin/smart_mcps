@@ -37,9 +37,14 @@ def node_work(metadata: Mapping[str, object], config: EstimatorConfig) -> float:
     """Per-task work in tokens — the hook injected into the partition strategy.
 
     Uses the metadata shape the codegraph adapter emits (source_bytes, files).
+    Prospective files contribute zero source bytes but count in the per-file
+    allowance — they will exist by the time the group runs, and pricing them at
+    zero would let merge_small_groups over-merge tiny greenfield groups.
     """
     source_bytes = int(metadata.get("source_bytes", 0) or 0)
-    file_count = len(metadata.get("files", ()) or ())
+    file_count = len(metadata.get("files", ()) or ()) + len(
+        metadata.get("prospective_files", ()) or ()
+    )
     tokens = source_bytes / config.bytes_per_token * config.slack_multiplier
     return tokens + file_count * config.per_file_tool_allowance
 
