@@ -1,32 +1,19 @@
-import type { Escalation } from "../types";
+// Stub — the live-board slice (plan U5) replaces this with the streaming log
+// wired to `openLogStream` (`/events/log`). The props are the contract App.tsx
+// already honors.
 
-interface EventLogProps {
-  lines: string[];
-  escalations: Escalation[];
+export interface EventLogProps {
+  project: string;
+  runId: string;
 }
 
-function EventLog({ lines, escalations }: EventLogProps) {
+function EventLog({ project, runId }: EventLogProps) {
   return (
-    <section className="event-log">
+    <section className="panel-stub" aria-label="Event log">
       <h2>Event log</h2>
-      <pre className="event-log__lines">{lines.join("\n")}</pre>
-
-      {escalations.length > 0 && (
-        <div className="escalations">
-          <h2>Pending escalations</h2>
-          <ul className="escalations__list">
-            {escalations.map((escalation) => (
-              <li key={escalation.id} className="escalation">
-                <div className="escalation__meta">
-                  <span className="escalation__kind">{escalation.kind}</span>
-                  <span className="escalation__group">{escalation.group_id}</span>
-                </div>
-                <p className="escalation__prompt">{escalation.prompt}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <p className="panel-stub__note">
+        Live event log for {project}/{runId} lands with the live-board slice.
+      </p>
     </section>
   );
 }

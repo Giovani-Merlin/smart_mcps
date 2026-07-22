@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
+node_modules/
 .venv/
 
 # Orchestrator run artifacts (see orchestrator/README.md)

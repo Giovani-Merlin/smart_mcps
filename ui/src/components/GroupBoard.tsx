@@ -1,39 +1,25 @@
-import type { GroupState, RunState } from "../types";
+// Stub — the live-board slice (plan U5) replaces this with the real board:
+// one card per snapshot group, DAG edges, and the stale-DAG marker. The props
+// are the contract App.tsx already honors.
 
-const STATE_LABELS: Record<GroupState, string> = {
-  pending: "Pending",
-  ready: "Ready",
-  running: "Running",
-  reviewing: "Reviewing",
-  rewriting: "Rewriting",
-  merging: "Merging",
-  completed: "Completed",
-  failed: "Failed",
-};
+import type { RunSnapshot } from "../types";
 
-interface GroupBoardProps {
-  runState: RunState;
+export interface GroupBoardProps {
+  project: string;
+  runId: string;
+  snapshot: RunSnapshot | null;
+  /** Advances on every successful snapshot load — re-render off this. */
+  revision: number;
+  loading: boolean;
 }
 
-function GroupBoard({ runState }: GroupBoardProps) {
-  const groupIds = Object.keys(runState.groups).sort();
-
+function GroupBoard({ snapshot, loading }: GroupBoardProps) {
   return (
-    <section className="group-board">
+    <section className="panel-stub" aria-label="Groups">
       <h2>Groups</h2>
-      <div className="group-board__grid">
-        {groupIds.map((groupId) => {
-          const group = runState.groups[groupId];
-          return (
-            <div key={groupId} className={`group-card group-card--${group.state}`}>
-              <div className="group-card__id">{groupId}</div>
-              <div className="group-card__state">{STATE_LABELS[group.state]}</div>
-              <div className="group-card__generation">gen {group.generation}</div>
-              {group.failure && <div className="group-card__failure">{group.failure}</div>}
-            </div>
-          );
-        })}
-      </div>
+      <p className="panel-stub__note">
+        {loading && !snapshot ? "Loading snapshot…" : "Group board lands with the live-board slice."}
+      </p>
     </section>
   );
 }

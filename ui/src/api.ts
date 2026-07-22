@@ -1,0 +1,166 @@
+// The single place every backend HTTP contract is used. Components never call
+// `fetch` or construct an `EventSource` themselves — they go through the typed
+// functions here (and `useRunStream`), so there is exactly one base URL and one
+// error path. Written against the endpoint contracts the plan defines, not
+// against a running backend: this layer compiles and type-checks with the server
+// down.
+//
+// Endpoint map (all under the vite dev proxy, see vite.config.ts):
+//   GET  /api/projects
+//   GET  /api/projects/{project}/runs
+//   GET  /api/projects/{project}/runs/{run}/snapshot
+//   GET  /api/projects/{project}/runs/{run}/escalations
+//   POST /api/projects/{project}/runs/{run}/escalations/{esc}/answer
+//   GET  /api/projects/{project}/runs/{run}/sessions/{session}/transcript
+//   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
+//   SSE  /events/log?project=&run=
+//   SSE  /events/run?project=&run=
+
+import type {
+  AnswerBody,
+  AnswerResult,
+  Artifact,
+  EscalationRequest,
+  Project,
+  RunInfo,
+  RunSnapshot,
+  TranscriptEvent,
+} from "./types";
+
+// Same-origin: dev serves the SPA through vite's proxy, prod serves it from the
+// FastAPI static mount, so a relative base works in both without configuration.
+export const API_BASE = "";
+
+/** Every non-2xx response from the backend surfaces as one of these, carrying
+ * the backend's own `detail` message so callers can show it verbatim. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** The one place a caught error becomes display text — components render this,
+ * never their own `String(err)` variants. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function backendMessage(res: Response): Promise<string> {
+  // FastAPI errors are `{"detail": ...}`; fall back to status text otherwise.
+  try {
+    const body = await res.json();
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    if (typeof detail === "string") return detail;
+    if (detail !== undefined) return JSON.stringify(detail);
+  } catch {
+    // Body was empty or not JSON — use the status line below.
+  }
+  return res.statusText || `request failed (${res.status})`;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, init);
+  if (!res.ok) {
+    throw new ApiError(res.status, await backendMessage(res));
+  }
+  return (await res.json()) as T;
+}
+
+const enc = encodeURIComponent;
+
+function runPath(project: string, run: string): string {
+  return `/api/projects/${enc(project)}/runs/${enc(run)}`;
+}
+
+// --------------------------------------------------------------------- REST
+
+export function listProjects(): Promise<Project[]> {
+  return request<Project[]>("/api/projects");
+}
+
+export function listRuns(project: string): Promise<RunInfo[]> {
+  return request<RunInfo[]>(`/api/projects/${enc(project)}/runs`);
+}
+
+export function getSnapshot(project: string, run: string): Promise<RunSnapshot> {
+  return request<RunSnapshot>(`${runPath(project, run)}/snapshot`);
+}
+
+export function listEscalations(project: string, run: string): Promise<EscalationRequest[]> {
+  return request<EscalationRequest[]>(`${runPath(project, run)}/escalations`);
+}
+
+export function answerEscalation(
+  project: string,
+  run: string,
+  escId: string,
+  body: AnswerBody,
+): Promise<AnswerResult> {
+  return request<AnswerResult>(`${runPath(project, run)}/escalations/${enc(escId)}/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function getTranscript(
+  project: string,
+  run: string,
+  sessionId: string,
+): Promise<TranscriptEvent[]> {
+  return request<TranscriptEvent[]>(`${runPath(project, run)}/sessions/${enc(sessionId)}/transcript`);
+}
+
+export function getArtifacts(
+  project: string,
+  run: string,
+  groupId: string,
+): Promise<Artifact[]> {
+  return request<Artifact[]>(`${runPath(project, run)}/groups/${enc(groupId)}/artifacts`);
+}
+
+// ---------------------------------------------------------------------- SSE
+
+/** Handlers for a live stream. `onError` fires on transport failure; the
+ * `EventSource` retries on its own, so this is a signal, not a teardown. */
+export interface StreamHandlers {
+  onError?: (event: Event) => void;
+}
+
+function streamUrl(path: string, project: string, run: string): string {
+  return `${API_BASE}${path}?project=${enc(project)}&run=${enc(run)}`;
+}
+
+/** Subscribe to the appended-line log stream (`/events/log`). Each new line
+ * arrives as an unnamed message. Returns the `EventSource` — call `.close()`
+ * to stop. */
+export function openLogStream(
+  project: string,
+  run: string,
+  onLine: (line: string) => void,
+  handlers: StreamHandlers = {},
+): EventSource {
+  const source = new EventSource(streamUrl("/events/log", project, run));
+  source.onmessage = (event) => onLine(event.data);
+  if (handlers.onError) source.onerror = handlers.onError;
+  return source;
+}
+
+/** Subscribe to the debounced run-change stream (`/events/run`). Fires the
+ * named `changed` event whenever the run directory mutates. Returns the
+ * `EventSource` — call `.close()` to stop. */
+export function openRunStream(
+  project: string,
+  run: string,
+  onChanged: () => void,
+  handlers: StreamHandlers = {},
+): EventSource {
+  const source = new EventSource(streamUrl("/events/run", project, run));
+  source.addEventListener("changed", () => onChanged());
+  if (handlers.onError) source.onerror = handlers.onError;
+  return source;
+}
