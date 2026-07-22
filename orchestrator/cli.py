@@ -525,6 +525,18 @@ def _print_outcomes(state: RunState) -> int:
     if completed:
         print("all groups completed; merge the integration branch when ready")
         return 0
+    interrupted = sorted(
+        gid for gid, entry in state.groups.items() if entry.state == GroupState.INTERRUPTED
+    )
+    if interrupted:
+        # Envelope failures are stopped-but-resumable: exit 2 mirrors the
+        # operator-abort path, distinct from needs-inspection work failures.
+        print(
+            f"run interrupted — group(s) {', '.join(interrupted)} stopped by envelope "
+            f"failure; resume with: smart-mcps-orchestrate resume {state.run_id}",
+            file=sys.stderr,
+        )
+        return 2
     print("run did not complete — inspect `status`, fix, then `resume`", file=sys.stderr)
     return 1
 
