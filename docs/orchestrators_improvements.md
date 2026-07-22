@@ -9,78 +9,39 @@ findings from executing that plan through the orchestrator itself.
 Each defect carries a severity and, where known, a citation. Re-verify citations before
 acting — they drift.
 
+**2026-07-22 — run-hardening landings.** D1, D7, D8, D9, D10, and D12 are fixed by
+`docs/plans/2026-07-22-001-feat-orchestrator-run-hardening-plan.md` (origin:
+`docs/brainstorms/2026-07-22-orchestrator-run-hardening-requirements.md`, which absorbed
+their requirements). Their write-ups inside the `obs1` live-run section below stay as-is —
+they are that run's historical record — but the defects themselves are closed. D2/D3/D4
+remain open: they are the grouper study's brief.
+
 | #   | Defect                                                                            | Severity   | Status |
 | --- | --------------------------------------------------------------------------------- | ---------- | ------ |
-| D1  | Codegraph index readiness is never checked — symbols silently dropped             | **High**   | Open   |
+| D1  | Codegraph index readiness is never checked — symbols silently dropped             | **High**   | Landed |
 | D2  | Slice contraction is undone by the budget splitter                                | High       | Open   |
 | D3  | Group-DAG cycles fail the run instead of being repaired                           | High       | Open   |
 | D4  | Greenfield work estimation is file-count-driven                                   | Medium     | Open   |
 | D5  | No way to ask "how would this plan group?" without paying for specs               | Medium     | Open   |
 | D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee                | Low (docs) | Open   |
-| D7  | `run.log` too sparse to be a live event log; content varies by run mode           | **High**   | Open   |
-| D8  | Round timeout unrelated to the group size the partitioner chose                   | **High**   | Open   |
-| D9  | Timed-out group terminally failed despite committed work                          | High       | Open   |
-| D10 | A unit that adds a dependency cannot install it (venv outside worktree)           | Medium     | Open   |
+| D7  | `run.log` too sparse to be a live event log; content varies by run mode           | **High**   | Landed |
+| D8  | Round timeout unrelated to the group size the partitioner chose                   | **High**   | Landed |
+| D9  | Timed-out group terminally failed despite committed work                          | High       | Landed |
+| D10 | A unit that adds a dependency cannot install it (venv outside worktree)           | Medium     | Landed |
 | D11 | Verification items that introspect framework internals are fragile                | Low        | Open   |
-| D12 | Worker CLI changes never reach the installed console script (self-drive is stale) | **High**   | Open   |
+| D12 | Worker CLI changes never reach the installed console script (self-drive is stale) | **High**   | Landed |
 
 ______________________________________________________________________
 
-## D1 — Codegraph index readiness is never checked (silent, high severity)
+## D1 — Codegraph index readiness is never checked (landed)
 
-**The single most dangerous defect here, because it corrupts grouping quality without
-failing anything.**
-
-Found 2026-07-21 while running the Observatory plan through the orchestrator. The first
-`group --dry-run` after merging the HITL work reported:
-
-```
-task map: task u1-orchestrator-seams mapped unknown symbol pending_escalations — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol _cmd_answer — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol EscalationResponse — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol HumanAction — dropped
-task map: task u6-escalation-api mapped unknown symbol EscalationRequest — dropped
-task map: task u4-sse-endpoints mapped unknown symbol log_event — dropped
-```
-
-Every one of those symbols exists. `codegraph query pending_escalations` resolved it to
-`orchestrator/execution/escalation.py:135`, and an immediate re-run of the identical
-command dropped **nothing**. The codegraph daemon had been cold-starting its index
-*during* the first run.
-
-**Mechanism.** `CodegraphClient.symbol_exists` (`orchestrator/grouping/graphing.py:122`)
-is `any(entry.get("node", {}).get("name") == name for entry in self.query(name))`, and
-`CodegraphClient._run` (`graphing.py:157`) shells out to `codegraph` with **no
-readiness gate**. An index that is empty, mid-build, or unsynced returns no results —
-which is indistinguishable from a symbol that genuinely does not exist. The symbol is
-dropped with a flag and grouping proceeds on a weaker affinity signal.
-
-**Why it stays invisible.** On a greenfield plan the flag list is already dozens of lines
-of entirely expected `does not exist yet — retained as prospective` notices. Six real
-drops scroll past inside that wall. The command exits 0, writes `groups.json`, and the
-run proceeds — with silently worse groups than the plan author specified.
-
-**Aggravating factor.** These worktrees run with `CODEGRAPH_NO_WATCH=1` (visible in
-`.codegraph/daemon.log`), so the index does *not* auto-update on file change. It refreshes
-only on explicit `codegraph sync`. Any `group` run shortly after a merge, a branch switch,
-or a fresh worktree is therefore exposed.
-
-**Workaround until fixed.** Run `codegraph sync` before any `group` invocation, and treat
-an unexpected `mapped unknown symbol` flag as an index problem, not a plan problem.
-
-**Candidate fixes**, roughly in increasing order of cost:
-
-1. Gate `run_grouping` on `codegraph status` reporting a non-zero node count, and fail
-   loudly if the index is empty. Cheap, catches the fully-cold case, misses the partial one.
-2. Have `parse_task_map` treat "the plan named a symbol the index cannot see" as a
-   *warning that fails the run by default* (`--allow-unknown-symbols` to override). A plan
-   with a verified task map should be asserting the symbol exists; if it does not, either
-   the index is stale or the plan is wrong, and **both deserve a stop**.
-3. Separate "index says no" from "index cannot answer" at the `CodegraphClient` layer, so
-   the caller can distinguish absence from unavailability. Most correct, most invasive.
-
-(2) is probably the right default: it converts a silent quality regression into a loud,
-actionable one, and the escape hatch keeps foreign plans working.
+Landed via the run-hardening plan
+(`docs/plans/2026-07-22-001-feat-orchestrator-run-hardening-plan.md`, R13/R14): `group`
+now runs a blocking `codegraph sync` before its first index read, and a task-map symbol
+the index cannot resolve is a hard `GrouperError` by default — `--allow-unknown-symbols`
+restores the old drop-with-flag behaviour. That is candidate fix (2) from the original
+analysis plus the sync gate; the mapper-fallback path keeps drop-with-flag (mapper output
+is a guess, not a claim). The original analysis lives in the origin brainstorm.
 
 ______________________________________________________________________
 
