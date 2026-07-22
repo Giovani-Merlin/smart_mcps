@@ -1,32 +1,74 @@
-import type { Escalation } from "../types";
+// The live event log (plan U5): renders `run.log` lines from the `/events/log`
+// SSE stream in arrival order, appending as they arrive and keeping the pane
+// pinned to the newest line. All transport goes through `api.ts`'s
+// `openLogStream` — no raw fetch/EventSource here.
 
-interface EventLogProps {
-  lines: string[];
-  escalations: Escalation[];
+import { useEffect, useRef, useState } from "react";
+
+import { openLogStream } from "../api";
+import "./EventLog.css";
+
+export interface EventLogProps {
+  project: string;
+  runId: string;
 }
 
-function EventLog({ lines, escalations }: EventLogProps) {
-  return (
-    <section className="event-log">
-      <h2>Event log</h2>
-      <pre className="event-log__lines">{lines.join("\n")}</pre>
+function EventLog({ project, runId }: EventLogProps) {
+  const [lines, setLines] = useState<string[]>([]);
+  const [stalled, setStalled] = useState(false);
+  const paneRef = useRef<HTMLDivElement | null>(null);
 
-      {escalations.length > 0 && (
-        <div className="escalations">
-          <h2>Pending escalations</h2>
-          <ul className="escalations__list">
-            {escalations.map((escalation) => (
-              <li key={escalation.id} className="escalation">
-                <div className="escalation__meta">
-                  <span className="escalation__kind">{escalation.kind}</span>
-                  <span className="escalation__group">{escalation.group_id}</span>
-                </div>
-                <p className="escalation__prompt">{escalation.prompt}</p>
+  useEffect(() => {
+    setLines([]);
+    setStalled(false);
+    const source = openLogStream(
+      project,
+      runId,
+      (line) => {
+        setStalled(false);
+        setLines((prev) => [...prev, line]);
+      },
+      {
+        onError: () => {
+          // The EventSource reconnects on its own, and on reconnect the
+          // backend replays the whole backlog — reset so nothing duplicates.
+          setStalled(true);
+          setLines([]);
+        },
+      },
+    );
+    return () => source.close();
+  }, [project, runId]);
+
+  // Pinned to the newest line: every append scrolls the pane to the bottom.
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (pane) pane.scrollTop = pane.scrollHeight;
+  }, [lines]);
+
+  return (
+    <section className="event-log" aria-label="Event log">
+      <div className="event-log__header">
+        <h2>Event log</h2>
+        {stalled && (
+          <span className="event-log__stalled" role="status">
+            stream interrupted — reconnecting…
+          </span>
+        )}
+      </div>
+      <div className="event-log__pane" ref={paneRef}>
+        {lines.length === 0 ? (
+          <p className="event-log__empty">Waiting for run.log lines…</p>
+        ) : (
+          <ol className="event-log__lines">
+            {lines.map((line, index) => (
+              <li key={index} className="event-log__line">
+                {line}
               </li>
             ))}
-          </ul>
-        </div>
-      )}
+          </ol>
+        )}
+      </div>
     </section>
   );
 }

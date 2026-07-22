@@ -1,0 +1,211 @@
+.group-board {
+  margin-bottom: 2rem;
+}
+
+.group-board__header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.group-board__header h2 {
+  margin: 0 0 0.75rem;
+}
+
+.group-board__stale {
+  border: 1px solid #ffd75e;
+  background-color: #fff4d6;
+  color: #6b4d00;
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.group-board__empty {
+  color: #55565c;
+}
+
+/* Cards sit above the SVG edge layer; edges show through the lane gaps. */
+.group-board__canvas {
+  position: relative;
+}
+
+.group-board__edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.group-board__edges path {
+  fill: none;
+  stroke: #9aa0a8;
+  stroke-width: 1.5;
+}
+
+.group-board__edges marker path {
+  fill: #9aa0a8;
+  stroke: none;
+}
+
+.group-board__lanes {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 2.5rem;
+}
+
+.group-board__lane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 200px;
+  flex: 1;
+}
+
+/* --------------------------------------------------------------- cards */
+
+.group-card {
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  border: 1px solid transparent;
+  background-color: #eceef1;
+  color: #1a1a1a;
+}
+
+.group-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.group-card__id {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.group-card__state {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+}
+
+.group-card__name {
+  margin-top: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.group-card__generation {
+  font-size: 0.8rem;
+  color: #55565c;
+  margin-top: 0.25rem;
+}
+
+.group-card__deps {
+  font-size: 0.75rem;
+  color: #55565c;
+  margin-top: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.group-card__failure {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #7a1414;
+  white-space: pre-wrap;
+}
+
+/* One distinct treatment per GroupState (all eight) — card surface plus a
+ * matching state badge. `running` additionally pulses. */
+
+.group-card--pending {
+  background-color: #eceef1;
+  border-color: #d3d5da;
+}
+.group-card__state--pending {
+  background-color: #d3d5da;
+  color: #3c3d42;
+}
+
+.group-card--ready {
+  background-color: #e3edff;
+  border-color: #a9c6ff;
+}
+.group-card__state--ready {
+  background-color: #a9c6ff;
+  color: #12316b;
+}
+
+.group-card--running {
+  background-color: #fff4d6;
+  border-color: #ffd75e;
+  animation: group-card-pulse 2s ease-in-out infinite;
+}
+.group-card__state--running {
+  background-color: #ffd75e;
+  color: #5c4300;
+}
+
+.group-card--reviewing {
+  background-color: #f2e3ff;
+  border-color: #cfa2ff;
+}
+.group-card__state--reviewing {
+  background-color: #cfa2ff;
+  color: #3d1266;
+}
+
+.group-card--rewriting {
+  background-color: #ffe6cf;
+  border-color: #ffb066;
+}
+.group-card__state--rewriting {
+  background-color: #ffb066;
+  color: #6b3600;
+}
+
+.group-card--merging {
+  background-color: #d9f2ff;
+  border-color: #7dd3ff;
+}
+.group-card__state--merging {
+  background-color: #7dd3ff;
+  color: #073a52;
+}
+
+.group-card--completed {
+  background-color: #dcf5df;
+  border-color: #8fe0a0;
+}
+.group-card__state--completed {
+  background-color: #8fe0a0;
+  color: #114a20;
+}
+
+.group-card--failed {
+  background-color: #fbdada;
+  border-color: #f19a9a;
+  border-style: dashed;
+}
+.group-card__state--failed {
+  background-color: #f19a9a;
+  color: #5c0c0c;
+}
+
+@keyframes group-card-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 194, 51, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 194, 51, 0);
+  }
+}

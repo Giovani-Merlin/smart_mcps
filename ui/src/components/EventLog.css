@@ -1,0 +1,51 @@
+.event-log {
+  margin-bottom: 2rem;
+}
+
+.event-log__header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.event-log__header h2 {
+  margin: 0 0 0.75rem;
+}
+
+.event-log__stalled {
+  color: #6b4d00;
+  font-size: 0.85rem;
+}
+
+.event-log__pane {
+  background-color: #1a1a1a;
+  color: #e6e6e6;
+  border-radius: 8px;
+  padding: 1rem;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.event-log__empty {
+  margin: 0;
+  color: #9aa0a8;
+}
+
+.event-log__lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.event-log__line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.event-log__line + .event-log__line {
+  margin-top: 0.15rem;
+}
