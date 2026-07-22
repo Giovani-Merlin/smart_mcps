@@ -529,6 +529,32 @@ should special-case a usage-limit envelope error distinctly from a genuine work 
   from config on every `run`/`resume` invocation (`cli.py:328`), so bumping the timeout and
   resuming takes effect immediately.
 
+**Second interruption on the same run refines the fix (g2, 2026-07-21).** After g1
+completed and merged, g2's coder failed with `SessionError: claude exited 1` and an *empty*
+stderr — a `<synthetic>` stop with zero token usage in its transcript, the CLI's signature
+for an aborted API call (a transient usage-limit blip; a liveness probe minutes later
+succeeded). Two lessons:
+
+1. **It failed before its first commit.** g2 had created `types.ts`, `api.ts`,
+   `useRunStream.ts` and staged `sample-run.ts`'s deletion, but committed nothing. That WIP
+   survived only because `create_worktree` returns an existing on-branch worktree **as-is**
+   (`worktrees.py:77`) — no checkout, no clean. So the "re-enter groups whose *branch has
+   commits* ahead" heuristic I proposed above **would have missed g2**. The condition must
+   be broader: re-enter a failed group if its **worktree is dirty OR its branch is ahead of
+   its fork point** — any preserved progress, committed or not.
+2. **Transient envelope failures are categorically different from work failures.** A
+   `SessionError` / `RoundTimeout` is the *harness* failing (API blip, timeout), not the
+   coder deciding it cannot proceed (a `skip`/`abort` verdict, a genuine block). The former
+   should auto-resume by default; only the latter should stay terminal. Distinguishing the
+   two at the point the group is marked `FAILED` — an envelope-error flag on the state
+   entry — would let `resume` do the right thing without the operator classifying it by
+   hand. Recording the failure string as it does today is not enough; `claude exited 1` and
+   `reviewer returned abort` both land as `failed`.
+
+Across this one run the usage/timeout interruption fired **twice in ~40 minutes** (g1
+timeout, g2 envelope error), each needing a manual `state.json` edit. That cadence is the
+argument for making D9 automatic.
+
 ### D10 — A unit that adds a dependency cannot install it (Medium)
 
 U1's job included adding `fastapi` to `pyproject.toml`, and it did. But the venv lives at
