@@ -1,0 +1,259 @@
+.escalation-panel {
+  margin-bottom: 2rem;
+}
+
+.escalation-panel__header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.escalation-panel__header h2 {
+  margin: 0 0 0.75rem;
+}
+
+.escalation-panel__count {
+  border: 1px solid #ffd75e;
+  background-color: #fff4d6;
+  color: #6b4d00;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.escalation-panel__notice {
+  border: 1px solid #ffd75e;
+  background-color: #fff4d6;
+  color: #6b4d00;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.escalation-panel__error {
+  border: 1px solid #f19a9a;
+  background-color: #fff5f5;
+  color: #7a1414;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.escalation-panel__empty {
+  color: #55565c;
+}
+
+.escalation-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* --------------------------------------------------------------- cards */
+
+/* Amber accent: a pending escalation is the run waiting on a human. */
+.escalation-card {
+  border: 1px solid #ffd75e;
+  border-left: 4px solid #ffc233;
+  background-color: #fffdf5;
+  border-radius: 8px;
+  padding: 1rem;
+  color: #1a1a1a;
+}
+
+/* Answered (or answered elsewhere) but still on disk's pending list at last
+ * fetch — muted until the next revision drops it. */
+.escalation-card--resolved {
+  border-color: #d3d5da;
+  border-left-color: #d3d5da;
+  background-color: #f2f3f5;
+}
+
+.escalation-card__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.escalation-card__kind {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background-color: #ffd75e;
+  color: #5c4300;
+  white-space: nowrap;
+}
+
+.escalation-card--resolved .escalation-card__kind {
+  background-color: #d3d5da;
+  color: #3c3d42;
+}
+
+.escalation-card__group {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.escalation-card__generation,
+.escalation-card__created {
+  color: #55565c;
+}
+
+/* The full prompt, untruncated — no max-height, no ellipsis. */
+.escalation-card__prompt {
+  margin: 0.75rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------------- context */
+
+.escalation-card__context {
+  margin: 0.75rem 0 0;
+  border-top: 1px solid #f0e2b6;
+  padding-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.escalation-card--resolved .escalation-card__context {
+  border-top-color: #d3d5da;
+}
+
+.escalation-card__context-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.escalation-card__context-row + .escalation-card__context-row {
+  margin-top: 0.35rem;
+}
+
+.escalation-card__context dt {
+  flex: none;
+  width: 5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #55565c;
+}
+
+.escalation-card__context dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.escalation-card__path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.escalation-card__diff {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.escalation-card__surprises {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.escalation-card__surprises li + li {
+  margin-top: 0.25rem;
+}
+
+.escalation-card__surprise-kind {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #55565c;
+}
+
+.escalation-card__surprise-groups {
+  color: #55565c;
+}
+
+/* ---------------------------------------------------------------- form */
+
+.escalation-card__form {
+  margin-top: 0.75rem;
+}
+
+.escalation-card__fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.escalation-card__fieldset:disabled {
+  opacity: 0.6;
+}
+
+.escalation-card__actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.escalation-card__action {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.escalation-card__text {
+  font: inherit;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #d3d5da;
+  background-color: #ffffff;
+  resize: vertical;
+}
+
+.escalation-card__submit {
+  align-self: flex-start;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #d3a300;
+  background-color: #ffc233;
+  color: #3d2e00;
+  cursor: pointer;
+}
+
+.escalation-card__submit:hover:enabled {
+  background-color: #ffcf5c;
+}
+
+.escalation-card__submit:disabled {
+  cursor: default;
+}
+
+/* -------------------------------------------------------------- status */
+
+.escalation-card__status {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: #114a20;
+}
+
+.escalation-card__status--conflict {
+  color: #6b4d00;
+}
+
+.escalation-card__error {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: #7a1414;
+}
