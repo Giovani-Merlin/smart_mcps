@@ -9,19 +9,20 @@ findings from executing that plan through the orchestrator itself.
 Each defect carries a severity and, where known, a citation. Re-verify citations before
 acting — they drift.
 
-| #   | Defect                                                                  | Severity   | Status |
-| --- | ----------------------------------------------------------------------- | ---------- | ------ |
-| D1  | Codegraph index readiness is never checked — symbols silently dropped   | **High**   | Open   |
-| D2  | Slice contraction is undone by the budget splitter                      | High       | Open   |
-| D3  | Group-DAG cycles fail the run instead of being repaired                 | High       | Open   |
-| D4  | Greenfield work estimation is file-count-driven                         | Medium     | Open   |
-| D5  | No way to ask "how would this plan group?" without paying for specs     | Medium     | Open   |
-| D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee      | Low (docs) | Open   |
-| D7  | `run.log` too sparse to be a live event log; content varies by run mode | **High**   | Open   |
-| D8  | Round timeout unrelated to the group size the partitioner chose         | **High**   | Open   |
-| D9  | Timed-out group terminally failed despite committed work                | High       | Open   |
-| D10 | A unit that adds a dependency cannot install it (venv outside worktree) | Medium     | Open   |
-| D11 | Verification items that introspect framework internals are fragile      | Low        | Open   |
+| #   | Defect                                                                            | Severity   | Status |
+| --- | --------------------------------------------------------------------------------- | ---------- | ------ |
+| D1  | Codegraph index readiness is never checked — symbols silently dropped             | **High**   | Open   |
+| D2  | Slice contraction is undone by the budget splitter                                | High       | Open   |
+| D3  | Group-DAG cycles fail the run instead of being repaired                           | High       | Open   |
+| D4  | Greenfield work estimation is file-count-driven                                   | Medium     | Open   |
+| D5  | No way to ask "how would this plan group?" without paying for specs               | Medium     | Open   |
+| D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee                | Low (docs) | Open   |
+| D7  | `run.log` too sparse to be a live event log; content varies by run mode           | **High**   | Open   |
+| D8  | Round timeout unrelated to the group size the partitioner chose                   | **High**   | Open   |
+| D9  | Timed-out group terminally failed despite committed work                          | High       | Open   |
+| D10 | A unit that adds a dependency cannot install it (venv outside worktree)           | Medium     | Open   |
+| D11 | Verification items that introspect framework internals are fragile                | Low        | Open   |
+| D12 | Worker CLI changes never reach the installed console script (self-drive is stale) | **High**   | Open   |
 
 ______________________________________________________________________
 
@@ -598,6 +599,49 @@ registered on the app object"* invites introspection of private framework struct
 same requirement expressed behaviourally — *"`GET /openapi.json` lists these paths"* — is
 both stronger and version-proof.
 
+### D12 — Orchestrator CLI changes made by a worker never reach the installed console script (High)
+
+**The venv's `smart-mcps-orchestrate` console script is an *editable install pinned to the
+main checkout's source tree*, so any change a worker makes to `orchestrator/` inside its
+group worktree is invisible to the running orchestrator.** The orchestrator drives itself
+with stale code for the entire run.
+
+Two concrete bites on `obs1`, both from the same cause:
+
+1. **The `ui` subcommand U1 added does not exist on the console script.**
+   `smart-mcps-orchestrate ui --help` errors with `invalid choice: 'ui'`, because the
+   installed entry point resolves `orchestrator.cli` from the *main checkout*
+   (`test/orchestrator-frontend`, still at the pre-Observatory commit), not from the
+   integration worktree that has U1's code. The subcommand is genuinely present and correct
+   — `PYTHONPATH=<worktree> python -m orchestrator.cli ui --help` works and lists
+   `--registry`, `--port`, `--repo` — but you cannot reach it the documented way until the
+   branch is merged back and the package reinstalled.
+
+2. **`obs1` never wrote its own per-run DAG snapshot.** U1's headline feature is
+   `_cmd_run` copying `groups.json` into `runs/<id>/groups.json` at run start (ADR 0002).
+   But `obs1` was *launched* with the same stale console script, whose `_cmd_run` predates
+   U1. So `runs/obs1/groups.json` was never created, and when the finished Observatory is
+   pointed at its own creation run it reports **`stale_dag: true`** and falls back to the
+   shared DAG. The run that built the snapshot feature could not use it. (The fallback
+   itself works perfectly — a `smoke1` run with a hand-placed `runs/smoke1/groups.json`
+   returns `stale_dag: false` — so this is purely the staleness, not a snapshot bug.)
+
+This is structural to how the orchestrator bootstraps: it runs from an installed console
+script while its workers edit source in isolated worktrees that are never on the running
+interpreter's path. Any self-referential change — a new subcommand, a change to `_cmd_run`,
+`answer_escalation`, the scheduler — only takes effect after merge-and-reinstall, i.e. on
+the *next* run, never the one that made it. Tests pass because they import
+`orchestrator.*` from the worktree source directly; only the live-driven behaviour is
+stale.
+
+**Fix direction.** The orchestrator should run workers against, and ideally drive itself
+from, the code under test — e.g. reinstall (`uv pip install -e`) the integration branch
+before consuming its CLI changes, or invoke `python -m orchestrator.cli` resolved to the
+integration worktree rather than a fixed console script. At minimum, document that
+orchestrator-self-modifying units only take effect on the following run, so a plan that
+changes `_cmd_run` and expects the same run to exercise the change (as this one did) is
+mis-sequenced.
+
 ### Correction to this run's recorded setup
 
 `obs1` ran **sequentially**, not at concurrency 3. `.orchestrator/config.toml` in the
@@ -676,5 +720,36 @@ rather than throwing the session away and re-forking.
   the shared-base KV benefit? Is the win (continuity) worth losing the single-base-session
   economy the current design is built around? Worth measuring both on a real over-limit
   group before committing either way.
+
+### `obs1` completed — end-to-end result (2026-07-22)
+
+**All four groups completed and merged; the full 10-unit Observatory plan is on
+`orchestrator/run-obs1`.** Timeline: g1 (backend, `paired_plus`) survived one round-timeout
+(D8) and one manual resume, then dual-approved; g2 (SPA) survived one envelope failure (D9)
+and one manual resume; g3 and g4 ran clean first try. Three interruptions, two distinct
+causes, **zero lost work** — the resume-with-worktree-reuse path held every time.
+
+Independently verified after completion:
+
+- **341 Python tests pass** on the integration branch.
+- **The SPA builds** (`tsc && vite build`, 40 modules, ~164 KB bundle, no TS errors).
+- **The Observatory serves and renders its own creation run.** Launched the backend against
+  the fe-test repo and exercised every endpoint against real `obs1`/`smoke1` data:
+  - `/api/projects` → the registry project, `error: null`.
+  - `/api/runs` → `obs1` and `smoke1`, newest-first.
+  - snapshot → 4 groups `completed` with `group_id`/state/generation/failure/`depends_on`,
+    the groups→sessions join (g1 shows the resumed coder + reviewer; the timed-out session
+    is correctly absent), and DAG edges `g1→g2, g1→g3, g2→g3, g1→g4, g2→g4`.
+  - the **`stale_dag` ladder works both ways**: `obs1` → `true` (fell back to the shared
+    DAG, per D12), `smoke1` → `false` (preferred its per-run snapshot). This is R20's
+    board/DAG half, proven live.
+  - transcript → U8's tolerant parser normalized the g1 coder log into 119 events
+    (text/tool_use/tool_result) with the right `seq/role/kind` shape.
+  - artifacts → g1's `report` + both `verdict` JSONs, parsed.
+  - escalations → `[]` (none fired). SPA root → the built `index.html`.
+
+The only blemishes are D12 (the run couldn't use its own per-run-snapshot feature because
+it was driven by stale installed code) and the known layer-shaped grouping (D2). Neither is
+a plan defect; both are recorded above.
 
 *(Append further findings here as the run progresses.)*
