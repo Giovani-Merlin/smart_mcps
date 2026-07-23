@@ -118,7 +118,8 @@ class ReviewDeps:
     merge_group: Callable[[Group, Path], None]  # raises MergeConflict
     rewrite_spec: Callable[[Group, list[Surprise]], Group]
     base_ref_for: Callable[[Group], str]
-    # HITL seam (plan Phase D): both None ⇒ byte-identical autonomous behavior.
+    # HITL seam (plan Phase D): both None ⇒ no escalations are ever raised; the
+    # lifecycle log stays on regardless (R10).
     broker: EscalationBroker | None = None
     policy: EscalationPolicy | None = None
 
@@ -160,6 +161,7 @@ class _GroupExecution:
         if self.deps.board.pending_for(self.gid):
             await self._rewrite("upstream surprise named this group before launch")
         self.workspace = self.deps.workspace_for(self.group)
+        self._log(f"group {self.gid}: worktree ready at {self.workspace}")
         while True:
             merged = await self._run_generation()
             if merged:
@@ -188,6 +190,7 @@ class _GroupExecution:
         self._log(f"group {self.gid} generation {self.generation}: coder launched")
         rounds = 0
         result = first
+        self._log(f"{self._round_tag(1)}: started")
 
         while True:
             report, result = await asyncio.to_thread(
@@ -210,11 +213,14 @@ class _GroupExecution:
             )
             self._spread(report.surprises)
             if report.status != "completed":
+                self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
                 await self._on_coder_stuck(report, report_path)
                 return False
 
             verdict, verdict_path = await self._review_round(report_path, rounds)
             if verdict is None or verdict.status == "approved":
+                outcome = "self-verified" if verdict is None else "approved"
+                self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
                 if self.deps.board.pending_for(self.gid):
                     # A surprise named this group while it was in review: its
                     # pending approval is not accepted (plan U7 scenario).
@@ -225,10 +231,12 @@ class _GroupExecution:
                 )
                 return await self._merge()
             if verdict.status in ("too_hard", "structural"):
+                self._log(f"{self._round_tag(rounds)}: ended ({verdict.status})")
                 await self._on_reviewer_hard(verdict, verdict_path)
                 return False
 
             # changes_required — breaker gate before the next warm round
+            self._log(f"{self._round_tag(rounds)}: ended (changes_required)")
             reason = self._breaker_reason(rounds)
             if reason:
                 await self._retire(reason)
@@ -236,6 +244,7 @@ class _GroupExecution:
                 return False
             assert verdict_path is not None
             self.ctx.set_state(GroupState.RUNNING)
+            self._log(f"{self._round_tag(rounds + 1)}: started")
             result = await asyncio.to_thread(
                 self.deps.runner.resume,
                 session_id=self.coder_sid,
@@ -282,6 +291,7 @@ class _GroupExecution:
             self.gid, artifact_name("verdict", self.generation, rounds), verdict
         )
         self._spread(verdict.surprises)
+        self._log(f"{self._round_tag(rounds)}: reviewer verdict {verdict.status}")
 
         if (
             verdict.status == "approved"
@@ -303,6 +313,7 @@ class _GroupExecution:
                 self.gid, f"verdict-g{self.generation}-r{rounds}-extra.json", verdict
             )
             self._spread(verdict.surprises)
+            self._log(f"{self._round_tag(rounds)}: reviewer verdict {verdict.status} (extra pass)")
         return verdict, verdict_path
 
     # ------------------------------------------------------------ outcomes
@@ -310,9 +321,11 @@ class _GroupExecution:
     async def _merge(self) -> bool:
         assert self.workspace is not None
         self.ctx.set_state(GroupState.MERGING)
+        self._log(f"group {self.gid}: merge attempt")
         try:
             await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
         except MergeConflict as exc:
+            self._log(f"group {self.gid}: merge conflict ({exc})")
             conflict = Surprise(
                 kind="merge_conflict", description=str(exc), affected_groups=exc.affected_groups
             )
@@ -370,6 +383,7 @@ class _GroupExecution:
         assert self.coder_entry is not None
         self.coder_entry.retirement_reason = reason
         self.deps.store.save(self.deps.manifest)
+        self._log(f"group {self.gid} generation {self.generation}: coder retired ({reason})")
         if self.generation >= self.deps.breaker.max_generations:
             # Terminal give-up: escalate before failing. An answer grants one more
             # (guided) generation; None fails as before.
@@ -535,10 +549,12 @@ class _GroupExecution:
         return diff_stat(self.workspace, self.deps.base_ref_for(self.group))
 
     def _log(self, text: str) -> None:
-        """Append to the run's event log — only when HITL is wired, so autonomous
-        runs create no new artifacts."""
-        if self.deps.broker is not None:
-            log_event(self.deps.store.paths, text)
+        """Append to the run's always-on lifecycle log (R10): control-plane events
+        land in ``run.log`` in every run mode, HITL or autonomous."""
+        log_event(self.deps.store.paths, text)
+
+    def _round_tag(self, round_no: int) -> str:
+        return f"group {self.gid} generation {self.generation} round {round_no}"
 
     # ------------------------------------------------------------ bookkeeping
 

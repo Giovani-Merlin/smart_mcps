@@ -393,6 +393,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         store.save(manifest)
 
+    # The lifecycle log is always on (R10): the run-start line lands in every
+    # mode; only the escalation channel itself is HITL-gated.
     if config.escalation.enabled:
         broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
         policy: EscalationPolicy | None = EscalationPolicy(
@@ -407,6 +409,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     else:
         broker = None
         policy = None
+        log_event(paths, f"run {run_id} started (autonomous)")
 
     workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger)
     deps = ReviewDeps(

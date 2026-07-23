@@ -8,6 +8,7 @@ surprise, too-hard) runs with zero subprocesses and zero tokens.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -592,6 +593,101 @@ async def test_orchestrator_only_downgrades_needs_input_to_the_rewrite_path(tmp_
     assert len(harness.rewritten) == 1
     descriptions = [s.description for s in harness.rewritten[0]]
     assert any("[operator] use the LRU" in d for d in descriptions)
+
+
+# ------------------------------------------------------------ lifecycle log (R10–R12)
+
+
+def run_log_lines(harness: Harness) -> list[str]:
+    return harness.store.paths.event_log_path.read_text().splitlines()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_run_writes_the_full_lifecycle_log(tmp_path):
+    # R10/R11: broker=None, policy=None — the same run.log lines as a HITL run:
+    # worktree, round start/end, every verdict (both changes_required cycles), the
+    # generation retirement and its follow-up fork, merge attempt/result, completed.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
+            "r1-g1-reviewer-g1": [
+                verdict("changes_required", ["fix a"]),
+                verdict("changes_required", ["fix b"]),
+            ],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    harness = Harness(
+        tmp_path, runner, breaker=BreakerConfig(max_rounds_per_generation=2, max_generations=3)
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.deps.broker is None and harness.deps.policy is None
+
+    lines = run_log_lines(harness)
+    expected_in_order = [
+        f"group g1: worktree ready at {harness.workspace}",
+        "group g1 generation 1: coder launched",
+        "group g1 generation 1 round 1: started",
+        "group g1 generation 1 round 1: reviewer verdict changes_required",
+        "group g1 generation 1 round 1: ended (changes_required)",
+        "group g1 generation 1 round 2: started",
+        "group g1 generation 1 round 2: reviewer verdict changes_required",
+        "group g1 generation 1 round 2: ended (changes_required)",
+        "group g1 generation 1: coder retired (round threshold reached (2 rounds this generation))",
+        "group g1 generation 2: coder launched",  # the follow-up fork
+        "group g1 generation 2 round 1: started",
+        "group g1 generation 2 round 1: reviewer verdict approved",
+        "group g1 generation 2 round 1: ended (approved)",
+        "group g1: merge attempt",
+        "group g1: merged into the integration branch",
+        "group g1: completed",
+    ]
+    cursor = 0
+    for expected in expected_in_order:
+        remaining = lines[cursor:]
+        matches = [i for i, line in enumerate(remaining) if line.endswith(expected)]
+        assert matches, f"missing (or out of order) lifecycle line: {expected!r}\ngot: {lines}"
+        cursor += matches[0] + 1
+    # R12: plain timestamped append-lines — the existing log_event format, no JSON.
+    assert all(re.match(r"^\d{4}-\d{2}-\d{2}T[^ ]+  ", line) for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_merge_conflict_writes_the_conflict_line(tmp_path):
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    harness.merge_failures.append(MergeConflict("g1 conflicts with g0", ["g0"]))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1: merge conflict (g1 conflicts with g0)") for line in lines)
+    # the retry after the rewrite still logged its attempt and result
+    assert sum(line.endswith("group g1: merge attempt") for line in lines) == 2
+    assert any(line.endswith("group g1: merged into the integration branch") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_paired_plus_extra_pass_verdict_is_logged(tmp_path):
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved"), verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group(intensity=ReviewIntensity.PAIRED_PLUS))
+    assert state == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(line.endswith("reviewer verdict approved (extra pass)") for line in lines)
 
 
 @pytest.mark.asyncio
