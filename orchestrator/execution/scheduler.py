@@ -24,7 +24,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from orchestrator.config import ExecutionConfig
-from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
+from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.model import Group
 
 
@@ -54,6 +55,9 @@ class GroupState(StrEnum):
     MERGING = "merging"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Envelope failure (R1/R2): the harness died under the group, not the work.
+    # Non-terminal, so a plain `resume` re-enters the group in its worktree.
+    INTERRUPTED = "interrupted"
 
 
 TERMINAL_STATES = frozenset({GroupState.COMPLETED, GroupState.FAILED})
@@ -207,10 +211,13 @@ class Scheduler:
                     in_flight[task] = gid
 
                 if not in_flight:
+                    # Interrupted groups are stopped-but-resumable, not wedged —
+                    # they never count toward the no-progress watchdog.
                     blocked = [
                         gid
                         for gid, entry in self.state.groups.items()
                         if entry.state not in TERMINAL_STATES
+                        and entry.state != GroupState.INTERRUPTED
                     ]
                     if not blocked:
                         return {gid: entry.state for gid, entry in self.state.groups.items()}
@@ -258,22 +265,38 @@ class Scheduler:
             # propagate. The broker's abort event (set where RunAbort was raised)
             # has already released any blocked siblings so their tasks can cancel.
             raise
+        except ReportError as exc:
+            # A work failure despite its SessionError type (plan decision): the
+            # report was judged only after the session's warm corrective nudges —
+            # the harness was healthy, the agent failed.
+            return self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
+        except SessionError as exc:
+            # Envelope failure (R1/R2): the claude process/API died under the
+            # group, not the work — non-terminal so `resume` re-enters it.
+            return self._classify(gid, GroupState.INTERRUPTED, f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
-            self.set_state(gid, GroupState.FAILED, failure=f"{type(exc).__name__}: {exc}")
-            return GroupState.FAILED
+            return self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
         if final not in TERMINAL_STATES:
-            self.set_state(
-                gid, GroupState.FAILED, failure=f"executor returned non-terminal state {final}"
+            return self._classify(
+                gid, GroupState.FAILED, f"executor returned non-terminal state {final}"
             )
-            return GroupState.FAILED
         self.set_state(gid, final)
         return final
 
+    def _classify(self, gid: str, state: GroupState, failure: str) -> GroupState:
+        """Record a failure-shaped outcome plus its lifecycle line (R1, R11)."""
+        self.set_state(gid, state, failure=failure)
+        log_event(self.paths, f"group {gid}: {state.value} ({failure})")
+        return state
+
     def _blocked_by_failure(self) -> set[str]:
-        """Groups with a failed (transitive) ancestor — stranded, not wedged."""
+        """Groups with a failed or interrupted (transitive) ancestor — stranded,
+        not wedged."""
         stranded: set[str] = set()
         frontier = [
-            gid for gid, entry in self.state.groups.items() if entry.state == GroupState.FAILED
+            gid
+            for gid, entry in self.state.groups.items()
+            if entry.state in (GroupState.FAILED, GroupState.INTERRUPTED)
         ]
         while frontier:
             gid = frontier.pop()

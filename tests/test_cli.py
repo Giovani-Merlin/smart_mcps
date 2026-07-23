@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from orchestrator.cli import apply_overrides, main
+from orchestrator.cli import _print_outcomes, apply_overrides, main
 from orchestrator.config import load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
@@ -240,6 +240,58 @@ class TestRunEarlyExits:
         assert "--fork-session" in capsys.readouterr().err
         # preflight failed before any run directory was created
         assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+
+class TestPrintOutcomes:
+    """Exit-code contract (R3): 0 = complete, 1 = needs-inspection work failure,
+    2 = stopped-but-resumable (interrupted, mirroring operator abort)."""
+
+    def test_all_completed_exits_zero(self, capsys):
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state) == 0
+        assert "all groups completed" in capsys.readouterr().out
+
+    def test_interrupted_groups_exit_two_naming_them_and_the_resume_command(self, capsys):
+        state = RunState(
+            run_id="r7",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED, failure="SessionError: claude exited 1"
+                ),
+                "g2": GroupRunState(state=GroupState.PENDING),
+                "g3": GroupRunState(
+                    state=GroupState.INTERRUPTED, failure="SessionError: usage limit reached"
+                ),
+            },
+        )
+        assert _print_outcomes(state) == 2
+        err = capsys.readouterr().err
+        assert "g1" in err and "g3" in err
+        assert "smart-mcps-orchestrate resume r7" in err
+
+    def test_only_work_failures_keep_exit_one_and_todays_message(self, capsys):
+        state = RunState(
+            run_id="r1",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: blocked"),
+                "g2": GroupRunState(state=GroupState.PENDING),
+            },
+        )
+        assert _print_outcomes(state) == 1
+        err = capsys.readouterr().err
+        assert "did not complete" in err
+        assert "resume r1" not in err  # the resume-command line is interrupted-only
+
+    def test_mixed_interrupted_and_failed_still_exits_two(self, capsys):
+        state = RunState(
+            run_id="r9",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: blocked"),
+                "g2": GroupRunState(state=GroupState.INTERRUPTED, failure="SessionError: x"),
+            },
+        )
+        assert _print_outcomes(state) == 2
+        assert "smart-mcps-orchestrate resume r9" in capsys.readouterr().err
 
 
 class TestStatus:

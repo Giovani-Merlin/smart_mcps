@@ -462,20 +462,19 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
         name_of(run_id, "g1", "coder"),
         coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
     )
-    # g2's coder dies at fork — the executor records the failure and exits nonzero
+    # g2's coder dies at fork — an envelope failure: the group lands interrupted
+    # (non-terminal) and the run exits 2, stopped-but-resumable (R1–R3)
     script_session(
         fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
     )
     exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
-    assert exit_code == 1
+    assert exit_code == 2
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
-    assert state["groups"]["g2"]["state"] == "failed"
+    assert state["groups"]["g2"]["state"] == "interrupted"
 
-    # operator intervention: mark g2 ready again and give its coder a fresh script
-    state["groups"]["g2"] = {"state": "ready", "generation": 1, "failure": None}
-    state_path = repo / ".orchestrator" / "runs" / run_id / "state.json"
-    state_path.write_text(json.dumps(state))
+    # no state surgery needed: plain `resume` relaunches interrupted groups —
+    # just give g2's coder a fresh script
     script_session(
         fake_home,
         name_of(run_id, "g2", "coder"),
