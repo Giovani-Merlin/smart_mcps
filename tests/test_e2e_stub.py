@@ -593,8 +593,9 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
 
 
 def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
-    """`--intensity autonomous` runs exactly like a no-flag run: no escalation
-    channel, no event log — the injected seam is fully absent."""
+    """`--intensity autonomous` runs exactly like a no-flag run: no *escalation*
+    artifacts — the injected seam is fully absent. The lifecycle log is always
+    on (R10), so run.log exists even here, but it carries no escalation lines."""
     run_id = "ra"
     write_run_artifacts(repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)])
     write_config(repo, fake_home)
@@ -611,4 +612,7 @@ def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
     assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
     run_dir = repo / ".orchestrator" / "runs" / run_id
     assert not (run_dir / "escalations").exists()
-    assert not (run_dir / "logs" / "run.log").exists()
+    run_log = (run_dir / "logs" / "run.log").read_text()
+    assert "ESCALATION" not in run_log  # escalation behaviour itself is unchanged
+    assert f"run {run_id} started (autonomous)" in run_log
+    assert "group g1: completed" in run_log  # lifecycle events in autonomous mode (R10)

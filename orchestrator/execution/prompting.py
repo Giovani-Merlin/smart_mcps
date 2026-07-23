@@ -69,6 +69,12 @@ def render_revision_prompt(verdict_path: str, required_changes: list[str]) -> st
     )
 
 
+def render_reentry_prompt(group: Group) -> str:
+    """Resume trigger for re-entering an interrupted coder session warm (R4/R6):
+    the session already holds its identity and spec — this only re-orients it."""
+    return Template(load_template("reentry")).substitute(group_name=group.name)
+
+
 def render_coder_answer_prompt(answer: str) -> str:
     """Resume trigger feeding an operator's answer back to a coder that ended its
     turn with ``needs_input`` (plan Phase D)."""

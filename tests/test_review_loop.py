@@ -8,6 +8,7 @@ surprise, too-hard) runs with zero subprocesses and zero tokens.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -23,15 +24,18 @@ from orchestrator.execution.review import (
     make_executor,
 )
 from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
-from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionUsage
+from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionError, SessionUsage
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
     EscalationResponse,
     Group,
+    GroupManifestEntry,
     HumanAction,
     ReviewIntensity,
     RunManifest,
+    SessionEntry,
+    SessionRole,
     Surprise,
     VerificationItem,
 )
@@ -594,6 +598,101 @@ async def test_orchestrator_only_downgrades_needs_input_to_the_rewrite_path(tmp_
     assert any("[operator] use the LRU" in d for d in descriptions)
 
 
+# ------------------------------------------------------------ lifecycle log (R10–R12)
+
+
+def run_log_lines(harness: Harness) -> list[str]:
+    return harness.store.paths.event_log_path.read_text().splitlines()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_run_writes_the_full_lifecycle_log(tmp_path):
+    # R10/R11: broker=None, policy=None — the same run.log lines as a HITL run:
+    # worktree, round start/end, every verdict (both changes_required cycles), the
+    # generation retirement and its follow-up fork, merge attempt/result, completed.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
+            "r1-g1-reviewer-g1": [
+                verdict("changes_required", ["fix a"]),
+                verdict("changes_required", ["fix b"]),
+            ],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    harness = Harness(
+        tmp_path, runner, breaker=BreakerConfig(max_rounds_per_generation=2, max_generations=3)
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.deps.broker is None and harness.deps.policy is None
+
+    lines = run_log_lines(harness)
+    expected_in_order = [
+        f"group g1: worktree ready at {harness.workspace}",
+        "group g1 generation 1: coder launched",
+        "group g1 generation 1 round 1: started",
+        "group g1 generation 1 round 1: reviewer verdict changes_required",
+        "group g1 generation 1 round 1: ended (changes_required)",
+        "group g1 generation 1 round 2: started",
+        "group g1 generation 1 round 2: reviewer verdict changes_required",
+        "group g1 generation 1 round 2: ended (changes_required)",
+        "group g1 generation 1: coder retired (round threshold reached (2 rounds this generation))",
+        "group g1 generation 2: coder launched",  # the follow-up fork
+        "group g1 generation 2 round 1: started",
+        "group g1 generation 2 round 1: reviewer verdict approved",
+        "group g1 generation 2 round 1: ended (approved)",
+        "group g1: merge attempt",
+        "group g1: merged into the integration branch",
+        "group g1: completed",
+    ]
+    cursor = 0
+    for expected in expected_in_order:
+        remaining = lines[cursor:]
+        matches = [i for i, line in enumerate(remaining) if line.endswith(expected)]
+        assert matches, f"missing (or out of order) lifecycle line: {expected!r}\ngot: {lines}"
+        cursor += matches[0] + 1
+    # R12: plain timestamped append-lines — the existing log_event format, no JSON.
+    assert all(re.match(r"^\d{4}-\d{2}-\d{2}T[^ ]+  ", line) for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_merge_conflict_writes_the_conflict_line(tmp_path):
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    harness.merge_failures.append(MergeConflict("g1 conflicts with g0", ["g0"]))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1: merge conflict (g1 conflicts with g0)") for line in lines)
+    # the retry after the rewrite still logged its attempt and result
+    assert sum(line.endswith("group g1: merge attempt") for line in lines) == 2
+    assert any(line.endswith("group g1: merged into the integration branch") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_paired_plus_extra_pass_verdict_is_logged(tmp_path):
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved"), verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group(intensity=ReviewIntensity.PAIRED_PLUS))
+    assert state == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(line.endswith("reviewer verdict approved (extra pass)") for line in lines)
+
+
 @pytest.mark.asyncio
 async def test_autonomous_policy_never_consults_the_broker(tmp_path):
     # Regression guard: a broker is present but the policy is autonomous, so the
@@ -616,3 +715,189 @@ async def test_autonomous_policy_never_consults_the_broker(tmp_path):
     assert state == GroupState.COMPLETED  # autonomous rewrite → gen-2 → approved
     assert broker.raised == []  # the policy short-circuited before any escalation
     assert len(harness.rewritten) == 1
+
+
+# ------------------------------------------------------------ re-entry (R4–R6)
+
+
+def seed_reentry_session(
+    harness: Harness,
+    *,
+    session_id: str = "sess-warm",
+    generation: int = 1,
+    context_tokens: int = 0,
+) -> None:
+    """Plant a live coder entry as if a prior process had already recorded it —
+    the manifest state a plain ``resume`` finds after an INTERRUPTED restart."""
+    harness.manifest.groups["g1"] = GroupManifestEntry(
+        group_id="g1",
+        group_name="group g1",
+        summary="summary g1",
+        sessions=[
+            SessionEntry(
+                session_id=session_id,
+                role=SessionRole.CODER,
+                generation=generation,
+                last_context_tokens=context_tokens,
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_warm_resumes_the_interrupted_coder(tmp_path):
+    # R4: a live coder entry at the persisted generation is resumed, not forked.
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-reviewer-g1"]  # no coder fork — resumed instead
+    assert len(runner.prompts["sess-warm"]) == 1
+    assert 'coder for group "group g1"' in runner.prompts["sess-warm"][0]
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 re-entry: resumed session sess-warm") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_reentry_resumes_round_numbering_from_completed_rounds(tmp_path):
+    # Regression: a pre-crash round 1's artifacts must survive re-entry — the
+    # resumed round is numbered round 2, not a second "round 1" that silently
+    # overwrites them (verified live: the bug reproduced exactly this collision).
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    group_dir = harness.store.paths.group_dir("g1")
+    group_dir.mkdir(parents=True)
+    stale_report = group_dir / "report-g1-r1.json"
+    stale_verdict = group_dir / "verdict-g1-r1.json"
+    stale_report.write_text('{"round": "pre-crash report"}')
+    stale_verdict.write_text('{"round": "pre-crash verdict"}')
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert stale_report.read_text() == '{"round": "pre-crash report"}'
+    assert stale_verdict.read_text() == '{"round": "pre-crash verdict"}'
+    assert (group_dir / "report-g1-r2.json").exists()
+    assert (group_dir / "verdict-g1-r2.json").exists()
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 generation 1 round 2: started") for line in lines)
+    assert not any("round 1: started" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_reentry_falls_through_to_fork_when_context_exceeds_the_breaker_limit(tmp_path):
+    # R5: the persisted context pre-check trips before any resume is attempted.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_token_limit=100))
+    seed_reentry_session(harness, context_tokens=200)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]  # fresh fork, not a resume
+    assert "sess-warm" not in runner.prompts  # never touched
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (context tokens 200 exceed limit 100)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
+    # R5/R6: an envelope failure on the warm attempt itself falls through to a
+    # fresh fork, logging the reason instead of the resumed-session line.
+    class FailOnResume(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            if session_id == "sess-warm":
+                raise SessionError("claude exited 1")
+            return super().resume(
+                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+            )
+
+    runner = FailOnResume(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (warm resume failed: claude exited 1)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
+    # No in-run retry loop (origin non-goal): if the fallback fork itself fails at
+    # the envelope, the SessionError propagates so the scheduler lands the group
+    # `interrupted` again (classification asserted by g1's scheduler tests).
+    class AlwaysDown(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            raise SessionError("warm resume down")
+
+        def start_fork(self, *, base_id, prompt, name, cwd, json_schema=None):
+            raise SessionError("fork also down")
+
+    runner = AlwaysDown({})
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    with pytest.raises(SessionError, match="fork also down"):
+        await harness.run(make_group())
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1  # exactly one re-entry line even though it fell through
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (warm resume failed: warm resume down)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypatch):
+    # R5: the manifest reflects the latest round's usage as it happens, not only
+    # once at generation end — the re-entry pre-check needs the freshest number.
+    class GrowingContext(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
+            return super().resume(
+                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+            )
+
+    runner = GrowingContext(
+        {
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
+            "r1-g1-reviewer-g1": [
+                verdict("changes_required", ["fix x"]),
+                verdict("approved"),
+            ],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    seen: list[int] = []
+    original_save = harness.store.save
+
+    def spying_save(manifest):
+        original_save(manifest)
+        coder = next(
+            (s for s in manifest.groups["g1"].sessions if s.role == SessionRole.CODER), None
+        )
+        if coder is not None:
+            seen.append(coder.last_context_tokens)
+
+    monkeypatch.setattr(harness.store, "save", spying_save)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    # round 1 persists the default (1_000); round 2 persists the bumped value —
+    # proof the manifest is written every round, not just once at the end.
+    assert 1_000 in seen
+    assert 6_000 in seen
+    assert seen.index(1_000) < seen.index(6_000)
