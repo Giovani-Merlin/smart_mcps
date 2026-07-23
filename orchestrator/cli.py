@@ -47,6 +47,7 @@ from orchestrator.execution.worktrees import (
     _git_ok,
     create_worktree,
     group_branch,
+    provision_env,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
@@ -425,7 +426,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         broker = None
         policy = None
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger)
+    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -468,7 +469,7 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
-def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
+def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, paths: RunPaths):
     """The workspace_for / base_ref_for pair, sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
@@ -485,6 +486,9 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
         path = create_worktree(
             repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
         )
+        # U6/R16: the worktree owns its environment — provision after creation,
+        # non-fatally (a failed sync logs and lets the worker re-sync itself).
+        provision_env(path, log=lambda message: log_event(paths, message))
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 

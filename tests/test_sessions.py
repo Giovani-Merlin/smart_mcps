@@ -41,6 +41,7 @@ from orchestrator.execution.worktrees import (
     create_worktree,
     group_branch,
     integration_branch,
+    provision_env,
     remove_worktree,
     worktree_path,
 )
@@ -202,6 +203,30 @@ def test_long_round_completes_with_no_per_round_timeout(fake_home, tmp_path):
     assert result.text == "slow but fine"
 
 
+def test_worker_env_scrubs_the_orchestrators_virtualenv(fake_home, tmp_path, monkeypatch):
+    """U6/R16: workers must resolve the worktree's venv, not inherit the
+    orchestrator's — VIRTUAL_ENV and every PATH entry under it are dropped."""
+    venv = str(tmp_path / "orch-venv")
+    monkeypatch.setenv("VIRTUAL_ENV", venv)
+    monkeypatch.setenv("PATH", f"{venv}/bin:/usr/bin:/bin")
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert "VIRTUAL_ENV" not in call["env"]
+    entries = call["env"]["PATH"].split(":")
+    assert all(not entry.startswith(venv) for entry in entries)
+    assert "/usr/bin" in entries and "/bin" in entries  # the rest of PATH survives
+
+
+def test_worker_env_without_virtualenv_passes_through(fake_home, tmp_path, monkeypatch):
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert call["env"]["PATH"] == "/usr/bin:/bin"
+
+
 def test_scripted_cli_failure_surfaces_stderr(fake_home, tmp_path):
     runner = make_runner(fake_home)
     script(fake_home, {"exit_code": 2, "stderr": "boom"})
@@ -354,6 +379,9 @@ def test_first_prompt_opens_with_a_parseable_identity_block():
     assert "<run-report" in prompt  # report contract included
     assert "- [v1] unit tests pass" in prompt
     assert "- [v2] no new lint errors (optional)" in prompt
+    # U6/R17: the dependency workflow is stated where the worker reads it
+    assert "`uv sync`" in prompt and "inside the worktree" in prompt
+    assert "imports a new" in prompt and "must pass here" in prompt
 
 
 def test_identity_block_escapes_attribute_breaking_characters():
@@ -385,6 +413,9 @@ def test_handoff_prompt_carries_generation_and_outstanding_items():
     assert "context tokens exceeded 120000" in prompt
     assert "- fix the retry loop" in prompt
     assert prompt.startswith("<run-manifest")  # respawned sessions carry identity too
+    # U6/R17: the dependency workflow rides the handoff too
+    assert "`uv sync`" in prompt and "inside the worktree" in prompt
+    assert "imports a new dependency" in prompt and "must pass here" in prompt
 
 
 # ---------------------------------------------------------------- worktrees
@@ -455,6 +486,51 @@ def test_remove_worktree_refuses_dirty_without_force_and_is_idempotent(git_repo)
     remove_worktree(git_repo, path, force=True)
     assert not path.exists()
     remove_worktree(git_repo, path)  # already gone: no-op
+
+
+def test_provision_env_runs_uv_sync_only_in_uv_worktrees(tmp_path):
+    recorded: list[tuple[list[str], Path]] = []
+
+    def fake_run(argv, **kwargs):
+        recorded.append((argv, kwargs.get("cwd")))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert provision_env(bare, runner=fake_run) is False
+    assert recorded == []  # no pyproject.toml / uv.lock: skipped silently
+
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    assert provision_env(marked, runner=fake_run) is True
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "uv.lock").write_text("")
+    assert provision_env(locked, runner=fake_run) is True
+    assert recorded == [(["uv", "sync"], marked), (["uv", "sync"], locked)]
+
+
+def test_provision_env_failure_logs_an_event_and_does_not_raise(tmp_path, capsys):
+    """A fixable env hiccup must never kill the group: warn + log, no raise."""
+    events: list[str] = []
+
+    def failing_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="resolution failed")
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "uv.lock").write_text("")
+    assert provision_env(worktree, runner=failing_run, log=events.append) is False
+    assert len(events) == 1
+    assert "uv sync failed" in events[0] and "resolution failed" in events[0]
+    assert "uv sync failed" in capsys.readouterr().err
+
+    def missing_uv(argv, **kwargs):
+        raise OSError("No such file or directory: 'uv'")
+
+    assert provision_env(worktree, runner=missing_uv, log=events.append) is False
+    assert len(events) == 2  # OSError (uv absent) rides the same non-fatal path
 
 
 def test_conflicting_directory_at_worktree_path_is_rejected(git_repo):

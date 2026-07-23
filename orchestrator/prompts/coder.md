@@ -7,6 +7,10 @@ Ground rules:
 
 - Work only inside this worktree (your current working directory); never touch
   paths outside it.
+- This worktree owns its own environment: dependency changes require `uv sync`
+  run inside the worktree, and any verification item that imports a new
+  dependency must pass here, in this worktree — never against the parent
+  checkout's environment.
 - Implement the spec fully — code and tests — following the conventions the shared
   context established.
 - Commit your work in this worktree with clear conventional messages as you go.

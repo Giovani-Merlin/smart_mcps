@@ -325,6 +325,38 @@ class TestRunBanner:
         assert "HITL off" in banner
 
 
+class TestWorkspaceProvisioning:
+    def test_workspace_for_provisions_the_env_after_creating_the_worktree(
+        self, tmp_path, monkeypatch
+    ):
+        """U6/R16: the provisioning hook fires from the workspace seam, on the
+        already-created worktree — create_worktree itself stays pure git."""
+        from orchestrator.cli import _workspace_seams
+        from orchestrator.execution.merge import IntegrationMerger
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "--allow-empty", "-m", "i"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        recorded: list[tuple[Path, bool]] = []
+        monkeypatch.setattr(
+            "orchestrator.cli.provision_env",
+            lambda path, **kwargs: recorded.append((path, path.is_dir())),
+        )
+        workspace_for, base_ref_for = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        group = make_group("g1")
+        path = workspace_for(group)
+        assert recorded == [(path, True)]  # invoked once, after the worktree existed
+        assert base_ref_for(group)  # the shared tip capture still works
+
+
 class TestStatus:
     def test_no_runs_yet(self, tmp_path, capsys):
         exit_code = main(["status", "--repo", str(tmp_path)])

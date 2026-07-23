@@ -150,7 +150,7 @@ class SessionRunner:
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
-        self._env = {**os.environ, **env} if env is not None else None
+        self._env = _scrub_virtualenv({**os.environ, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
@@ -286,6 +286,24 @@ class SessionRunner:
             if self.tracker is not None:
                 self.tracker.exited(proc.pid)
         return proc.returncode, stdout, stderr
+
+
+def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
+    """Drop the orchestrator's own venv from the worker env (plan U6, R16).
+
+    A worker inheriting ``VIRTUAL_ENV`` and its PATH entries resolves
+    ``python``/``pytest`` to the parent checkout's venv from inside its
+    worktree — the worktree's own venv (provisioned at creation) must win.
+    """
+    venv = env.pop("VIRTUAL_ENV", None)
+    if venv and env.get("PATH"):
+        prefix = venv.rstrip(os.sep) + os.sep
+        env["PATH"] = os.pathsep.join(
+            entry
+            for entry in env["PATH"].split(os.pathsep)
+            if entry and entry != venv and not entry.startswith(prefix)
+        )
+    return env
 
 
 def _argv_context(extra: list[str]) -> str:
