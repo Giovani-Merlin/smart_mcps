@@ -27,6 +27,7 @@ from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import (
     ManifestStore,
     artifact_name,
+    completed_round_count,
     log_event,
     record_session,
 )
@@ -183,6 +184,7 @@ class _GroupExecution:
         self.ctx.set_state(GroupState.RUNNING)
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
+        is_reentry = reentry is not None
         if reentry is not None:
             first = await self._reenter(reentry)
         if first is None:
@@ -199,9 +201,16 @@ class _GroupExecution:
             self.coder_entry = self._record(SessionRole.CODER, first.session_id)
             self.reviewer_sid = None
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
-        rounds = 0
+        # Re-entry (warm-resumed or fallback-forked) continues this generation's
+        # numbering rather than starting over, so round-numbered artifacts don't
+        # collide with — and silently overwrite — pre-crash ones still on disk.
+        rounds = (
+            completed_round_count(self.deps.store.paths, self.gid, self.generation)
+            if is_reentry
+            else 0
+        )
         result = first
-        self._log(f"{self._round_tag(1)}: started")
+        self._log(f"{self._round_tag(rounds + 1)}: started")
 
         while True:
             report, result = await asyncio.to_thread(

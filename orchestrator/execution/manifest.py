@@ -10,6 +10,7 @@ as the artifacts round triggers point to (pointers, not payloads).
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -117,3 +118,23 @@ def record_session(
 def artifact_name(kind: str, generation: int, round_no: int) -> str:
     """Canonical artifact filename: e.g. ``report-g1-r2.json``, ``verdict-g2-r1.json``."""
     return f"{kind}-g{generation}-r{round_no}.json"
+
+
+_REPORT_ROUND_RE = re.compile(r"^report-g(\d+)-r(\d+)\.json$")
+
+
+def completed_round_count(paths: RunPaths, group_id: str, generation: int) -> int:
+    """How many rounds of ``generation`` already have a saved report on disk.
+
+    Re-entry (warm-resumed or fallback-forked) continues the same generation
+    number rather than starting a fresh one, so round numbering must resume
+    from here instead of colliding with — and overwriting — pre-crash
+    artifacts still on disk.
+    """
+    group_dir = paths.group_dir(group_id)
+    rounds = [
+        int(match.group(2))
+        for path in group_dir.glob(f"report-g{generation}-r*.json")
+        if (match := _REPORT_ROUND_RE.match(path.name))
+    ]
+    return max(rounds, default=0)

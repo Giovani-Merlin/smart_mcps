@@ -762,6 +762,33 @@ async def test_reentry_warm_resumes_the_interrupted_coder(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reentry_resumes_round_numbering_from_completed_rounds(tmp_path):
+    # Regression: a pre-crash round 1's artifacts must survive re-entry — the
+    # resumed round is numbered round 2, not a second "round 1" that silently
+    # overwrites them (verified live: the bug reproduced exactly this collision).
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    group_dir = harness.store.paths.group_dir("g1")
+    group_dir.mkdir(parents=True)
+    stale_report = group_dir / "report-g1-r1.json"
+    stale_verdict = group_dir / "verdict-g1-r1.json"
+    stale_report.write_text('{"round": "pre-crash report"}')
+    stale_verdict.write_text('{"round": "pre-crash verdict"}')
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert stale_report.read_text() == '{"round": "pre-crash report"}'
+    assert stale_verdict.read_text() == '{"round": "pre-crash verdict"}'
+    assert (group_dir / "report-g1-r2.json").exists()
+    assert (group_dir / "verdict-g1-r2.json").exists()
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 generation 1 round 2: started") for line in lines)
+    assert not any("round 1: started" in line for line in lines)
+
+
+@pytest.mark.asyncio
 async def test_reentry_falls_through_to_fork_when_context_exceeds_the_breaker_limit(tmp_path):
     # R5: the persisted context pre-check trips before any resume is attempted.
     runner = StubRunner(
