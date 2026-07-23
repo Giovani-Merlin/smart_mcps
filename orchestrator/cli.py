@@ -324,10 +324,27 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         return 1
 
+    # R8: the effective execution config prints before any session spawns —
+    # obs1's operator trap was a config file silently beating flag expectations,
+    # discovered only after the base session was already paid for.
+    mode = (
+        "sequential"
+        if config.execution.sequential
+        else f"concurrency {config.execution.concurrency}"
+    )
+    hitl = (
+        f"HITL on (intensity={config.escalation.intensity}, source={config.escalation.source})"
+        if config.escalation.enabled
+        else "HITL off"
+    )
+    print(
+        f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
+        f"permission-mode {config.execution.permission_mode}"
+    )
+
     session = config.session
     runner = SessionRunner(
         claude_bin=session.claude_bin,
-        timeout_s=session.timeout_s,
         model=session.model,
         permission_mode=config.execution.permission_mode,
         allowed_tools=session.allowed_tools or None,
@@ -429,11 +446,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     )
     executor_slot.append(make_executor(deps))
 
-    print(
-        f"run {run_id}: {len(groups)} group(s), concurrency "
-        f"{1 if config.execution.sequential else config.execution.concurrency}"
-        + (f", HITL={config.escalation.intensity}" if config.escalation.enabled else "")
-    )
     try:
         asyncio.run(scheduler.run())
     except RunAbort as exc:

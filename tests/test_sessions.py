@@ -30,7 +30,6 @@ from orchestrator.execution.prompting import (
 from orchestrator.execution.sessions import (
     PreflightError,
     ReportError,
-    RoundTimeout,
     SessionError,
     SessionRunner,
     nudge_until_report,
@@ -72,7 +71,6 @@ def fake_home(tmp_path: Path) -> Path:
 
 def make_runner(fake_home: Path, **kwargs) -> SessionRunner:
     env = {"FAKE_CLAUDE_HOME": str(fake_home), **kwargs.pop("env", {})}
-    kwargs.setdefault("timeout_s", 20.0)
     kwargs.setdefault("transcript_root", fake_home / "projects")
     return SessionRunner(claude_bin=[sys.executable, str(FAKE_CLAUDE)], env=env, **kwargs)
 
@@ -193,12 +191,15 @@ def test_usage_accumulates_across_rounds_and_is_queryable_per_session(fake_home,
     assert runner.usage_of(base.session_id).rounds == 1
 
 
-def test_round_timeout_kills_the_subprocess_and_raises(fake_home, tmp_path):
-    runner = make_runner(fake_home, timeout_s=0.5)
+def test_long_round_completes_with_no_per_round_timeout(fake_home, tmp_path):
+    """R7: rounds run as long as the CLI does. The scripted delay outlasts the
+    0.5s timeout the deleted RoundTimeout test used to kill this exact round at
+    (tests never scripted a longer one); the round now completes normally."""
+    runner = make_runner(fake_home)
     base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
-    script(fake_home, {"delay_s": 5})
-    with pytest.raises(RoundTimeout):
-        runner.resume(session_id=base.session_id, prompt="slow", cwd=tmp_path)
+    script(fake_home, {"delay_s": 1.5, "result": "slow but fine"})
+    result = runner.resume(session_id=base.session_id, prompt="slow", cwd=tmp_path)
+    assert result.text == "slow but fine"
 
 
 def test_scripted_cli_failure_surfaces_stderr(fake_home, tmp_path):

@@ -23,7 +23,7 @@ from orchestrator.execution.scheduler import (
     Scheduler,
     SchedulerError,
 )
-from orchestrator.execution.sessions import RoundTimeout
+from orchestrator.execution.sessions import SessionError
 from orchestrator.model import Group, ReviewIntensity
 
 
@@ -228,9 +228,9 @@ async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_round_timeout_fails_the_group_and_records_the_stall(tmp_path):
+async def test_session_error_fails_the_group_and_records_the_failure(tmp_path):
     async def executor(ctx):
-        raise RoundTimeout("round exceeded 0.5s (--resume sess-1)")
+        raise SessionError("claude exited 1 (--resume sess-1): stream error exceeded retries")
 
     scheduler = Scheduler(
         groups=[make_group("g1"), make_group("g2", deps=["g1"])],

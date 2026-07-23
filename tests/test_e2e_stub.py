@@ -75,7 +75,6 @@ def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
         "[session]\n"
         f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
         f'transcript_root = "{fake_home}/projects"\n'
-        "timeout_s = 30.0\n"
         f"{extra}"
     )
 

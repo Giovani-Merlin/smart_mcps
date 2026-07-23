@@ -60,10 +60,6 @@ class PreflightError(SessionError):
     """The installed CLI does not support the flags this design pins."""
 
 
-class RoundTimeout(SessionError):
-    """A round exceeded the per-round subprocess timeout."""
-
-
 class ReportError(SessionError):
     """The round's final message never produced a valid report block."""
 
@@ -142,7 +138,6 @@ class SessionRunner:
         self,
         *,
         claude_bin: str | Sequence[str] = "claude",
-        timeout_s: float = 1800.0,
         model: str | None = None,
         permission_mode: str | None = "acceptEdits",
         allowed_tools: Sequence[str] | None = None,
@@ -151,7 +146,6 @@ class SessionRunner:
         tracker: SubprocessTracker | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
-        self.timeout_s = timeout_s
         self.model = model
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
@@ -285,11 +279,9 @@ class SessionRunner:
         if self.tracker is not None:
             self.tracker.spawned(proc.pid, context)
         try:
-            stdout, stderr = proc.communicate(timeout=self.timeout_s)
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            proc.communicate()
-            raise RoundTimeout(f"round exceeded {self.timeout_s}s ({context})") from exc
+            # No per-round timeout (R7): a round runs as long as the CLI does —
+            # wall-clock is a terrible proxy for stuck, and long rounds are normal.
+            stdout, stderr = proc.communicate()
         finally:
             if self.tracker is not None:
                 self.tracker.exited(proc.pid)
