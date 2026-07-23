@@ -36,12 +36,14 @@ from orchestrator.execution.prompting import (
     render_extra_pass_prompt,
     render_handoff_prompt,
     render_re_review_prompt,
+    render_reentry_prompt,
     render_reviewer_prompt,
     render_revision_prompt,
 )
 from orchestrator.execution.scheduler import Executor, GroupContext, GroupState, RunAbort
 from orchestrator.execution.sessions import (
     RoundResult,
+    SessionError,
     SessionRunner,
     nudge_until_report,
     session_display_name,
@@ -152,6 +154,10 @@ class _GroupExecution:
         self.reviewer_sid: str | None = None
         self._questions = 0  # needs_input rounds this generation (uncounted vs the breaker)
         self._grant_notes: list[str] = []  # operator guidance for an over-cap generation
+        # Re-entry discovery (R4): a live coder entry at the persisted generation
+        # can only pre-exist the executor on a resumed run — fresh runs start with
+        # an empty group entry. One-shot: consumed by the first generation.
+        self._reentry_entry: SessionEntry | None = self._find_reentry_session()
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -175,19 +181,24 @@ class _GroupExecution:
         """One coder session's lifetime. True → merged; False → respawn/rewritten."""
         assert self.workspace is not None
         self.ctx.set_state(GroupState.RUNNING)
-        prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
-        self.handoff_prompt = None
-        first = await asyncio.to_thread(
-            self.deps.runner.start_fork,
-            base_id=self.deps.base_session_id,
-            prompt=prompt,
-            name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
-            cwd=self.workspace,
-        )
-        self.coder_sid = first.session_id
-        self.coder_entry = self._record(SessionRole.CODER, first.session_id)
-        self.reviewer_sid = None
-        self._log(f"group {self.gid} generation {self.generation}: coder launched")
+        first: RoundResult | None = None
+        reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
+        if reentry is not None:
+            first = await self._reenter(reentry)
+        if first is None:
+            prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
+            self.handoff_prompt = None
+            first = await asyncio.to_thread(
+                self.deps.runner.start_fork,
+                base_id=self.deps.base_session_id,
+                prompt=prompt,
+                name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
+                cwd=self.workspace,
+            )
+            self.coder_sid = first.session_id
+            self.coder_entry = self._record(SessionRole.CODER, first.session_id)
+            self.reviewer_sid = None
+            self._log(f"group {self.gid} generation {self.generation}: coder launched")
         rounds = 0
         result = first
         self._log(f"{self._round_tag(1)}: started")
@@ -196,6 +207,7 @@ class _GroupExecution:
             report, result = await asyncio.to_thread(
                 nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
             )
+            self._persist_coder_usage()
 
             if report.status == "needs_input":
                 # The coder-question channel: escalate, and on an answer resume the
@@ -251,6 +263,72 @@ class _GroupExecution:
                 prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
                 cwd=self.workspace,
             )
+
+    # ------------------------------------------------------------ re-entry (R4–R6)
+
+    def _find_reentry_session(self) -> SessionEntry | None:
+        """The interrupted coder to warm-resume, discovered from the manifest: the
+        group's latest coder entry at the persisted generation with no retirement
+        reason (spec discovery rule)."""
+        group_entry = self.deps.manifest.groups.get(self.gid)
+        if group_entry is None:
+            return None
+        live = [
+            entry
+            for entry in group_entry.sessions
+            if entry.role == SessionRole.CODER
+            and entry.generation == self.generation
+            and entry.retirement_reason is None
+        ]
+        return live[-1] if live else None
+
+    async def _reenter(self, entry: SessionEntry) -> RoundResult | None:
+        """Warm-resume the interrupted coder in its worktree (R4). Returns the
+        resumed round, or None to fall through to a fresh fork from base — when
+        the persisted context already exceeds the breaker limit (R5) or the warm
+        resume itself fails at the envelope. A SessionError from that fork
+        propagates: the group lands interrupted again, since the envelope is
+        still failing (no in-run retry loop). Exactly one re-entry lifecycle
+        line is written either way (R6)."""
+        assert self.workspace is not None
+        limit = self.deps.breaker.context_token_limit
+        if entry.last_context_tokens > limit:
+            self._reentry_fallback(
+                entry, f"context tokens {entry.last_context_tokens} exceed limit {limit}"
+            )
+            return None
+        try:
+            result = await asyncio.to_thread(
+                self.deps.runner.resume,
+                session_id=entry.session_id,
+                prompt=render_reentry_prompt(self.group),
+                cwd=self.workspace,
+            )
+        except SessionError as exc:
+            self._reentry_fallback(entry, f"warm resume failed: {exc}")
+            return None
+        self.coder_sid = entry.session_id
+        self.coder_entry = entry
+        self.reviewer_sid = None
+        self.sessions_spawned += 1  # live session again: a later rewrite respawns fresh
+        self._log(f"group {self.gid} re-entry: resumed session {entry.session_id}")
+        return result
+
+    def _reentry_fallback(self, entry: SessionEntry, reason: str) -> None:
+        """Retire the unreachable session and log the fork decision; the caller
+        falls through to the fresh-fork path (existing handoff-free coder prompt)."""
+        entry.retirement_reason = f"re-entry fallback: {reason}"
+        self._log(f"group {self.gid} re-entry: forked generation {self.generation} ({reason})")
+
+    def _persist_coder_usage(self) -> None:
+        """Record the active coder's latest context size on its manifest entry
+        after every round (R5): in-memory usage dies with the process, and the
+        next re-entry pre-checks this value against the breaker limit."""
+        if self.coder_entry is None:
+            return
+        context = self.deps.runner.usage_of(self.coder_sid).last_context_tokens
+        self.coder_entry.last_context_tokens = context
+        self.deps.store.save(self.deps.manifest)
 
     # ------------------------------------------------------------ review
 

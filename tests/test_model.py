@@ -95,6 +95,16 @@ class TestManifest:
         assert sessions[0].retirement_reason == "round threshold exceeded"
         assert sessions[1].retirement_reason is None
 
+    def test_session_entry_last_context_tokens_round_trips(self):
+        """R5: the persisted context size survives the manifest round trip — the
+        re-entry pre-check reads it after the in-memory usage died with the process."""
+        entry = SessionEntry(
+            session_id="s-warm", role=SessionRole.CODER, last_context_tokens=87_654
+        )
+        assert SessionEntry.model_validate_json(entry.model_dump_json()) == entry
+        # a fresh entry starts at zero
+        assert SessionEntry(session_id="s-new", role=SessionRole.CODER).last_context_tokens == 0
+
 
 class TestReportSchemas:
     def test_coder_report_requires_status(self):

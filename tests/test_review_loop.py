@@ -24,15 +24,18 @@ from orchestrator.execution.review import (
     make_executor,
 )
 from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
-from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionUsage
+from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionError, SessionUsage
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
     EscalationResponse,
     Group,
+    GroupManifestEntry,
     HumanAction,
     ReviewIntensity,
     RunManifest,
+    SessionEntry,
+    SessionRole,
     Surprise,
     VerificationItem,
 )
@@ -712,3 +715,162 @@ async def test_autonomous_policy_never_consults_the_broker(tmp_path):
     assert state == GroupState.COMPLETED  # autonomous rewrite → gen-2 → approved
     assert broker.raised == []  # the policy short-circuited before any escalation
     assert len(harness.rewritten) == 1
+
+
+# ------------------------------------------------------------ re-entry (R4–R6)
+
+
+def seed_reentry_session(
+    harness: Harness,
+    *,
+    session_id: str = "sess-warm",
+    generation: int = 1,
+    context_tokens: int = 0,
+) -> None:
+    """Plant a live coder entry as if a prior process had already recorded it —
+    the manifest state a plain ``resume`` finds after an INTERRUPTED restart."""
+    harness.manifest.groups["g1"] = GroupManifestEntry(
+        group_id="g1",
+        group_name="group g1",
+        summary="summary g1",
+        sessions=[
+            SessionEntry(
+                session_id=session_id,
+                role=SessionRole.CODER,
+                generation=generation,
+                last_context_tokens=context_tokens,
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_warm_resumes_the_interrupted_coder(tmp_path):
+    # R4: a live coder entry at the persisted generation is resumed, not forked.
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-reviewer-g1"]  # no coder fork — resumed instead
+    assert len(runner.prompts["sess-warm"]) == 1
+    assert 'coder for group "group g1"' in runner.prompts["sess-warm"][0]
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 re-entry: resumed session sess-warm") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_reentry_falls_through_to_fork_when_context_exceeds_the_breaker_limit(tmp_path):
+    # R5: the persisted context pre-check trips before any resume is attempted.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_token_limit=100))
+    seed_reentry_session(harness, context_tokens=200)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]  # fresh fork, not a resume
+    assert "sess-warm" not in runner.prompts  # never touched
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (context tokens 200 exceed limit 100)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
+    # R5/R6: an envelope failure on the warm attempt itself falls through to a
+    # fresh fork, logging the reason instead of the resumed-session line.
+    class FailOnResume(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            if session_id == "sess-warm":
+                raise SessionError("claude exited 1")
+            return super().resume(
+                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+            )
+
+    runner = FailOnResume(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (warm resume failed: claude exited 1)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
+    # No in-run retry loop (origin non-goal): if the fallback fork itself fails at
+    # the envelope, the SessionError propagates so the scheduler lands the group
+    # `interrupted` again (classification asserted by g1's scheduler tests).
+    class AlwaysDown(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            raise SessionError("warm resume down")
+
+        def start_fork(self, *, base_id, prompt, name, cwd, json_schema=None):
+            raise SessionError("fork also down")
+
+    runner = AlwaysDown({})
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    with pytest.raises(SessionError, match="fork also down"):
+        await harness.run(make_group())
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1  # exactly one re-entry line even though it fell through
+    assert reentry_lines[0].endswith(
+        "group g1 re-entry: forked generation 1 (warm resume failed: warm resume down)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypatch):
+    # R5: the manifest reflects the latest round's usage as it happens, not only
+    # once at generation end — the re-entry pre-check needs the freshest number.
+    class GrowingContext(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+            self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
+            return super().resume(
+                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+            )
+
+    runner = GrowingContext(
+        {
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
+            "r1-g1-reviewer-g1": [
+                verdict("changes_required", ["fix x"]),
+                verdict("approved"),
+            ],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    seen: list[int] = []
+    original_save = harness.store.save
+
+    def spying_save(manifest):
+        original_save(manifest)
+        coder = next(
+            (s for s in manifest.groups["g1"].sessions if s.role == SessionRole.CODER), None
+        )
+        if coder is not None:
+            seen.append(coder.last_context_tokens)
+
+    monkeypatch.setattr(harness.store, "save", spying_save)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    # round 1 persists the default (1_000); round 2 persists the bumped value —
+    # proof the manifest is written every round, not just once at the end.
+    assert 1_000 in seen
+    assert 6_000 in seen
+    assert seen.index(1_000) < seen.index(6_000)
