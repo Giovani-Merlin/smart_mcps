@@ -24,6 +24,8 @@ REPO_ROOT = Path(__file__).parent.parent
 
 
 def empty_response(command, symbol):
+    if command == "sync":
+        return ""
     if command == "query":
         return "[]"
     if command == "files":
@@ -262,6 +264,13 @@ class TestQueriesAndMetadata:
         client, runner = client_with({})
         runner.responses[("files", None)] = "\x1b[1mProject Structure\x1b[0m\n├── a.py\n"
         assert client.files_overview() == "Project Structure\n├── a.py\n"
+
+    def test_sync_calls_the_runner_with_the_sync_argv(self):
+        """R13: sync() goes through the same injectable runner seam as every
+        other command, so offline tests can keep faking the CLI."""
+        client, runner = client_with({})
+        client.sync()
+        assert runner.calls == [["sync"]]
 
     def test_identical_queries_are_memoized(self):
         """A hub symbol mapped by many tasks must not respawn the CLI per task."""

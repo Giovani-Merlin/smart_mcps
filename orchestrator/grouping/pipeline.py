@@ -38,13 +38,36 @@ from orchestrator.grouping.partition import (
     detect_hub_roles,
     slice_atoms,
 )
-from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import Group, GroupingResult
 
 
 class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
+
+
+SELF_MODIFICATION_FLAG = (
+    "self-modification: this plan's mappings touch orchestrator/ — the changes "
+    "take effect on the next run, not this one (see orchestrator/README.md)"
+)
+
+
+def _flag_self_modification(mapper_out: MapperOutput) -> None:
+    """R15: warn when a plan edits the orchestrator that is about to drive it.
+
+    Workers run from the installed console script, not the worktree they edit,
+    so a change to ``orchestrator/`` can never be exercised by the run that
+    makes it (D12) — surfaced here, at grouping time, rather than discovered
+    mid-run.
+    """
+    touches_orchestrator = any(
+        file == "orchestrator" or file.startswith("orchestrator/")
+        for mapping in mapper_out.mappings
+        for file in (*mapping.files, *mapping.prospective_files)
+    )
+    if touches_orchestrator:
+        mapper_out.flags.append(SELF_MODIFICATION_FLAG)
 
 
 def group_label(gid: int) -> str:
@@ -80,6 +103,7 @@ def compute_partition(
     config: OrchestratorConfig | None = None,
     llm_runner: JsonRunner | None = None,
     client: CodegraphClient | None = None,
+    allow_unknown_symbols: bool = False,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
     does before handing off to the speccer, callable on its own."""
@@ -91,12 +115,13 @@ def compute_partition(
     failure_dir = repo_root / ".orchestrator" / "failures"
 
     plan_text = plan_path.read_text()
+    client.sync()
     codegraph_files = client.files_overview()
     # Deterministic fast path: a plan carrying a task map already answered what
     # the mapper LLM would have to guess. Malformed maps fail hard (silent
     # fallback would hide prose↔map drift); absent maps keep foreign plans working.
     try:
-        mapper_out = parse_task_map(plan_text, client)
+        mapper_out = parse_task_map(plan_text, client, allow_unknown_symbols=allow_unknown_symbols)
     except TaskMapError as exc:
         raise GrouperError(f"task map: {exc}") from exc
     if mapper_out is None:
@@ -107,6 +132,7 @@ def compute_partition(
         mapper_out.flags.insert(0, "task map: parsed from plan — mapper LLM skipped")
     if not mapper_out.mappings:
         raise GrouperError("mapper produced no tasks from the plan document")
+    _flag_self_modification(mapper_out)
 
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
     graph = build_task_graph(mapper_out.mappings, client, weights)
@@ -151,6 +177,7 @@ def run_grouping(
     config: OrchestratorConfig | None = None,
     llm_runner: JsonRunner | None = None,
     client: CodegraphClient | None = None,
+    allow_unknown_symbols: bool = False,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
@@ -164,6 +191,7 @@ def run_grouping(
         config=config,
         llm_runner=llm_runner,
         client=client,
+        allow_unknown_symbols=allow_unknown_symbols,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -181,7 +209,9 @@ def run_grouping(
         }
         for gid, members in sorted(members_by_gid.items())
     }
-    specs = write_specs(outcome.plan_text, skeletons, llm_runner, failure_dir=failure_dir)
+    specs = write_specs(
+        strip_task_map(outcome.plan_text), skeletons, llm_runner, failure_dir=failure_dir
+    )
 
     upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}
     for up_gid, downs in dag.items():
