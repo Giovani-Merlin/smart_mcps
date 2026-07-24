@@ -139,6 +139,31 @@ def _renumber(partition: Partition) -> Partition:
     return {node: new_gid for new_gid, members in enumerate(ordered) for node in members}
 
 
+def _membership(partition: Partition) -> frozenset[frozenset[str]]:
+    """Group membership independent of gid numbering — the stage-diffing key."""
+    groups: dict[int, set[str]] = defaultdict(set)
+    for node, gid in partition.items():
+        groups[gid].add(node)
+    return frozenset(frozenset(members) for members in groups.values())
+
+
+def _last_modifying_stage(stages: list[tuple[str, Partition]]) -> str:
+    """The last stage whose membership differs from the stage before it.
+
+    The first stage in the list is always the baseline (it always "changed"
+    from no partition at all), so it is the default when nothing after it
+    changes anything.
+    """
+    last = stages[0][0]
+    previous = _membership(stages[0][1])
+    for label, snapshot in stages[1:]:
+        membership = _membership(snapshot)
+        if membership != previous:
+            last = label
+        previous = membership
+    return last
+
+
 @dataclass
 class DefaultPartitionStrategy:
     """CoCoder's pipeline, ported: hub isolation → slice contraction → Louvain →
@@ -155,34 +180,50 @@ class DefaultPartitionStrategy:
     for clustering and lifting, then membership expands. Softness comes after
     expansion: ``split_over_budget`` may still break an oversized slice at its
     weakest internal edges and ``merge_small_groups`` may combine small ones.
+
+    ``last_stage`` (R18) records which internal stage last *changed* the
+    partition's membership (contraction/louvain, lift, split, merge) — set after
+    every ``partition()`` call by comparing group membership after each stage,
+    not by re-running anything.
     """
 
     work_fn: WorkFn = lambda node: 1.0
     budget_cap: float | None = None
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
+    last_stage: str | None = field(default=None, init=False)
 
     def partition(self, graph: TaskGraph) -> Partition:
         if not graph.nodes:
+            self.last_stage = None
             return {}
         roles = detect_hub_roles(graph, threshold=self.hub_threshold)
-        atoms = _slice_atoms(graph, roles)
+        atoms = slice_atoms(graph, roles)
+        stages: list[tuple[str, Partition]] = []
         if atoms:
             unit_graph, self_loops, unit_of = _contract_slices(graph, atoms)
             unit_roles = {unit_of[node]: role for node, role in roles.items()}
             unit_partition = _hub_isolated_clustering(
                 unit_graph, unit_roles, self.louvain_resolution, self_loops
             )
+            partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
+            stages.append(("contraction", dict(partition)))
             unit_partition = lift_independent(unit_graph, unit_partition)
             partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
+            stages.append(("lift", dict(partition)))
         else:
             partition = _hub_isolated_clustering(graph, roles, self.louvain_resolution)
+            stages.append(("louvain", dict(partition)))
             partition = lift_independent(graph, partition)
+            stages.append(("lift", dict(partition)))
         if self.budget_cap is not None:
             partition = split_over_budget(graph, partition, self.work_fn, self.budget_cap)
+            stages.append(("split", dict(partition)))
         partition = merge_small_groups(graph, partition, self.work_fn, self.budget_cap)
+        stages.append(("merge", dict(partition)))
         partition = _renumber(partition)
         build_group_dag(graph, partition)  # cycles must fail loudly (plan U1)
+        self.last_stage = _last_modifying_stage(stages)
         return partition
 
 
@@ -216,12 +257,12 @@ def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD)
     return roles
 
 
-def _slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]:
+def slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]:
     """Slice label → sorted core members with 2+ tasks (the real must-links).
 
     Reads the ``slice`` node metadata the task map supplies. Hub-role nodes are
     excluded — hubs are isolated before slices contract and are never absorbed
-    into a feature slice.
+    into a feature slice. Public: the R18 partition-only report surfaces these.
     """
     atoms: dict[str, list[str]] = defaultdict(list)
     for node in sorted(graph.nodes):

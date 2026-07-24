@@ -352,3 +352,35 @@ class TestStrategySeam:
                 assert all(alias.name in allowed for alias in node.names), ast.dump(node)
             elif isinstance(node, ast.ImportFrom):
                 assert node.module in allowed, node.module
+
+
+class TestStageAttribution:
+    """R18: DefaultPartitionStrategy.last_stage names which internal stage
+    (contraction / louvain / lift / split / merge) last changed group membership."""
+
+    def test_last_stage_is_split_when_budget_forces_a_cut(self):
+        """An oversized slice survives contraction/lift, then split_over_budget
+        makes the final cut — last_stage must name it, not the earlier stages."""
+        g = graph(
+            "a1 a2 a3".split(),
+            affinity={("a1", "a2"): 5.0, ("a2", "a3"): 1.0},
+            slices={"a1": "s", "a2": "s", "a3": "s"},
+        )
+        strategy = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0)
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
+        assert strategy.last_stage == "split"
+
+    def test_last_stage_is_merge_when_a_dependent_chain_collapses(self):
+        """No budget cap (split never runs); merge_small_groups is the only stage
+        that changes anything, so it must be named last."""
+        g = graph("a b c".split(), dependencies={("a", "b"): 1.0, ("b", "c"): 1.0})
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset({"a", "b", "c"})}
+        assert strategy.last_stage == "merge"
+
+    def test_last_stage_is_none_for_empty_graph(self):
+        strategy = DefaultPartitionStrategy()
+        strategy.partition(graph([]))
+        assert strategy.last_stage is None
