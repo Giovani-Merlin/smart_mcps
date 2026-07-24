@@ -15,7 +15,12 @@ from orchestrator.grouping.graphing import CodegraphClient
 from orchestrator.grouping.estimator import estimate_group_tokens
 from orchestrator.grouping.llm import LlmError, call_llm_json
 from orchestrator.grouping.mapper import MapperOutput
-from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
+from orchestrator.grouping.pipeline import (
+    GrouperError,
+    compute_partition,
+    run_grouping,
+    serialize_grouping,
+)
 
 PLAN_TEXT = """# feat: toy plan
 
@@ -521,3 +526,109 @@ class TestDryRunCli:
         )
         assert exit_code != 0
         assert "plan" in capsys.readouterr().err.lower()
+
+
+def _llm_must_not_be_called(prompt, schema):
+    raise AssertionError("the LLM runner must not be called for this scenario")
+
+
+class TestComputePartition:
+    """U7 (R19): the deterministic prefix of run_grouping, callable standalone —
+    mapper -> graph -> partition -> group DAG, with the R18 report fields."""
+
+    def test_returns_every_r18_field(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert set(outcome.partition) == set(outcome.graph.nodes)
+        assert outcome.dag == {0: {1}}
+        assert outcome.node_work and all(v >= 0 for v in outcome.node_work.values())
+        assert outcome.budget_cap > 0
+        assert outcome.hub_roles["t1-scaffold"] == "utility_hub"
+        assert outcome.slice_atoms == {"items": ["t2-items-api", "t3-items-ui"]}
+        assert outcome.last_stage in {"contraction", "louvain", "lift", "split", "merge"}
+        assert "greenfield service" in outcome.base_context
+
+    def test_task_map_plan_never_calls_the_llm_runner(self, tmp_path):
+        """The R19 seam is sub-second and zero-LLM whenever a task map is present —
+        the mapper is skipped entirely, so a raising stub must never fire."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert outcome.mapper_out.flags[0] == "task map: parsed from plan — mapper LLM skipped"
+
+    def test_run_grouping_partition_matches_compute_partition_alone(self, tmp_path):
+        """run_grouping is compute_partition + speccer + assembly — the partition
+        it hands to the speccer must be exactly what compute_partition returns."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        by_task = {task: group.id for group in result.groups for task in group.tasks}
+        members_by_gid: dict[int, list[str]] = {}
+        for node, gid in outcome.partition.items():
+            members_by_gid.setdefault(gid, []).append(node)
+        for gid, members in members_by_gid.items():
+            group_ids = {by_task[m] for m in members}
+            assert len(group_ids) == 1
+
+
+class TestNoSpecCli:
+    """U7 (R18): `group <plan> --no-spec` — the zero-LLM, sub-second report."""
+
+    def test_no_spec_prints_r18_items_and_never_calls_the_llm(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        for expected in (
+            "node work",
+            "budget cap",
+            "hub roles",
+            "slice atoms",
+            "last partition-modifying stage",
+            "depends on",
+        ):
+            assert expected in out
+        assert not (repo / ".orchestrator" / "groups.json").exists()
+
+    def test_no_spec_completes_in_under_a_second(self, tmp_path):
+        import time
+
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        start = time.monotonic()
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        elapsed = time.monotonic() - start
+        assert exit_code == 0
+        assert elapsed < 1.0

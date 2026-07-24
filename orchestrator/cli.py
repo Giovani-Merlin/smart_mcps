@@ -51,7 +51,14 @@ from orchestrator.execution.worktrees import (
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
 from orchestrator.grouping.partition import GroupCycleError
-from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
+from orchestrator.grouping.pipeline import (
+    GrouperError,
+    PartitionOutcome,
+    compute_partition,
+    group_label,
+    run_grouping,
+    serialize_grouping,
+)
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import (
     EscalationResponse,
@@ -82,6 +89,15 @@ def main(
     )
     group_cmd.add_argument(
         "--token-budget", type=int, default=None, help="override estimator token budget per group"
+    )
+    group_cmd.add_argument(
+        "--no-spec",
+        action="store_true",
+        help=(
+            "print the partition-only report (groups, DAG, node work, budget cap, "
+            "hub roles, slice atoms, last-modifying stage) with zero LLM calls; "
+            "never writes artifacts"
+        ),
     )
     _add_common_args(group_cmd)
 
@@ -227,6 +243,22 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+
+    if getattr(args, "no_spec", False):
+        try:
+            outcome = compute_partition(
+                plan_path=args.plan,
+                repo_root=repo_root,
+                config=config,
+                llm_runner=llm_runner,
+                client=client,
+            )
+        except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        _print_partition_report(outcome)
+        return 0
+
     try:
         result, base_context = run_grouping(
             plan_path=args.plan,
@@ -250,6 +282,47 @@ def _cmd_group(
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _print_partition_report(outcome: PartitionOutcome) -> None:
+    """R18: the zero-LLM, sub-second answer to "how would this plan group?" —
+    every field ``compute_partition`` returns, without paying for specs."""
+    members_by_gid: dict[int, list[str]] = {}
+    for node, gid in outcome.partition.items():
+        members_by_gid.setdefault(gid, []).append(node)
+
+    print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
+    for gid, members in sorted(members_by_gid.items()):
+        gid_str = group_label(gid)
+        work = sum(outcome.node_work.get(node, 0.0) for node in members)
+        downstream = sorted(group_label(down) for down in outcome.dag.get(gid, ()))
+        print(f"\n{gid_str}:")
+        print(f"  tasks: {', '.join(sorted(members))}")
+        print(f"  node work: {work:.1f} / budget cap {outcome.budget_cap:.1f}")
+        print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
+
+    hub_roles = {node: role for node, role in outcome.hub_roles.items() if role != "core"}
+    print("\nhub roles:")
+    if hub_roles:
+        for node, role in sorted(hub_roles.items()):
+            print(f"  {node}: {role}")
+    else:
+        print("  none")
+
+    print("\nslice atoms:")
+    if outcome.slice_atoms:
+        for label, members in sorted(outcome.slice_atoms.items()):
+            print(f"  {label}: {', '.join(members)}")
+    else:
+        print("  none")
+
+    print(f"\nlast partition-modifying stage: {outcome.last_stage}")
+    print(f"budget cap: {outcome.budget_cap:.1f}")
+
+    if outcome.mapper_out.flags:
+        print("\nflags:")
+        for flag in outcome.mapper_out.flags:
+            print(f"  - {flag}")
 
 
 def _print_report(result: GroupingResult) -> None:
