@@ -128,6 +128,12 @@ class CodegraphClient:
         base context and the mapper prompt (the CLI colorizes even when piped)."""
         return _ANSI_ESCAPES.sub("", self._run(["files"]))
 
+    def sync(self) -> None:
+        """Blocking `codegraph sync` (R13): refreshes the on-disk index before the
+        pipeline's first read of it — grouping against a stale index silently drops
+        real symbols and files that exist on disk."""
+        self._run(["sync"])
+
     def _parsed(self, args: Sequence[str], expect_key: str) -> list[dict]:
         payload = self._json(args)
         if not isinstance(payload, dict) or expect_key not in payload:

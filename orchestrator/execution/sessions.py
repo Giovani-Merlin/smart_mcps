@@ -60,10 +60,6 @@ class PreflightError(SessionError):
     """The installed CLI does not support the flags this design pins."""
 
 
-class RoundTimeout(SessionError):
-    """A round exceeded the per-round subprocess timeout."""
-
-
 class ReportError(SessionError):
     """The round's final message never produced a valid report block."""
 
@@ -142,7 +138,6 @@ class SessionRunner:
         self,
         *,
         claude_bin: str | Sequence[str] = "claude",
-        timeout_s: float = 1800.0,
         model: str | None = None,
         permission_mode: str | None = "acceptEdits",
         allowed_tools: Sequence[str] | None = None,
@@ -151,12 +146,11 @@ class SessionRunner:
         tracker: SubprocessTracker | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
-        self.timeout_s = timeout_s
         self.model = model
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
-        self._env = {**os.environ, **env} if env is not None else None
+        self._env = _scrub_virtualenv({**os.environ, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
@@ -285,15 +279,31 @@ class SessionRunner:
         if self.tracker is not None:
             self.tracker.spawned(proc.pid, context)
         try:
-            stdout, stderr = proc.communicate(timeout=self.timeout_s)
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            proc.communicate()
-            raise RoundTimeout(f"round exceeded {self.timeout_s}s ({context})") from exc
+            # No per-round timeout (R7): a round runs as long as the CLI does —
+            # wall-clock is a terrible proxy for stuck, and long rounds are normal.
+            stdout, stderr = proc.communicate()
         finally:
             if self.tracker is not None:
                 self.tracker.exited(proc.pid)
         return proc.returncode, stdout, stderr
+
+
+def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
+    """Drop the orchestrator's own venv from the worker env (plan U6, R16).
+
+    A worker inheriting ``VIRTUAL_ENV`` and its PATH entries resolves
+    ``python``/``pytest`` to the parent checkout's venv from inside its
+    worktree — the worktree's own venv (provisioned at creation) must win.
+    """
+    venv = env.pop("VIRTUAL_ENV", None)
+    if venv and env.get("PATH"):
+        prefix = venv.rstrip(os.sep) + os.sep
+        env["PATH"] = os.pathsep.join(
+            entry
+            for entry in env["PATH"].split(os.pathsep)
+            if entry and entry != venv and not entry.startswith(prefix)
+        )
+    return env
 
 
 def _argv_context(extra: list[str]) -> str:

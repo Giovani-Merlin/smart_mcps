@@ -8,10 +8,12 @@ an actionable message before any session is launched.
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import sys
 from pathlib import Path
 
-from orchestrator.cli import apply_overrides, main
+from orchestrator.cli import _print_outcomes, apply_overrides, main
 from orchestrator.config import load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
@@ -89,6 +91,23 @@ class TestPrecedence:
         merged = apply_overrides(load_config(config_file), args)
         assert merged.execution.concurrency == 5
         assert merged.execution.sequential is True  # store_true absence never un-sets the file
+
+    def test_deprecated_session_timeout_warns_to_stderr_but_loads(self, tmp_path, capsys):
+        """R7: pydantic v2 drops unknown keys silently, so the removed per-round
+        timeout is detected in the raw TOML and warned about — never an error."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[session]\ntimeout_s = 900.0\n[execution]\nconcurrency = 2\n")
+        loaded = load_config(config_file)
+        assert loaded.execution.concurrency == 2  # the rest of the config still applies
+        err = capsys.readouterr().err
+        assert "timeout_s" in err and "deprecated" in err
+
+    def test_config_without_the_deprecated_key_warns_nothing(self, tmp_path, capsys):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[session]\nclaude_bin = "claude"\n[escalation]\ntimeout_s = 30.0\n')
+        loaded = load_config(config_file)
+        assert loaded.escalation.timeout_s == 30.0  # escalation-wait timeout is untouched
+        assert capsys.readouterr().err == ""
 
 
 class TestEscalationOverrides:
@@ -240,6 +259,154 @@ class TestRunEarlyExits:
         assert "--fork-session" in capsys.readouterr().err
         # preflight failed before any run directory was created
         assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+
+class TestPrintOutcomes:
+    """Exit-code contract (R3): 0 = complete, 1 = needs-inspection work failure,
+    2 = stopped-but-resumable (interrupted, mirroring operator abort)."""
+
+    def test_all_completed_exits_zero(self, capsys):
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state) == 0
+        assert "all groups completed" in capsys.readouterr().out
+
+    def test_interrupted_groups_exit_two_naming_them_and_the_resume_command(self, capsys):
+        state = RunState(
+            run_id="r7",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED, failure="SessionError: claude exited 1"
+                ),
+                "g2": GroupRunState(state=GroupState.PENDING),
+                "g3": GroupRunState(
+                    state=GroupState.INTERRUPTED, failure="SessionError: usage limit reached"
+                ),
+            },
+        )
+        assert _print_outcomes(state) == 2
+        err = capsys.readouterr().err
+        assert "g1" in err and "g3" in err
+        assert "smart-mcps-orchestrate resume r7" in err
+
+    def test_only_work_failures_keep_exit_one_and_todays_message(self, capsys):
+        state = RunState(
+            run_id="r1",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: blocked"),
+                "g2": GroupRunState(state=GroupState.PENDING),
+            },
+        )
+        assert _print_outcomes(state) == 1
+        err = capsys.readouterr().err
+        assert "did not complete" in err
+        assert "resume r1" not in err  # the resume-command line is interrupted-only
+
+    def test_mixed_interrupted_and_failed_still_exits_two(self, capsys):
+        state = RunState(
+            run_id="r9",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: blocked"),
+                "g2": GroupRunState(state=GroupState.INTERRUPTED, failure="SessionError: x"),
+            },
+        )
+        assert _print_outcomes(state) == 2
+        assert "smart-mcps-orchestrate resume r9" in capsys.readouterr().err
+
+
+class TestRunBanner:
+    """R8: the effective execution config prints before any session spawns."""
+
+    def _setup(self, tmp_path, monkeypatch, *, failures: int) -> Path:
+        write_run_artifacts(tmp_path, [make_group("g1"), make_group("g2")])
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "init"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+        fake_home = tmp_path / "fake-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
+        monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+        # Script every base-session attempt to die at spawn: under the old
+        # post-spawn print, this path produced no banner at all — the banner
+        # appearing despite the failed spawn pins the output order.
+        (fake_home / "script.jsonl").write_text(
+            (json.dumps({"exit_code": 1, "stderr": "spawn died"}) + "\n") * failures
+        )
+        return fake_home
+
+    def _base_calls(self, fake_home: Path) -> list[dict]:
+        path = fake_home / "calls.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_banner_precedes_the_base_session_spawn(self, tmp_path, capsys, monkeypatch):
+        fake_home = self._setup(tmp_path, monkeypatch, failures=1)
+        exit_code = main(
+            ["run", "--repo", str(tmp_path), "--run-id", "r9", "--sequential", "--hitl"]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "base session failed" in captured.err
+        # the spawn was attempted (exactly one CLI call: the base session)...
+        calls = self._base_calls(fake_home)
+        assert len(calls) == 1
+        argv = calls[0]["argv"]
+        assert argv[argv.index("--name") + 1] == "r9-base"
+        # ...and the banner still made it out first, naming every R8 item
+        banner = captured.out.splitlines()[0]
+        assert "run r9" in banner
+        assert "2 group(s)" in banner
+        assert "sequential" in banner
+        assert "HITL on (intensity=on_stuck, source=workers_via_orchestrator)" in banner
+        assert "permission-mode acceptEdits" in banner
+
+    def test_banner_names_concurrency_and_disabled_hitl(self, tmp_path, capsys, monkeypatch):
+        self._setup(tmp_path, monkeypatch, failures=1)
+        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r10", "--concurrency", "4"])
+        assert exit_code == 1
+        banner = capsys.readouterr().out.splitlines()[0]
+        assert "run r10" in banner
+        assert "concurrency 4" in banner
+        assert "HITL off" in banner
+
+
+class TestWorkspaceProvisioning:
+    def test_workspace_for_provisions_the_env_after_creating_the_worktree(
+        self, tmp_path, monkeypatch
+    ):
+        """U6/R16: the provisioning hook fires from the workspace seam, on the
+        already-created worktree — create_worktree itself stays pure git."""
+        from orchestrator.cli import _workspace_seams
+        from orchestrator.execution.merge import IntegrationMerger
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "--allow-empty", "-m", "i"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        recorded: list[tuple[Path, bool]] = []
+        monkeypatch.setattr(
+            "orchestrator.cli.provision_env",
+            lambda path, **kwargs: recorded.append((path, path.is_dir())),
+        )
+        workspace_for, base_ref_for = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        group = make_group("g1")
+        path = workspace_for(group)
+        assert recorded == [(path, True)]  # invoked once, after the worktree existed
+        assert base_ref_for(group)  # the shared tip capture still works
 
 
 class TestStatus:

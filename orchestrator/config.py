@@ -7,6 +7,7 @@ CLI-flag > config-file > default resolution on top of `load_config`.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -103,7 +104,6 @@ class SessionConfig(BaseModel):
     """
 
     claude_bin: str | list[str] = "claude"
-    timeout_s: float = 1800.0
     model: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
     transcript_root: str | None = None
@@ -152,4 +152,14 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
         return OrchestratorConfig()
     with path.open("rb") as fh:
         data = tomllib.load(fh)
+    # Raw-TOML detection (R7): pydantic v2 silently ignores unknown keys, so a
+    # config still carrying the removed per-round timeout would be dropped
+    # without a trace — warn explicitly before validation.
+    session = data.get("session")
+    if isinstance(session, dict) and "timeout_s" in session:
+        print(
+            f"warning: {path}: [session] timeout_s is deprecated and ignored — "
+            "the per-round timeout was removed (R7)",
+            file=sys.stderr,
+        )
     return OrchestratorConfig.model_validate(data)

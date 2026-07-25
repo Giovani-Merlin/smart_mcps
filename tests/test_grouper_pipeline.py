@@ -12,10 +12,16 @@ import pytest
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.base_context import compile_base_context
 from orchestrator.grouping.graphing import CodegraphClient
-from orchestrator.grouping.estimator import estimate_group_tokens
+from orchestrator.grouping.estimator import estimate_group_tokens, partition_budget_cap
 from orchestrator.grouping.llm import LlmError, call_llm_json
 from orchestrator.grouping.mapper import MapperOutput
-from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
+from orchestrator.grouping.pipeline import (
+    GrouperError,
+    compute_partition,
+    run_grouping,
+    serialize_grouping,
+)
+from orchestrator.model import Group, ReviewIntensity, Surprise
 
 PLAN_TEXT = """# feat: toy plan
 
@@ -95,6 +101,8 @@ def make_repo(tmp_path):
 def codegraph_response(args):
     """Canned codegraph CLI output covering every command the pipeline issues."""
     command = args[0]
+    if command == "sync":
+        return ""
     if command == "files":
         return "repo files: server.py, test_server.py"
     symbol = args[1]
@@ -177,7 +185,7 @@ def make_client(repo):
     return CodegraphClient(repo_root=repo, runner=codegraph_response)
 
 
-def grouping(tmp_path, llm=None, config=None):
+def grouping(tmp_path, llm=None, config=None, allow_unknown_symbols=False):
     repo, plan = make_repo(tmp_path)
     result, base_context = run_grouping(
         plan_path=plan,
@@ -185,6 +193,7 @@ def grouping(tmp_path, llm=None, config=None):
         config=config or OrchestratorConfig(),
         llm_runner=llm or StubLlm(),
         client=make_client(repo),
+        allow_unknown_symbols=allow_unknown_symbols,
     )
     return result, base_context
 
@@ -521,3 +530,400 @@ class TestDryRunCli:
         )
         assert exit_code != 0
         assert "plan" in capsys.readouterr().err.lower()
+
+
+def _llm_must_not_be_called(prompt, schema):
+    raise AssertionError("the LLM runner must not be called for this scenario")
+
+
+class TestComputePartition:
+    """U7 (R19): the deterministic prefix of run_grouping, callable standalone —
+    mapper -> graph -> partition -> group DAG, with the R18 report fields."""
+
+    def test_returns_every_r18_field(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert set(outcome.partition) == set(outcome.graph.nodes)
+        assert outcome.dag == {0: {1}}
+        assert outcome.node_work and all(v >= 0 for v in outcome.node_work.values())
+        assert outcome.budget_cap > 0
+        assert outcome.hub_roles["t1-scaffold"] == "utility_hub"
+        assert outcome.slice_atoms == {"items": ["t2-items-api", "t3-items-ui"]}
+        assert outcome.last_stage in {"contraction", "louvain", "lift", "split", "merge"}
+        assert "greenfield service" in outcome.base_context
+
+    def test_task_map_plan_never_calls_the_llm_runner(self, tmp_path):
+        """The R19 seam is sub-second and zero-LLM whenever a task map is present —
+        the mapper is skipped entirely, so a raising stub must never fire."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert outcome.mapper_out.flags[0] == "task map: parsed from plan — mapper LLM skipped"
+
+    def test_run_grouping_partition_matches_compute_partition_alone(self, tmp_path):
+        """run_grouping is compute_partition + speccer + assembly — the partition
+        it hands to the speccer must be exactly what compute_partition returns."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        by_task = {task: group.id for group in result.groups for task in group.tasks}
+        members_by_gid: dict[int, list[str]] = {}
+        for node, gid in outcome.partition.items():
+            members_by_gid.setdefault(gid, []).append(node)
+        for gid, members in members_by_gid.items():
+            group_ids = {by_task[m] for m in members}
+            assert len(group_ids) == 1
+
+
+class TestNoSpecCli:
+    """U7 (R18): `group <plan> --no-spec` — the zero-LLM, sub-second report."""
+
+    def test_no_spec_prints_r18_items_and_never_calls_the_llm(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        for expected in (
+            "node work",
+            "budget cap",
+            "hub roles",
+            "slice atoms",
+            "last partition-modifying stage",
+            "depends on",
+        ):
+            assert expected in out
+        assert not (repo / ".orchestrator" / "groups.json").exists()
+
+    def test_no_spec_completes_in_under_a_second(self, tmp_path):
+        import time
+
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        start = time.monotonic()
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        elapsed = time.monotonic() - start
+        assert exit_code == 0
+        assert elapsed < 1.0
+
+
+class TestSyncGate:
+    """R13: `group` refuses to run against a stale index — sync() is invoked,
+    blocking, before the first index read (files_overview)."""
+
+    def test_sync_runs_before_files_overview(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        calls = []
+
+        def recording_runner(args):
+            calls.append(list(args))
+            return codegraph_response(args)
+
+        client = CodegraphClient(repo_root=repo, runner=recording_runner)
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client,
+        )
+        assert calls[0] == ["sync"]
+        assert calls[1][0] == "files"
+
+    def test_run_grouping_also_syncs_first(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        calls = []
+
+        def recording_runner(args):
+            calls.append(list(args))
+            return codegraph_response(args)
+
+        client = CodegraphClient(repo_root=repo, runner=recording_runner)
+        run_grouping(plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=client)
+        assert calls[0] == ["sync"]
+        assert calls[1][0] == "files"
+
+
+UNKNOWN_SYMBOL_PLAN = """# feat: proxy task naming an unknown symbol
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: t1-proxy
+    description: extend the proxy server tool list
+    files: [server.py]
+    symbols: [real_fn, ghost_fn]
+```
+"""
+
+
+class TestUnknownSymbolGate:
+    """R14: an unknown task-map symbol is a hard error by default;
+    --allow-unknown-symbols restores drop-with-flag. The mapper-fallback path
+    (no task map) keeps drop-with-flag regardless of the flag."""
+
+    def test_unknown_symbol_raises_grouper_error_naming_task_and_symbol(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(UNKNOWN_SYMBOL_PLAN)
+        with pytest.raises(GrouperError, match=r"t1-proxy.*ghost_fn"):
+            run_grouping(
+                plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+            )
+
+    def test_allow_unknown_symbols_flag_restores_drop_with_flag(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(UNKNOWN_SYMBOL_PLAN)
+        result, _ = run_grouping(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            allow_unknown_symbols=True,
+        )
+        assert any("ghost_fn" in flag and "dropped" in flag for flag in result.flags)
+        grouped_tasks = {task for group in result.groups for task in group.tasks}
+        assert "t1-proxy" in grouped_tasks
+
+    def test_cli_allow_unknown_symbols_flag(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(UNKNOWN_SYMBOL_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--dry-run"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 1
+        assert "ghost_fn" in capsys.readouterr().err
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--dry-run", "--allow-unknown-symbols"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        assert "ghost_fn" in capsys.readouterr().out
+
+    def test_prospective_files_unaffected_by_the_flag(self, tmp_path):
+        """A plan can carry both a claimed symbol and a not-yet-created file;
+        the flag only governs symbol handling, so prospective-file treatment
+        must match in both regimes."""
+        plan_text = (
+            "# feat: mixed prospective file and unknown symbol\n\n"
+            "## Task Map\n\n```yaml\n"
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [server.py, brand/new.py]\n"
+            "    symbols: [real_fn, ghost_fn]\n"
+            "```\n"
+        )
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(plan_text)
+        result, _ = run_grouping(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            allow_unknown_symbols=True,
+        )
+        assert "brand/new.py" in result.groups[0].files
+        assert any("brand/new.py" in flag and "prospective" in flag for flag in result.flags)
+
+    def test_mapper_fallback_keeps_drop_with_flag_regardless_of_the_flag(self, tmp_path):
+        mapper = json.loads(MAPPER_RESPONSE)
+        mapper["tasks"][0]["symbols"] = ["real_fn", "ghost_fn"]
+        for allow in (False, True):
+            result, _ = grouping(
+                tmp_path,
+                llm=StubLlm(mapper=json.dumps(mapper)),
+                allow_unknown_symbols=allow,
+            )
+            assert any("ghost_fn" in flag for flag in result.flags)
+            grouped_tasks = {task for group in result.groups for task in group.tasks}
+            assert "t1-proxy" in grouped_tasks
+
+
+SELF_MOD_PLAN = """# feat: touch the orchestrator itself
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: t1-cli
+    description: tweak the CLI banner
+    files: [orchestrator/cli.py]
+```
+"""
+
+
+class TestSelfModificationWarning:
+    """R15: a plan whose mappings touch orchestrator/ gets flagged and warned
+    about at grouping time — D12's worker-changes-land-next-run rule."""
+
+    def test_flag_and_stderr_warning_when_plan_touches_orchestrator(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(SELF_MOD_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--dry-run"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        err = capsys.readouterr().err
+        assert "take effect on the next run" in err
+
+    def test_no_warning_when_plan_does_not_touch_orchestrator(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--dry-run"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        assert capsys.readouterr().err == ""
+
+    def test_no_spec_path_also_flags_and_warns(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(SELF_MOD_PLAN)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        assert "take effect on the next run" in capsys.readouterr().err
+
+
+class TestTaskMapStripping:
+    """R27: the task-map YAML block is grouper parser input only — it never
+    reaches an LLM-facing context (base context, speccer prompt, rewrite prompt).
+    The plan file on disk is never touched."""
+
+    def test_base_context_has_no_marker_or_heading(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert "orchestrator-task-map v1" not in outcome.base_context
+        assert "## Task Map" not in outcome.base_context
+        # the surrounding unit prose survives the strip
+        assert "t1-scaffold: create the app skeleton" in outcome.base_context
+
+    def test_base_context_compilation_stays_byte_stable(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        first = compile_base_context(repo, plan, codegraph_summary="s")
+        second = compile_base_context(repo, plan, codegraph_summary="s")
+        assert first == second
+
+    def test_budget_cap_is_derived_from_the_stripped_base_context(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        config = OrchestratorConfig()
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        expected_tokens = int(len(outcome.base_context) / config.estimator.bytes_per_token)
+        assert outcome.base_tokens == expected_tokens
+        assert outcome.budget_cap == partition_budget_cap(expected_tokens, config.estimator)
+
+    def test_speccer_prompt_has_no_version_marker(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        llm = StubLlm()
+        run_grouping(plan_path=plan, repo_root=repo, llm_runner=llm, client=make_client(repo))
+        speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
+        assert speccer_prompts
+        assert all("orchestrator-task-map v1" not in p for p in speccer_prompts)
+
+    def test_rewrite_prompt_has_no_version_marker(self, tmp_path):
+        from orchestrator.cli import _rewrite_provider
+        from orchestrator.grouping.plan_reader import strip_task_map
+
+        # sanity: the raw plan text does carry the marker, so the assertion below
+        # is meaningful — it is the strip that removes it, not something else.
+        assert "orchestrator-task-map v1" in GREENFIELD_PLAN
+        stripped = strip_task_map(GREENFIELD_PLAN)
+        llm = StubLlm()
+        rewrite_spec = _rewrite_provider(stripped, llm, failure_dir=tmp_path)
+        group = Group(
+            id="g1",
+            name="n",
+            summary="s",
+            spec="old spec",
+            difficulty=0.1,
+            intensity=ReviewIntensity.SELF_VERIFY,
+            tasks=["t1-scaffold"],
+            files=["app/main.py"],
+        )
+        rewrite_spec(group, surprises=[Surprise(kind="other", description="stuck")])
+        prompts = [p for _, p in llm.prompts]
+        assert prompts
+        assert all("orchestrator-task-map v1" not in p for p in prompts)
+
+    def test_plan_file_on_disk_is_byte_identical_after_group(self, tmp_path):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        before = plan.read_bytes()
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo)],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        assert plan.read_bytes() == before

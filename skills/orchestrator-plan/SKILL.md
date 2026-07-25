@@ -15,7 +15,6 @@ writing the map.
 
 Input: `$ARGUMENTS`
 
-
 ______________________________________________________________________
 
 ## Phase 1 — Origin
@@ -135,6 +134,16 @@ Any divergence is a bug the verifier will catch.>
   budget-splitting).
 - **Inter-slice `depends_on` must be acyclic** — a cycle between slices becomes
   a group-DAG cycle and fails the whole grouping run loudly.
+
+### Verification-item guidance
+
+- **Phrase verification items behaviourally — observable outcomes, never
+  framework-internal introspection.** An item like *"the router is registered
+  on the app object"* invites tests that walk private framework structure and
+  break across versions (a FastAPI point release renamed an internal wrapper
+  attribute and failed an otherwise-correct group). The same requirement
+  phrased as *"`GET /openapi.json` lists these paths"* is both stronger and
+  version-proof.
 
 ### No-placeholder rules
 

@@ -7,6 +7,7 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from orchestrator.config import OrchestratorConfig
@@ -31,11 +32,13 @@ from orchestrator.grouping.llm import JsonRunner, claude_json_runner
 from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
+    Partition,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
+    slice_atoms,
 )
-from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import Group, GroupingResult
 
@@ -44,14 +47,66 @@ class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
 
 
-def run_grouping(
+SELF_MODIFICATION_FLAG = (
+    "self-modification: this plan's mappings touch orchestrator/ — the changes "
+    "take effect on the next run, not this one (see orchestrator/README.md)"
+)
+
+
+def _flag_self_modification(mapper_out: MapperOutput) -> None:
+    """R15: warn when a plan edits the orchestrator that is about to drive it.
+
+    Workers run from the installed console script, not the worktree they edit,
+    so a change to ``orchestrator/`` can never be exercised by the run that
+    makes it (D12) — surfaced here, at grouping time, rather than discovered
+    mid-run.
+    """
+    touches_orchestrator = any(
+        file == "orchestrator" or file.startswith("orchestrator/")
+        for mapping in mapper_out.mappings
+        for file in (*mapping.files, *mapping.prospective_files)
+    )
+    if touches_orchestrator:
+        mapper_out.flags.append(SELF_MODIFICATION_FLAG)
+
+
+def group_label(gid: int) -> str:
+    """Group id → display id, e.g. ``g1``. Shared by the partition-only report
+    (cli.py --no-spec) and the full assembly below — group numbering must match."""
+    return f"g{gid + 1}"
+
+
+@dataclass(frozen=True)
+class PartitionOutcome:
+    """The deterministic, sub-second prefix of ``run_grouping`` (R19): mapper →
+    graph → partition → group DAG. Zero LLM calls whenever the plan carries a
+    task map (the mapper-LLM fallback below still runs here for foreign plans —
+    it is the only part of this prefix that is not itself deterministic)."""
+
+    plan_text: str
+    mapper_out: MapperOutput
+    graph: TaskGraph
+    partition: Partition
+    dag: dict[int, set[int]]
+    node_work: dict[str, float]
+    budget_cap: float
+    hub_roles: dict[str, str]
+    slice_atoms: dict[str, list[str]]
+    last_stage: str | None
+    base_context: str
+    base_tokens: int
+
+
+def compute_partition(
     plan_path: Path,
     repo_root: Path,
     config: OrchestratorConfig | None = None,
     llm_runner: JsonRunner | None = None,
     client: CodegraphClient | None = None,
-) -> tuple[GroupingResult, str]:
-    """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
+    allow_unknown_symbols: bool = False,
+) -> PartitionOutcome:
+    """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
+    does before handing off to the speccer, callable on its own."""
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
     config = config or OrchestratorConfig()
@@ -60,12 +115,13 @@ def run_grouping(
     failure_dir = repo_root / ".orchestrator" / "failures"
 
     plan_text = plan_path.read_text()
+    client.sync()
     codegraph_files = client.files_overview()
     # Deterministic fast path: a plan carrying a task map already answered what
     # the mapper LLM would have to guess. Malformed maps fail hard (silent
     # fallback would hide prose↔map drift); absent maps keep foreign plans working.
     try:
-        mapper_out = parse_task_map(plan_text, client)
+        mapper_out = parse_task_map(plan_text, client, allow_unknown_symbols=allow_unknown_symbols)
     except TaskMapError as exc:
         raise GrouperError(f"task map: {exc}") from exc
     if mapper_out is None:
@@ -76,6 +132,7 @@ def run_grouping(
         mapper_out.flags.insert(0, "task map: parsed from plan — mapper LLM skipped")
     if not mapper_out.mappings:
         raise GrouperError("mapper produced no tasks from the plan document")
+    _flag_self_modification(mapper_out)
 
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
     graph = build_task_graph(mapper_out.mappings, client, weights)
@@ -83,43 +140,89 @@ def run_grouping(
 
     base_context = compile_base_context(repo_root, plan_path, codegraph_files)
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
+    budget_cap = partition_budget_cap(base_tokens, config.estimator)
+
+    def node_work_fn(node: str) -> float:
+        return node_work(graph.metadata.get(node, {}), config.estimator)
 
     strategy = DefaultPartitionStrategy(
-        work_fn=lambda node: node_work(graph.metadata.get(node, {}), config.estimator),
-        budget_cap=partition_budget_cap(base_tokens, config.estimator),
+        work_fn=node_work_fn,
+        budget_cap=budget_cap,
         hub_threshold=config.partition.hub_threshold,
         louvain_resolution=config.partition.louvain_resolution,
     )
     partition = strategy.partition(graph)
     dag = build_group_dag(graph, partition)
+    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
 
-    def group_id(gid: int) -> str:
-        return f"g{gid + 1}"
+    return PartitionOutcome(
+        plan_text=plan_text,
+        mapper_out=mapper_out,
+        graph=graph,
+        partition=partition,
+        dag=dag,
+        node_work={node: node_work_fn(node) for node in graph.nodes},
+        budget_cap=budget_cap,
+        hub_roles=roles,
+        slice_atoms=slice_atoms(graph, roles),
+        last_stage=strategy.last_stage,
+        base_context=base_context,
+        base_tokens=base_tokens,
+    )
+
+
+def run_grouping(
+    plan_path: Path,
+    repo_root: Path,
+    config: OrchestratorConfig | None = None,
+    llm_runner: JsonRunner | None = None,
+    client: CodegraphClient | None = None,
+    allow_unknown_symbols: bool = False,
+) -> tuple[GroupingResult, str]:
+    """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
+    config = config or OrchestratorConfig()
+    llm_runner = llm_runner or claude_json_runner
+    client = client or CodegraphClient(repo_root=repo_root)
+    failure_dir = repo_root / ".orchestrator" / "failures"
+
+    outcome = compute_partition(
+        plan_path=plan_path,
+        repo_root=repo_root,
+        config=config,
+        llm_runner=llm_runner,
+        client=client,
+        allow_unknown_symbols=allow_unknown_symbols,
+    )
+    graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
+    mapper_out = outcome.mapper_out
+    base_context, base_tokens = outcome.base_context, outcome.base_tokens
 
     members_by_gid: dict[int, list[str]] = {}
     for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
     skeletons = {
-        group_id(gid): {
+        group_label(gid): {
             "tasks": sorted(members),
             "descriptions": {t: mapper_out.descriptions.get(t, "") for t in sorted(members)},
             "files": _union_files(graph, members),
         }
         for gid, members in sorted(members_by_gid.items())
     }
-    specs = write_specs(plan_text, skeletons, llm_runner, failure_dir=failure_dir)
+    specs = write_specs(
+        strip_task_map(outcome.plan_text), skeletons, llm_runner, failure_dir=failure_dir
+    )
 
     upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}
     for up_gid, downs in dag.items():
         for down_gid in downs:
             upstream_of[down_gid].append(up_gid)
 
-    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
+    roles = outcome.hub_roles
     flags = list(mapper_out.flags)
     groups: list[Group] = []
     for gid, members in sorted(members_by_gid.items()):
-        gid_str = group_id(gid)
+        gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
         metas = [graph.metadata.get(node, {}) for node in sorted(members)]
@@ -157,7 +260,7 @@ def run_grouping(
                 spec=spec.spec,
                 difficulty=difficulty,
                 intensity=intensity_for(difficulty, config.difficulty),
-                dependencies=sorted(group_id(up) for up in upstream_of[gid]),
+                dependencies=sorted(group_label(up) for up in upstream_of[gid]),
                 verification=spec.verification,
                 tasks=sorted(members),
                 files=files,

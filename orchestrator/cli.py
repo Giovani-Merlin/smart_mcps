@@ -47,11 +47,21 @@ from orchestrator.execution.worktrees import (
     _git_ok,
     create_worktree,
     group_branch,
+    provision_env,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
 from orchestrator.grouping.partition import GroupCycleError
-from orchestrator.grouping.pipeline import GrouperError, run_grouping, serialize_grouping
+from orchestrator.grouping.pipeline import (
+    SELF_MODIFICATION_FLAG,
+    GrouperError,
+    PartitionOutcome,
+    compute_partition,
+    group_label,
+    run_grouping,
+    serialize_grouping,
+)
+from orchestrator.grouping.plan_reader import strip_task_map
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import (
     EscalationResponse,
@@ -82,6 +92,23 @@ def main(
     )
     group_cmd.add_argument(
         "--token-budget", type=int, default=None, help="override estimator token budget per group"
+    )
+    group_cmd.add_argument(
+        "--no-spec",
+        action="store_true",
+        help=(
+            "print the partition-only report (groups, DAG, node work, budget cap, "
+            "hub roles, slice atoms, last-modifying stage) with zero LLM calls; "
+            "never writes artifacts"
+        ),
+    )
+    group_cmd.add_argument(
+        "--allow-unknown-symbols",
+        action="store_true",
+        help=(
+            "task-map symbols not found in the codegraph index are dropped with a "
+            "flag instead of failing the run (default: hard error)"
+        ),
     )
     _add_common_args(group_cmd)
 
@@ -227,6 +254,25 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+    allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
+
+    if getattr(args, "no_spec", False):
+        try:
+            outcome = compute_partition(
+                plan_path=args.plan,
+                repo_root=repo_root,
+                config=config,
+                llm_runner=llm_runner,
+                client=client,
+                allow_unknown_symbols=allow_unknown_symbols,
+            )
+        except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        _warn_self_modification(outcome.mapper_out.flags)
+        _print_partition_report(outcome)
+        return 0
+
     try:
         result, base_context = run_grouping(
             plan_path=args.plan,
@@ -234,10 +280,12 @@ def _cmd_group(
             config=config,
             llm_runner=llm_runner,
             client=client,
+            allow_unknown_symbols=allow_unknown_symbols,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    _warn_self_modification(result.flags)
 
     if args.dry_run:
         _print_report(result)
@@ -250,6 +298,54 @@ def _cmd_group(
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _warn_self_modification(flags: list[str]) -> None:
+    """R15: echo the self-modification flag to stderr at grouping time, so a plan
+    that edits orchestrator/ is caught before the run starts, not mid-run."""
+    if SELF_MODIFICATION_FLAG in flags:
+        print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
+
+
+def _print_partition_report(outcome: PartitionOutcome) -> None:
+    """R18: the zero-LLM, sub-second answer to "how would this plan group?" —
+    every field ``compute_partition`` returns, without paying for specs."""
+    members_by_gid: dict[int, list[str]] = {}
+    for node, gid in outcome.partition.items():
+        members_by_gid.setdefault(gid, []).append(node)
+
+    print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
+    for gid, members in sorted(members_by_gid.items()):
+        gid_str = group_label(gid)
+        work = sum(outcome.node_work.get(node, 0.0) for node in members)
+        downstream = sorted(group_label(down) for down in outcome.dag.get(gid, ()))
+        print(f"\n{gid_str}:")
+        print(f"  tasks: {', '.join(sorted(members))}")
+        print(f"  node work: {work:.1f} / budget cap {outcome.budget_cap:.1f}")
+        print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
+
+    hub_roles = {node: role for node, role in outcome.hub_roles.items() if role != "core"}
+    print("\nhub roles:")
+    if hub_roles:
+        for node, role in sorted(hub_roles.items()):
+            print(f"  {node}: {role}")
+    else:
+        print("  none")
+
+    print("\nslice atoms:")
+    if outcome.slice_atoms:
+        for label, members in sorted(outcome.slice_atoms.items()):
+            print(f"  {label}: {', '.join(members)}")
+    else:
+        print("  none")
+
+    print(f"\nlast partition-modifying stage: {outcome.last_stage}")
+    print(f"budget cap: {outcome.budget_cap:.1f}")
+
+    if outcome.mapper_out.flags:
+        print("\nflags:")
+        for flag in outcome.mapper_out.flags:
+            print(f"  - {flag}")
 
 
 def _print_report(result: GroupingResult) -> None:
@@ -306,7 +402,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             file=sys.stderr,
         )
         return 1
-    plan_text = plan_path.read_text()
+    # Stripped before it ever reaches an LLM context (R27) — the rewrite provider
+    # is the only consumer of plan_text in this command.
+    plan_text = strip_task_map(plan_path.read_text())
 
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)
@@ -324,10 +422,27 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         return 1
 
+    # R8: the effective execution config prints before any session spawns —
+    # obs1's operator trap was a config file silently beating flag expectations,
+    # discovered only after the base session was already paid for.
+    mode = (
+        "sequential"
+        if config.execution.sequential
+        else f"concurrency {config.execution.concurrency}"
+    )
+    hitl = (
+        f"HITL on (intensity={config.escalation.intensity}, source={config.escalation.source})"
+        if config.escalation.enabled
+        else "HITL off"
+    )
+    print(
+        f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
+        f"permission-mode {config.execution.permission_mode}"
+    )
+
     session = config.session
     runner = SessionRunner(
         claude_bin=session.claude_bin,
-        timeout_s=session.timeout_s,
         model=session.model,
         permission_mode=config.execution.permission_mode,
         allowed_tools=session.allowed_tools or None,
@@ -393,6 +508,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         store.save(manifest)
 
+    # The lifecycle log is always on (R10): the run-start line lands in every
+    # mode; only the escalation channel itself is HITL-gated.
     if config.escalation.enabled:
         broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
         policy: EscalationPolicy | None = EscalationPolicy(
@@ -407,8 +524,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     else:
         broker = None
         policy = None
+        log_event(paths, f"run {run_id} started (autonomous)")
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger)
+    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -429,11 +547,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     )
     executor_slot.append(make_executor(deps))
 
-    print(
-        f"run {run_id}: {len(groups)} group(s), concurrency "
-        f"{1 if config.execution.sequential else config.execution.concurrency}"
-        + (f", HITL={config.escalation.intensity}" if config.escalation.enabled else "")
-    )
     try:
         asyncio.run(scheduler.run())
     except RunAbort as exc:
@@ -456,7 +569,7 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
-def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
+def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, paths: RunPaths):
     """The workspace_for / base_ref_for pair, sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
@@ -473,6 +586,9 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
         path = create_worktree(
             repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
         )
+        # U6/R16: the worktree owns its environment — provision after creation,
+        # non-fatally (a failed sync logs and lets the worker re-sync itself).
+        provision_env(path, log=lambda message: log_event(paths, message))
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 
@@ -525,6 +641,18 @@ def _print_outcomes(state: RunState) -> int:
     if completed:
         print("all groups completed; merge the integration branch when ready")
         return 0
+    interrupted = sorted(
+        gid for gid, entry in state.groups.items() if entry.state == GroupState.INTERRUPTED
+    )
+    if interrupted:
+        # Envelope failures are stopped-but-resumable: exit 2 mirrors the
+        # operator-abort path, distinct from needs-inspection work failures.
+        print(
+            f"run interrupted — group(s) {', '.join(interrupted)} stopped by envelope "
+            f"failure; resume with: smart-mcps-orchestrate resume {state.run_id}",
+            file=sys.stderr,
+        )
+        return 2
     print("run did not complete — inspect `status`, fix, then `resume`", file=sys.stderr)
     return 1
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import subprocess
 import sys
 import time
@@ -15,7 +16,9 @@ import pytest
 
 from orchestrator.config import ExecutionConfig
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.review import GroupFailure
 from orchestrator.execution.scheduler import (
+    TERMINAL_STATES,
     GroupRunState,
     GroupState,
     NoProgressError,
@@ -23,7 +26,7 @@ from orchestrator.execution.scheduler import (
     Scheduler,
     SchedulerError,
 )
-from orchestrator.execution.sessions import RoundTimeout
+from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.model import Group, ReviewIntensity
 
 
@@ -228,9 +231,9 @@ async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_round_timeout_fails_the_group_and_records_the_stall(tmp_path):
+async def test_executor_exception_fails_the_group_and_records_the_failure(tmp_path):
     async def executor(ctx):
-        raise RoundTimeout("round exceeded 0.5s (--resume sess-1)")
+        raise RuntimeError("coder produced no diff")
 
     scheduler = Scheduler(
         groups=[make_group("g1"), make_group("g2", deps=["g1"])],
@@ -241,7 +244,115 @@ async def test_round_timeout_fails_the_group_and_records_the_stall(tmp_path):
     assert states["g1"] == GroupState.FAILED
     assert states["g2"] == GroupState.PENDING
     entry = scheduler.state.groups["g1"]
-    assert entry.failure is not None and "exceeded" in entry.failure
+    assert entry.failure == "RuntimeError: coder produced no diff"
+
+
+# ------------------------------------------------------- interrupted (R1–R3)
+
+
+def test_interrupted_is_a_known_non_terminal_state():
+    assert GroupState.INTERRUPTED.value == "interrupted"
+    assert GroupState.INTERRUPTED not in TERMINAL_STATES
+    assert TERMINAL_STATES == frozenset({GroupState.COMPLETED, GroupState.FAILED})
+
+
+@pytest.mark.asyncio
+async def test_session_error_marks_the_group_interrupted_with_failure_text(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise SessionError("claude exited 1 (--resume sess-1)")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()  # returns cleanly: interrupted is not a wedge
+    assert states["g1"] == GroupState.INTERRUPTED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.INTERRUPTED
+    assert persisted.groups["g1"].failure == "SessionError: claude exited 1 (--resume sess-1)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ReportError("no valid report block after 2 nudges"),
+        GroupFailure("coder blocked: missing dependency"),
+    ],
+    ids=["report_error_is_a_work_failure", "group_failure_is_a_work_failure"],
+)
+async def test_work_failures_still_mark_the_group_failed(tmp_path, exc):
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise exc
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.FAILED
+    assert persisted.groups["g1"].failure == f"{type(exc).__name__}: {exc}"
+
+
+@pytest.mark.asyncio
+async def test_dependent_of_interrupted_group_stays_pending_and_run_returns(tmp_path):
+    async def executor(ctx):
+        raise SessionError("API connection dropped")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1"), make_group("g2", deps=["g1"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+    )
+    states = await scheduler.run()  # no NoProgressError: stranded, not wedged
+    assert states["g1"] == GroupState.INTERRUPTED
+    assert states["g2"] == GroupState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_classification_writes_lifecycle_log_lines(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise SessionError("claude exited 1")
+        raise GroupFailure("coder blocked")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1"), make_group("g2")],
+        paths=paths,
+        executor=executor,
+        config=ExecutionConfig(concurrency=2),
+    )
+    await scheduler.run()
+    lines = paths.event_log_path.read_text().splitlines()
+    assert any(
+        line.endswith("group g1: interrupted (SessionError: claude exited 1)") for line in lines
+    )
+    assert any(line.endswith("group g2: failed (GroupFailure: coder blocked)") for line in lines)
+    # Plain timestamped append-lines, the existing log_event format (R12).
+    assert all(re.match(r"^\d{4}-\d{2}-\d{2}T[^ ]+  ", line) for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_resume_relaunches_an_interrupted_group(tmp_path):
+    # `resume` marks non-terminal, non-pending groups ready; INTERRUPTED rides
+    # that path — the re-entry group (u2) counts on it.
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={"g1": GroupRunState(state=GroupState.INTERRUPTED, failure="SessionError: x")},
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states == {"g1": GroupState.COMPLETED}
 
 
 @pytest.mark.asyncio

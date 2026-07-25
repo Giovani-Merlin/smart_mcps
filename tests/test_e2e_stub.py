@@ -75,7 +75,6 @@ def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
         "[session]\n"
         f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
         f'transcript_root = "{fake_home}/projects"\n'
-        "timeout_s = 30.0\n"
         f"{extra}"
     )
 
@@ -462,20 +461,19 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
         name_of(run_id, "g1", "coder"),
         coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
     )
-    # g2's coder dies at fork — the executor records the failure and exits nonzero
+    # g2's coder dies at fork — an envelope failure: the group lands interrupted
+    # (non-terminal) and the run exits 2, stopped-but-resumable (R1–R3)
     script_session(
         fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
     )
     exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
-    assert exit_code == 1
+    assert exit_code == 2
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
-    assert state["groups"]["g2"]["state"] == "failed"
+    assert state["groups"]["g2"]["state"] == "interrupted"
 
-    # operator intervention: mark g2 ready again and give its coder a fresh script
-    state["groups"]["g2"] = {"state": "ready", "generation": 1, "failure": None}
-    state_path = repo / ".orchestrator" / "runs" / run_id / "state.json"
-    state_path.write_text(json.dumps(state))
+    # no state surgery needed: plain `resume` relaunches interrupted groups —
+    # just give g2's coder a fresh script
     script_session(
         fake_home,
         name_of(run_id, "g2", "coder"),
@@ -594,8 +592,9 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
 
 
 def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
-    """`--intensity autonomous` runs exactly like a no-flag run: no escalation
-    channel, no event log — the injected seam is fully absent."""
+    """`--intensity autonomous` runs exactly like a no-flag run: no *escalation*
+    artifacts — the injected seam is fully absent. The lifecycle log is always
+    on (R10), so run.log exists even here, but it carries no escalation lines."""
     run_id = "ra"
     write_run_artifacts(repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)])
     write_config(repo, fake_home)
@@ -612,4 +611,7 @@ def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
     assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
     run_dir = repo / ".orchestrator" / "runs" / run_id
     assert not (run_dir / "escalations").exists()
-    assert not (run_dir / "logs" / "run.log").exists()
+    run_log = (run_dir / "logs" / "run.log").read_text()
+    assert "ESCALATION" not in run_log  # escalation behaviour itself is unchanged
+    assert f"run {run_id} started (autonomous)" in run_log
+    assert "group g1: completed" in run_log  # lifecycle events in autonomous mode (R10)

@@ -74,6 +74,10 @@ class SessionEntry(BaseModel):
     name: str = ""  # display-name convention: <run_id>-<group_id>-<role>-g<generation>
     retirement_reason: str | None = None
     transcript_path: str | None = None
+    # Latest-round context size, persisted every round (R5): in-memory usage dies
+    # with the process, and re-entry needs a pre-check against the breaker limit
+    # before warm-resuming an interrupted coder.
+    last_context_tokens: int = 0
 
 
 class GroupManifestEntry(BaseModel):
