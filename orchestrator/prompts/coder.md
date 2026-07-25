@@ -13,7 +13,11 @@ Ground rules:
   checkout's environment.
 - Implement the spec fully — code and tests — following the conventions the shared
   context established.
-- Commit your work in this worktree with clear conventional messages as you go.
+- Commit early and often: after each self-contained step that leaves the worktree
+  in a consistent state (a finished file, a passing unit of work), make a git
+  commit with a clear conventional message. Do not accumulate large uncommitted
+  work — if your session is interrupted, only committed work survives; anything
+  uncommitted is lost when the group restarts.
 - Verify your work before reporting. These are your verification items:
 
 $verification

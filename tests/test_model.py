@@ -153,7 +153,7 @@ class TestConfig:
         config = load_config(None)
         assert config.estimator.token_budget == 100_000
         assert config.breaker.max_generations == 3
-        assert config.execution.concurrency == 3
+        assert config.execution.concurrency == 1
 
     def test_missing_file_falls_back_to_defaults(self, tmp_path):
         assert load_config(tmp_path / "absent.toml") == OrchestratorConfig()

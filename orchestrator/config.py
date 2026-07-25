@@ -87,7 +87,12 @@ class BreakerConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
-    concurrency: int = 3
+    # Serial by default: each group's worktree is cut from the integration tip at
+    # its ready→running transition, so one-at-a-time stacks each group on the
+    # prior's merged work — no cross-group merge conflicts, and a usage-limit hit
+    # costs at most one in-flight group. Raise via `--concurrency N` for throughput
+    # when rate-limit pressure is low.
+    concurrency: int = 1
     sequential: bool = False  # R25: deterministic one-at-a-time first-debug mode
     permission_mode: str = "acceptEdits"
     # Spec rewrites per group before it fails. The plan bounds respawns via the

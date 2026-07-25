@@ -406,7 +406,13 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     )
 
     stub = StubLlm()
-    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=stub)
+    # Concurrency>1 is required for the race: under the serial default the groups
+    # stack (g2 branches from the tip that already has g1's conflict.txt) and no
+    # conflict ever arises — which is the whole point of serial. Force parallel to
+    # exercise the conflict→rewrite path.
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--concurrency", "2"], llm_runner=stub
+    )
     assert exit_code == 0
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
