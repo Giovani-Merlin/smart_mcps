@@ -9,82 +9,33 @@ findings from executing that plan through the orchestrator itself.
 Each defect carries a severity and, where known, a citation. Re-verify citations before
 acting — they drift.
 
-| #   | Defect                                                                            | Severity   | Status |
-| --- | --------------------------------------------------------------------------------- | ---------- | ------ |
-| D1  | Codegraph index readiness is never checked — symbols silently dropped             | **High**   | Open   |
-| D2  | Slice contraction is undone by the budget splitter                                | High       | Open   |
-| D3  | Group-DAG cycles fail the run instead of being repaired                           | High       | Open   |
-| D4  | Greenfield work estimation is file-count-driven                                   | Medium     | Open   |
-| D5  | No way to ask "how would this plan group?" without paying for specs               | Medium     | Open   |
-| D6  | `docs/orchestrator-task-map.md` overstates the must-link guarantee                | Low (docs) | Open   |
-| D7  | `run.log` too sparse to be a live event log; content varies by run mode           | **High**   | Open   |
-| D8  | Round timeout unrelated to the group size the partitioner chose                   | **High**   | Open   |
-| D9  | Timed-out group terminally failed despite committed work                          | High       | Open   |
-| D10 | A unit that adds a dependency cannot install it (venv outside worktree)           | Medium     | Open   |
-| D11 | Verification items that introspect framework internals are fragile                | Low        | Open   |
-| D12 | Worker CLI changes never reach the installed console script (self-drive is stale) | **High**   | Open   |
+| #   | Defect                                                  | Severity | Status |
+| --- | ------------------------------------------------------- | -------- | ------ |
+| D2  | Slice contraction is undone by the budget splitter      | High     | Open   |
+| D3  | Group-DAG cycles fail the run instead of being repaired | High     | Open   |
+| D4  | Greenfield work estimation is file-count-driven         | Medium   | Open   |
 
-______________________________________________________________________
-
-## D1 — Codegraph index readiness is never checked (silent, high severity)
-
-**The single most dangerous defect here, because it corrupts grouping quality without
-failing anything.**
-
-Found 2026-07-21 while running the Observatory plan through the orchestrator. The first
-`group --dry-run` after merging the HITL work reported:
-
-```
-task map: task u1-orchestrator-seams mapped unknown symbol pending_escalations — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol _cmd_answer — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol EscalationResponse — dropped
-task map: task u1-orchestrator-seams mapped unknown symbol HumanAction — dropped
-task map: task u6-escalation-api mapped unknown symbol EscalationRequest — dropped
-task map: task u4-sse-endpoints mapped unknown symbol log_event — dropped
-```
-
-Every one of those symbols exists. `codegraph query pending_escalations` resolved it to
-`orchestrator/execution/escalation.py:135`, and an immediate re-run of the identical
-command dropped **nothing**. The codegraph daemon had been cold-starting its index
-*during* the first run.
-
-**Mechanism.** `CodegraphClient.symbol_exists` (`orchestrator/grouping/graphing.py:122`)
-is `any(entry.get("node", {}).get("name") == name for entry in self.query(name))`, and
-`CodegraphClient._run` (`graphing.py:157`) shells out to `codegraph` with **no
-readiness gate**. An index that is empty, mid-build, or unsynced returns no results —
-which is indistinguishable from a symbol that genuinely does not exist. The symbol is
-dropped with a flag and grouping proceeds on a weaker affinity signal.
-
-**Why it stays invisible.** On a greenfield plan the flag list is already dozens of lines
-of entirely expected `does not exist yet — retained as prospective` notices. Six real
-drops scroll past inside that wall. The command exits 0, writes `groups.json`, and the
-run proceeds — with silently worse groups than the plan author specified.
-
-**Aggravating factor.** These worktrees run with `CODEGRAPH_NO_WATCH=1` (visible in
-`.codegraph/daemon.log`), so the index does *not* auto-update on file change. It refreshes
-only on explicit `codegraph sync`. Any `group` run shortly after a merge, a branch switch,
-or a fresh worktree is therefore exposed.
-
-**Workaround until fixed.** Run `codegraph sync` before any `group` invocation, and treat
-an unexpected `mapped unknown symbol` flag as an index problem, not a plan problem.
-
-**Candidate fixes**, roughly in increasing order of cost:
-
-1. Gate `run_grouping` on `codegraph status` reporting a non-zero node count, and fail
-   loudly if the index is empty. Cheap, catches the fully-cold case, misses the partial one.
-2. Have `parse_task_map` treat "the plan named a symbol the index cannot see" as a
-   *warning that fails the run by default* (`--allow-unknown-symbols` to override). A plan
-   with a verified task map should be asserting the symbol exists; if it does not, either
-   the index is stale or the plan is wrong, and **both deserve a stop**.
-3. Separate "index says no" from "index cannot answer" at the `CodegraphClient` layer, so
-   the caller can distinguish absence from unavailability. Most correct, most invasive.
-
-(2) is probably the right default: it converts a silent quality regression into a loud,
-actionable one, and the escape hatch keeps foreign plans working.
+**Absorbed 2026-07-22:** D1, D5, D6, D7, D8, D9, D10, D11, D12 moved into the
+approved run-hardening requirements —
+`docs/brainstorms/2026-07-22-orchestrator-run-hardening-requirements.md` (R1–R26;
+verified mechanics preserved in its appendix). D5's absorption is the full harness:
+`--no-spec` (R18/R19), fixtures + properties (R20/R21), and the opt-in LLM
+scenarios (R26) — but *not* the acyclicity-as-invariant assertion, which needs
+D3/H1 behavior changes and stays with the study. What remains here is the grouping
+study only: D2/D3/D4 and the H1–H5 decision (H5 — repair cycles instead of
+raising — included), to be taken up by a dedicated session once the harness has
+landed.
 
 ______________________________________________________________________
 
 ## D2–D6 — Slice dissolution and group-DAG cycles
+
+> **Absorption note (2026-07-22):** within this study, D5 (the full harness:
+> `--no-spec` R18/R19, fixtures + properties R20/R21, opt-in LLM scenarios R26)
+> and D6 (the must-link doc correction, R22) are absorbed by the run-hardening
+> requirements. The D2/D3/D4 mechanisms and the H1–H5 decision below — including
+> H5's repair-instead-of-raise, which is a partitioner behavior change — remain
+> the open brief; the study text is kept whole for coherence.
 
 Everything below is the original slice-dissolution study, from writing the Observatory
 plan. That plan shipped and groups cleanly; this section is about what went wrong on the
@@ -286,6 +237,8 @@ cut the partitioner itself chose. It could back off the offending cut and re-spl
 elsewhere instead of failing the run. This is orthogonal to H1–H4 and may be worth doing
 regardless.
 
+b 
+
 My weak lean is H2 first (cheapest, and file-count inflation is clearly *a* real bug),
 then H1, with H5 as an independent robustness fix. But H3 deserves a genuine hearing —
 "the feature did nothing in 2/2 successful runs" is evidence, and I would rather delete a
@@ -391,7 +344,8 @@ on cross-stack plans, not a fluke.
 
 ### Observations
 
-- **D1 reproduced here** — see above. Found on this run's very first `group` invocation.
+- **D1 reproduced here** (cold codegraph index silently dropped six real symbols; absorbed
+  as run-hardening R13/R14). Found on this run's very first `group` invocation.
 - **The DAG is shared, not per-run (ADR 0002), and it bit immediately.** Running `group`
   for the Observatory plan overwrote `.orchestrator/groups.json`, which still described
   the earlier `smoke1` run. `smoke1` is the fixture U2 needs for its post-mortem tests, so
@@ -400,247 +354,26 @@ on cross-stack plans, not a fluke.
   confirms the ADR's premise with a concrete loss: **any run predating the snapshot feature
   has an unrecoverable DAG once a new `group` runs.**
 
-### D7 — `run.log` is far too sparse to be a live event log (High)
+### Absorbed findings (D7–D12) — moved to run-hardening requirements (2026-07-22)
 
-**Found mid-`obs1`, and it directly undermines the Observatory being built by this very
-run.**
+Full write-ups, verified mechanics, and fix decisions now live in
+`docs/brainstorms/2026-07-22-orchestrator-run-hardening-requirements.md`.
+One-line record of what this run surfaced:
 
-After **18 minutes** of g1 executing — a coder session that had already committed U1 and
-was midway through U2 — `runs/obs1/logs/run.log` contained exactly **one line**:
-
-```
-2026-07-21T14:25:57+00:00  run obs1 started with HITL: intensity=on_stuck, source=…
-```
-
-There are only **six `log_event` call sites in the entire orchestrator**
-(`escalation.py` ×3, `cli.py` ×2, `review.py` ×1). Over a group's whole lifetime the log
-receives roughly four lines:
-
-```
-group <gid> generation <n>: coder launched     review.py:188
-group <gid>: completed                          review.py:166
-group <gid>: merged into the integration branch review.py:330
-ESCALATION <id> …                               escalation.py (only if one fires)
-```
-
-Nothing is logged for: round starts and ends, reviewer verdicts, `changes_required`
-cycles, breaker respawns, worktree creation, merge attempts, test runs, or any coder
-activity whatsoever. The long pole — a coder session that can run for tens of minutes —
-is completely silent.
-
-**Consequence for the Observatory.** U5's requirement is *"`EventLog` renders lines from
-`/events/log` in arrival order and appends new lines as they stream, keeping the view
-pinned to the newest line."* It will do exactly that, correctly, against a stream that
-emits ~4 events per group. **The live board will look frozen for 20+ minutes at a time**,
-which is precisely the experience R18's live-HITL gate is supposed to validate. The
-front-end groups will build and verify a component whose backing data is too thin for it
-to be useful — and no unit's verification will catch that, because every unit's criteria
-are met.
-
-**Second, worse wrinkle: the log's content depends on the run mode.** `_log`
-(`review.py:539`) is:
-
-```python
-def _log(self, text: str) -> None:
-    """Append to the run's event log — only when HITL is wired, so autonomous
-    runs create no new artifacts."""
-    if self.deps.broker is not None:
-        log_event(self.deps.store.paths, text)
-```
-
-So in an **autonomous** run the review loop logs *nothing* — the event log holds a single
-run-start line, forever. The Observatory therefore renders materially different data for
-the same work depending on a flag the viewer cannot see. `obs1` only has any group events
-at all because it was launched `--hitl`.
-
-**Fix direction.** Decouple event logging from the escalation broker — the "autonomous
-runs create no new artifacts" rationale is thin, since the run directory is already being
-written continuously — and add call sites for round boundaries, verdicts, respawns, and
-merges. This is orchestrator work, not Observatory work: the SSE endpoint and the UI
-component are both correct as specified, and neither can compensate for events that were
-never emitted.
-
-**Open question for the operator:** whether to widen `obs1`'s scope to fix this now (it
-would mean a new unit and re-grouping mid-run) or ship the Observatory against the sparse
-log and fix the emitter afterwards. Deferred — not a decision to make unilaterally
-mid-run.
-
-### D8 — The round timeout is unrelated to the group size the partitioner chose (High)
-
-**`obs1`'s g1 was killed by a 900s round timeout while healthy and making committed
-progress.** Final state:
-
-```
-g1: failed — RoundTimeout: round exceeded 900.0s (--session-id 72d01831-…)
-```
-
-Nothing was wrong with the work. In those 15 minutes the coder had committed **four of its
-six units** — U1 seams, U2 app core, U6 escalation API, U8 transcript API — 952 lines of
-source and 878 of tests, and was mid-way through U4 when the axe fell.
-
-The defect is that **two independent knobs decide whether a group can possibly succeed,
-and nothing reconciles them**:
-
-- `estimator.token_budget` (100k) sizes groups. It gave g1 six units, 87.7k tokens, 28
-  verification items, and a `paired_plus` review tier.
-- `session.timeout_s` caps a **single round**. Here it was 900s.
-
-A group large enough to be classified `paired_plus` is essentially guaranteed to need more
-than one 15-minute round, but the partitioner has no idea the timeout exists. The failure
-mode is silent until it fires, and then it discards a mostly-successful session.
-
-**Fix direction.** At minimum, `group` should warn when a group's estimated tokens imply a
-round longer than `session.timeout_s`. Better: make the timeout scale with estimated group
-work, or make a round timeout a *checkpoint* rather than a fatal error — the coder commits
-as it goes, so a timed-out round has usually banked real progress.
-
-### D9 — A timed-out group is terminally failed despite committed work (High)
-
-Related to D8 but separately fixable. `failed` is terminal: per `orchestrator/README.md`,
-recovering means hand-editing `state.json` back to `"ready"` before `resume`. That is
-manual surgery on a state file the orchestrator otherwise owns exclusively.
-
-It is the wrong default here because **the worktree survives with every commit intact**.
-`resume` could observe that the group's branch has advanced and re-enter it as a new
-generation rather than requiring the operator to know the file format. As shipped, the
-orchestrator throws away a recoverable situation and asks a human to repair it by hand.
-
-**This is not a rare edge — it is the common case.** The Claude subscription usage limit
-(the 5-hour session cap) will be hit mid-run routinely on any real plan. When it is, the
-`claude -p` worker fails at the envelope level, the scheduler records the group as
-`FAILED`, and — because `FAILED` is terminal (`scheduler.py:177` only resets non-terminal,
-non-pending groups to `READY` on resume) — a plain `resume` will **not** pick that group
-back up. Every usage-limit interruption therefore currently requires hand-editing
-`state.json`. Since the interruption is expected to recur often, `resume` should treat a
-group whose branch has commits ahead of its fork point as re-enterable by default, and
-should special-case a usage-limit envelope error distinctly from a genuine work failure.
-
-**Verified resume mechanics (so the fix preserves them):**
-
-- The **base session** (shared context) is reused on resume, not recompiled — `_cmd_run`
-  reads `base_session_id` from the manifest (`cli.py:374`).
-- The per-group **worktree and its branch are reused**, not recreated — `create_worktree`
-  is called with the group's existing branch, and the diff base becomes its original
-  fork-point merge-base (`cli.py:459` docstring). So committed work is never lost on resume.
-- A re-entered group starts a **fresh coder generation forked from base**, which re-orients
-  itself from the git state of the worktree (where prior units are already committed)
-  rather than from the timed-out session's conversation. Within a generation, rounds
-  resume the same coder session (`review.py:240`); only a new generation forks fresh.
-- The **new `session.timeout_s` is picked up on resume** — the `SessionRunner` is rebuilt
-  from config on every `run`/`resume` invocation (`cli.py:328`), so bumping the timeout and
-  resuming takes effect immediately.
-
-**Second interruption on the same run refines the fix (g2, 2026-07-21).** After g1
-completed and merged, g2's coder failed with `SessionError: claude exited 1` and an *empty*
-stderr — a `<synthetic>` stop with zero token usage in its transcript, the CLI's signature
-for an aborted API call (a transient usage-limit blip; a liveness probe minutes later
-succeeded). Two lessons:
-
-1. **It failed before its first commit.** g2 had created `types.ts`, `api.ts`,
-   `useRunStream.ts` and staged `sample-run.ts`'s deletion, but committed nothing. That WIP
-   survived only because `create_worktree` returns an existing on-branch worktree **as-is**
-   (`worktrees.py:77`) — no checkout, no clean. So the "re-enter groups whose *branch has
-   commits* ahead" heuristic I proposed above **would have missed g2**. The condition must
-   be broader: re-enter a failed group if its **worktree is dirty OR its branch is ahead of
-   its fork point** — any preserved progress, committed or not.
-2. **Transient envelope failures are categorically different from work failures.** A
-   `SessionError` / `RoundTimeout` is the *harness* failing (API blip, timeout), not the
-   coder deciding it cannot proceed (a `skip`/`abort` verdict, a genuine block). The former
-   should auto-resume by default; only the latter should stay terminal. Distinguishing the
-   two at the point the group is marked `FAILED` — an envelope-error flag on the state
-   entry — would let `resume` do the right thing without the operator classifying it by
-   hand. Recording the failure string as it does today is not enough; `claude exited 1` and
-   `reviewer returned abort` both land as `failed`.
-
-Across this one run the usage/timeout interruption fired **twice in ~40 minutes** (g1
-timeout, g2 envelope error), each needing a manual `state.json` edit. That cadence is the
-argument for making D9 automatic.
-
-### D10 — A unit that adds a dependency cannot install it (Medium)
-
-U1's job included adding `fastapi` to `pyproject.toml`, and it did. But the venv lives at
-`<repo>/.venv` — **outside** the per-group worktree — and belongs to the parent checkout,
-whose `pyproject.toml` does not have the new dependency. So:
-
-- The coder could not `uv sync` its own new dependency into a usable environment.
-- Every later unit in the same group (U2/U4/U6/U8, all of which `import fastapi`) wrote
-  code and tests it could not execute.
-- Verification item `[g1-ui-subcommand-and-dep]` requires `uv run python -c "import fastapi"` to succeed — **unsatisfiable from inside the worktree**.
-
-Confirmed by running g1's suite after the fact: it collapsed at import with
-`ModuleNotFoundError: No module named 'fastapi'` until `uv pip install fastapi` was run
-manually against the shared venv. After that, **328 passed, 1 failed**.
-
-**Fix direction.** Either give each group worktree its own environment, or have the
-orchestrator run `uv sync` in the worktree after the coder reports, or declare dependency
-changes out of scope for workers and hoist them to a pre-run step. Any of the three; the
-current arrangement quietly makes a whole class of unit unverifiable.
-
-### D11 — Verification items that introspect framework internals are fragile (Low)
-
-The one genuine test failure in g1's suite is **a test bug, not a product bug**, and it is
-instructive. `test_the_four_slice_routers_are_included` walks `app.routes` looking for
-each slice router's paths, via a helper that recurses through `.routes`:
-
-```python
-nested = getattr(route, "routes", None)
-if nested:
-    paths |= route_paths(nested)
-```
-
-That is thoughtful code — the coder anticipated wrapper objects. But FastAPI 0.139.2 wraps
-an included router in `_IncludedRouter`, which exposes `original_router`, **not** `routes`.
-The helper cannot see through it, so the assertion fails even though every route is live:
-the OpenAPI schema lists all nine endpoints, and `/api/projects` answers 200.
-
-Root cause is the plan pinning `fastapi>=0.115` and resolving to 0.139.2, whose internals
-differ. The lesson for plan authors: a verification item phrased as *"the router is
-registered on the app object"* invites introspection of private framework structure. The
-same requirement expressed behaviourally — *"`GET /openapi.json` lists these paths"* — is
-both stronger and version-proof.
-
-### D12 — Orchestrator CLI changes made by a worker never reach the installed console script (High)
-
-**The venv's `smart-mcps-orchestrate` console script is an *editable install pinned to the
-main checkout's source tree*, so any change a worker makes to `orchestrator/` inside its
-group worktree is invisible to the running orchestrator.** The orchestrator drives itself
-with stale code for the entire run.
-
-Two concrete bites on `obs1`, both from the same cause:
-
-1. **The `ui` subcommand U1 added does not exist on the console script.**
-   `smart-mcps-orchestrate ui --help` errors with `invalid choice: 'ui'`, because the
-   installed entry point resolves `orchestrator.cli` from the *main checkout*
-   (`test/orchestrator-frontend`, still at the pre-Observatory commit), not from the
-   integration worktree that has U1's code. The subcommand is genuinely present and correct
-   — `PYTHONPATH=<worktree> python -m orchestrator.cli ui --help` works and lists
-   `--registry`, `--port`, `--repo` — but you cannot reach it the documented way until the
-   branch is merged back and the package reinstalled.
-
-2. **`obs1` never wrote its own per-run DAG snapshot.** U1's headline feature is
-   `_cmd_run` copying `groups.json` into `runs/<id>/groups.json` at run start (ADR 0002).
-   But `obs1` was *launched* with the same stale console script, whose `_cmd_run` predates
-   U1. So `runs/obs1/groups.json` was never created, and when the finished Observatory is
-   pointed at its own creation run it reports **`stale_dag: true`** and falls back to the
-   shared DAG. The run that built the snapshot feature could not use it. (The fallback
-   itself works perfectly — a `smoke1` run with a hand-placed `runs/smoke1/groups.json`
-   returns `stale_dag: false` — so this is purely the staleness, not a snapshot bug.)
-
-This is structural to how the orchestrator bootstraps: it runs from an installed console
-script while its workers edit source in isolated worktrees that are never on the running
-interpreter's path. Any self-referential change — a new subcommand, a change to `_cmd_run`,
-`answer_escalation`, the scheduler — only takes effect after merge-and-reinstall, i.e. on
-the *next* run, never the one that made it. Tests pass because they import
-`orchestrator.*` from the worktree source directly; only the live-driven behaviour is
-stale.
-
-**Fix direction.** The orchestrator should run workers against, and ideally drive itself
-from, the code under test — e.g. reinstall (`uv pip install -e`) the integration branch
-before consuming its CLI changes, or invoke `python -m orchestrator.cli` resolved to the
-integration worktree rather than a fixed console script. At minimum, document that
-orchestrator-self-modifying units only take effect on the following run, so a plan that
-changes `_cmd_run` and expects the same run to exercise the change (as this one did) is
-mis-sequenced.
+- **D7** — `run.log` emitted ~4 lines per group and nothing at all in autonomous
+  mode (`_log` gated on the HITL broker) → always-on lifecycle log, R10–R12.
+- **D8** — a 900s round timeout killed a healthy g1 four units in → the round
+  timeout is removed entirely, R7 (decision: no replacement, no watchdog).
+- **D9** — envelope failures (timeout, `claude exited 1`/empty stderr) landed as
+  terminal `failed`, needing manual `state.json` surgery twice in ~40 min →
+  `INTERRUPTED` state + resume-first re-entry, R1–R6, R9.
+- **D10** — the venv lives outside the worktree; dependency-adding units were
+  unverifiable → per-worktree venv, R16–R17.
+- **D11** — a verification item introspecting FastAPI internals failed while the
+  behaviour was correct → behavioural-phrasing guidance, R23.
+- **D12** — the orchestrator drives itself from a stale editable install; `obs1`
+  could not use its own snapshot feature → docs + plan-time warning, R15/R24
+  (worker-side half fixed by R16's per-worktree venv).
 
 ### Correction to this run's recorded setup
 
@@ -654,8 +387,9 @@ never surfaced at all.
 ### Config change applied after `obs1` (2026-07-22)
 
 In response to D8, the target repo's `.orchestrator/config.toml` sets
-`session.timeout_s = 7200.0` (2h/round) as a stopgap until D8's root fix (timeout that
-scales with group work) lands. The operator flagged it as temporary.
+`session.timeout_s = 7200.0` (2h/round) as a stopgap. Superseded by D8's decided
+resolution (2026-07-22): the round timeout is removed entirely (run-hardening R7),
+at which point this key becomes a no-op and draws a deprecation warning.
 
 `estimator.token_budget` was **left at the default 100k**. It was briefly bumped to 200k
 and reverted once the two budgets below were disentangled — 200k is the wrong lever for the
