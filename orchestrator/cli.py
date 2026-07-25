@@ -52,6 +52,7 @@ from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
 from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
+    SELF_MODIFICATION_FLAG,
     GrouperError,
     PartitionOutcome,
     compute_partition,
@@ -59,6 +60,7 @@ from orchestrator.grouping.pipeline import (
     run_grouping,
     serialize_grouping,
 )
+from orchestrator.grouping.plan_reader import strip_task_map
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.model import (
     EscalationResponse,
@@ -97,6 +99,14 @@ def main(
             "print the partition-only report (groups, DAG, node work, budget cap, "
             "hub roles, slice atoms, last-modifying stage) with zero LLM calls; "
             "never writes artifacts"
+        ),
+    )
+    group_cmd.add_argument(
+        "--allow-unknown-symbols",
+        action="store_true",
+        help=(
+            "task-map symbols not found in the codegraph index are dropped with a "
+            "flag instead of failing the run (default: hard error)"
         ),
     )
     _add_common_args(group_cmd)
@@ -243,6 +253,7 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+    allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
 
     if getattr(args, "no_spec", False):
         try:
@@ -252,10 +263,12 @@ def _cmd_group(
                 config=config,
                 llm_runner=llm_runner,
                 client=client,
+                allow_unknown_symbols=allow_unknown_symbols,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(outcome)
         return 0
 
@@ -266,10 +279,12 @@ def _cmd_group(
             config=config,
             llm_runner=llm_runner,
             client=client,
+            allow_unknown_symbols=allow_unknown_symbols,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    _warn_self_modification(result.flags)
 
     if args.dry_run:
         _print_report(result)
@@ -282,6 +297,13 @@ def _cmd_group(
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _warn_self_modification(flags: list[str]) -> None:
+    """R15: echo the self-modification flag to stderr at grouping time, so a plan
+    that edits orchestrator/ is caught before the run starts, not mid-run."""
+    if SELF_MODIFICATION_FLAG in flags:
+        print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
 
 
 def _print_partition_report(outcome: PartitionOutcome) -> None:
@@ -379,7 +401,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             file=sys.stderr,
         )
         return 1
-    plan_text = plan_path.read_text()
+    # Stripped before it ever reaches an LLM context (R27) — the rewrite provider
+    # is the only consumer of plan_text in this command.
+    plan_text = strip_task_map(plan_path.read_text())
 
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)

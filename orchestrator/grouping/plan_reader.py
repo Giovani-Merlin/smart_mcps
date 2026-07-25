@@ -28,6 +28,10 @@ _BLOCK = re.compile(
     re.DOTALL,
 )
 _ANY_VERSION = re.compile(r"```ya?ml[ \t]*\n[ \t]*#[ \t]*orchestrator-task-map v(\d+)")
+# A "## Task Map" heading directly preceding the block (only blank lines in
+# between) is part of the strip span too — matched against the text *before*
+# the block, anchored to end exactly where the block begins.
+_PRECEDING_HEADING = re.compile(r"(?:(?<=\n)|\A)[ \t]*## Task Map[ \t]*\n(?:[ \t]*\n)*\Z")
 
 _LIST_FIELDS = ("files", "symbols", "depends_on", "implements", "consumes")
 _KNOWN_KEYS = {"task_id", "description", "slice", *_LIST_FIELDS}
@@ -37,13 +41,21 @@ class TaskMapError(Exception):
     """The plan's task-map block is present but malformed (hard error, no fallback)."""
 
 
-def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | None:
+def parse_task_map(
+    plan_text: str,
+    client: CodegraphClient,
+    allow_unknown_symbols: bool = False,
+) -> MapperOutput | None:
     """Parse the plan's task-map block into verified mappings, or ``None`` if absent.
 
-    Validation mirrors the mapper's codegraph verification: unknown symbols are
-    dropped with a flag; files that don't exist yet are retained as prospective
-    files with an info flag. Structural problems (bad YAML, duplicate ids, bad
-    ``depends_on``, oversized slices, unknown keys) raise ``TaskMapError``.
+    Files that don't exist yet are retained as prospective files with an info
+    flag. Unknown symbols are a hard error by default (R14): the map's ``symbols:``
+    field has no prospective notation, so every listed symbol is a claim that it
+    exists — unlike the mapper LLM's guesses, a false claim should stop the run,
+    not get silently dropped. ``allow_unknown_symbols=True`` restores the old
+    mirror-the-mapper behaviour (drop with a flag). Structural problems (bad
+    YAML, duplicate ids, bad ``depends_on``, oversized slices, unknown keys)
+    always raise ``TaskMapError``.
     """
     blocks = _BLOCK.findall(plan_text)
     if not blocks:
@@ -83,8 +95,13 @@ def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | No
         for symbol in _dedupe(entry.get("symbols") or []):
             if client.symbol_exists(symbol):
                 symbols.append(symbol)
-            else:
+            elif allow_unknown_symbols:
                 flags.append(f"task map: task {task_id} mapped unknown symbol {symbol} — dropped")
+            else:
+                raise TaskMapError(
+                    f"task {task_id} mapped unknown symbol {symbol!r} — not found in the "
+                    "codegraph index (pass --allow-unknown-symbols to drop it instead)"
+                )
         mappings.append(
             TaskMapping(
                 task_id,
@@ -98,6 +115,26 @@ def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | No
             )
         )
     return MapperOutput(mappings=mappings, descriptions=descriptions, flags=flags)
+
+
+def strip_task_map(plan_text: str) -> str:
+    """Strip the marked task-map block (plus a directly preceding ``## Task Map``
+    heading) out of plan text bound for an LLM context (R27).
+
+    The map is this parser's input, not worker/speccer/rewrite context — every
+    LLM-facing consumer of the plan text calls this first. Text without a marked
+    block passes through unchanged; only the first marker-located block (there is
+    at most one in a valid plan — ``parse_task_map`` rejects more) is removed,
+    using the same detection this module's parser uses.
+    """
+    match = _BLOCK.search(plan_text)
+    if not match:
+        return plan_text
+    start = match.start()
+    heading_match = _PRECEDING_HEADING.search(plan_text[:start])
+    if heading_match:
+        start = heading_match.start()
+    return plan_text[:start] + plan_text[match.end() :]
 
 
 def _validate_shape(payload: object) -> list[dict]:

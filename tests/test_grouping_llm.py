@@ -29,6 +29,8 @@ GREENFIELD_NO_TASK_MAP_PLAN = """# feat: checkout service
 
 
 def stub_codegraph_runner(args):
+    if args[0] == "sync":
+        return ""
     if args[0] == "files":
         return "stub repo (llm test — codegraph itself stays stubbed)\n"
     raise AssertionError(f"unexpected codegraph call: {args}")

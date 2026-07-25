@@ -25,8 +25,11 @@ def _llm_must_not_be_called(prompt, schema):
 
 def stub_codegraph_runner(args):
     """Zero real codegraph: every fixture plan declares no `symbols`, so the
-    only call the pipeline ever issues is `codegraph files` for the base
-    context. Anything else means a fixture accidentally started using symbols."""
+    only calls the pipeline ever issues are `codegraph sync` (R13) and
+    `codegraph files` for the base context. Anything else means a fixture
+    accidentally started using symbols."""
+    if args[0] == "sync":
+        return ""
     if args[0] == "files":
         return "stub repo (fixture test — no queries expected)\n"
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
