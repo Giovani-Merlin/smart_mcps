@@ -182,6 +182,11 @@ def main() -> int:
                     "ts_start": started,
                     "ts_end": time.time(),
                     "exit_code": code,
+                    # The env slice the U6 scrub tests assert on: workers must
+                    # never inherit the orchestrator's VIRTUAL_ENV / its PATH.
+                    "env": {
+                        key: os.environ[key] for key in ("VIRTUAL_ENV", "PATH") if key in os.environ
+                    },
                 },
             )
             return code

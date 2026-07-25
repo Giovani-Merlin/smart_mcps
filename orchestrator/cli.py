@@ -47,6 +47,7 @@ from orchestrator.execution.worktrees import (
     _git_ok,
     create_worktree,
     group_branch,
+    provision_env,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
@@ -421,10 +422,27 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         return 1
 
+    # R8: the effective execution config prints before any session spawns —
+    # obs1's operator trap was a config file silently beating flag expectations,
+    # discovered only after the base session was already paid for.
+    mode = (
+        "sequential"
+        if config.execution.sequential
+        else f"concurrency {config.execution.concurrency}"
+    )
+    hitl = (
+        f"HITL on (intensity={config.escalation.intensity}, source={config.escalation.source})"
+        if config.escalation.enabled
+        else "HITL off"
+    )
+    print(
+        f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
+        f"permission-mode {config.execution.permission_mode}"
+    )
+
     session = config.session
     runner = SessionRunner(
         claude_bin=session.claude_bin,
-        timeout_s=session.timeout_s,
         model=session.model,
         permission_mode=config.execution.permission_mode,
         allowed_tools=session.allowed_tools or None,
@@ -508,7 +526,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         policy = None
         log_event(paths, f"run {run_id} started (autonomous)")
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger)
+    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -529,11 +547,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     )
     executor_slot.append(make_executor(deps))
 
-    print(
-        f"run {run_id}: {len(groups)} group(s), concurrency "
-        f"{1 if config.execution.sequential else config.execution.concurrency}"
-        + (f", HITL={config.escalation.intensity}" if config.escalation.enabled else "")
-    )
     try:
         asyncio.run(scheduler.run())
     except RunAbort as exc:
@@ -556,7 +569,7 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
-def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
+def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, paths: RunPaths):
     """The workspace_for / base_ref_for pair, sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
@@ -573,6 +586,9 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger):
         path = create_worktree(
             repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
         )
+        # U6/R16: the worktree owns its environment — provision after creation,
+        # non-fatally (a failed sync logs and lets the worker re-sync itself).
+        provision_env(path, log=lambda message: log_event(paths, message))
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 

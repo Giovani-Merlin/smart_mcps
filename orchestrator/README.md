@@ -104,7 +104,6 @@ token_budget = 100000         # per-group budget for partitioning (--token-budge
 
 [session]
 claude_bin = "claude"         # or a list, e.g. ["python", "tests/fake_claude.py"]
-timeout_s = 1800.0            # per-round subprocess timeout
 model = ""                    # optional --model for worker sessions
 allowed_tools = []            # optional --allowedTools list
 transcript_root = ""          # default: ~/.claude/projects

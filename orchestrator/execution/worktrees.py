@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -88,6 +90,40 @@ def create_worktree(
     else:
         _git_ok(repo_root, "worktree", "add", "-b", branch, str(path), start_point)
     return path
+
+
+def provision_env(
+    worktree: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Provision the worktree's own venv via ``uv sync`` (plan U6, R16).
+
+    Runs only when the worktree root carries ``pyproject.toml`` or ``uv.lock``
+    (a uv-managed checkout); anything else is skipped silently. A failing sync
+    is non-fatal — the worker can re-sync per its guidance, so a fixable env
+    hiccup must never kill the group: log the lifecycle event, warn on stderr,
+    move on. ``runner`` is the injectable subprocess seam for offline tests.
+    """
+    if not (worktree / "pyproject.toml").is_file() and not (worktree / "uv.lock").is_file():
+        return False
+    run = runner or subprocess.run
+    try:
+        result = run(["uv", "sync"], cwd=worktree, capture_output=True, text=True)
+    except OSError as exc:  # uv missing entirely — same non-fatal contract
+        _report_sync_failure(f"uv sync failed in {worktree}: {exc}", log)
+        return False
+    if result.returncode != 0:
+        _report_sync_failure(f"uv sync failed in {worktree}: {result.stderr.strip()[:500]}", log)
+        return False
+    return True
+
+
+def _report_sync_failure(message: str, log: Callable[[str], None] | None) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+    if log is not None:
+        log(message)
 
 
 def is_dirty(worktree: Path) -> bool:
