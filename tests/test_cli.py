@@ -47,14 +47,17 @@ def make_group(gid: str = "g1", **overrides) -> Group:
     return Group(**defaults)
 
 
-def write_run_artifacts(repo: Path, groups: list[Group] | None = None) -> None:
-    """The artifacts `group` leaves behind, which `run`/`resume` consume."""
-    orch = repo / ".orchestrator"
-    orch.mkdir(parents=True, exist_ok=True)
+def write_run_artifacts(repo: Path, groups: list[Group] | None = None, name: str = "plan") -> None:
+    """The named-grouping-directory artifacts `group` leaves behind (plan U10),
+    which `run`/`resume` consume. ``name="plan"`` mirrors the real CLI default
+    (the plan filename stem), so tests relying on auto-selection of the sole
+    grouping keep working unchanged."""
+    grouping_dir = repo / ".orchestrator" / "groupings" / name
+    grouping_dir.mkdir(parents=True, exist_ok=True)
     (repo / "plan.md").write_text("# toy plan\n\n- T1: do the thing\n")
     result = GroupingResult(plan_path="plan.md", groups=groups or [make_group()])
-    (orch / "groups.json").write_text(serialize_grouping(result))
-    (orch / "base-context.md").write_text("shared base context\n")
+    (grouping_dir / "groups.json").write_text(serialize_grouping(result))
+    (grouping_dir / "base-context.md").write_text("shared base context\n")
 
 
 class TestPrecedence:

@@ -163,7 +163,9 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+    )
     gids = [group["id"] for group in grouping["groups"]]
     assert gids  # the toy plan produced at least one group
 
@@ -264,7 +266,9 @@ def test_group_cli_premapped_greenfield_plan_skips_mapper_and_orders_groups(repo
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "greenfield-plan" / "groups.json").read_text()
+    )
 
     # the flags record the deterministic fast path and the prospective files
     assert any("mapper LLM skipped" in flag for flag in grouping["flags"])
