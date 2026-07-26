@@ -1,7 +1,9 @@
 # How grouping works
 
-How `smart-mcps-orchestrate group <plan>` turns a plan document into
-`groups.json` — the DAG of execution groups the `run` command later drives.
+How `smart-mcps-orchestrate group <plan>` turns a plan document into a named
+grouping — `.orchestrator/groupings/<name>/`, holding `groups.json` (the DAG of
+execution groups `run` later drives), `base-context.md`, and
+`grouping-trace.json` (see [Output](#output)).
 
 **At most two LLM calls, everything else deterministic.** The LLM sits only at
 the two *edges* (mapper in, speccer out); the whole middle — graph building,
@@ -45,7 +47,7 @@ flowchart TD
 
     subgraph DET["⚙️ deterministic core (no LLM)"]
         partition["DefaultPartitionStrategy.partition()<br/>hub → slice contraction → Louvain<br/>→ lift → split → merge"]
-        partition --> dag["build_group_dag()<br/>group DAG + cycle check"]
+        partition --> dag["build_group_dag()<br/>group DAG + cycle repair"]
         dag --> est["estimator + difficulty<br/>→ review intensity"]
     end
 
@@ -55,7 +57,7 @@ flowchart TD
         speccer["write_specs()<br/>name/summary/spec/verification<br/>per group (never moves tasks)"]
     end
 
-    speccer --> out["groups.json<br/>+ base-context.md"]
+    speccer --> out["groupings/&lt;name&gt;/<br/>groups.json + base-context.md<br/>+ grouping-trace.json"]
 ```
 
 The sequence in code ([`pipeline.py:54`](../orchestrator/grouping/pipeline.py)):
@@ -253,45 +255,61 @@ CoCoder (Apache-2.0), behind a swappable `PartitionStrategy` interface (R22):
 ```mermaid
 flowchart TD
     A["detect_hub_roles()<br/>utility_hub / aggregator_hub / core"] --> S
-    S["_slice_atoms() → _contract_slices()<br/>each slice's CORE members become<br/>one supernode (hubs never absorbed)"] --> B
+    S["_slice_atoms() → _contract_slices()<br/>EVERY declared member joins its atom,<br/>regardless of hub role (hub isolation<br/>still applies to slice-less tasks)"] --> B
     B["_hub_isolated_clustering()<br/>Louvain communities on the CORE<br/>(seeded, resolution-tuned,<br/>slice self-loops preserved)"] --> C
     C["lift_independent()<br/>split siblings that only depend<br/>on internal hubs (unit-level)"] --> X
     X["expand slice supernodes<br/>back to their member tasks"] --> D
-    D["split_over_budget()<br/>break groups over the token cap<br/>at their lowest-affinity boundary<br/>(may break an oversized slice)"] --> E
-    E["merge_small_groups()<br/>merge tiny groups (dep-safe,<br/>makespan no-regression)"] --> F
-    F["_renumber() → build_group_dag()<br/>contiguous ids; cycle = loud failure"]
+    D["split_over_budget()<br/>cuts between whole blocks (a slice<br/>or a lone node) — never inside a slice"] --> E
+    E["merge_small_groups()<br/>merge tiny groups (dep-safe,<br/>acyclic, makespan no-regression)"] --> F
+    F["build_group_dag()<br/>cycle → merge the cyclic SCC,<br/>dependency-safe re-split, retry"] --> R
+    R["_renumber()<br/>contiguous ids;<br/>surviving cycle = orchestrator bug"]
 ```
 
-**Slice contraction** (task-map must-links): after hub roles are fixed, each
-slice's core members contract into a `slice::<label>` supernode — sorted
-iteration, parallel edge weights summed, intra-slice affinity kept as a Louvain
-self-loop (Rey et al. 2022: contracted-graph modularity ≡ constraint-respecting
-original modularity). Clustering and sibling-lifting run at unit level, then
-membership expands. The must-link is hard through clustering but soft after:
-`split_over_budget` may still break an oversized slice at its weakest internal
-edges, and `merge_small_groups` may combine small ones. A slice-induced group
-cycle fails loudly at DAG build, naming the offending task edges — the plan
-skill's verifier requires inter-slice `depends_on` acyclicity up front.
+**Slice contraction** (task-map must-links): after hub roles are computed, every
+declared slice member — core or hub — contracts into one `slice::<label>`
+supernode; a declared slice outranks an inferred hub role, so hub isolation only
+ever removes slice-*less* tasks (sorted iteration, parallel edge weights summed,
+intra-slice affinity kept as a Louvain self-loop; Rey et al. 2022:
+contracted-graph modularity ≡ constraint-respecting original modularity).
+Clustering and sibling-lifting run at unit level, then membership expands. From
+here the must-link is a **hard output invariant, not just a clustering-time
+one**: `split_over_budget` computes its cut candidates between whole blocks (a
+slice or a lone node), never inside a slice, and `merge_small_groups` rejects
+any candidate merge that would create a group-level cycle alongside its
+existing budget/chain/makespan guards. A slice whose own summed work exceeds
+the cap is a named `GrouperError` (or, with `--allow-oversized-slice`, one
+flagged group) — never a silent split; see
+[`docs/orchestrator-task-map.md`](orchestrator-task-map.md). A group-DAG cycle
+that survives merge-time prevention (it can still originate at Louvain/lift/
+split) is repaired at `build_group_dag`: the cyclic SCC is merged deterministically,
+then a dependency-safe re-split brings it back inside the cap without
+reintroducing a cycle. Acyclicity is now an internal invariant — a
+`GroupCycleError` that still escapes is an orchestrator bug, not an expected
+outcome — and the plan skill's verifier still requires inter-slice `depends_on`
+acyclicity up front, since prevention is cheaper than repair.
 
 - **Hub roles** ([`partition.py:171`](../orchestrator/grouping/partition.py)):
   degree-thresholded — a node most others depend on (`utility_hub`) is isolated as
   its own group; a node depending on most others (`aggregator_hub`) trails in one
-  shared group; the rest are `core`.
+  shared group; the rest are `core`. Applies only to tasks carrying no slice label.
 - **Louvain** ([`partition.py:201`](../orchestrator/grouping/partition.py)):
   `networkx` directed Louvain over the affinity weights, **seeded** (`LOUVAIN_SEED = 42`) with deterministic community numbering → stable across runs.
 - **lift / split / merge** ([`partition.py:261/328/462`](../orchestrator/grouping/partition.py)):
   peel off independent siblings, split any group whose summed **token work**
-  exceeds the budget cap ([estimator hook](#estimator--difficulty--review-tier)),
-  merge undersized groups without creating a dependency cycle or regressing
-  makespan.
+  exceeds the budget cap ([estimator hook](#estimator--difficulty--review-tier))
+  at a block boundary (never inside a slice), merge undersized groups without
+  creating a dependency cycle or regressing makespan.
 - **DAG + cycle check** ([`build_group_dag()` `partition.py:91`](../orchestrator/grouping/partition.py)):
-  lifts task dependencies to group-level edges; a cycle raises `GroupCycleError`
-  naming the offending task edges (CoCoder silently wedged here — we fail loudly).
+  lifts task dependencies to group-level edges; a cycle triggers SCC-merge +
+  dependency-safe re-split repair before it would ever reach the operator as
+  `GroupCycleError` (CoCoder silently wedged here — we fail loudly only if
+  repair itself cannot produce an acyclic result).
 
 > **What the partition optimizes: affinity modularity + a token budget + makespan
-> no-regression. What it does _not_ model: testability, vertical slices, or
-> cross-stack cohesion.** A group is "a cluster of tightly-coupled code," not "an
-> independently-shippable/testable unit." See [Known limitations](#known-limitations).
+> no-regression, subject to the slice must-link as a hard constraint.** Grouping
+> is not choosing "independently-shippable/testable units" from first principles —
+> it is affinity-clustering everything the plan didn't explicitly bind together,
+> and never splitting what it did. See [Known limitations](#known-limitations).
 
 ______________________________________________________________________
 
@@ -316,6 +334,41 @@ return PAIRED_PLUS                                      # + mandatory extra pass
 
 Thresholds/weights all live in [`DifficultyConfig`](../orchestrator/config.py)
 (`config.py:45`).
+
+### The pricing sweep — recorded evidence that pricing isn't the slice-integrity lever
+
+It is tempting to read slice dissolution as a pricing bug: greenfield
+`node_work` is almost pure file-count (`per_file_tool_allowance` × file count,
+since prospective files carry 0 source bytes), so a `tsconfig.json` costs the
+same as a 400-line module, and a cheaper rate looks like it should let more
+slices fit. Sweeping `per_file_tool_allowance` over `2000 → 100` through the
+partition-only path (`group --no-spec`) on both real plans in this repo falsifies
+that:
+
+| `per_file_tool_allowance` | observatory (greenfield, ~50 prospective files) | run-hardening (brownfield, real files) |
+| ------------------------- | ----------------------------------------------- | -------------------------------------- |
+| 2000 (default)            | 2 of 3 slices split, cycles                     | both slices intact                     |
+| 1000                      | split, cycles                                   | **1 slice split**                      |
+| 600                       | split, cycles                                   | split                                  |
+| 400                       | split, cycles                                   | split                                  |
+
+Lowering the rate never restores a slice on the plan where slices were already
+dissolving, and it **dissolves a slice that had survived** on the
+brownfield plan — cheaper nodes let `merge_small_groups` build larger clusters,
+which then exceed the budget cap and get cut. (The same sweep against the six
+grouping fixtures shows every cycling fixture still cycling at every value down
+to 100 — pricing does not touch the merge-time cycle mechanism either.) Pricing
+is real — a flat rate that charges `tsconfig.json` like a 400-line module is
+dishonest in both directions — but it buys **precision, not integrity**: see
+`size_hints` in [`docs/orchestrator-task-map.md`](orchestrator-task-map.md) for
+the fix that ships, priced by declared size (`small`/`medium`/`large` at
+500/2000/5000) rather than by a single global rate. The mechanisms that
+actually dissolve or cycle a slice — hub-role exclusion before contraction,
+merges that invert a dependency edge, and the splitter cutting inside an
+expanded slice — are structural, and are what the slice-atoms, acyclic-merge,
+and slice-aware-splitter changes above fix. See
+[`docs/orchestrators_improvements.md`](orchestrators_improvements.md) (D2/D3/D4)
+for the full mechanism write-up.
 
 ______________________________________________________________________
 
@@ -344,18 +397,41 @@ ______________________________________________________________________
 
 ## Output
 
-[`serialize_grouping()`](../orchestrator/grouping/pipeline.py) writes:
+A grouping is a **named, self-contained directory** —
+`.orchestrator/groupings/<name>/` — not a single overwritable slot: grouping a
+second plan used to destroy the first grouping with no record (ADR 0003).
+`group --name <tag>` (default: the plan's filename stem) writes it; `run --grouping <tag>` selects one (auto-selecting only when exactly one exists, and
+otherwise erroring with every candidate's name and plan path — never "the
+newest"); `groupings` lists every one with its plan path and group count.
+[`serialize_grouping()`](../orchestrator/grouping/pipeline.py) writes three
+artifacts into it:
 
-- **`.orchestrator/groups.json`** — the canonical `GroupingResult`: every `Group`
-  with id, name, summary, spec, difficulty, intensity, **dependencies**,
-  verification, tasks, files, estimated_tokens, plus `flags` (dropped mappings,
-  budget warnings). This is what `run` consumes.
-- **`.orchestrator/base-context.md`** — repo conventions (`CLAUDE.md`/`AGENTS.md`) +
+- **`groups.json`** — the canonical `GroupingResult`: every `Group` with id,
+  name, summary, spec, difficulty, intensity, **dependencies**, verification,
+  tasks, files, estimated_tokens, plus `flags` (dropped mappings, budget
+  warnings, accepted slice overshoots). This is what `run` consumes.
+- **`base-context.md`** — repo conventions (`CLAUDE.md`/`AGENTS.md`) +
   codegraph architecture summary + the plan, compiled once as the base session's
   shared context ([`base_context.py:16`](../orchestrator/grouping/base_context.py)).
+- **`grouping-trace.json`** — the versioned record of every partition stage's
+  output and every decision (hub scores vs. threshold, slice atoms, Louvain
+  communities, each cut/merge/repair with its reason and quantitative context)
+  — "why is this node in this group" answered from the file, without a
+  debugging session. Written on **every** invocation, including `--dry-run` and
+  `--no-spec`, and even when the run fails (a partial trace records the
+  failure) — explaining a partition you chose not to materialize, or one that
+  failed, is the main iteration loop. Carries no timestamp, so re-running the
+  same plan produces byte-identical bytes; file mtime and the run snapshot
+  supply time instead.
 
-`--dry-run` prints the report and skips both writes — the human checkpoint before
-any session launches.
+`--dry-run` and `--no-spec` print the report and write only
+`grouping-trace.json` — the human checkpoint before any session launches, or
+before deciding to materialize a grouping at all.
+
+`run` never reads the live `groupings/<name>/` directory again once it starts:
+it copies the directory's files into `.orchestrator/runs/<run_id>/` at launch
+and records the grouping's name in `manifest.json`, so a later `group --name <same>` against a different plan cannot rewrite a finished or in-flight run's
+DAG (ADR 0002, ADR 0003); `resume` reads the snapshot, not the live directory.
 
 ______________________________________________________________________
 
