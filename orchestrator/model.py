@@ -94,6 +94,7 @@ class RunManifest(BaseModel):
     plan_path: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     base_session_id: str | None = None
+    grouping: str | None = None  # named grouping this run snapshotted (plan U10)
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 
 
