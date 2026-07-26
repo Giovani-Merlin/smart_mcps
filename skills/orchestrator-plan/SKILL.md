@@ -140,8 +140,13 @@ Any divergence is a bug the verifier will catch.>
   work, the cap, and the overshoot, unless the plan is run with
   `--allow-oversized-slice` (which keeps it whole as one flagged group instead).
   Size it to fit; don't rely on the splitter to bail you out.
-- **Inter-slice `depends_on` must be acyclic** — a cycle between slices becomes
-  a group-DAG cycle and fails the whole grouping run loudly.
+- **Inter-slice `depends_on` should still be acyclic** — a cycle between slices
+  becomes a group-DAG cycle. This is no longer a hard failure: `build_group_dag`
+  repairs it automatically (merging the cyclic SCC, then re-splitting it back
+  under the cap), but the repaired group can land larger and less clean than a
+  merge that was never needed, and an unrepairable cycle is an orchestrator bug,
+  not a routine planning error. Prevention is still cheaper than repair — plan
+  dependencies acyclically rather than relying on the repair path.
 
 ### Verification-item guidance
 
