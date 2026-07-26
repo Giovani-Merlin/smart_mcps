@@ -272,6 +272,29 @@ class TestQueriesAndMetadata:
         client.sync()
         assert runner.calls == [["sync"]]
 
+    def test_sync_takes_the_project_path_positionally(self):
+        """`codegraph sync` rejects `-p` (`Usage: codegraph sync [options] [path]`),
+        so the assembled argv must place the repo path positionally. Every
+        grouping test injects a runner, which is precisely why passing `-p` here
+        broke every real `group` invocation without failing a single test."""
+        client, _ = client_with({})
+        assert client._argv(["sync"]) == ["codegraph", "sync", str(client.repo_root)]
+
+    def test_query_commands_keep_the_path_flag(self):
+        """The query side of the CLI does accept `-p, --path`."""
+        client, _ = client_with({})
+        assert client._argv(["query", "X", "-j", "-l", "1000"]) == [
+            "codegraph",
+            "query",
+            "X",
+            "-j",
+            "-l",
+            "1000",
+            "-p",
+            str(client.repo_root),
+        ]
+        assert client._argv(["files"])[-2:] == ["-p", str(client.repo_root)]
+
     def test_identical_queries_are_memoized(self):
         """A hub symbol mapped by many tasks must not respawn the CLI per task."""
         client, runner = client_with({})

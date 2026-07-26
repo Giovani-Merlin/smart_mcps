@@ -33,6 +33,11 @@ IMPACT_DEPTH = 2
 # so its magnitude matters solely for merge tie-breaking — not a config knob.
 DECLARED_DEP_WEIGHT = 1.0
 
+# codegraph subcommands that take the project path positionally and reject `-p`
+# (`codegraph sync --help`: `Usage: codegraph sync [options] [path]`). Every other
+# command this client issues accepts `-p, --path`.
+POSITIONAL_PATH_COMMANDS = frozenset({"sync", "index", "status"})
+
 # Full CLI argv → stdout. Injected in tests to replay captured fixture output.
 Runner = Callable[[Sequence[str]], str]
 
@@ -160,6 +165,22 @@ class CodegraphClient:
                 f"codegraph {args[0]} {args[1]!r} produced invalid JSON: {exc}"
             ) from exc
 
+    def _argv(self, args: Sequence[str]) -> list[str]:
+        """Full command line for one codegraph call.
+
+        The CLI is not uniform about how it takes the project path: the query
+        commands (``query``/``files``/``callers``/``callees``/``impact``) accept
+        ``-p, --path``, while the index-maintenance commands take it as a
+        positional argument and reject ``-p`` outright — ``codegraph sync -p
+        <repo>`` exits 1 with ``unknown option '-p'``. Passing ``-p`` to every
+        command made ``client.sync()`` — and with it every real ``group``
+        invocation — fail; the injected-runner test seam hid it, because no test
+        ever built this argv.
+        """
+        if args[0] in POSITIONAL_PATH_COMMANDS:
+            return ["codegraph", *args, str(self.repo_root)]
+        return ["codegraph", *args, "-p", str(self.repo_root)]
+
     def _run(self, args: Sequence[str]) -> str:
         key = tuple(args)
         if key in self._cache:
@@ -168,7 +189,7 @@ class CodegraphClient:
             output = self.runner(args)
         else:
             result = subprocess.run(
-                ["codegraph", *args, "-p", str(self.repo_root)],
+                self._argv(args),
                 capture_output=True,
                 text=True,
             )

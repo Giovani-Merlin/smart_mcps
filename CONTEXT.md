@@ -15,12 +15,21 @@ A single config file listing the target repos the Observatory can switch between
 each as a name plus a repo path. The source of the Observatory's project switcher.
 _Avoid_: front-matter (the original loose term for this idea)
 
+**Grouping**:
+A named, self-contained partition of one plan into execution groups, stored at
+`<repo>/.orchestrator/groupings/<name>/` (groups.json, base-context.md,
+grouping-trace.json). Written by `group --name <name>`, selected by
+`run --grouping <name>`. Several may coexist — two plans, or two alternative
+partitions of one plan (ADR 0003).
+_Avoid_: the groups file (there is no single one), the plan's grouping (a plan may have several)
+
 **Run Directory**:
 The per-run artifact tree at `<repo>/.orchestrator/runs/<run_id>/` (state.json,
-manifest.json, groups.json, logs/run.log, escalations/, groups/). The Observatory's
-entire read and write surface for a run — there is no other channel. Its
-`groups.json` is a per-run snapshot of the shared `.orchestrator/groups.json`,
-taken at run start so the DAG survives later re-planning (ADR 0002).
+manifest.json, groups.json, grouping-trace.json, logs/run.log, escalations/,
+groups/). The Observatory's entire read and write surface for a run — there is
+no other channel. Its copies of the grouping artifacts are a per-run snapshot of
+the Grouping the run was launched from, taken at run start so the DAG survives
+later re-planning (ADR 0002, ADR 0003).
 
 **Run Snapshot**:
 The single composed payload the Observatory serves for a run — state.json's group
