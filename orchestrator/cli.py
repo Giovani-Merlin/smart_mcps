@@ -3,9 +3,11 @@
 U4 ships the `group` command with `--dry-run` as the human checkpoint before any
 execution; U9 adds `run` / `status` / `resume` on top. Config resolution is
 CLI flags > `.orchestrator/config.toml` in the target repo > defaults (plan U9).
-`run` consumes the artifacts `group` wrote (`groups.json`, `base-context.md`) and
-wires the Phase B execution engine: one base session per run, a dependency-aware
-scheduler, per-group review loops, and integration-branch merges.
+`group` writes a named grouping directory (`.orchestrator/groupings/<name>/`,
+plan U10) holding `groups.json` + `base-context.md`; `run` selects one, snapshots
+it into the run directory, and wires the Phase B execution engine: one base
+session per run, a dependency-aware scheduler, per-group review loops, and
+integration-branch merges.
 """
 
 from __future__ import annotations
@@ -26,10 +28,16 @@ from orchestrator.execution.escalation import (
     pending_escalations,
 )
 from orchestrator.execution.manifest import (
+    GroupingNameError,
+    GroupingSelectionError,
     ManifestStore,
     RunPaths,
     atomic_write_text,
+    describe_groupings,
+    grouping_dir,
     log_event,
+    snapshot_grouping,
+    validate_grouping_name,
 )
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
@@ -86,6 +94,12 @@ def main(
     group_cmd = subparsers.add_parser("group", help="compute groups from a plan document")
     group_cmd.add_argument("plan", type=Path, help="path to the plan document")
     group_cmd.add_argument(
+        "--name",
+        default=None,
+        help="grouping name (default: the plan's filename stem); written to "
+        ".orchestrator/groupings/<name>/",
+    )
+    group_cmd.add_argument(
         "--dry-run",
         action="store_true",
         help="print groups, DAG, and estimates without writing artifacts",
@@ -114,6 +128,11 @@ def main(
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
     run_cmd.add_argument("--run-id", default=None, help="run identifier (default: r<timestamp>)")
+    run_cmd.add_argument(
+        "--grouping",
+        default=None,
+        help="named grouping to run (default: auto-select if exactly one exists)",
+    )
     _add_execution_args(run_cmd)
     _add_common_args(run_cmd)
 
@@ -121,6 +140,9 @@ def main(
     resume_cmd.add_argument("run_id", help="the run to resume (see `status`)")
     _add_execution_args(resume_cmd)
     _add_common_args(resume_cmd)
+
+    groupings_cmd = subparsers.add_parser("groupings", help="list named groupings")
+    groupings_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
     status_cmd = subparsers.add_parser("status", help="show run state and sessions")
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
@@ -145,6 +167,8 @@ def main(
         return _cmd_run(args, llm_runner, resume=False)
     if args.command == "resume":
         return _cmd_run(args, llm_runner, resume=True)
+    if args.command == "groupings":
+        return _cmd_groupings(args)
     if args.command == "status":
         return _cmd_status(args)
     if args.command == "answer":
@@ -251,6 +275,13 @@ def _cmd_group(
     client: CodegraphClient | None,
 ) -> int:
     repo_root = args.repo.resolve()
+    name = getattr(args, "name", None) or args.plan.stem
+    try:
+        validate_grouping_name(name)
+    except GroupingNameError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     config = _load_config(args, repo_root)
     if config is None:
         return 1
@@ -291,7 +322,7 @@ def _cmd_group(
         _print_report(result)
         return 0
 
-    out_dir = repo_root / ".orchestrator"
+    out_dir = grouping_dir(repo_root, name)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "groups.json").write_text(serialize_grouping(result))
     (out_dir / "base-context.md").write_text(base_context)
@@ -367,6 +398,56 @@ def _print_report(result: GroupingResult) -> None:
             print(f"  - {flag}")
 
 
+# ------------------------------------------------------------------ groupings
+
+
+def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
+    """`run`'s grouping selection (plan U10): an explicit ``--grouping`` wins;
+    with none, auto-select only when exactly one grouping exists. Ambiguity and
+    legacy top-level state are reported by name, never guessed — that
+    implicitness is the failure ADR 0002 records."""
+    if name:
+        source_dir = grouping_dir(repo_root, name)
+        if not (source_dir / "groups.json").is_file():
+            raise GroupingSelectionError(
+                f"no grouping named {name!r} at {source_dir} — run "
+                f"`smart-mcps-orchestrate group <plan> --name {name}` first"
+            )
+        return name, source_dir
+
+    infos = describe_groupings(repo_root)
+    if len(infos) == 1:
+        info = infos[0]
+        return info.name, grouping_dir(repo_root, info.name)
+    if len(infos) > 1:
+        listing = "; ".join(f"{info.name} ({info.plan_path})" for info in infos)
+        raise GroupingSelectionError(
+            f"multiple groupings present — pick one with --grouping <name>: {listing}"
+        )
+
+    legacy = repo_root / ".orchestrator" / "groups.json"
+    if legacy.is_file():
+        raise GroupingSelectionError(
+            f"found legacy grouping artifact {legacy} from before named groupings — "
+            "it is not used automatically; re-group with "
+            "`smart-mcps-orchestrate group <plan> --name <name>`"
+        )
+    raise GroupingSelectionError(
+        "no groupings found — run `smart-mcps-orchestrate group <plan>` first"
+    )
+
+
+def _cmd_groupings(args: argparse.Namespace) -> int:
+    repo_root = args.repo.resolve()
+    infos = describe_groupings(repo_root)
+    if not infos:
+        print("no groupings found")
+        return 0
+    for info in infos:
+        print(f"{info.name}: {info.plan_path} ({info.group_count} group(s))")
+    return 0
+
+
 # ----------------------------------------------------------------- run/resume
 
 
@@ -376,9 +457,39 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     if config is None:
         return 1
 
+    run_id = args.run_id if resume else (args.run_id or _default_run_id())
+    paths = RunPaths(repo_root, run_id)
     orch_dir = repo_root / ".orchestrator"
-    groups_path = orch_dir / "groups.json"
-    base_context_path = orch_dir / "base-context.md"
+
+    source_grouping_dir: Path | None = None
+    grouping_name: str | None = None
+    if resume:
+        if not paths.state_path.is_file():
+            print(
+                f"error: no run state at {paths.state_path} — check `status` for known runs",
+                file=sys.stderr,
+            )
+            return 1
+        groups_path = paths.run_dir / "groups.json"
+        base_context_path = paths.run_dir / "base-context.md"
+    else:
+        if paths.state_path.is_file():
+            print(
+                f"error: run {run_id} already exists — `resume {run_id}` to continue it, "
+                "or pick another --run-id",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            grouping_name, source_grouping_dir = _select_grouping(
+                repo_root, getattr(args, "grouping", None)
+            )
+        except (GroupingNameError, GroupingSelectionError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        groups_path = source_grouping_dir / "groups.json"
+        base_context_path = source_grouping_dir / "base-context.md"
+
     if not groups_path.is_file() or not base_context_path.is_file():
         print(
             f"error: {groups_path} or {base_context_path} missing — "
@@ -397,7 +508,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         plan_path = repo_root / plan_path
     if not plan_path.is_file():
         print(
-            f"error: plan document {plan_path} (referenced by groups.json) not found — "
+            f"error: plan document {plan_path} (referenced by the grouping) not found — "
             "re-run `group` against the current plan",
             file=sys.stderr,
         )
@@ -405,22 +516,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # Stripped before it ever reaches an LLM context (R27) — the rewrite provider
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
-
-    run_id = args.run_id if resume else (args.run_id or _default_run_id())
-    paths = RunPaths(repo_root, run_id)
-    if resume and not paths.state_path.is_file():
-        print(
-            f"error: no run state at {paths.state_path} — check `status` for known runs",
-            file=sys.stderr,
-        )
-        return 1
-    if not resume and paths.state_path.is_file():
-        print(
-            f"error: run {run_id} already exists — `resume {run_id}` to continue it, "
-            "or pick another --run-id",
-            file=sys.stderr,
-        )
-        return 1
 
     # R8: the effective execution config prints before any session spawns —
     # obs1's operator trap was a config file silently beating flag expectations,
@@ -455,6 +550,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     except SessionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # The run keeps its own frozen copy of the grouping it started with (plan
+    # U10): a later `group --name <same>` against a different plan must not be
+    # able to rewrite a finished run's history. Done only after preflight
+    # succeeds, so a dead worker CLI never leaves a run directory behind.
+    if not resume:
+        snapshot_grouping(source_grouping_dir, paths.run_dir)
 
     # Construction is circular on paper (scheduler → executor → deps → runner →
     # scheduler.tracker); the executor closes over a slot assigned once deps exist —
@@ -504,7 +606,10 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             return 1
         base_session_id = base.session_id
         manifest = RunManifest(
-            run_id=run_id, plan_path=grouping.plan_path, base_session_id=base_session_id
+            run_id=run_id,
+            plan_path=grouping.plan_path,
+            base_session_id=base_session_id,
+            grouping=grouping_name,
         )
         store.save(manifest)
 
