@@ -494,6 +494,9 @@ class TestDryRunCli:
         assert not (repo / ".orchestrator").exists()
 
     def test_group_writes_artifacts_without_dry_run(self, tmp_path):
+        """Plan U10: with no --name, the grouping directory is named after the
+        plan's filename stem (``plan.md`` -> ``plan``), and no top-level
+        artifact is written any more."""
         from orchestrator.cli import main
 
         repo, plan = make_repo(tmp_path)
@@ -503,8 +506,52 @@ class TestDryRunCli:
             client=make_client(repo),
         )
         assert exit_code == 0
-        assert (repo / ".orchestrator" / "groups.json").is_file()
-        assert (repo / ".orchestrator" / "base-context.md").is_file()
+        assert (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").is_file()
+        assert (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").is_file()
+        assert not (repo / ".orchestrator" / "groups.json").exists()
+
+    def test_group_with_explicit_name_writes_under_that_directory(self, tmp_path):
+        """Plan U10: `--name` picks the grouping directory explicitly."""
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--name", "alpha"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        assert (repo / ".orchestrator" / "groupings" / "alpha" / "groups.json").is_file()
+        assert (repo / ".orchestrator" / "groupings" / "alpha" / "base-context.md").is_file()
+        assert not (repo / ".orchestrator" / "groupings" / "plan").exists()
+
+    def test_group_name_with_path_separator_is_rejected_before_writing(self, tmp_path, capsys):
+        """Plan U10: a `--name` containing a path separator or `..` is rejected
+        before anything is written under .orchestrator/."""
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--name", "../escape"],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code != 0
+        assert "invalid grouping name" in capsys.readouterr().err
+        assert not (repo / ".orchestrator").exists()
+
+    def test_group_name_with_dotdot_alone_is_rejected(self, tmp_path, capsys):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--name", ".."],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code != 0
+        assert "invalid grouping name" in capsys.readouterr().err
+        assert not (repo / ".orchestrator").exists()
 
     def test_malformed_config_fails_cleanly(self, tmp_path, capsys):
         from orchestrator.cli import main

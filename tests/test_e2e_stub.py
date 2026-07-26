@@ -163,7 +163,9 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+    )
     gids = [group["id"] for group in grouping["groups"]]
     assert gids  # the toy plan produced at least one group
 
@@ -264,7 +266,9 @@ def test_group_cli_premapped_greenfield_plan_skips_mapper_and_orders_groups(repo
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "greenfield-plan" / "groups.json").read_text()
+    )
 
     # the flags record the deterministic fast path and the prospective files
     assert any("mapper LLM skipped" in flag for flag in grouping["flags"])
@@ -499,6 +503,88 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     assert manifest["base_session_id"]
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
+
+
+# ------------------------------------------------------------- named groupings
+
+
+def test_run_snapshots_the_named_grouping_and_records_it_in_the_manifest(repo, fake_home):
+    """Plan U10: `run --grouping alpha` copies alpha's files into the run
+    directory and records which grouping it used in manifest.json."""
+    run_id = "r-snap"
+    write_run_artifacts(
+        repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)], name="alpha"
+    )
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "x\n"}, commit="g1: work"),
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--grouping", "alpha"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    assert (run_dir / "groups.json").is_file()
+    assert (run_dir / "base-context.md").is_file()
+    assert manifest_of(repo, run_id)["grouping"] == "alpha"
+
+
+def test_resume_after_regroup_uses_the_run_snapshot_not_the_live_grouping(repo, fake_home):
+    """Plan U10 (ADR 0002): re-running `group --name alpha` against a different
+    plan must not be able to rewrite a run that already started from it —
+    `resume` schedules the groups the run began with, from its own snapshot."""
+    from test_grouper_pipeline import MIXED_PLAN
+
+    run_id = "r7"
+    groups = [
+        make_group("g1", intensity=ReviewIntensity.SELF_VERIFY),
+        make_group("g2", intensity=ReviewIntensity.SELF_VERIFY),
+    ]
+    write_run_artifacts(repo, groups, name="alpha")
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--grouping", "alpha"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 2
+    assert set(state_of(repo, run_id)["groups"]) == {"g1", "g2"}
+
+    # `group --name alpha` re-run against an unrelated plan overwrites the live
+    # grouping directory
+    other_plan = repo / "other-plan.md"
+    other_plan.write_text(MIXED_PLAN)
+    regroup_exit = main(
+        ["group", str(other_plan), "--repo", str(repo), "--name", "alpha"],
+        llm_runner=StubLlm(),
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert regroup_exit == 0
+    live_grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "alpha" / "groups.json").read_text()
+    )
+    live_tasks = {task for group in live_grouping["groups"] for task in group["tasks"]}
+    assert live_tasks == {"t1-api", "t2-ui"}  # the live directory really did change
+
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.out": "two\n"}, commit="g2: work"),
+    )
+    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert set(state["groups"]) == {"g1", "g2"}  # the resumed run kept its own snapshot
 
 
 # ------------------------------------------------------------------ HITL (Phase D)

@@ -47,14 +47,17 @@ def make_group(gid: str = "g1", **overrides) -> Group:
     return Group(**defaults)
 
 
-def write_run_artifacts(repo: Path, groups: list[Group] | None = None) -> None:
-    """The artifacts `group` leaves behind, which `run`/`resume` consume."""
-    orch = repo / ".orchestrator"
-    orch.mkdir(parents=True, exist_ok=True)
+def write_run_artifacts(repo: Path, groups: list[Group] | None = None, name: str = "plan") -> None:
+    """The named-grouping-directory artifacts `group` leaves behind (plan U10),
+    which `run`/`resume` consume. ``name="plan"`` mirrors the real CLI default
+    (the plan filename stem), so tests relying on auto-selection of the sole
+    grouping keep working unchanged."""
+    grouping_dir = repo / ".orchestrator" / "groupings" / name
+    grouping_dir.mkdir(parents=True, exist_ok=True)
     (repo / "plan.md").write_text("# toy plan\n\n- T1: do the thing\n")
     result = GroupingResult(plan_path="plan.md", groups=groups or [make_group()])
-    (orch / "groups.json").write_text(serialize_grouping(result))
-    (orch / "base-context.md").write_text("shared base context\n")
+    (grouping_dir / "groups.json").write_text(serialize_grouping(result))
+    (grouping_dir / "base-context.md").write_text("shared base context\n")
 
 
 class TestPrecedence:
@@ -259,6 +262,71 @@ class TestRunEarlyExits:
         assert "--fork-session" in capsys.readouterr().err
         # preflight failed before any run directory was created
         assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+
+class TestGroupingSelection:
+    """Plan U10: `run` never guesses between ambiguous or legacy grouping state."""
+
+    def test_ambiguous_groupings_lists_both_names_and_plans(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha")
+        write_run_artifacts(tmp_path, name="beta")
+        exit_code = main(["run", "--repo", str(tmp_path)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "alpha" in err and "beta" in err
+        assert "plan.md" in err
+        assert "--grouping" in err
+
+    def test_one_of_several_groupings_selects_via_flag(self, tmp_path, capsys, monkeypatch):
+        write_run_artifacts(tmp_path, [make_group("g1")], name="alpha")
+        write_run_artifacts(tmp_path, [make_group("g9")], name="beta")
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(tmp_path / "fake-home"))
+        monkeypatch.setenv("FAKE_CLAUDE_HIDE_FLAGS", "--fork-session")
+        exit_code = main(["run", "--repo", str(tmp_path), "--grouping", "beta"])
+        # picks "beta" successfully and proceeds all the way to preflight,
+        # which fails for an unrelated, already-covered reason
+        assert exit_code == 1
+        assert "--fork-session" in capsys.readouterr().err
+
+    def test_unknown_grouping_name_is_actionable(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha")
+        exit_code = main(["run", "--repo", str(tmp_path), "--grouping", "nope"])
+        assert exit_code == 1
+        assert "no grouping named 'nope'" in capsys.readouterr().err
+
+    def test_legacy_top_level_artifact_is_reported_not_consumed(self, tmp_path, capsys):
+        (tmp_path / ".orchestrator").mkdir(parents=True)
+        (tmp_path / "plan.md").write_text("# toy plan\n")
+        legacy_result = GroupingResult(plan_path="plan.md", groups=[make_group()])
+        legacy_path = tmp_path / ".orchestrator" / "groups.json"
+        legacy_path.write_text(serialize_grouping(legacy_result))
+        (tmp_path / ".orchestrator" / "base-context.md").write_text("ctx\n")
+
+        exit_code = main(["run", "--repo", str(tmp_path)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert str(legacy_path) in err
+        assert "--name" in err  # names the re-group command
+        # never consumed: the legacy file is untouched and no run started
+        assert legacy_path.is_file()
+        assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+    def test_groupings_subcommand_lists_name_plan_and_count(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, [make_group("g1"), make_group("g2")], name="alpha")
+        exit_code = main(["groupings", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "alpha" in out
+        assert "plan.md" in out
+        assert "2 group(s)" in out
+
+    def test_groupings_subcommand_empty(self, tmp_path, capsys):
+        exit_code = main(["groupings", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no groupings found" in capsys.readouterr().out
 
 
 class TestPrintOutcomes:

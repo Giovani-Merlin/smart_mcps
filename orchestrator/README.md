@@ -9,26 +9,35 @@ no API client anywhere, and the orchestrator itself spends zero tokens.
 ## Commands
 
 ```sh
-smart-mcps-orchestrate group <plan.md> [--repo DIR] [--dry-run] [--token-budget N]
-smart-mcps-orchestrate run   [--repo DIR] [--run-id ID] [--sequential] [--concurrency N]
-                             [--permission-mode MODE] [--review-intensity TIER]
-                             [--hitl] [--intensity TIER] [--escalation-source SRC]
-                             [--escalation-timeout S]
+smart-mcps-orchestrate group <plan.md> [--repo DIR] [--name NAME] [--dry-run] [--token-budget N]
+smart-mcps-orchestrate run   [--repo DIR] [--run-id ID] [--grouping NAME] [--sequential]
+                             [--concurrency N] [--permission-mode MODE]
+                             [--review-intensity TIER] [--hitl] [--intensity TIER]
+                             [--escalation-source SRC] [--escalation-timeout S]
+smart-mcps-orchestrate groupings [--repo DIR]
 smart-mcps-orchestrate status [RUN_ID] [--repo DIR]
 smart-mcps-orchestrate resume RUN_ID [--repo DIR] [...same execution flags as run]
 smart-mcps-orchestrate answer RUN_ID ESC_ID [--action answer|skip|abort] [--text ...] [--repo DIR]
 ```
 
 - **`group`** — LLM-maps plan tasks to code regions, partitions them into
-  execution groups, and writes `.orchestrator/groups.json` +
-  `.orchestrator/base-context.md`. `--dry-run` prints the groups, DAG, and token
-  estimates without writing anything — the human checkpoint before execution.
-- **`run`** — consumes the `group` artifacts: starts one base session holding the
-  compiled base context, forks a coder (and, per review tier, a reviewer) session
-  per group in its own worktree, schedules groups in dependency order, and merges
-  approved groups into the run's integration branch `orchestrator/run-<run_id>`.
-  Exit 0 only if every group completed. The final merge of the integration branch
-  into your main branch is deliberately manual.
+  execution groups, and writes a named grouping directory:
+  `.orchestrator/groupings/<name>/groups.json` +
+  `.../base-context.md`. `--name` defaults to the plan's filename stem, so
+  grouping different plans never overwrites each other. `--dry-run` prints the
+  groups, DAG, and token estimates without writing anything — the human
+  checkpoint before execution.
+- **`run`** — selects a grouping (`--grouping NAME`, or auto-selects when exactly
+  one exists; with several present, or only a pre-named-grouping legacy
+  artifact, it lists what's there and exits rather than guessing), snapshots it
+  into the run directory, starts one base session holding the compiled base
+  context, forks a coder (and, per review tier, a reviewer) session per group in
+  its own worktree, schedules groups in dependency order, and merges approved
+  groups into the run's integration branch `orchestrator/run-<run_id>`. Exit 0
+  only if every group completed. The final merge of the integration branch into
+  your main branch is deliberately manual.
+- **`groupings`** — lists every named grouping with its plan path and group
+  count.
 - **`status`** — lists runs, or pretty-prints one run's per-group state,
   generations, failures, and sessions.
 - **`resume`** — re-enters a crashed or interrupted run: terminates orphaned
@@ -132,10 +141,13 @@ All run state lives in the target repo, never under `~/.claude`:
 <repo>/
   .orchestrator/
     config.toml               # optional; yours
-    groups.json               # grouping output (the run's input)
-    base-context.md           # compiled shared context for the base session
+    groupings/<name>/
+      groups.json              # grouping output (the run's input)
+      base-context.md          # compiled shared context for the base session
     failures/                 # raw LLM output that failed validation
     runs/<run_id>/
+      groups.json              # snapshot of the grouping the run started with
+      base-context.md          # snapshot of the base context at run start
       manifest.json           # run → groups → sessions join (the analyzer contract)
       state.json              # crash-resumable scheduler state + live worker PIDs
       groups/<gid>/           # report-g<G>-r<R>.json / verdict-g<G>-r<R>.json
@@ -145,6 +157,10 @@ All run state lives in the target repo, never under `~/.claude`:
     run-<run_id>-integration/ # the integration branch's worktree
     <gid>-<name>/             # per-group worktrees (removed after a clean merge)
 ```
+
+A run never reads the live `groupings/<name>/` directory again after it starts:
+it works from its own snapshot, so a later `group --name <same>` against a
+different plan cannot rewrite a finished or in-flight run's history.
 
 Branches: each group works on `orchestrator/<run_id>-<gid>`; approved groups
 merge `--no-ff` into `orchestrator/run-<run_id>` (one merge commit per group).
