@@ -20,6 +20,7 @@ from orchestrator.grouping.partition import (
     detect_hub_roles,
     lift_independent,
     merge_small_groups,
+    slice_atoms,
     split_over_budget,
 )
 
@@ -245,17 +246,62 @@ class TestSliceContraction:
         partition = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0).partition(g)
         assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
 
-    def test_hub_is_never_absorbed_into_its_slice(self):
-        """Hub isolation runs before contraction: a hub carrying a slice label
-        stays its own group; the remaining slice-mates still contract."""
+    def test_hub_role_member_joins_its_slice(self):
+        """A declared slice outranks an inferred hub role (plan U2): the planner
+        bound these tasks explicitly, so a hub-classified member now contracts
+        with its slice-mates instead of being isolated away from them. This
+        corrects the pre-U2 expectation, which had the hub excluded."""
         g = graph(
             "hub a b c".split(),
             dependencies={("hub", n): 1.0 for n in "abc"},
             slices={"hub": "s", "a": "s", "b": "s"},
         )
+        partition = DefaultPartitionStrategy().partition(g)
+        assert partition["hub"] == partition["a"] == partition["b"]
+
+    def test_hub_isolation_still_applies_to_a_slice_less_task(self):
+        """Slices override hub classification only for their own declared members
+        (plan U2 decision); a hub carrying no slice label is isolated exactly as
+        before, even with an unrelated slice present elsewhere in the graph."""
+        g = graph(
+            "hub a b c d".split(),
+            affinity={("hub", n): 1.0 for n in "abcd"} | {("a", "b"): 5.0, ("c", "d"): 5.0},
+            dependencies={("hub", n): 1.0 for n in "abcd"},
+            slices={"a": "sl", "b": "sl"},
+        )
         partition = DefaultPartitionStrategy(budget_cap=2.0).partition(g)
+        assert frozenset({"hub"}) in groups_of(partition)
         assert partition["a"] == partition["b"]
-        assert partition["hub"] != partition["a"]
+
+    def test_slice_atoms_retains_a_hub_classified_member(self):
+        """slice_atoms no longer filters by role (plan U2, mechanism M1): every
+        declared member joins its atom even when detect_hub_roles classifies it
+        as a hub."""
+        g = graph(
+            "agg s2 x y z".split(),
+            dependencies={(n, "agg"): 1.0 for n in "xyz"},
+            slices={"agg": "sl", "s2": "sl"},
+        )
+        roles = detect_hub_roles(g)
+        assert roles["agg"] == "aggregator_hub"
+        assert slice_atoms(g, roles) == {"sl": ["agg", "s2"]}
+
+    def test_slice_survives_when_every_member_is_hub_classified(self):
+        """The Observatory failure mode (plan U2): a slice whose members are all
+        hub-classified used to vanish entirely (no member was 'core', so the
+        label never reached the atoms dict at all). Now the whole slice
+        contracts and every member lands in the same partitioned group."""
+        g = graph(
+            "p1 p2 x1 x2 x3".split(),
+            dependencies={(x, "p1"): 1.0 for x in "x1 x2 x3".split()}
+            | {(x, "p2"): 1.0 for x in "x1 x2 x3".split()},
+            slices={"p1": "sl", "p2": "sl"},
+        )
+        roles = detect_hub_roles(g)
+        assert roles["p1"] == "aggregator_hub"
+        assert roles["p2"] == "aggregator_hub"
+        partition = DefaultPartitionStrategy().partition(g)
+        assert partition["p1"] == partition["p2"]
 
     def test_contraction_is_deterministic_across_runs(self):
         g = graph(

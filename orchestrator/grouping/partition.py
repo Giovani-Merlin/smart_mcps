@@ -258,16 +258,18 @@ def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD)
 
 
 def slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]:
-    """Slice label → sorted core members with 2+ tasks (the real must-links).
+    """Slice label → sorted members with 2+ tasks (the real must-links).
 
-    Reads the ``slice`` node metadata the task map supplies. Hub-role nodes are
-    excluded — hubs are isolated before slices contract and are never absorbed
-    into a feature slice. Public: the R18 partition-only report surfaces these.
+    Reads the ``slice`` node metadata the task map supplies. A declared slice
+    outranks an inferred hub role: every member joins its atom regardless of
+    ``roles``, because the planner bound those tasks explicitly and hub
+    classification is only a degree-ratio inference (``detect_hub_roles``).
+    ``roles`` is accepted for signature stability and trace context, not to
+    filter membership. Hub isolation still applies to every task carrying no
+    slice label. Public: the R18 partition-only report surfaces these.
     """
     atoms: dict[str, list[str]] = defaultdict(list)
     for node in sorted(graph.nodes):
-        if roles.get(node) != "core":
-            continue
         label = graph.metadata.get(node, {}).get("slice")
         if isinstance(label, str) and label:
             atoms[label].append(node)
