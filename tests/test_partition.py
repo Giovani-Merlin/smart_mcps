@@ -277,8 +277,10 @@ class TestGroupDag:
             affinity={("a", "d"): 100.0, ("b", "c"): 100.0},
             dependencies={("a", "b"): 1.0, ("c", "d"): 1.0},
         )
-        partition = DefaultPartitionStrategy().partition(g)
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
         assert groups_of(partition) == {frozenset("abcd")}
+        assert strategy.last_stage == "repair"
 
 
 class TestSccRepair:
@@ -463,8 +465,10 @@ class TestSliceContraction:
             dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
             slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
         )
-        partition = DefaultPartitionStrategy().partition(g)
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
         assert groups_of(partition) == {frozenset({"a1", "a2", "b1", "b2"})}
+        assert strategy.last_stage == "repair"
 
 
 class TestDefaultStrategyEndToEnd:

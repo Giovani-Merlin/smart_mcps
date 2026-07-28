@@ -204,6 +204,29 @@ class TestPureBackend:
         assert any({"shipping-api", "shipping-worker"} <= members for members in by_gid.values())
 
 
+class TestObservatoryRoundA:
+    """Plan U5: minimized reproduction of the real Observatory plan's "Round A"
+    group-DAG cycle — an SPA hub depending on a backend hub, three two-task
+    cross-stack slices split across the two hubs, and a verification task
+    converging on all three. Unlike greenfield-cross-stack.md (one hub), the
+    merge that would recreate the historical cycle here is the one where
+    verify's slice would fold into the backend hub across the still-separate
+    SPA hub — the U4 guard refuses exactly that merge (chain_compatible would
+    otherwise let it through, since every node pair is dependency-ordered);
+    if a cycle ever survives prevention on a shape like this, U5's repair is
+    what this fixture is here to keep covered."""
+
+    def test_partitions_without_cycle_and_slices_intact(self, tmp_path):
+        repo, plan = make_repo(tmp_path, "observatory-round-a")
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+        _assert_cross_stack_slices_intact(outcome.partition)
+
+
 ALL_FIXTURES = [
     ("greenfield-cross-stack", None, {}),
     ("brownfield-cross-stack", BROWNFIELD_CROSS_STACK_FILES, {}),
@@ -211,6 +234,7 @@ ALL_FIXTURES = [
     ("no-affinity-sink", None, {}),
     ("slice-over-budget", None, {"token_budget": 8_000}),
     ("pure-backend", None, {}),
+    ("observatory-round-a", None, {}),
 ]
 
 # slice-over-budget is excluded here on purpose (plan U3 decision): its
