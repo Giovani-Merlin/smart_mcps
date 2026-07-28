@@ -57,15 +57,18 @@ class TaskMapping:
 
     The plan-time fields (all defaulted — mapper-produced mappings never set
     them) come from a parsed task map: ``prospective_files`` are plan-declared
-    files that don't exist yet, ``depends_on`` names upstream task ids,
-    ``slice`` is the vertical-slice must-link label, and ``implements``/
-    ``consumes`` are matched route/contract tags.
+    files that don't exist yet, ``size_hints`` prices a subset of those by
+    declared class (small/medium/large) instead of the flat per-file allowance
+    (plan U7), ``depends_on`` names upstream task ids, ``slice`` is the
+    vertical-slice must-link label, and ``implements``/``consumes`` are matched
+    route/contract tags.
     """
 
     task_id: str
     files: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
     prospective_files: tuple[str, ...] = ()
+    size_hints: tuple[tuple[str, str], ...] = ()
     depends_on: tuple[str, ...] = ()
     slice: str | None = None
     implements: tuple[str, ...] = ()
@@ -312,6 +315,7 @@ def build_task_graph(
         metadata[task] = {
             "files": sorted(mapping.files),
             "prospective_files": sorted(mapping.prospective_files),
+            "size_hints": dict(mapping.size_hints),
             "symbols": sorted(mapping.symbols),
             "slice": mapping.slice,
             "implements": sorted(mapping.implements),

@@ -33,20 +33,38 @@ def is_over_budget(estimated_tokens: int, config: EstimatorConfig) -> bool:
     return estimated_tokens > config.token_budget
 
 
+# size_hints class name -> the EstimatorConfig field pricing it (plan U7).
+_SIZE_HINT_FIELDS = {
+    "small": "size_hint_small",
+    "medium": "size_hint_medium",
+    "large": "size_hint_large",
+}
+
+
 def node_work(metadata: Mapping[str, object], config: EstimatorConfig) -> float:
     """Per-task work in tokens — the hook injected into the partition strategy.
 
     Uses the metadata shape the codegraph adapter emits (source_bytes, files).
     Prospective files contribute zero source bytes but count in the per-file
     allowance — they will exist by the time the group runs, and pricing them at
-    zero would let merge_small_groups over-merge tiny greenfield groups.
+    zero would let merge_small_groups over-merge tiny greenfield groups. A
+    prospective file named in ``size_hints`` (path -> small/medium/large) is
+    priced by that class instead of the flat allowance; existing-file pricing
+    is untouched.
     """
     source_bytes = int(metadata.get("source_bytes", 0) or 0)
-    file_count = len(metadata.get("files", ()) or ()) + len(
-        metadata.get("prospective_files", ()) or ()
-    )
+    existing_files = metadata.get("files", ()) or ()
+    prospective_files = metadata.get("prospective_files", ()) or ()
+    size_hints = metadata.get("size_hints") or {}
     tokens = source_bytes / config.bytes_per_token * config.slack_multiplier
-    return tokens + file_count * config.per_file_tool_allowance
+    tokens += len(existing_files) * config.per_file_tool_allowance
+    for file in prospective_files:
+        hint = size_hints.get(file)
+        if hint:
+            tokens += getattr(config, _SIZE_HINT_FIELDS[hint])
+        else:
+            tokens += config.per_file_tool_allowance
+    return tokens
 
 
 def partition_budget_cap(base_tokens: int, config: EstimatorConfig) -> float:

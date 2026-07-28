@@ -219,6 +219,87 @@ class TestHardErrors:
             parse_task_map(plan_with(map_yaml), make_client(tmp_path))
 
 
+class TestSizeHints:
+    """Plan U7: size_hints prices a prospective file by declared class instead of
+    the flat per-file allowance. Carrier is the map's ``size_hints`` sibling key,
+    not plan prose."""
+
+    def test_size_hints_carried_on_prospective_files_only(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [existing.py, app/new.py]\n"
+            "    size_hints:\n"
+            "      app/new.py: large\n"
+        )
+        out = parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        assert out.mappings[0].size_hints == (("app/new.py", "large"),)
+
+    def test_map_without_size_hints_key_carries_no_hints(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [app/new.py]\n"
+        )
+        out = parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        assert out.mappings[0].size_hints == ()
+
+    def test_size_hints_path_not_in_files_raises(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [app/new.py]\n"
+            "    size_hints:\n"
+            "      app/other.py: large\n"
+        )
+        with pytest.raises(TaskMapError, match=r"t1.*app/other\.py.*not in this task's files"):
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+
+    def test_size_hints_unknown_class_raises(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [app/new.py]\n"
+            "    size_hints:\n"
+            "      app/new.py: huge\n"
+        )
+        with pytest.raises(TaskMapError, match=r"t1.*'huge'.*large.*medium.*small"):
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+
+    def test_size_hints_on_existing_file_raises_naming_it(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [existing.py]\n"
+            "    size_hints:\n"
+            "      existing.py: small\n"
+        )
+        with pytest.raises(TaskMapError, match=r"t1.*existing\.py.*already exists"):
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+
+    def test_size_hints_wrong_shape_raises(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [app/new.py]\n"
+            "    size_hints: [app/new.py]\n"
+        )
+        with pytest.raises(TaskMapError, match=r"t1.*'size_hints'.*mapping of path"):
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+
+
 class TestStripTaskMap:
     """R27: the task-map block is grouper parser input only — strip_task_map
     removes it (plus a directly preceding heading) from LLM-facing plan text."""
