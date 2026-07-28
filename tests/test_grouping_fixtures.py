@@ -13,7 +13,6 @@ import pytest
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.graphing import CodegraphClient
-from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import compute_partition
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "grouping"
@@ -83,54 +82,64 @@ BROWNFIELD_CROSS_STACK_FILES = {
 }
 
 
-class TestGreenfieldCrossStack:
-    """Current behaviour: the aggregator (verify) and the utility hub (scaffold)
-    end up merged with one slice (auth) by merge_small_groups, while the other
-    two slices (items, profile) stay separate — leaving both a scaffold->items
-    edge and an items->verify edge crossing the same group boundary in opposite
-    directions. This is the D3 mechanism, not a bug introduced here."""
+def _assert_cross_stack_slices_intact(partition):
+    by_gid = members_by_group(partition)
+    for members in (
+        {"auth-api", "auth-ui"},
+        {"items-api", "items-ui"},
+        {"profile-api", "profile-ui"},
+    ):
+        assert any(members <= group for group in by_gid.values()), members
 
-    def test_cycles_today(self, tmp_path):
+
+class TestGreenfieldCrossStack:
+    """Plan U4 (M2): the acyclic merge guard now refuses to fold the
+    aggregator (verify) and the utility hub (scaffold) into one group across
+    an intact slice — the scaffold->items and items->verify edges that used
+    to cross the same group boundary in opposite directions can no longer
+    both exist. This shape partitions cleanly with every slice intact."""
+
+    def test_partitions_without_cycle_and_slices_intact(self, tmp_path):
         repo, plan = make_repo(tmp_path, "greenfield-cross-stack")
-        with pytest.raises(GroupCycleError):
-            compute_partition(
-                plan_path=plan,
-                repo_root=repo,
-                llm_runner=_llm_must_not_be_called,
-                client=client_for(repo),
-            )
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+        _assert_cross_stack_slices_intact(outcome.partition)
 
 
 class TestBrownfieldCrossStack:
-    """Same task-map shape as greenfield-cross-stack, backed by real files.
-    Current behaviour: the cycle is structural (D3), not an artifact of
-    greenfield file-count-driven estimation (D4) — it reproduces identically
-    once the mapped files exist on disk."""
+    """Same task-map shape as greenfield-cross-stack, backed by real files —
+    the merge guard's fix reproduces identically once the mapped files exist
+    on disk, confirming it is not an artifact of greenfield estimation."""
 
-    def test_cycles_today_same_as_greenfield(self, tmp_path):
+    def test_partitions_without_cycle_same_as_greenfield(self, tmp_path):
         repo, plan = make_repo(
             tmp_path, "brownfield-cross-stack", real_files=BROWNFIELD_CROSS_STACK_FILES
         )
-        with pytest.raises(GroupCycleError):
-            compute_partition(
-                plan_path=plan,
-                repo_root=repo,
-                llm_runner=_llm_must_not_be_called,
-                client=client_for(repo),
-            )
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+        _assert_cross_stack_slices_intact(outcome.partition)
 
 
 class TestSliceOverBudget:
-    """Current (soft) behaviour: split_over_budget dissolves the oversized
-    slice into its two individual tasks rather than failing loudly (H1 in the
-    register would make this a hard error instead)."""
+    """Plan U3: split_over_budget cuts between blocks, never inside a slice —
+    the oversized reports slice now stays whole, over budget, rather than
+    being dissolved into its two individual tasks (U6's overflow gate is
+    what reacts to the overshoot, not the splitter)."""
 
     def config(self):
         config = OrchestratorConfig()
         config.estimator.token_budget = 8_000
         return config
 
-    def test_slice_is_split_apart_not_kept_whole(self, tmp_path):
+    def test_slice_stays_whole_even_over_budget(self, tmp_path):
         repo, plan = make_repo(tmp_path, "slice-over-budget")
         outcome = compute_partition(
             plan_path=plan,
@@ -139,47 +148,41 @@ class TestSliceOverBudget:
             llm_runner=_llm_must_not_be_called,
             client=client_for(repo),
         )
-        groups = groups_of(outcome.partition)
-        assert frozenset({"reports-api", "reports-ui"}) not in groups
         by_gid = members_by_group(outcome.partition)
-        assert any(members == {"reports-api"} for members in by_gid.values())
-        assert any(members == {"reports-ui"} for members in by_gid.values())
+        assert any({"reports-api", "reports-ui"} <= members for members in by_gid.values())
 
 
 class TestHubInTheMiddle:
-    """Current behaviour: gateway (hub B) merges with platform (hub A) and one
-    feature (billing) into a single group; the other three features stay
-    separate, each receiving a gateway-> edge and sending a ->integration edge
-    across the same boundary — the D3 cycle, reproduced from a source/sink
-    sandwiching a middle hub rather than a slice."""
+    """Plan U4: gateway (hub B) merging with platform (hub A) and one feature
+    (billing), while the other three features stay separate, used to leave a
+    gateway-> edge and a ->integration edge crossing the same boundary in
+    opposite directions — the merge guard now refuses whichever merge would
+    close that cycle."""
 
-    def test_cycles_today(self, tmp_path):
+    def test_partitions_without_cycle(self, tmp_path):
         repo, plan = make_repo(tmp_path, "hub-in-the-middle")
-        with pytest.raises(GroupCycleError):
-            compute_partition(
-                plan_path=plan,
-                repo_root=repo,
-                llm_runner=_llm_must_not_be_called,
-                client=client_for(repo),
-            )
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
 
 
 class TestNoAffinitySink:
-    """Current behaviour: audit (the affinity-less sink) merges into whichever
-    branch (billing) happens to cluster with the shared scaffold first; the
-    other branch (shipping) stays separate and ends up on both sides of the
-    same group boundary — the D3 cycle again, from the opposite contributing
-    factor (a sink with no shared-file gravity)."""
+    """Plan U4: audit (the affinity-less sink) used to merge into whichever
+    branch (billing) happened to cluster with the shared scaffold first,
+    leaving the other branch (shipping) on both sides of the same group
+    boundary — the merge guard now refuses that merge."""
 
-    def test_cycles_today(self, tmp_path):
+    def test_partitions_without_cycle(self, tmp_path):
         repo, plan = make_repo(tmp_path, "no-affinity-sink")
-        with pytest.raises(GroupCycleError):
-            compute_partition(
-                plan_path=plan,
-                repo_root=repo,
-                llm_runner=_llm_must_not_be_called,
-                client=client_for(repo),
-            )
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
 
 
 class TestPureBackend:
@@ -201,16 +204,49 @@ class TestPureBackend:
         assert any({"shipping-api", "shipping-worker"} <= members for members in by_gid.values())
 
 
-NON_CYCLING_FIXTURES = [
+class TestObservatoryRoundA:
+    """Plan U5: minimized reproduction of the real Observatory plan's "Round A"
+    group-DAG cycle — an SPA hub depending on a backend hub, three two-task
+    cross-stack slices split across the two hubs, and a verification task
+    converging on all three. Unlike greenfield-cross-stack.md (one hub), the
+    merge that would recreate the historical cycle here is the one where
+    verify's slice would fold into the backend hub across the still-separate
+    SPA hub — the U4 guard refuses exactly that merge (chain_compatible would
+    otherwise let it through, since every node pair is dependency-ordered);
+    if a cycle ever survives prevention on a shape like this, U5's repair is
+    what this fixture is here to keep covered."""
+
+    def test_partitions_without_cycle_and_slices_intact(self, tmp_path):
+        repo, plan = make_repo(tmp_path, "observatory-round-a")
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+        _assert_cross_stack_slices_intact(outcome.partition)
+
+
+ALL_FIXTURES = [
+    ("greenfield-cross-stack", None, {}),
+    ("brownfield-cross-stack", BROWNFIELD_CROSS_STACK_FILES, {}),
+    ("hub-in-the-middle", None, {}),
+    ("no-affinity-sink", None, {}),
     ("slice-over-budget", None, {"token_budget": 8_000}),
     ("pure-backend", None, {}),
+    ("observatory-round-a", None, {}),
 ]
+
+# slice-over-budget is excluded here on purpose (plan U3 decision): its
+# reports slice is a declared, intentional exception to the cap — U6's
+# overflow gate is what will react to that, not this generic property.
+WITHIN_CAP_FIXTURES = [f for f in ALL_FIXTURES if f[0] != "slice-over-budget"]
 
 
 class TestProperties:
     """R21: property assertions that hold regardless of which fixture cycles."""
 
-    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", NON_CYCLING_FIXTURES)
+    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", WITHIN_CAP_FIXTURES)
     def test_no_group_summed_work_exceeds_budget_cap(
         self, tmp_path, fixture_name, real_files, config_overrides
     ):
@@ -229,7 +265,7 @@ class TestProperties:
             total = sum(outcome.node_work[n] for n in members)
             assert total <= outcome.budget_cap
 
-    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", NON_CYCLING_FIXTURES)
+    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", ALL_FIXTURES)
     def test_partitioning_is_byte_stable_across_runs(
         self, tmp_path, fixture_name, real_files, config_overrides
     ):

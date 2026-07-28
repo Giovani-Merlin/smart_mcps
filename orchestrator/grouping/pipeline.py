@@ -81,7 +81,12 @@ class PartitionOutcome:
     """The deterministic, sub-second prefix of ``run_grouping`` (R19): mapper →
     graph → partition → group DAG. Zero LLM calls whenever the plan carries a
     task map (the mapper-LLM fallback below still runs here for foreign plans —
-    it is the only part of this prefix that is not itself deterministic)."""
+    it is the only part of this prefix that is not itself deterministic).
+
+    ``flags`` (R10) carries the partitioner's own warnings — currently just a
+    repaired group that could not be re-split back under budget (plan U5) —
+    distinct from ``mapper_out.flags``, which are mapper-level warnings.
+    """
 
     plan_text: str
     mapper_out: MapperOutput
@@ -93,6 +98,7 @@ class PartitionOutcome:
     hub_roles: dict[str, str]
     slice_atoms: dict[str, list[str]]
     last_stage: str | None
+    flags: list[str]
     base_context: str
     base_tokens: int
 
@@ -166,6 +172,7 @@ def compute_partition(
         hub_roles=roles,
         slice_atoms=slice_atoms(graph, roles),
         last_stage=strategy.last_stage,
+        flags=list(strategy.flags),
         base_context=base_context,
         base_tokens=base_tokens,
     )
@@ -219,7 +226,7 @@ def run_grouping(
             upstream_of[down_gid].append(up_gid)
 
     roles = outcome.hub_roles
-    flags = list(mapper_out.flags)
+    flags = list(mapper_out.flags) + list(outcome.flags)
     groups: list[Group] = []
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
