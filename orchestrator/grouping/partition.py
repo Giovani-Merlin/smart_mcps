@@ -88,12 +88,49 @@ class SingleGroupStrategy:
         return {node: 0 for node in sorted(graph.nodes)}
 
 
+def _group_edges(graph: TaskGraph, partition: Partition) -> dict[int, set[int]]:
+    """Group-level dependency edges {upstream_gid: {downstream_gid}}, unfiltered —
+    may contain cycles. Shared by build_group_dag's authoritative check, the U4
+    merge guard, and the U5 SCC repair."""
+    group_edges: dict[int, set[int]] = defaultdict(set)
+    for up, down in graph.dependencies:
+        gu, gd = partition[up], partition[down]
+        if gu != gd:
+            group_edges[gu].add(gd)
+    return group_edges
+
+
+def _is_acyclic(group_edges: Mapping[int, set[int]], gids: set[int]) -> bool:
+    """Kahn's algorithm over a group-level edge map; the surviving-node count
+    is order-independent, so this needs no sorting to be deterministic."""
+    indegree: dict[int, int] = dict.fromkeys(gids, 0)
+    for gu, downs in group_edges.items():
+        for gd in downs:
+            if gd in indegree:
+                indegree[gd] += 1
+    queue = [gid for gid, d in indegree.items() if d == 0]
+    seen = 0
+    while queue:
+        gid = queue.pop()
+        seen += 1
+        for gd in group_edges.get(gid, ()):
+            if gd in indegree:
+                indegree[gd] -= 1
+                if indegree[gd] == 0:
+                    queue.append(gd)
+    return seen == len(indegree)
+
+
 def build_group_dag(graph: TaskGraph, partition: Partition) -> dict[int, set[int]]:
     """Group-level dependency edges {upstream_gid: {downstream_gid}}; cycles fail loudly.
 
     CoCoder has no cycle detection (a cyclic graph silently wedges its scheduler);
     here a cycle raises GroupCycleError naming the groups and the task edges that
-    close the cycle.
+    close the cycle. By the time DefaultPartitionStrategy reaches this call
+    (plan U4/U5), the merge guard has refused every cycle-creating merge and the
+    SCC repair has folded away whatever still cycled after Louvain/lift/split —
+    a GroupCycleError surfacing from here is an orchestrator bug, not a
+    user-facing outcome.
     """
     group_edges: dict[int, set[int]] = defaultdict(set)
     edge_evidence: dict[tuple[int, int], list[Pair]] = defaultdict(list)
@@ -454,16 +491,42 @@ def lift_independent(graph: TaskGraph, partition: Partition) -> Partition:
     return new_partition
 
 
+def _slice_block_of(graph: TaskGraph) -> dict[str, str]:
+    """Node → indivisible block id: a declared slice's members share one id
+    (``slice::<label>``), every other node is its own block. The splitter and
+    the SCC re-split (plan U3/U5) both cut between blocks, never inside one."""
+    block_of: dict[str, str] = {}
+    for label, members in slice_atoms(graph, {}).items():
+        for node in members:
+            block_of[node] = f"slice::{label}"
+    for node in graph.nodes:
+        block_of.setdefault(node, node)
+    return block_of
+
+
+def _blocks_of(members: list[str], block_of: dict[str, str]) -> dict[str, list[str]]:
+    """Group ``members`` by block id, each list sorted for determinism."""
+    blocks: dict[str, list[str]] = defaultdict(list)
+    for node in members:
+        blocks[block_of[node]].append(node)
+    return {block_id: sorted(nodes) for block_id, nodes in blocks.items()}
+
+
 def split_over_budget(
     graph: TaskGraph, partition: Partition, work_fn: WorkFn, budget_cap: float
 ) -> Partition:
     """Split any group whose summed work exceeds the cap at its lowest-affinity boundary.
 
     Not in CoCoder (its clustering output is size-unbounded upward); required by
-    origin AE2. Reverse-Kruskal: drop the weakest internal affinity edges until the
-    group falls apart, recurse on any component still over budget. A single node
-    over budget stays a singleton — the estimator flags it downstream.
+    origin AE2. Cut candidates are computed *between indivisible blocks* — a
+    declared slice's members or a lone node (plan U3) — so a cut can separate a
+    slice from the rest of an over-budget group but never break the slice apart.
+    Reverse-Kruskal: drop the weakest internal block-to-block affinity until the
+    group falls apart, recurse on any component still over budget. A group made
+    of a single block over budget stays whole — the estimator flags it downstream
+    (or, for a slice, U6's overflow gate).
     """
+    block_of = _slice_block_of(graph)
     groups: dict[int, list[str]] = defaultdict(list)
     for node, gid in partition.items():
         groups[gid].append(node)
@@ -474,23 +537,35 @@ def split_over_budget(
     while pending:
         members = pending.pop(0)
         total = sum(work_fn(n) for n in members)
-        if total <= budget_cap or len(members) == 1:
+        blocks = _blocks_of(members, block_of)
+        if total <= budget_cap or len(blocks) == 1:
             for node in members:
                 new_partition[node] = next_gid
             next_gid += 1
             continue
         member_set = set(members)
+        block_affinity: dict[Pair, float] = defaultdict(float)
+        for (a, b), w in graph.affinity.items():
+            if a in member_set and b in member_set:
+                ba, bb = block_of[a], block_of[b]
+                if ba != bb:
+                    block_affinity[canonical_pair(ba, bb)] += w
+        block_ids = set(blocks)
         internal = sorted(
-            ((w, pair) for pair, w in graph.affinity.items() if set(pair) <= member_set),
+            ((w, pair) for pair, w in block_affinity.items()),
             key=lambda item: (item[0], item[1]),
         )
-        components = _components_after_cut(member_set, internal)
+        components = _components_after_cut(block_ids, internal)
         if len(components) == 1:
             # Fully cohesive at every weight level: cut the single weakest edge set
-            # couldn't separate it, so peel the smallest-work node deterministically.
-            peel = min(members, key=lambda n: (work_fn(n), n))
-            components = [[peel], sorted(member_set - {peel})]
-        pending = components + pending
+            # couldn't separate it, so peel the smallest-work block deterministically.
+            block_work = {b: sum(work_fn(n) for n in blocks[b]) for b in block_ids}
+            peel = min(block_ids, key=lambda b: (block_work[b], b))
+            components = [[peel], sorted(block_ids - {peel})]
+        pending = [
+            sorted(node for block_id in component for node in blocks[block_id])
+            for component in components
+        ] + pending
     return new_partition
 
 
@@ -651,6 +726,12 @@ def merge_small_groups(
             candidate = {
                 node: (target if gid == source else gid) for node, gid in partition.items()
             }
+            if not _is_acyclic(_group_edges(graph, candidate), set(candidate.values())):
+                # Plan U4 (M2): folding an upstream hub's group together with a
+                # downstream aggregator's group across an intermediate group
+                # inverts an edge in the quotient graph — refuse it here
+                # rather than let build_group_dag discover it at the end.
+                continue
             candidate_makespan = _simulate_makespan(graph, candidate, work)
             if candidate_makespan > current_makespan + 1e-9:
                 continue

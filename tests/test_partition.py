@@ -155,6 +155,45 @@ class TestMerge:
         for members in groups_of(merged):
             assert not {"b1", "b2"} <= members
 
+    def test_acyclic_merge_still_accepted(self):
+        """Plan U4: the new cycle guard must not disable ordinary merging — an
+        acyclic, in-budget, makespan-neutral chain still fully collapses."""
+        g = graph("a b c".split(), dependencies={("a", "b"): 1.0, ("b", "c"): 1.0})
+        merged = merge_small_groups(g, {"a": 0, "b": 1, "c": 2}, lambda n: 1.0, budget_cap=10.0)
+        assert groups_of(merged) == {frozenset({"a", "b", "c"})}
+
+
+class TestMergeAcyclicGuard:
+    """Plan U4 (M2): merging an upstream hub's group with a downstream
+    aggregator's group across an intermediate group inverts an edge in the
+    quotient graph — the guard must refuse that specific merge."""
+
+    def test_merge_creating_cross_group_cycle_is_rejected(self):
+        """source-hub -> feature -> sink-aggregator, plus a direct
+        source-hub -> sink-aggregator edge (the aggregator's real-world
+        pattern of also depending on the hub directly). Merging hub and agg
+        skips feature and would invert the feature->agg edge against the
+        (now single-group) hub->feature edge — every candidate merge here is
+        either over budget or would create that cycle, so all three groups
+        stay distinct."""
+        g = graph(
+            "hub feature agg".split(),
+            dependencies={
+                ("hub", "feature"): 1.0,
+                ("feature", "agg"): 1.0,
+                ("hub", "agg"): 1.0,
+            },
+        )
+        work = {"hub": 1.0, "feature": 10.0, "agg": 1.0}
+        merged = merge_small_groups(
+            g, {"hub": 0, "feature": 1, "agg": 2}, lambda n: work[n], budget_cap=5.0
+        )
+        assert groups_of(merged) == {
+            frozenset({"hub"}),
+            frozenset({"feature"}),
+            frozenset({"agg"}),
+        }
+
 
 class TestSplitOverBudget:
     def test_ae2_split_at_lowest_affinity_boundary(self):
@@ -179,6 +218,32 @@ class TestSplitOverBudget:
         )
         split = split_over_budget(g, {n: 0 for n in "abc"}, lambda n: 1.0, budget_cap=2.0)
         assert all(len(members) <= 2 for members in groups_of(split))
+
+    def test_slice_keeps_its_members_together_when_group_splits(self):
+        """Plan U3: cut candidates are between blocks — a slice atom or a lone
+        node — never inside a slice. A two-task slice plus two loose tasks
+        must split around the slice, not through it."""
+        g = graph(
+            "s1 s2 x y".split(),
+            affinity={("s1", "s2"): 10.0, ("s2", "x"): 1.0, ("x", "y"): 10.0},
+            slices={"s1": "sl", "s2": "sl"},
+        )
+        split = split_over_budget(
+            g, {n: 0 for n in "s1 s2 x y".split()}, lambda n: 1.0, budget_cap=2.0
+        )
+        assert any({"s1", "s2"} <= members for members in groups_of(split))
+
+    def test_single_block_over_budget_stays_whole_even_when_it_is_a_slice(self):
+        """Generalizes the single-node passthrough (plan U3): a group made of
+        exactly one block — even a multi-task slice atom — stays whole when
+        over budget, since there is nothing to cut it against."""
+        g = graph(
+            "s1 s2".split(),
+            affinity={("s1", "s2"): 5.0},
+            slices={"s1": "sl", "s2": "sl"},
+        )
+        split = split_over_budget(g, {"s1": 0, "s2": 0}, lambda n: 100.0, budget_cap=1.0)
+        assert groups_of(split) == {frozenset({"s1", "s2"})}
 
 
 class TestGroupDag:
@@ -236,15 +301,18 @@ class TestSliceContraction:
         assert partition["a"] == partition["b"]
         assert partition["z"] != partition["a"]
 
-    def test_oversized_slice_still_splits_on_budget_at_weakest_internal_edge(self):
-        """Softness comes after expansion: the must-link yields to the token cap."""
+    def test_oversized_slice_stays_whole_instead_of_splitting(self):
+        """Plan U3: a slice is one indivisible block for the splitter — the
+        must-link no longer yields to the token cap the way it did pre-U3.
+        An oversized slice passes through whole; reacting to the overshoot
+        is U6's overflow gate, not the splitter."""
         g = graph(
             "a1 a2 a3".split(),
             affinity={("a1", "a2"): 5.0, ("a2", "a3"): 1.0},
             slices={"a1": "s", "a2": "s", "a3": "s"},
         )
         partition = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0).partition(g)
-        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
+        assert groups_of(partition) == {frozenset({"a1", "a2", "a3"})}
 
     def test_hub_role_member_joins_its_slice(self):
         """A declared slice outranks an inferred hub role (plan U2): the planner
@@ -405,16 +473,18 @@ class TestStageAttribution:
     (contraction / louvain / lift / split / merge) last changed group membership."""
 
     def test_last_stage_is_split_when_budget_forces_a_cut(self):
-        """An oversized slice survives contraction/lift, then split_over_budget
-        makes the final cut — last_stage must name it, not the earlier stages."""
+        """A slice plus a loose task survive contraction/lift clustered
+        together, then split_over_budget cuts the loose task away — the
+        slice's two members stay together (plan U3), and last_stage must
+        name the split, not the earlier stages."""
         g = graph(
-            "a1 a2 a3".split(),
-            affinity={("a1", "a2"): 5.0, ("a2", "a3"): 1.0},
-            slices={"a1": "s", "a2": "s", "a3": "s"},
+            "a1 a2 x".split(),
+            affinity={("a1", "a2"): 5.0, ("a2", "x"): 1.0},
+            slices={"a1": "s", "a2": "s"},
         )
         strategy = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0)
         partition = strategy.partition(g)
-        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
+        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"x"})}
         assert strategy.last_stage == "split"
 
     def test_last_stage_is_merge_when_a_dependent_chain_collapses(self):
