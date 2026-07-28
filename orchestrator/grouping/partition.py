@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 Pair = tuple[str, str]
 # node → group id. Group ids are contiguous ints; deterministic across runs.
@@ -34,6 +34,8 @@ WorkFn = Callable[[str], float]
 
 DEFAULT_HUB_THRESHOLD = 0.4  # CoCoder's live ROLE_THRESHOLD (partition_into_groups.py:37)
 LOUVAIN_SEED = 42
+
+_Node = TypeVar("_Node")
 
 
 def canonical_pair(a: str, b: str) -> Pair:
@@ -204,7 +206,7 @@ def _last_modifying_stage(stages: list[tuple[str, Partition]]) -> str:
 @dataclass
 class DefaultPartitionStrategy:
     """CoCoder's pipeline, ported: hub isolation → slice contraction → Louvain →
-    lift → split → merge.
+    lift → split → merge → repair.
 
     ``work_fn`` and ``budget_cap`` are the injected estimator hooks: work is the
     relative size of one task node and the cap bounds a group's summed work. With
@@ -214,14 +216,23 @@ class DefaultPartitionStrategy:
     Slice labels (task-map must-links, docs/orchestrator-task-map.md) enter as
     deterministic node contraction: hub roles are detected first (a hub is never
     absorbed into a slice), each slice's core members contract into one supernode
-    for clustering and lifting, then membership expands. Softness comes after
-    expansion: ``split_over_budget`` may still break an oversized slice at its
-    weakest internal edges and ``merge_small_groups`` may combine small ones.
+    for clustering and lifting, then membership expands. A slice is an indivisible
+    block from here on: ``split_over_budget`` (plan U3) cuts around a slice, never
+    through it, and ``merge_small_groups`` (plan U4) refuses any merge that would
+    close a group-level dependency cycle.
+
+    Prevention is not exhaustive — a cycle can still originate at Louvain, lift or
+    split, before merge ever runs (plan U5). ``repair_cycles`` merges every such
+    surviving cyclic group-SCC and re-splits it back inside budget where possible;
+    acyclicity is an internal invariant from this point on, so the final
+    ``build_group_dag`` call below is a safety net whose ``GroupCycleError`` would
+    mean a bug in this repair, not a user-facing outcome.
 
     ``last_stage`` (R18) records which internal stage last *changed* the
-    partition's membership (contraction/louvain, lift, split, merge) — set after
-    every ``partition()`` call by comparing group membership after each stage,
-    not by re-running anything.
+    partition's membership (contraction/louvain, lift, split, merge, repair) — set
+    after every ``partition()`` call by comparing group membership after each
+    stage, not by re-running anything. ``flags`` (R10) accumulates one message per
+    repaired group that could not be re-split back under budget.
     """
 
     work_fn: WorkFn = lambda node: 1.0
@@ -229,8 +240,10 @@ class DefaultPartitionStrategy:
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
     last_stage: str | None = field(default=None, init=False)
+    flags: list[str] = field(default_factory=list, init=False)
 
     def partition(self, graph: TaskGraph) -> Partition:
+        self.flags = []
         if not graph.nodes:
             self.last_stage = None
             return {}
@@ -258,8 +271,10 @@ class DefaultPartitionStrategy:
             stages.append(("split", dict(partition)))
         partition = merge_small_groups(graph, partition, self.work_fn, self.budget_cap)
         stages.append(("merge", dict(partition)))
+        partition = repair_cycles(graph, partition, self.work_fn, self.budget_cap, self.flags)
+        stages.append(("repair", dict(partition)))
         partition = _renumber(partition)
-        build_group_dag(graph, partition)  # cycles must fail loudly (plan U1)
+        build_group_dag(graph, partition)  # an orchestrator bug if this still raises (plan U5)
         self.last_stage = _last_modifying_stage(stages)
         return partition
 
@@ -778,3 +793,203 @@ def _compute_waves(graph: TaskGraph) -> dict[str, int]:
     for node in graph.nodes:
         layer.setdefault(node, 0)
     return layer
+
+
+def _strongly_connected_components(
+    edges: Mapping[_Node, set[_Node]], node_ids: set[_Node]
+) -> list[list[_Node]]:
+    """Kosaraju's SCC, sorted-order deterministic (plan U5): fixed traversal
+    order at both passes makes the assignment of nodes to components
+    reproducible across runs, which is what byte-stable repair (R18) needs
+    from this step. Generic over the node type: used both for the group
+    quotient graph (int ids) and the block-level graph inside a re-split
+    (str block ids, see _resplit_by_wave)."""
+    visited: set[_Node] = set()
+    finish_order: list[_Node] = []
+    for start in sorted(node_ids):
+        if start in visited:
+            continue
+        visited.add(start)
+        stack: list[tuple[_Node, list[_Node]]] = [(start, sorted(edges.get(start, ())))]
+        while stack:
+            node, remaining = stack[-1]
+            advanced = False
+            while remaining:
+                nxt = remaining.pop(0)
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append((nxt, sorted(edges.get(nxt, ()))))
+                    advanced = True
+                    break
+            if not advanced:
+                finish_order.append(node)
+                stack.pop()
+
+    reverse_edges: dict[_Node, set[_Node]] = defaultdict(set)
+    for u, downs in edges.items():
+        for v in downs:
+            reverse_edges[v].add(u)
+
+    assigned: set[_Node] = set()
+    components: list[list[_Node]] = []
+    for node_id in reversed(finish_order):
+        if node_id in assigned:
+            continue
+        assigned.add(node_id)
+        component = [node_id]
+        stack = [node_id]
+        while stack:
+            node = stack.pop()
+            for nxt in sorted(reverse_edges.get(node, ())):
+                if nxt not in assigned:
+                    assigned.add(nxt)
+                    component.append(nxt)
+                    stack.append(nxt)
+        components.append(sorted(component))
+    return components
+
+
+def _resplit_by_wave(
+    graph: TaskGraph, members: list[str], work_fn: WorkFn, budget_cap: float
+) -> list[list[str]]:
+    """Chunk a merged group's members along ascending dependency-wave
+    boundaries (plan U5), never splitting a slice block apart.
+
+    This is what makes the re-split provably cycle-safe: an external group X
+    cannot have edges in both directions against the members of a just-merged
+    SCC (if it did, X would have been part of that SCC), so X's relationship
+    to every chunk carved from those members is the same single direction as
+    its relationship to the whole merged set. Chunking by ascending wave
+    order — computed from dependencies internal to ``members`` only — means
+    no chunk can ever depend on a later chunk either. Together, no re-split
+    chunk boundary can introduce a new cross-group edge running the wrong way.
+    """
+    member_set = set(members)
+    block_of = _slice_block_of(graph)
+    blocks: dict[str, list[str]] = defaultdict(list)
+    for node in members:
+        blocks[block_of[node]].append(node)
+    for nodes in blocks.values():
+        nodes.sort()
+
+    block_edges: dict[str, set[str]] = defaultdict(set)
+    for up, down in graph.dependencies:
+        if up in member_set and down in member_set:
+            bu, bd = block_of[up], block_of[down]
+            if bu != bd:
+                block_edges[bu].add(bd)
+
+    # A slice can straddle two blocks that were only cyclic at the group
+    # level (see repair_cycles): e.g. a1/a2 share a slice while a1 -> b ->
+    # a2, so contracting a1+a2 makes the slice block and b's block depend on
+    # each other. Condensing this block graph's own SCCs first — the same
+    # theorem repair_cycles already relies on — guarantees the wave loop
+    # below always terminates instead of deadlocking on a mutual dependency.
+    block_ids = set(blocks)
+    super_of: dict[str, str] = {}
+    for component in _strongly_connected_components(block_edges, block_ids):
+        rep = min(component)
+        for block_id in component:
+            super_of[block_id] = rep
+    supers: dict[str, list[str]] = defaultdict(list)
+    for block_id, nodes in blocks.items():
+        supers[super_of[block_id]].extend(nodes)
+    for nodes in supers.values():
+        nodes.sort()
+
+    dependencies_of_super: dict[str, set[str]] = defaultdict(set)
+    for bu, downs in block_edges.items():
+        for bd in downs:
+            su, sd = super_of[bu], super_of[bd]
+            if su != sd:
+                dependencies_of_super[sd].add(su)
+
+    wave: dict[str, int] = {}
+    changed = True
+    while changed:
+        changed = False
+        for super_id in supers:
+            if super_id in wave:
+                continue
+            deps = dependencies_of_super.get(super_id, set())
+            if all(d in wave for d in deps):
+                wave[super_id] = max([0] + [wave[d] + 1 for d in deps])
+                changed = True
+    ordered = sorted(supers, key=lambda s: (wave[s], s))
+
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_work = 0.0
+    for super_id in ordered:
+        super_members = supers[super_id]
+        super_work = sum(work_fn(n) for n in super_members)
+        if current and current_work + super_work > budget_cap:
+            chunks.append(current)
+            current, current_work = [], 0.0
+        current.extend(super_members)
+        current_work += super_work
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def repair_cycles(
+    graph: TaskGraph,
+    partition: Partition,
+    work_fn: WorkFn,
+    budget_cap: float | None,
+    flags: list[str],
+) -> Partition:
+    """SCC-merge, then a mandatory dependency-safe re-split (plan U5).
+
+    A cycle surviving the U4 merge guard can only have originated earlier —
+    at Louvain, lift or split — so it is repaired here rather than raised to
+    the caller. Merging every cyclic group-SCC's members into one supergroup
+    always yields an acyclic condensation (standard SCC theorem); the
+    wave-ordered re-split that follows (``_resplit_by_wave``) never
+    reintroduces a cycle. A chunk that still cannot fit under budget after
+    re-splitting is left over budget with an entry appended to ``flags``
+    naming it and the overshoot, rather than failing — these are greenfield
+    estimates, and a hard failure here would be unactionable.
+    """
+    group_edges = _group_edges(graph, partition)
+    gids = set(partition.values())
+    components = _strongly_connected_components(group_edges, gids)
+    cyclic = [c for c in components if len(c) > 1]
+    if not cyclic:
+        return partition
+
+    merge_target = {gid: min(component) for component in cyclic for gid in component}
+    merged_partition = {node: merge_target.get(gid, gid) for node, gid in partition.items()}
+    if budget_cap is None:
+        return merged_partition
+
+    merged_groups: dict[int, list[str]] = defaultdict(list)
+    for node, gid in merged_partition.items():
+        merged_groups[gid].append(node)
+
+    result = dict(merged_partition)
+    next_gid = max(partition.values(), default=-1) + 1
+    for component in cyclic:
+        target = min(component)
+        members = sorted(merged_groups[target])
+        total = sum(work_fn(n) for n in members)
+        if total <= budget_cap:
+            continue
+        chunks = _resplit_by_wave(graph, members, work_fn, budget_cap)
+        for chunk in chunks:
+            chunk_work = sum(work_fn(n) for n in chunk)
+            if chunk_work > budget_cap:
+                flags.append(
+                    f"partition: group containing {chunk[0]!r} stays "
+                    f"{chunk_work - budget_cap:.0f} over the {budget_cap:.0f} cap "
+                    "after cycle repair (an acyclic re-split under budget did not exist)"
+                )
+        first, *rest = chunks
+        for node in first:
+            result[node] = target
+        for chunk in rest:
+            for node in chunk:
+                result[node] = next_gid
+            next_gid += 1
+    return result

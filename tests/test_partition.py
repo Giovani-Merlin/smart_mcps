@@ -20,6 +20,7 @@ from orchestrator.grouping.partition import (
     detect_hub_roles,
     lift_independent,
     merge_small_groups,
+    repair_cycles,
     slice_atoms,
     split_over_budget,
 )
@@ -265,15 +266,85 @@ class TestGroupDag:
         dag = build_group_dag(g, {"a": 0, "b": 1, "c": 2})
         assert dag == {0: {1}, 1: {2}}
 
-    def test_strategy_fails_loudly_on_cyclic_grouping(self):
-        """Affinity pulls a+d and b+c together while dependencies cross: a→b, c→d."""
+    def test_strategy_repairs_a_cyclic_grouping_instead_of_raising(self):
+        """Plan U5: affinity pulls a+d and b+c together while dependencies
+        cross (a→b, c→d) — unrelated across the groups, so the merge guard's
+        chain_compatible check refuses to fold them together itself, leaving
+        a 2-group cycle for repair_cycles to fix by merging the SCC. The
+        strategy no longer raises for a cycle it can repair."""
         g = graph(
             "a b c d".split(),
             affinity={("a", "d"): 100.0, ("b", "c"): 100.0},
             dependencies={("a", "b"): 1.0, ("c", "d"): 1.0},
         )
-        with pytest.raises(GroupCycleError):
-            DefaultPartitionStrategy().partition(g)
+        partition = DefaultPartitionStrategy().partition(g)
+        assert groups_of(partition) == {frozenset("abcd")}
+
+
+class TestSccRepair:
+    """Plan U5: repair_cycles merges every cyclic group-SCC deterministically,
+    then re-splits the merged group back inside budget where an acyclic
+    re-split exists."""
+
+    def test_repair_merges_cyclic_scc_and_stays_acyclic(self):
+        """A 3-group cycle (a->b->c->a) merges into one group; an unrelated
+        downstream group (d) is untouched, and every task from the formerly
+        cyclic groups appears exactly once in the result."""
+        g = graph(
+            "a b c d".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=None, flags=[])
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"}), frozenset({"d"})}
+        build_group_dag(g, repaired)  # must not raise
+
+    def test_repair_resplit_brings_merged_scc_within_cap(self):
+        """A 2-group cycle whose merged work (4) exceeds the cap (2) is
+        re-split into two chunks that each fit, and the quotient graph
+        stays acyclic — the wave-ordered re-split (plan U5) is what makes
+        this safe rather than reintroducing the same cycle."""
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        flags: list[str] = []
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags)
+        assert flags == []
+        groups = groups_of(repaired)
+        assert {n for members in groups for n in members} == {"a1", "a2", "b1", "b2"}
+        assert all(len(members) <= 2 for members in groups)
+        build_group_dag(g, repaired)  # must not raise
+
+    def test_repair_flags_group_that_cannot_be_resplit_under_cap(self):
+        """a1/a2 share a slice while a1 -> b -> a2: contracting the slice
+        makes the slice block and b's block mutually dependent, so no
+        acyclic re-split can separate them. The merged group is returned
+        over budget with a flags[] entry naming it and the overshoot."""
+        g = graph(
+            "a1 a2 b".split(),
+            dependencies={("a1", "b"): 1.0, ("b", "a2"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        partition = {"a1": 0, "a2": 0, "b": 1}
+        flags: list[str] = []
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags)
+        assert groups_of(repaired) == {frozenset({"a1", "a2", "b"})}
+        assert len(flags) == 1
+        assert "a1" in flags[0] and "1" in flags[0]
+
+    def test_repair_is_deterministic_across_runs(self):
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        results = {
+            tuple(sorted(repair_cycles(g, dict(partition), lambda n: 1.0, 2.0, []).items()))
+            for _ in range(5)
+        }
+        assert len(results) == 1
 
 
 class TestSliceContraction:
@@ -381,19 +452,19 @@ class TestSliceContraction:
         results = {tuple(sorted(DefaultPartitionStrategy().partition(g).items())) for _ in range(5)}
         assert len(results) == 1
 
-    def test_slice_induced_group_cycle_fails_loudly_naming_the_edges(self):
-        """Contraction can close a cycle absent at task level: slice s1 feeds s2
-        through one task while s2 feeds s1 through another. The chain guard
-        refuses to merge them away, and the DAG build names both task edges."""
+    def test_slice_induced_group_cycle_is_repaired_by_merging_the_scc(self):
+        """Plan U5: contraction can close a cycle absent at task level — slice
+        s1 feeds s2 through one task while s2 feeds s1 through another. The
+        chain guard refuses to merge them away (unrelated node pairs across
+        the two slices), leaving a 2-group cycle that repair_cycles now
+        merges into one group instead of raising."""
         g = graph(
             "a1 a2 b1 b2".split(),
             dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
             slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
         )
-        with pytest.raises(GroupCycleError) as exc:
-            DefaultPartitionStrategy().partition(g)
-        assert ("a1", "b1") in exc.value.offending_edges
-        assert ("b2", "a2") in exc.value.offending_edges
+        partition = DefaultPartitionStrategy().partition(g)
+        assert groups_of(partition) == {frozenset({"a1", "a2", "b1", "b2"})}
 
 
 class TestDefaultStrategyEndToEnd:
