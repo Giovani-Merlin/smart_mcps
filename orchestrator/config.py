@@ -51,6 +51,12 @@ class EstimatorConfig(BaseModel):
     slack_multiplier: float = 1.3
     per_file_tool_allowance: int = 2_000
     spec_tokens_allowance: int = 3_000  # partition-time stand-in before specs exist
+    # Plan U7: a prospective file with a declared size_hints class is priced here
+    # instead of per_file_tool_allowance; medium equals today's flat rate by
+    # design, so an unhinted prospective file is priced exactly as before.
+    size_hint_small: int = 500
+    size_hint_medium: int = 2_000
+    size_hint_large: int = 5_000
 
 
 class DifficultyConfig(BaseModel):
