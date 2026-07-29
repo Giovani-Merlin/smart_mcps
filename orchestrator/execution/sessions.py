@@ -84,12 +84,24 @@ class RoundUsage:
 
     @classmethod
     def from_envelope(cls, envelope: dict) -> RoundUsage:
+        """Context occupancy of the round's final turn.
+
+        The envelope's top-level ``usage`` *sums* every turn of the round, so on a
+        multi-turn round its cache-read total grows without bound and has nothing to
+        do with how full the context actually is — a 190-turn coder round reported
+        18.6M against a real occupancy of 262k. ``usage.iterations`` carries the
+        per-turn entries, and the last of them is the context the next round would
+        resume into. Envelopes without ``iterations`` (older CLIs, the test stub)
+        fall back to the top level, where the two are identical for a single turn.
+        """
         usage = envelope.get("usage") or {}
+        iterations = usage.get("iterations") or []
+        latest = iterations[-1] if isinstance(iterations, list) and iterations else usage
         return cls(
-            input_tokens=int(usage.get("input_tokens", 0) or 0),
-            output_tokens=int(usage.get("output_tokens", 0) or 0),
-            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
-            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            input_tokens=int(latest.get("input_tokens", 0) or 0),
+            output_tokens=int(latest.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(latest.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(latest.get("cache_creation_input_tokens", 0) or 0),
         )
 
 

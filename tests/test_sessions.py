@@ -30,6 +30,7 @@ from orchestrator.execution.prompting import (
 from orchestrator.execution.sessions import (
     PreflightError,
     ReportError,
+    RoundUsage,
     SessionError,
     SessionRunner,
     nudge_until_report,
@@ -190,6 +191,55 @@ def test_usage_accumulates_across_rounds_and_is_queryable_per_session(fake_home,
     # last-round context = input + output + cache_read + cache_creation (spike finding)
     assert usage.last_context_tokens == 7 + 20 + 2000 + 200
     assert runner.usage_of(base.session_id).rounds == 1
+
+
+def test_multi_turn_envelope_reports_last_turn_context_not_the_round_sum():
+    """A real multi-turn envelope sums every turn into the top-level ``usage``, so
+    reading it as context occupancy inflates without bound: the live run saw a
+    190-turn coder round report 18,606,845 against a real occupancy of ~262k, which
+    tripped the 120k breaker on every group that needed a second round. Shape taken
+    from CLI 2.1.211's `--output-format json`.
+    """
+    envelope = {
+        "usage": {
+            # top level = the sum across both turns, which is NOT the context size
+            "input_tokens": 4,
+            "output_tokens": 300,
+            "cache_read_input_tokens": 261_000,
+            "cache_creation_input_tokens": 500,
+            "iterations": [
+                {
+                    "input_tokens": 2,
+                    "output_tokens": 35,
+                    "cache_read_input_tokens": 100_000,
+                    "cache_creation_input_tokens": 282,
+                },
+                {
+                    "input_tokens": 2,
+                    "output_tokens": 265,
+                    "cache_read_input_tokens": 161_000,
+                    "cache_creation_input_tokens": 218,
+                },
+            ],
+        }
+    }
+    usage = RoundUsage.from_envelope(envelope)
+    assert usage.context_tokens == 2 + 265 + 161_000 + 218
+    assert usage.context_tokens < 261_804  # the sum, had we read the top level
+
+
+def test_envelope_without_iterations_falls_back_to_top_level_usage():
+    """Older CLIs and the test stub emit no ``iterations``; for a single turn the
+    top-level totals *are* the last turn, so the fallback stays exact."""
+    envelope = {
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 7_370,
+            "cache_creation_input_tokens": 17_158,
+        }
+    }
+    assert RoundUsage.from_envelope(envelope).context_tokens == 2 + 4 + 7_370 + 17_158
 
 
 def test_long_round_completes_with_no_per_round_timeout(fake_home, tmp_path):
