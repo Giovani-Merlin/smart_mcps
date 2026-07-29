@@ -39,3 +39,24 @@ Hence `"--project", "${CLAUDE_PLUGIN_ROOT:-.}"`. `${CLAUDE_PLUGIN_ROOT}` is set 
 
 - **`${CLAUDE_PROJECT_DIR}` is not available in `.mcp.json`** — only in hooks. Using it yields a "Missing environment variables" warning.
 - **Defaults don't nest.** `${VAR:-default}` works, but `${A:-${B}}` does not expand `B` — it silently passes a literal, which `uv` may accept when the console script is already on PATH, hiding the bug locally while breaking for consumers.
+
+## Never keep working notes in the `/tmp` scratchpad
+
+The session scratchpad under `/tmp` is **wiped when the Claude Code process restarts** — not
+just at the end of a session. Anything written there is gone without warning.
+
+This has already cost real work: on 2026-07-29 a restart destroyed the accumulated findings
+and deferred-fix list for two sessions of orchestrator debugging, plus a patch backup of a
+group's stranded work.
+
+Use `/tmp` only for genuinely throwaway intermediates. Anything another session would want —
+findings, deferred-fix lists, handoff notes, backups of uncommitted work — goes somewhere
+durable:
+
+| what                                  | where                                                                               |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| Run findings, deferred fixes, backups | `.orchestrator/` — gitignored, survives restarts, never collides with a group merge |
+| Facts worth recalling across sessions | the auto-memory dir (`~/.claude/projects/<project>/memory/`)                        |
+| Anything the repo should carry        | `docs/` — committed                                                                 |
+
+Write it durably **as you go**, not at the end. A restart gives no notice.
