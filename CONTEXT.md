@@ -46,6 +46,13 @@ a work failure (see below). Recoverable by definition: the work itself was
 never judged.
 _Avoid_: crash (too vague), transient error (some envelope failures last hours)
 
+**Permission Denial**:
+A worker's tool call refused by the harness's permission layer, not by the
+orchestrator. A kind of Envelope Failure — the work was never judged, and the
+same command succeeds once the grant exists — so it is recoverable, never a
+Work Failure. A coder that meets one reports it; it never improvises around it.
+_Avoid_: blocked (that is the coder's judgement that the work itself cannot proceed)
+
 **Work Failure**:
 A group failure decided by an agent or a bound — coder blocked/failed, reviewer
 abort, operator skip, generation/rewrite caps exhausted. Includes `ReportError`:
@@ -69,6 +76,31 @@ Continuing an interrupted coder session by its session id, preserving its
 conversation — the same mechanism `changes_required` rounds already use.
 _Avoid_: respawn (that is the fork-fresh path)
 
+**Resolve**:
+The orchestrator's recovery of a group that ended in a Work Failure: commit
+whatever its worktree still holds uncommitted, then merge the branch. Reachable
+autonomously (HITL off) or on operator request (HITL on). Possible only because
+the orchestrator shells git itself, outside the worker's permission sandbox — the
+same reason an operator can commit by hand where the coder was denied. Never
+applied to an Interrupted group, whose work is unfinished by definition and whose
+Re-entry is designed to finish it.
+_Avoid_: recover (the operator's manual version), retry (no agent runs again)
+
+**Resolved**:
+The terminal outcome of a group whose work was merged by a Resolve — banked, but
+never reviewed. Deliberately distinct from completed: a group that reached
+integration without a verdict must not claim one (ADR 0004).
+_Avoid_: completed (that asserts a passed review), failed (its work is merged)
+
+**Granularity**:
+The explicit dial on how aggressively the partitioner merges small groups —
+`independent` (both merge guards on), `balanced` (makespan no-regression guard
+relaxed), `monolithic` (both relaxed). Orthogonal to concurrency: chain
+compatibility keeps groups *disjoint*, and file overlap between groups is a
+correctness hazard a serial run still wants avoided. Slice must-link and the
+budget cap stay hard at every level.
+_Avoid_: parallel (naming the default for parallelism concedes exactly that point)
+
 **Slice**:
 A plan-declared set of tasks that must execute as one group — the task map's
 must-link. An output invariant of grouping: a slice lands whole in exactly one
@@ -82,6 +114,14 @@ stage's output and each decision with its quantitative context — the grouping
 engine's explanation of itself, and the contract a front-end renders. A record,
 never an input: reading it back never influences grouping.
 _Avoid_: explain log (it is structured data, not log lines)
+
+**Grouping Scorecard**:
+The measured quality of one partition's *outcome* — group count, cross-group
+edge count, work spread against the cap, critical path, modularity, slice
+integrity — carried with the provenance needed to attribute it (plan hash, repo
+commit, codegraph index fingerprint, resolved config). A Grouping Trace explains
+how the partition was decided; a scorecard says how good the result is.
+_Avoid_: grouping metrics (too generic), grouping stats (implies incidental counters)
 
 **Size Hint**:
 The optional size class (`small`|`medium`|`large`) on a task map's prospective

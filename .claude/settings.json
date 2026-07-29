@@ -1,31 +1,22 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(smart-mcps-perplexity *)",
-      "Bash(codegraph *)",
-      "mcp__codegraph__*",
-      "mcp__plugin_smart-mcps_codegraph__*",
-      "Bash(nlm *)",
-      "Read(//home/gbm1996/.pyenv/**)",
-      "Bash(pip show *)",
-      "Bash(pip3 show *)",
-      "Bash(python3 -c ' *)",
-      "WebFetch(domain:docs.perplexity.ai)",
-      "Read(//tmp/**)",
-      "Bash(git add *)",
-      "Bash(git commit -m ' *)",
-      "Bash(git push *)",
-      "Bash(uv run pytest*)",
-      "Bash(uv run python*)",
-      "Bash(uv run ruff*)",
-      "Bash(uv sync*)",
-      "Bash(pytest*)",
-      "Bash(python3 -m pytest*)",
-      "Bash(ruff check*)",
-      "Bash(ruff format*)",
-      "Bash(sort -u -t'\"' -k2)",
-      "Bash(grep -v ':0$')"
-    ]
+  "allow": [
+    "Bash(git *)", "Bash(uv *)", "Bash(python3 *)", "Bash(python *)",
+    "Bash(pytest*)", "Bash(ruff*)", "Bash(mypy*)", "Bash(pip *)", "Bash(pip3 *)",
+    "Bash(ls *)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+    "Bash(grep *)", "Bash(rg *)", "Bash(find *)", "Bash(sed *)", "Bash(awk *)",
+    "Bash(sort *)", "Bash(uniq *)", "Bash(cut *)", "Bash(tr *)", "Bash(jq *)",
+    "Bash(diff *)", "Bash(echo *)", "Bash(date*)", "Bash(pwd)", "Bash(cd *)",
+    "Bash(mkdir *)", "Bash(touch *)", "Bash(cp *)", "Bash(mv *)", "Bash(which *)",
+    "Bash(test *)", "Bash(true)", "Bash(timeout *)", "Bash(nohup *)",
+    "Bash(xargs *)", "Bash(tee *)", "Bash(codegraph *)",
+    "Bash(smart-mcps-orchestrate *)", "Bash(smart-mcps-perplexity *)", "Bash(nlm *)",
+    "mcp__codegraph__*","mcp__plugin_smart-mcps_codegraph__*"
+  ],
+  "ask": [
+    "Bash(git clean*)", "Bash(git reset --hard*)",
+    "Bash(git push --force*)", "Bash(git worktree remove*)"
+  ]
   },
   "hooks": {
     "SessionStart": [
