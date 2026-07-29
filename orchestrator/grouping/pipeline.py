@@ -130,6 +130,37 @@ def _check_slice_overflow(
         )
 
 
+def _check_degenerate_partition(
+    repair_flags: list[str],
+    allow_degenerate_partition: bool,
+) -> None:
+    """A cycle repair that could not re-split back under budget is a *failure*.
+
+    ``repair_cycles`` merges a cyclic group-SCC and re-splits it by dependency
+    wave; when no acyclic re-split under budget exists it leaves one over-cap
+    group and appends a flag. Nothing blocked on that flag, so a saturated
+    dependency graph produced a legal single-group "success" 3.8x over the cap
+    and `group` exited 0 (docs/orchestrator-grouping.md, limitation 5).
+
+    Loud by default, mirroring ``_check_slice_overflow``: the overshoot is
+    reported with the partition's own message, and the escape hatch
+    (``--allow-degenerate-partition`` / ``[partition] allow_degenerate_partition``
+    — exactly equivalent) accepts it instead. Unlike an oversized slice, this is
+    never something the operator declared, so the default is an error rather than
+    a warning.
+    """
+    if not repair_flags or allow_degenerate_partition:
+        return
+    detail = "\n  ".join(repair_flags)
+    raise GrouperError(
+        "partition is degenerate — cycle repair collapsed groups it could not "
+        f"re-split back under budget:\n  {detail}\n"
+        "This almost always means the task dependency graph is saturated rather "
+        "than the plan being too large. Inspect grouping-trace.json ('repairs') for "
+        "the offending edges, or accept it with --allow-degenerate-partition."
+    )
+
+
 SELF_MODIFICATION_FLAG = (
     "self-modification: this plan's mappings touch orchestrator/ — the changes "
     "take effect on the next run, not this one (see orchestrator/README.md)"
@@ -230,8 +261,11 @@ def compute_partition(
     _flag_self_modification(mapper_out)
 
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
-    graph = build_task_graph(mapper_out.mappings, client, weights)
+    graph = build_task_graph(mapper_out.mappings, client, weights, flags=mapper_out.flags)
     graph = _with_prose_fallback(graph, mapper_out, config.edge_weights.prose_neighbor)
+    # The fallback only adds affinity, but it rebuilds the graph — re-assert rather
+    # than trust that it stays that way.
+    graph.assert_acyclic_dependencies()
 
     base_context = compile_base_context(repo_root, plan_path, codegraph_files)
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
@@ -266,6 +300,13 @@ def compute_partition(
         recorder=recorder,
     )
     partition = strategy.partition(graph)
+    # Before _check_slice_overflow appends to the same list: at this point
+    # strategy.flags carries only the repair-overshoot messages, which is exactly
+    # what the degeneracy gate judges.
+    _check_degenerate_partition(
+        repair_flags=list(strategy.flags),
+        allow_degenerate_partition=config.partition.allow_degenerate_partition,
+    )
     roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
     atoms = slice_atoms(graph, roles)
     _assert_slice_integrity(atoms, partition)

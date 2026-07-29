@@ -23,7 +23,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from orchestrator.grouping.partition import Pair, TaskGraph, canonical_pair
+from orchestrator.grouping.partition import (
+    Pair,
+    TaskGraph,
+    _strongly_connected_components,
+    canonical_pair,
+)
 
 # The CLI defaults to 20 results, which would silently truncate hub fan-in counts
 # (plan U2); every caller/callee query passes this explicit high limit instead.
@@ -209,8 +214,19 @@ class CodegraphClient:
 class _EdgeAccumulator:
     affinity: dict[Pair, float] = field(default_factory=dict)
     dependencies: dict[Pair, float] = field(default_factory=dict)
+    # Directed pairs that came from a plan's declared depends_on rather than from a
+    # codegraph relation. Only these are precedence by *statement*; everything else
+    # is precedence by *inference* and is subject to the acyclicity filter below.
+    declared: set[Pair] = field(default_factory=set)
 
     def add(self, upstream: str, downstream: str, weight: float) -> None:
+        """Derived structural relation: cohesion *and* provisional precedence.
+
+        The affinity half is unconditional — a call or impact relation is real
+        coupling however the pair is ordered. The dependency half is a hypothesis
+        that ``_drop_inferred_cycles`` may withdraw, which is why the weight is
+        recorded in both maps: dropping the directed edge later costs no affinity.
+        """
         pair = canonical_pair(upstream, downstream)
         self.affinity[pair] = self.affinity.get(pair, 0.0) + weight
         key = (upstream, downstream)
@@ -225,12 +241,84 @@ class _EdgeAccumulator:
         mixing precedence into cohesion produces incoherent groups)."""
         key = (upstream, downstream)
         self.dependencies[key] = self.dependencies.get(key, 0.0) + weight
+        self.declared.add(key)
+
+
+def _drop_inferred_cycles(edges: _EdgeAccumulator) -> list[str]:
+    """Withdraw inferred precedence until ``dependencies`` is a DAG. Returns flags.
+
+    A codegraph reference is *coupling*, not *ordering*: it says how code
+    references code today, while a task dependency is a claim about which edit
+    must land first. Reading every ``callers``/``callees``/``impact`` relation as
+    precedence saturates the graph — measured on a real 8-task plan, 52 of 56
+    possible directed edges, one SCC containing every task, so the only acyclic
+    partition was the degenerate single group at 3.8x the budget cap
+    (docs/orchestrator-grouping.md, limitation 4).
+
+    Two withdrawals, both affinity-preserving because ``_EdgeAccumulator.add``
+    already banked the weight symmetrically:
+
+    1. **Mutual pairs.** ``a -> b`` and ``b -> a`` both inferred means the two
+       tasks reference each other — coupling with no ordering. Drop both.
+    2. **Residual SCCs.** Dropping mutual pairs cannot break a longer cycle
+       (a -> b -> c -> a has no mutual pair), so whatever still cycles has its
+       inferred edges dropped as well.
+
+    Declared ``depends_on`` edges are never withdrawn — they are the plan's own
+    statement of intent. They are validated acyclic at parse time
+    (``plan_reader._check_acyclic``), so an SCC that survives step 2 means
+    declared edges alone are cyclic, which is a caller bug rather than a plan the
+    partitioner should silently repair.
+    """
+    flags: list[str] = []
+    inferred = {key for key in edges.dependencies if key not in edges.declared}
+
+    mutual = sorted(
+        key for key in inferred if (key[1], key[0]) in edges.dependencies and key[1] != key[0]
+    )
+    withdrawn = {key for key in mutual if key in inferred}
+    if withdrawn:
+        flags.append(
+            f"graph: withdrew {len(withdrawn)} inferred precedence edge(s) between "
+            f"{len({canonical_pair(*k) for k in withdrawn})} mutually-referencing task "
+            "pair(s) — kept as affinity (a reference is coupling, not ordering)"
+        )
+
+    remaining = {k: w for k, w in edges.dependencies.items() if k not in withdrawn}
+    adjacency: dict[str, set[str]] = {}
+    nodes: set[str] = set()
+    for up, down in remaining:
+        adjacency.setdefault(up, set()).add(down)
+        nodes.update((up, down))
+    residual = [c for c in _strongly_connected_components(adjacency, nodes) if len(c) > 1]
+    for component in residual:
+        members = set(component)
+        internal = {
+            key
+            for key in remaining
+            if key[0] in members and key[1] in members and key not in edges.declared
+        }
+        if not internal:
+            raise GraphBuildError(
+                "declared depends_on edges form a cycle among tasks "
+                f"{sorted(members)} — the task map's own ordering is not a DAG"
+            )
+        withdrawn |= internal
+        flags.append(
+            f"graph: withdrew {len(internal)} inferred precedence edge(s) inside a "
+            f"{len(members)}-task reference cycle {sorted(members)} — kept as affinity"
+        )
+
+    for key in withdrawn:
+        edges.dependencies.pop(key, None)
+    return flags
 
 
 def build_task_graph(
     mappings: Sequence[TaskMapping],
     client: CodegraphClient,
     weights: EdgeWeights | None = None,
+    flags: list[str] | None = None,
 ) -> TaskGraph:
     """Query codegraph for every mapped symbol and assemble the weighted task graph.
 
@@ -329,13 +417,21 @@ def build_task_graph(
         }
 
     _add_semantic_layer(mappings, edges, weights)
+    # Last, so it sees every inferred edge at once: a pair can become mutual through
+    # two different symbols, and an SCC can close through a task whose own symbols
+    # were queried earlier in the loop above.
+    cycle_flags = _drop_inferred_cycles(edges)
+    if flags is not None:
+        flags.extend(cycle_flags)
 
-    return TaskGraph(
+    graph = TaskGraph(
         nodes=frozenset(ids),
         affinity=edges.affinity,
         dependencies=edges.dependencies,
         metadata=metadata,
     )
+    graph.assert_acyclic_dependencies()  # builder-output contract; see limitation 4
+    return graph
 
 
 def _add_semantic_layer(

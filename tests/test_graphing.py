@@ -152,6 +152,134 @@ class TestCallProximityEdges:
         assert graph.dependencies == {}
 
 
+def _call_response(symbol, callers):
+    return json.dumps(
+        {"symbol": symbol, "callers": [{"name": n, "filePath": f} for n, f in callers]}
+    )
+
+
+class TestInferredPrecedenceIsWithdrawnOnCycles:
+    """Limitation 4: a codegraph reference is coupling, not ordering.
+
+    Reading every caller/callee/impact relation as precedence saturated a real
+    8-task plan to 52 of 56 possible directed edges — one SCC, so the only acyclic
+    partition was the degenerate single group. `_drop_inferred_cycles` withdraws
+    inferred precedence until the graph is a DAG, never touching declared
+    `depends_on` and never costing affinity.
+    """
+
+    def two_mutually_referencing_tasks(self):
+        responses = {
+            ("callers", "a_sym"): _call_response("a_sym", [("b_sym", "b.py")]),
+            ("callers", "b_sym"): _call_response("b_sym", [("a_sym", "a.py")]),
+        }
+        client, _ = client_with(responses)
+        return build_task_graph(
+            [
+                TaskMapping("a", files=("a.py",), symbols=("a_sym",)),
+                TaskMapping("b", files=("b.py",), symbols=("b_sym",)),
+            ],
+            client,
+            EdgeWeights(call=2.0),
+        )
+
+    def test_mutual_reference_yields_no_precedence(self):
+        graph = self.two_mutually_referencing_tasks()
+        assert graph.dependencies == {}
+
+    def test_mutual_reference_keeps_full_affinity(self):
+        """The withdrawal is free: `add` banked the weight symmetrically, so
+        dropping the directed claim costs no cohesion."""
+        graph = self.two_mutually_referencing_tasks()
+        assert graph.affinity[("a", "b")] == 4.0
+
+    def test_longer_cycle_without_any_mutual_pair_is_still_broken(self):
+        """a -> b -> c -> a has no mutual pair, so dropping mutual pairs alone
+        cannot break it — the residual-SCC pass is what does."""
+        responses = {
+            ("callers", "a_sym"): _call_response("a_sym", [("b_sym", "b.py")]),
+            ("callers", "b_sym"): _call_response("b_sym", [("c_sym", "c.py")]),
+            ("callers", "c_sym"): _call_response("c_sym", [("a_sym", "a.py")]),
+        }
+        client, _ = client_with(responses)
+        graph = build_task_graph(
+            [
+                TaskMapping("a", files=("a.py",), symbols=("a_sym",)),
+                TaskMapping("b", files=("b.py",), symbols=("b_sym",)),
+                TaskMapping("c", files=("c.py",), symbols=("c_sym",)),
+            ],
+            client,
+            EdgeWeights(call=2.0),
+        )
+        assert graph.dependencies == {}
+        assert graph.affinity[("a", "b")] == 2.0
+
+    def test_one_directional_inferred_precedence_survives(self):
+        """The fix must not flatten every inferred edge — only cyclic ones."""
+        responses = {("callers", "lib_sym"): _call_response("lib_sym", [("app_fn", "app.py")])}
+        client, _ = client_with(responses)
+        graph = build_task_graph(
+            [
+                TaskMapping("lib", files=("lib.py",), symbols=("lib_sym",)),
+                TaskMapping("app", files=("app.py",), symbols=("app_fn",)),
+            ],
+            client,
+            EdgeWeights(call=2.0),
+        )
+        assert graph.dependencies == {("lib", "app"): 2.0}
+
+    def test_declared_precedence_is_never_withdrawn(self):
+        """A declared edge stays even when the same pair references mutually —
+        it is the plan's own statement of intent, not an inference."""
+        responses = {
+            ("callers", "a_sym"): _call_response("a_sym", [("b_sym", "b.py")]),
+            ("callers", "b_sym"): _call_response("b_sym", [("a_sym", "a.py")]),
+        }
+        client, _ = client_with(responses)
+        graph = build_task_graph(
+            [
+                TaskMapping("a", files=("a.py",), symbols=("a_sym",)),
+                TaskMapping("b", files=("b.py",), symbols=("b_sym",), depends_on=("a",)),
+            ],
+            client,
+            EdgeWeights(call=2.0),
+        )
+        assert graph.dependencies == {("a", "b"): pytest.approx(3.0)}
+
+    def test_a_declared_only_cycle_fails_loudly(self):
+        """Declared edges are validated acyclic at parse time, so reaching the
+        builder with one is a caller bug — named, not silently repaired."""
+        client, _ = client_with({})
+        with pytest.raises(GraphBuildError) as excinfo:
+            build_task_graph(
+                [
+                    TaskMapping("a", files=("a.py",), depends_on=("b",)),
+                    TaskMapping("b", files=("b.py",), depends_on=("a",)),
+                ],
+                client,
+            )
+        assert "declared depends_on" in str(excinfo.value)
+        assert "'a', 'b'" in str(excinfo.value)
+
+    def test_the_withdrawal_is_reported_through_flags(self):
+        flags: list[str] = []
+        responses = {
+            ("callers", "a_sym"): _call_response("a_sym", [("b_sym", "b.py")]),
+            ("callers", "b_sym"): _call_response("b_sym", [("a_sym", "a.py")]),
+        }
+        client, _ = client_with(responses)
+        build_task_graph(
+            [
+                TaskMapping("a", files=("a.py",), symbols=("a_sym",)),
+                TaskMapping("b", files=("b.py",), symbols=("b_sym",)),
+            ],
+            client,
+            EdgeWeights(call=2.0),
+            flags=flags,
+        )
+        assert any("withdrew" in flag for flag in flags), flags
+
+
 class TestImpactEdges:
     def test_impact_overlap_produces_edge(self):
         """Plan U2 scenario: one task's write surface impacts another's read surface."""

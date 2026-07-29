@@ -1,0 +1,9 @@
+{
+ "symbol": "Reporter",
+ "callees": [
+  {
+   "name": "load_config",
+   "filePath": "app/cli.py"
+  }
+ ]
+}

@@ -45,6 +45,11 @@ class PartitionConfig(BaseModel):
     # is a hard GrouperError by default; this (and --allow-oversized-slice,
     # exactly equivalent) keeps it whole as one flagged group instead.
     allow_oversized_slice: bool = False
+    # A partition whose cycle repair left a group over the cap is degenerate: the
+    # repair collapsed an SCC it could not re-split, so the "groups" are one blob.
+    # Hard error by default (this used to be a flag nobody blocked on, so `group`
+    # exited 0 with a single 3.8x-over-cap group); this accepts it instead.
+    allow_degenerate_partition: bool = False
 
 
 class EstimatorConfig(BaseModel):

@@ -56,7 +56,7 @@ def _compute(tmp_path, fixture_name, real_files, config_overrides, recorder=None
         repo_root=repo,
         config=config,
         llm_runner=_llm_must_not_be_called,
-        client=client_for(repo),
+        client=client_for(repo, fixture_name),
         recorder=recorder,
     )
 
@@ -260,6 +260,10 @@ tasks:
         # raises before repair_cycles can record anything. Accept the overshoot so
         # the U5 repair path this test actually targets still runs.
         config.partition.allow_oversized_slice = True
+        # Likewise, the degeneracy gate landed after this test: an unre-splittable
+        # repair overshoot is now a hard error by default. This test exists to prove
+        # the overshoot is *recorded* when accepted, so it opts into accepting it.
+        config.partition.allow_degenerate_partition = True
         recorder = TraceRecorder()
         outcome = compute_partition(
             plan_path=plan,

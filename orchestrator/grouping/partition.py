@@ -64,6 +64,41 @@ class TaskGraph:
                 if missing:
                     raise ValueError(f"{kind} edge {(u, v)} references unknown nodes {missing}")
 
+    def assert_acyclic_dependencies(self) -> None:
+        """Task-level precedence must be a DAG — the builder-output contract.
+
+        Deliberately **not** in ``__post_init__``: slice contraction legitimately
+        creates cycles that do not exist at task level (``_contract_slices``
+        merging a1+a2 and b1+b2 turns an acyclic a1->b1, b2->a2 into s1<->s2),
+        and that is exactly what ``repair_cycles`` is for. The contract is on what
+        a *builder* emits, so this is called at the end of ``build_task_graph``
+        and again in ``compute_partition`` — never on internal intermediates.
+
+        Nothing used to check this at all. The only acyclicity check was on the
+        *output* group DAG, which ``repair_cycles`` can always satisfy by
+        collapsing every task into one group — so a saturated dependency graph
+        produced a legal, useless, single-group "success" instead of an error
+        (docs/orchestrator-grouping.md, limitations 4-5). Builders are responsible
+        for withdrawing inferred precedence until this holds
+        (``graphing._drop_inferred_cycles``).
+        """
+        adjacency: dict[str, set[str]] = {}
+        for up, down in self.dependencies:
+            adjacency.setdefault(up, set()).add(down)
+        cyclic = [
+            c for c in _strongly_connected_components(adjacency, set(self.nodes)) if len(c) > 1
+        ]
+        if cyclic:
+            component = cyclic[0]
+            members = set(component)
+            edges = sorted((u, v) for u, v in self.dependencies if u in members and v in members)
+            shown = ", ".join(f"{u} -> {v}" for u, v in edges[:8])
+            more = f" (+{len(edges) - 8} more)" if len(edges) > 8 else ""
+            raise ValueError(
+                f"dependency cycle among tasks {sorted(component)}: {shown}{more} — "
+                "task precedence must be a DAG"
+            )
+
 
 class GroupCycleError(Exception):
     """The computed group DAG contains a dependency cycle."""

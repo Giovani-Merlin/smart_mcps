@@ -24,15 +24,49 @@ def _llm_must_not_be_called(prompt, schema):
 
 
 def stub_codegraph_runner(args):
-    """Zero real codegraph: every fixture plan declares no `symbols`, so the
-    only calls the pipeline ever issues are `codegraph sync` (R13) and
-    `codegraph files` for the base context. Anything else means a fixture
-    accidentally started using symbols."""
+    """Zero real codegraph for the no-symbols fixtures: the only calls the
+    pipeline issues are `codegraph sync` (R13) and `codegraph files` for the base
+    context. Anything else means a fixture accidentally started using symbols
+    without switching to the cassette runner below."""
     if args[0] == "sync":
         return ""
     if args[0] == "files":
         return "stub repo (fixture test — no queries expected)\n"
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
+
+
+CASSETTE_DIR = Path(__file__).parent / "fixtures" / "codegraph_hub"
+
+
+def cassette_codegraph_runner(args):
+    """Replays captured-shape codegraph output for the symbol-bearing fixtures.
+
+    The register used to exclude `symbols` from every fixture *by construction*
+    (see this module's original docstring), which left the entire codegraph-derived
+    edge layer with zero coverage — and that is the layer that shipped
+    limitation 4. This runner is what lets a fixture exercise it, still at zero
+    tokens and with no live codegraph.
+    """
+    if args[0] == "sync":
+        return ""
+    if args[0] == "files":
+        return "stub repo (cassette fixture)\n"
+    command, symbol = args[0], args[1]
+    path = CASSETTE_DIR / f"{command}_{symbol}.json"
+    if path.is_file():
+        return path.read_text()
+    if command == "query":
+        return "[]"
+    key = {"callers": "callers", "callees": "callees", "impact": "affected"}[command]
+    return json.dumps({"symbol": symbol, key: []})
+
+
+# Fixtures whose task map declares `symbols` and therefore need the cassette.
+SYMBOL_FIXTURES = {"hub-file-symbols"}
+
+
+def runner_for(fixture_name):
+    return cassette_codegraph_runner if fixture_name in SYMBOL_FIXTURES else stub_codegraph_runner
 
 
 def make_repo(tmp_path, fixture_name, real_files=None):
@@ -49,8 +83,8 @@ def make_repo(tmp_path, fixture_name, real_files=None):
     return repo, plan
 
 
-def client_for(repo):
-    return CodegraphClient(repo_root=repo, runner=stub_codegraph_runner)
+def client_for(repo, fixture_name=None):
+    return CodegraphClient(repo_root=repo, runner=runner_for(fixture_name))
 
 
 def members_by_group(partition):
@@ -274,6 +308,7 @@ ALL_FIXTURES = [
     ("slice-over-budget", None, {"token_budget": 8_000}),
     ("pure-backend", None, {}),
     ("observatory-round-a", None, {}),
+    ("hub-file-symbols", None, {}),
 ]
 
 # slice-over-budget is excluded here on purpose (plan U3 decision): its
@@ -298,11 +333,31 @@ class TestProperties:
             repo_root=repo,
             config=config,
             llm_runner=_llm_must_not_be_called,
-            client=client_for(repo),
+            client=client_for(repo, fixture_name),
         )
         for members in members_by_group(outcome.partition).values():
             total = sum(outcome.node_work[n] for n in members)
             assert total <= outcome.budget_cap
+
+    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", ALL_FIXTURES)
+    def test_task_precedence_is_a_dag(self, tmp_path, fixture_name, real_files, config_overrides):
+        """The invariant limitation 4 violated: whatever the graph builder emits,
+        `dependencies` must be acyclic. Nothing asserted this before — the only
+        acyclicity check was on the *output* group DAG, which cycle repair can
+        always satisfy by collapsing every task into one group."""
+        repo, plan = make_repo(tmp_path, fixture_name, real_files=real_files)
+        config = OrchestratorConfig()
+        for key, value in config_overrides.items():
+            setattr(config.estimator, key, value)
+        config.partition.allow_oversized_slice = True
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo, fixture_name),
+        )
+        outcome.graph.assert_acyclic_dependencies()  # raises on a cycle
 
     @pytest.mark.parametrize("fixture_name,real_files,config_overrides", ALL_FIXTURES)
     def test_partitioning_is_byte_stable_across_runs(
@@ -323,7 +378,7 @@ class TestProperties:
             repo_root=repo_a,
             config=config,
             llm_runner=_llm_must_not_be_called,
-            client=client_for(repo_a),
+            client=client_for(repo_a, fixture_name),
         )
         repo_b, plan_b = make_repo(tmp_path / "b", fixture_name, real_files=real_files)
         outcome_b = compute_partition(
@@ -331,6 +386,55 @@ class TestProperties:
             repo_root=repo_b,
             config=config,
             llm_runner=_llm_must_not_be_called,
-            client=client_for(repo_b),
+            client=client_for(repo_b, fixture_name),
         )
         assert serialize_partition(outcome_a.partition) == serialize_partition(outcome_b.partition)
+
+
+class TestHubFileSymbols:
+    """Limitation 4's regression fixture — the only one exercising the
+    codegraph-derived edge layer (see `cassette_codegraph_runner`).
+
+    Four units co-edit `app/cli.py` and each declares a symbol referenced from it,
+    so `owners_of`'s file fallback resolves every caller/impact result to every
+    other unit. Read as precedence that is a near-complete digraph; read as
+    coupling it is four strongly affine units with one declared ordering edge.
+    """
+
+    def outcome(self, tmp_path):
+        repo, plan = make_repo(tmp_path, "hub-file-symbols")
+        return compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo, "hub-file-symbols"),
+        )
+
+    def test_partition_is_not_degenerate(self, tmp_path):
+        """The failure this fixture exists for: every task in one over-cap group."""
+        outcome = self.outcome(tmp_path)
+        assert len(members_by_group(outcome.partition)) > 1
+        assert outcome.last_stage != "repair"
+
+    def test_inferred_precedence_is_withdrawn_but_declared_precedence_survives(self, tmp_path):
+        outcome = self.outcome(tmp_path)
+        assert ("merge-unit", "verify-unit") in outcome.graph.dependencies
+        for pair in outcome.graph.dependencies:
+            assert (pair[1], pair[0]) not in outcome.graph.dependencies, f"mutual pair {pair}"
+
+    def test_withdrawn_precedence_is_kept_as_affinity(self, tmp_path):
+        """Withdrawing an inferred edge must not cost cohesion — the units that
+        reference each other still cluster; only the ordering claim is dropped."""
+        outcome = self.outcome(tmp_path)
+        for pair in (
+            ("gate-unit", "merge-unit"),
+            ("merge-unit", "report-unit"),
+            ("merge-unit", "verify-unit"),
+        ):
+            assert outcome.graph.affinity.get(pair, 0.0) > 0, pair
+
+    def test_the_withdrawal_is_reported_to_the_operator(self, tmp_path):
+        outcome = self.outcome(tmp_path)
+        assert any(
+            "withdrew" in flag and "precedence" in flag for flag in outcome.mapper_out.flags
+        ), outcome.mapper_out.flags

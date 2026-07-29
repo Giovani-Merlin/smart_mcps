@@ -1,0 +1,17 @@
+{
+ "symbol": "Merger",
+ "affected": [
+  {
+   "name": "run_cli",
+   "filePath": "app/cli.py"
+  },
+  {
+   "name": "Gate",
+   "filePath": "app/gate.py"
+  },
+  {
+   "name": "Reporter",
+   "filePath": "app/report.py"
+  }
+ ]
+}

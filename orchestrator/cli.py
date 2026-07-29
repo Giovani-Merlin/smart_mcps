@@ -133,6 +133,15 @@ def main(
             "[partition] allow_oversized_slice = true in config.toml"
         ),
     )
+    group_cmd.add_argument(
+        "--allow-degenerate-partition",
+        action="store_true",
+        help=(
+            "accept a partition whose cycle repair left a group over the budget cap "
+            "instead of failing (default: hard error); equivalent to "
+            "[partition] allow_degenerate_partition = true in config.toml"
+        ),
+    )
     _add_common_args(group_cmd)
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
@@ -245,6 +254,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     partition_updates: dict = {}
     if getattr(args, "allow_oversized_slice", False):
         partition_updates["allow_oversized_slice"] = True
+    if getattr(args, "allow_degenerate_partition", False):
+        partition_updates["allow_degenerate_partition"] = True
     escalation_updates: dict = {}
     intensity = getattr(args, "intensity", None)
     if intensity:

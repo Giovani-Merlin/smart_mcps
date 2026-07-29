@@ -1,0 +1,10 @@
+[
+ {
+  "node": {
+   "name": "Reporter",
+   "filePath": "app/report.py",
+   "kind": "class"
+  },
+  "score": 1.0
+ }
+]

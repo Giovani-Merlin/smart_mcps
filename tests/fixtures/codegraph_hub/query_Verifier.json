@@ -1,0 +1,10 @@
+[
+ {
+  "node": {
+   "name": "Verifier",
+   "filePath": "app/verify.py",
+   "kind": "class"
+  },
+  "score": 1.0
+ }
+]
