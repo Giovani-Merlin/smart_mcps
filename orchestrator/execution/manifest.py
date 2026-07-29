@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from orchestrator.model import GroupManifestEntry, RunManifest, SessionEntry
+from orchestrator.model import GroupingResult, GroupManifestEntry, RunManifest, SessionEntry
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -31,6 +33,74 @@ def atomic_write_text(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+class GroupingNameError(Exception):
+    """A ``--name``/``--grouping`` tag is unsafe to use as a directory component."""
+
+
+class GroupingSelectionError(Exception):
+    """``run``/``resume`` could not unambiguously select a grouping directory."""
+
+
+def validate_grouping_name(name: str) -> None:
+    """Reject a path separator or ``..`` before anything is written to disk (plan U10)."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise GroupingNameError(
+            f"invalid grouping name {name!r}: must not contain a path separator or '..'"
+        )
+
+
+def groupings_root(repo_root: Path) -> Path:
+    return repo_root / ".orchestrator" / "groupings"
+
+
+def grouping_dir(repo_root: Path, name: str) -> Path:
+    """The one place a named grouping's directory path is spelled out (plan U10)."""
+    validate_grouping_name(name)
+    return groupings_root(repo_root) / name
+
+
+def list_grouping_names(repo_root: Path) -> list[str]:
+    root = groupings_root(repo_root)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
+@dataclass(frozen=True)
+class GroupingInfo:
+    name: str
+    plan_path: str
+    group_count: int
+
+
+def describe_groupings(repo_root: Path) -> list[GroupingInfo]:
+    """Every named grouping present, with its plan path and group count (plan U10)."""
+    infos = []
+    for name in list_grouping_names(repo_root):
+        groups_path = grouping_dir(repo_root, name) / "groups.json"
+        if not groups_path.is_file():
+            continue
+        result = GroupingResult.model_validate_json(groups_path.read_text())
+        infos.append(
+            GroupingInfo(name=name, plan_path=result.plan_path, group_count=len(result.groups))
+        )
+    return infos
+
+
+def snapshot_grouping(source_dir: Path, dest_dir: Path) -> None:
+    """Copy a grouping directory's files into a run directory (plan U10).
+
+    Generic file copy rather than an enumerated list, so a later artifact
+    (e.g. a trace file) is snapshotted automatically. The run keeps its own
+    frozen copy so a later ``group --name <same>`` against a different plan
+    cannot rewrite a finished run's history.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for path in source_dir.iterdir():
+        if path.is_file():
+            shutil.copy2(path, dest_dir / path.name)
 
 
 class RunPaths:

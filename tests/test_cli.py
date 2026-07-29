@@ -14,9 +14,10 @@ import sys
 from pathlib import Path
 
 from orchestrator.cli import _print_outcomes, apply_overrides, main
-from orchestrator.config import load_config
+from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
+from orchestrator.grouping.graphing import CodegraphClient
 from orchestrator.grouping.pipeline import serialize_grouping
 from orchestrator.model import (
     EscalationRequest,
@@ -47,14 +48,17 @@ def make_group(gid: str = "g1", **overrides) -> Group:
     return Group(**defaults)
 
 
-def write_run_artifacts(repo: Path, groups: list[Group] | None = None) -> None:
-    """The artifacts `group` leaves behind, which `run`/`resume` consume."""
-    orch = repo / ".orchestrator"
-    orch.mkdir(parents=True, exist_ok=True)
+def write_run_artifacts(repo: Path, groups: list[Group] | None = None, name: str = "plan") -> None:
+    """The named-grouping-directory artifacts `group` leaves behind (plan U10),
+    which `run`/`resume` consume. ``name="plan"`` mirrors the real CLI default
+    (the plan filename stem), so tests relying on auto-selection of the sole
+    grouping keep working unchanged."""
+    grouping_dir = repo / ".orchestrator" / "groupings" / name
+    grouping_dir.mkdir(parents=True, exist_ok=True)
     (repo / "plan.md").write_text("# toy plan\n\n- T1: do the thing\n")
     result = GroupingResult(plan_path="plan.md", groups=groups or [make_group()])
-    (orch / "groups.json").write_text(serialize_grouping(result))
-    (orch / "base-context.md").write_text("shared base context\n")
+    (grouping_dir / "groups.json").write_text(serialize_grouping(result))
+    (grouping_dir / "base-context.md").write_text("shared base context\n")
 
 
 class TestPrecedence:
@@ -108,6 +112,115 @@ class TestPrecedence:
         loaded = load_config(config_file)
         assert loaded.escalation.timeout_s == 30.0  # escalation-wait timeout is untouched
         assert capsys.readouterr().err == ""
+
+
+class TestAllowOversizedSliceConfig:
+    """Plan U6: --allow-oversized-slice and [partition] allow_oversized_slice
+    must be exactly equivalent — neither is a stronger or weaker form of the
+    other, they are the same override reached two ways."""
+
+    def test_config_file_sets_it(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[partition]\nallow_oversized_slice = true\n")
+        loaded = load_config(config_file)
+        assert loaded.partition.allow_oversized_slice is True
+
+    def test_default_is_false(self):
+        assert OrchestratorConfig().partition.allow_oversized_slice is False
+
+    def test_flag_sets_it_with_no_config_file(self):
+        args = argparse.Namespace(allow_oversized_slice=True)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.partition.allow_oversized_slice is True
+
+    def test_absent_flag_leaves_it_false(self):
+        args = argparse.Namespace(allow_oversized_slice=False)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.partition.allow_oversized_slice is False
+
+    def test_flag_and_config_file_reach_the_same_effective_config(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[partition]\nallow_oversized_slice = true\n")
+        via_config_file = load_config(config_file)
+        via_flag = apply_overrides(
+            OrchestratorConfig(), argparse.Namespace(allow_oversized_slice=True)
+        )
+        assert via_config_file.partition.allow_oversized_slice is True
+        assert via_flag.partition.allow_oversized_slice is True
+
+
+def _stub_codegraph_runner(args):
+    if args[0] == "sync":
+        return ""
+    if args[0] == "files":
+        return "stub repo\n"
+    raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
+
+
+OVERSIZED_SLICE_PLAN = """# feat: oversized slice
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: reports-api
+    description: reporting API routes
+    slice: reports
+    files: [app/reports.py]
+  - task_id: reports-ui
+    description: reporting admin page
+    slice: reports
+    files: [web/reports.tsx]
+```
+"""
+
+
+class TestSliceOverflowGateCli:
+    """Plan U6, CLI surface: `group --no-spec` is the zero-LLM path, so it
+    exercises the gate end-to-end without needing a speccer stub."""
+
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(OVERSIZED_SLICE_PLAN)
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("[estimator]\ntoken_budget = 6000\n")
+        return repo, plan
+
+    def test_no_spec_without_override_exits_nonzero_naming_everything(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code != 0
+        err = capsys.readouterr().err
+        assert "reports" in err
+        assert "reports-api" in err
+        assert "reports-ui" in err
+        assert "cap" in err
+        # A rejected grouping must leave nothing usable behind. Originally this
+        # asserted the groupings directory did not exist at all, but g7's failure
+        # trace (_write_failure_trace) deliberately persists grouping-trace.json so
+        # a rejected run can be debugged. The invariant that actually matters is
+        # that no *grouping* results — describe_groupings skips any directory
+        # without groups.json, so a trace-only directory is never selectable by
+        # `run --grouping`.
+        assert not list((repo / ".orchestrator" / "groupings").rglob("groups.json"))
+
+    def test_no_spec_with_override_exits_zero_and_keeps_slice_whole(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec", "--allow-oversized-slice"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "reports-api" in out
+        assert "reports-ui" in out
 
 
 class TestEscalationOverrides:
@@ -259,6 +372,71 @@ class TestRunEarlyExits:
         assert "--fork-session" in capsys.readouterr().err
         # preflight failed before any run directory was created
         assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+
+class TestGroupingSelection:
+    """Plan U10: `run` never guesses between ambiguous or legacy grouping state."""
+
+    def test_ambiguous_groupings_lists_both_names_and_plans(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha")
+        write_run_artifacts(tmp_path, name="beta")
+        exit_code = main(["run", "--repo", str(tmp_path)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "alpha" in err and "beta" in err
+        assert "plan.md" in err
+        assert "--grouping" in err
+
+    def test_one_of_several_groupings_selects_via_flag(self, tmp_path, capsys, monkeypatch):
+        write_run_artifacts(tmp_path, [make_group("g1")], name="alpha")
+        write_run_artifacts(tmp_path, [make_group("g9")], name="beta")
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(tmp_path / "fake-home"))
+        monkeypatch.setenv("FAKE_CLAUDE_HIDE_FLAGS", "--fork-session")
+        exit_code = main(["run", "--repo", str(tmp_path), "--grouping", "beta"])
+        # picks "beta" successfully and proceeds all the way to preflight,
+        # which fails for an unrelated, already-covered reason
+        assert exit_code == 1
+        assert "--fork-session" in capsys.readouterr().err
+
+    def test_unknown_grouping_name_is_actionable(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha")
+        exit_code = main(["run", "--repo", str(tmp_path), "--grouping", "nope"])
+        assert exit_code == 1
+        assert "no grouping named 'nope'" in capsys.readouterr().err
+
+    def test_legacy_top_level_artifact_is_reported_not_consumed(self, tmp_path, capsys):
+        (tmp_path / ".orchestrator").mkdir(parents=True)
+        (tmp_path / "plan.md").write_text("# toy plan\n")
+        legacy_result = GroupingResult(plan_path="plan.md", groups=[make_group()])
+        legacy_path = tmp_path / ".orchestrator" / "groups.json"
+        legacy_path.write_text(serialize_grouping(legacy_result))
+        (tmp_path / ".orchestrator" / "base-context.md").write_text("ctx\n")
+
+        exit_code = main(["run", "--repo", str(tmp_path)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert str(legacy_path) in err
+        assert "--name" in err  # names the re-group command
+        # never consumed: the legacy file is untouched and no run started
+        assert legacy_path.is_file()
+        assert not (tmp_path / ".orchestrator" / "runs").exists()
+
+    def test_groupings_subcommand_lists_name_plan_and_count(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, [make_group("g1"), make_group("g2")], name="alpha")
+        exit_code = main(["groupings", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "alpha" in out
+        assert "plan.md" in out
+        assert "2 group(s)" in out
+
+    def test_groupings_subcommand_empty(self, tmp_path, capsys):
+        exit_code = main(["groupings", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no groupings found" in capsys.readouterr().out
 
 
 class TestPrintOutcomes:

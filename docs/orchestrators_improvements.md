@@ -9,11 +9,11 @@ findings from executing that plan through the orchestrator itself.
 Each defect carries a severity and, where known, a citation. Re-verify citations before
 acting — they drift.
 
-| #   | Defect                                                  | Severity | Status |
-| --- | ------------------------------------------------------- | -------- | ------ |
-| D2  | Slice contraction is undone by the budget splitter      | High     | Open   |
-| D3  | Group-DAG cycles fail the run instead of being repaired | High     | Open   |
-| D4  | Greenfield work estimation is file-count-driven         | Medium   | Open   |
+| #   | Defect                                                  | Severity | Status                |
+| --- | ------------------------------------------------------- | -------- | --------------------- |
+| D2  | Slice contraction is undone by the budget splitter      | High     | Resolved (2026-07-25) |
+| D3  | Group-DAG cycles fail the run instead of being repaired | High     | Resolved (2026-07-25) |
+| D4  | Greenfield work estimation is file-count-driven         | Medium   | Resolved (2026-07-25) |
 
 **Absorbed 2026-07-22:** D1, D5, D6, D7, D8, D9, D10, D11, D12 moved into the
 approved run-hardening requirements —
@@ -36,6 +36,50 @@ ______________________________________________________________________
 > requirements. The D2/D3/D4 mechanisms and the H1–H5 decision below — including
 > H5's repair-instead-of-raise, which is a partitioner behavior change — remain
 > the open brief; the study text is kept whole for coherence.
+
+> **Resolution (2026-07-25):** D2/D3/D4 are resolved by
+> `docs/plans/2026-07-25-001-feat-orchestrator-grouping-improvement-plan.md`.
+> The causal model below — D2/D6 blaming the budget splitter alone, and H2's bet
+> that a lower `per_file_tool_allowance` would restore slices — was **falsified
+> by measurement** during that plan's exploration. Slice dissolution and
+> group-DAG cycles have **three independent mechanisms**, not one:
+>
+> - **M1 — hub-role exclusion deletes the slice before contraction runs.**
+>   `slice_atoms` filtered every slice member classified `aggregator_hub` /
+>   `utility_hub` out *before* contraction, so a slice with a hub-shaped member
+>   (a vertical's backend half, which naturally has several upstreams) dropped
+>   to one member and was never contracted at all — it wasn't split by the
+>   budget splitter (the original D2 account); it was deleted earlier.
+> - **M2 — `merge_small_groups` creates the cycles, not the splitter.** It had
+>   budget, chain-compatibility, and makespan guards but no acyclicity guard, so
+>   merging a small group across an intermediate group could invert a
+>   dependency edge in the group-level quotient graph. This — not D3's original
+>   "the splitter cut a slice in a direction that inverted an edge" — is what
+>   produced most of the cycles below.
+> - **M3 — `split_over_budget` cutting inside an expanded slice** (D2's
+>   original account) is real, but secondary: it explains the brownfield
+>   run-hardening regression at low allowances and the `slice-over-budget`
+>   fixture, not the Observatory dissolution (that was M1).
+>
+> **H2 was tested first, as this study recommended, and falsified it:**
+> sweeping `per_file_tool_allowance` from 2000 down to 100 never restored a
+> dissolved slice, and *lowering* it dissolved a slice that had survived at the
+> default (cheaper nodes let `merge_small_groups` build larger clusters that
+> then exceed the cap and get cut) — recorded as evidence, not a default, in
+> `docs/orchestrator-grouping.md`. **H1 was taken** (slice must-link is now a
+> hard output invariant, enforced at every stage that could break it — see
+> `docs/orchestrator-task-map.md`), plus **H5** (a surviving group-DAG cycle is
+> repaired — SCC-merge then a dependency-safe re-split — rather than raised;
+> `GroupCycleError` reaching the operator is now an orchestrator bug, not an
+> expected outcome). **H3** (drop `slice:`, accept layer-shaped groups) and
+> **H4** (grouper becomes advisory) were considered and not taken — the
+> measured fixes make `slice:` mean what the contract always said it meant.
+> Pricing gained the `size_hints` field for precision (H2's honest half: a
+> `tsconfig.json` shouldn't cost what a real module costs) but is explicitly
+> **not** the slice-integrity lever. The exploratory study below is kept for
+> the mechanism data it recorded — the mechanism *conclusions* it draws (D2/D3
+> as originally stated, and the "test H2 first" recommendation as a fix rather
+> than a falsified hypothesis) are superseded by this note.
 
 Everything below is the original slice-dissolution study, from writing the Observatory
 plan. That plan shipped and groups cleanly; this section is about what went wrong on the
@@ -237,7 +281,7 @@ cut the partitioner itself chose. It could back off the offending cut and re-spl
 elsewhere instead of failing the run. This is orthogonal to H1–H4 and may be worth doing
 regardless.
 
-b 
+b
 
 My weak lean is H2 first (cheapest, and file-count inflation is clearly *a* real bug),
 then H1, with H5 as an independent robustness fix. But H3 deserves a genuine hearing —

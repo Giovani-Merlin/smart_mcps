@@ -63,6 +63,61 @@ class TestTokenEstimate:
         meta = {"source_bytes": 0, "files": [], "prospective_files": ["new1.py", "new2.py"]}
         assert node_work(meta, config) == 200
 
+    def test_node_work_prices_hinted_prospective_file_by_class(self):
+        """Plan U7: a hinted prospective file is priced by its class, not the
+        flat per-file allowance; other files still use their own allowances."""
+        config = EstimatorConfig(
+            bytes_per_token=4.0,
+            slack_multiplier=1.0,
+            per_file_tool_allowance=100,
+            size_hint_small=500,
+            size_hint_medium=2_000,
+            size_hint_large=5_000,
+        )
+        meta = {
+            "source_bytes": 0,
+            "files": ["existing.py"],
+            "prospective_files": ["app/big.py", "app/unhinted.py"],
+            "size_hints": {"app/big.py": "large"},
+        }
+        assert node_work(meta, config) == 100 + 5_000 + 100
+
+    def test_node_work_with_no_size_hints_key_matches_today(self):
+        """A metadata dict carrying no ``size_hints`` key produces exactly the
+        same node_work as before this change (backward compatibility)."""
+        config = EstimatorConfig(
+            bytes_per_token=4.0, slack_multiplier=1.0, per_file_tool_allowance=100
+        )
+        meta = {
+            "source_bytes": 400,
+            "files": ["a.py", "b.py"],
+            "prospective_files": ["new1.py", "new2.py"],
+        }
+        assert node_work(meta, config) == 100 + 400
+
+    def test_node_work_with_empty_size_hints_matches_no_hints(self):
+        config = EstimatorConfig(
+            bytes_per_token=4.0, slack_multiplier=1.0, per_file_tool_allowance=100
+        )
+        meta = {
+            "source_bytes": 400,
+            "files": ["a.py", "b.py"],
+            "prospective_files": ["new1.py", "new2.py"],
+            "size_hints": {},
+        }
+        assert node_work(meta, config) == 100 + 400
+
+    def test_estimate_group_tokens_unchanged_for_group_with_no_hinted_files(self):
+        """size_hints only affects node_work; estimate_group_tokens (the
+        post-partition group estimate) keeps its pre-existing flat formula."""
+        config = EstimatorConfig(
+            bytes_per_token=4.0, slack_multiplier=2.0, per_file_tool_allowance=100
+        )
+        estimate = estimate_group_tokens(
+            source_bytes=400, file_count=2, spec_tokens=50, base_tokens=50, config=config
+        )
+        assert estimate == int((50 + 50 + 100) * 2.0 + 200)
+
     def test_partition_budget_cap_subtracts_slacked_head(self):
         config = EstimatorConfig(
             token_budget=100_000, slack_multiplier=1.0, spec_tokens_allowance=3_000

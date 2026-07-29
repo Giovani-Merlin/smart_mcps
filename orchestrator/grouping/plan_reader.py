@@ -22,6 +22,9 @@ VERSION_MARKER = "# orchestrator-task-map v1"
 # A slice contracts to a single Louvain node: past this size the partition would
 # degenerate to pure budget-splitting (docs/orchestrator-task-map.md).
 SLICE_TASK_CAP = 5
+# size_hints classes, priced by EstimatorConfig.size_hint_{small,medium,large}
+# (plan U7); medium is today's flat per_file_tool_allowance rate.
+SIZE_HINT_CLASSES = frozenset({"small", "medium", "large"})
 
 _BLOCK = re.compile(
     r"```ya?ml[ \t]*\n(?P<body>[ \t]*" + re.escape(VERSION_MARKER) + r"[ \t]*\n.*?)```",
@@ -34,7 +37,7 @@ _ANY_VERSION = re.compile(r"```ya?ml[ \t]*\n[ \t]*#[ \t]*orchestrator-task-map v
 _PRECEDING_HEADING = re.compile(r"(?:(?<=\n)|\A)[ \t]*## Task Map[ \t]*\n(?:[ \t]*\n)*\Z")
 
 _LIST_FIELDS = ("files", "symbols", "depends_on", "implements", "consumes")
-_KNOWN_KEYS = {"task_id", "description", "slice", *_LIST_FIELDS}
+_KNOWN_KEYS = {"task_id", "description", "slice", "size_hints", *_LIST_FIELDS}
 
 
 class TaskMapError(Exception):
@@ -80,10 +83,16 @@ def parse_task_map(
     for entry in tasks:
         task_id = entry["task_id"]
         descriptions[task_id] = entry["description"]
+        raw_size_hints: dict[str, str] = entry.get("size_hints") or {}
         files: list[str] = []
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (client.repo_root / file).is_file():
+                if file in raw_size_hints:
+                    raise TaskMapError(
+                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
+                        "hints price unwritten (prospective) work only"
+                    )
                 files.append(file)
             else:
                 prospective.append(file)
@@ -91,6 +100,9 @@ def parse_task_map(
                     f"task map: task {task_id} file {file} does not exist yet — "
                     "retained as prospective"
                 )
+        size_hints = tuple(
+            sorted((f, raw_size_hints[f]) for f in prospective if f in raw_size_hints)
+        )
         symbols: list[str] = []
         for symbol in _dedupe(entry.get("symbols") or []):
             if client.symbol_exists(symbol):
@@ -108,6 +120,7 @@ def parse_task_map(
                 files=tuple(files),
                 symbols=tuple(symbols),
                 prospective_files=tuple(prospective),
+                size_hints=size_hints,
                 depends_on=tuple(_dedupe(entry.get("depends_on") or [])),
                 slice=entry.get("slice"),
                 implements=tuple(_dedupe(entry.get("implements") or [])),
@@ -167,6 +180,28 @@ def _validate_shape(payload: object) -> list[dict]:
                 raise TaskMapError(
                     f"task {entry['task_id']!r} {key!r} must be a list of non-empty strings"
                 )
+        size_hints = entry.get("size_hints")
+        if size_hints is not None:
+            if not isinstance(size_hints, dict) or not all(
+                isinstance(path, str) and path and isinstance(cls, str) and cls
+                for path, cls in size_hints.items()
+            ):
+                raise TaskMapError(
+                    f"task {entry['task_id']!r} 'size_hints' must be a mapping of "
+                    "path to size class"
+                )
+            declared_files = set(entry.get("files") or [])
+            for path, cls in size_hints.items():
+                if path not in declared_files:
+                    raise TaskMapError(
+                        f"task {entry['task_id']!r} size_hints names {path!r}, which is "
+                        "not in this task's files"
+                    )
+                if cls not in SIZE_HINT_CLASSES:
+                    raise TaskMapError(
+                        f"task {entry['task_id']!r} size_hints class {cls!r} for {path!r} "
+                        f"must be one of {sorted(SIZE_HINT_CLASSES)}"
+                    )
 
     ids = [entry["task_id"] for entry in tasks]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})

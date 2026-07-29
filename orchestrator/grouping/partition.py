@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 Pair = tuple[str, str]
 # node → group id. Group ids are contiguous ints; deterministic across runs.
@@ -34,6 +34,8 @@ WorkFn = Callable[[str], float]
 
 DEFAULT_HUB_THRESHOLD = 0.4  # CoCoder's live ROLE_THRESHOLD (partition_into_groups.py:37)
 LOUVAIN_SEED = 42
+
+_Node = TypeVar("_Node")
 
 
 def canonical_pair(a: str, b: str) -> Pair:
@@ -81,6 +83,58 @@ class PartitionStrategy(Protocol):
     def partition(self, graph: TaskGraph) -> Partition: ...
 
 
+class PartitionRecorder(Protocol):
+    """Structural type for the optional trace hook (plan U8).
+
+    This module never imports ``orchestrator.grouping.trace`` — a caller
+    passes anything satisfying this shape (duck typing; no inheritance
+    required), which keeps the dependency one-directional and this module's
+    import surface pure (``TestStrategySeam::test_module_imports_stay_pure``).
+    Every stage function below accepts ``recorder: PartitionRecorder | None =
+    None`` and only ever calls these methods — never reads them back into a
+    decision, so attaching a recorder cannot change the partition produced.
+    """
+
+    def record_stage(self, stage: str, partition: Partition) -> None: ...
+    def record_hub_role(
+        self,
+        node: str,
+        role: str,
+        depends_on_ratio: float,
+        depended_by_ratio: float,
+        threshold: float,
+    ) -> None: ...
+    def record_louvain(
+        self, resolution: float, seed: int, communities: list[list[str]]
+    ) -> None: ...
+    def record_split(
+        self,
+        members: list[str],
+        total_work: float,
+        budget_cap: float,
+        candidates: list[dict],
+        components: list[list[str]],
+    ) -> None: ...
+    def record_merge_candidate(
+        self,
+        round_: int,
+        source: int,
+        target: int,
+        accepted: bool,
+        reason: str,
+        merged_work: float,
+        edge_weight: float,
+    ) -> None: ...
+    def record_repair(
+        self,
+        cyclic_groups: list[int],
+        evidence_edges: list[Pair],
+        merge_target: int,
+        resplit_chunks: list[list[str]],
+        overshoots: list[str],
+    ) -> None: ...
+
+
 class SingleGroupStrategy:
     """Trivial passthrough: every task in one group. Proves the R22 seam."""
 
@@ -88,12 +142,49 @@ class SingleGroupStrategy:
         return {node: 0 for node in sorted(graph.nodes)}
 
 
+def _group_edges(graph: TaskGraph, partition: Partition) -> dict[int, set[int]]:
+    """Group-level dependency edges {upstream_gid: {downstream_gid}}, unfiltered —
+    may contain cycles. Shared by build_group_dag's authoritative check, the U4
+    merge guard, and the U5 SCC repair."""
+    group_edges: dict[int, set[int]] = defaultdict(set)
+    for up, down in graph.dependencies:
+        gu, gd = partition[up], partition[down]
+        if gu != gd:
+            group_edges[gu].add(gd)
+    return group_edges
+
+
+def _is_acyclic(group_edges: Mapping[int, set[int]], gids: set[int]) -> bool:
+    """Kahn's algorithm over a group-level edge map; the surviving-node count
+    is order-independent, so this needs no sorting to be deterministic."""
+    indegree: dict[int, int] = dict.fromkeys(gids, 0)
+    for gu, downs in group_edges.items():
+        for gd in downs:
+            if gd in indegree:
+                indegree[gd] += 1
+    queue = [gid for gid, d in indegree.items() if d == 0]
+    seen = 0
+    while queue:
+        gid = queue.pop()
+        seen += 1
+        for gd in group_edges.get(gid, ()):
+            if gd in indegree:
+                indegree[gd] -= 1
+                if indegree[gd] == 0:
+                    queue.append(gd)
+    return seen == len(indegree)
+
+
 def build_group_dag(graph: TaskGraph, partition: Partition) -> dict[int, set[int]]:
     """Group-level dependency edges {upstream_gid: {downstream_gid}}; cycles fail loudly.
 
     CoCoder has no cycle detection (a cyclic graph silently wedges its scheduler);
     here a cycle raises GroupCycleError naming the groups and the task edges that
-    close the cycle.
+    close the cycle. By the time DefaultPartitionStrategy reaches this call
+    (plan U4/U5), the merge guard has refused every cycle-creating merge and the
+    SCC repair has folded away whatever still cycled after Louvain/lift/split —
+    a GroupCycleError surfacing from here is an orchestrator bug, not a
+    user-facing outcome.
     """
     group_edges: dict[int, set[int]] = defaultdict(set)
     edge_evidence: dict[tuple[int, int], list[Pair]] = defaultdict(list)
@@ -167,7 +258,7 @@ def _last_modifying_stage(stages: list[tuple[str, Partition]]) -> str:
 @dataclass
 class DefaultPartitionStrategy:
     """CoCoder's pipeline, ported: hub isolation → slice contraction → Louvain →
-    lift → split → merge.
+    lift → split → merge → repair.
 
     ``work_fn`` and ``budget_cap`` are the injected estimator hooks: work is the
     relative size of one task node and the cap bounds a group's summed work. With
@@ -177,57 +268,95 @@ class DefaultPartitionStrategy:
     Slice labels (task-map must-links, docs/orchestrator-task-map.md) enter as
     deterministic node contraction: hub roles are detected first (a hub is never
     absorbed into a slice), each slice's core members contract into one supernode
-    for clustering and lifting, then membership expands. Softness comes after
-    expansion: ``split_over_budget`` may still break an oversized slice at its
-    weakest internal edges and ``merge_small_groups`` may combine small ones.
+    for clustering and lifting, then membership expands. A slice is an indivisible
+    block from here on: ``split_over_budget`` (plan U3) cuts around a slice, never
+    through it, and ``merge_small_groups`` (plan U4) refuses any merge that would
+    close a group-level dependency cycle.
+
+    Prevention is not exhaustive — a cycle can still originate at Louvain, lift or
+    split, before merge ever runs (plan U5). ``repair_cycles`` merges every such
+    surviving cyclic group-SCC and re-splits it back inside budget where possible;
+    acyclicity is an internal invariant from this point on, so the final
+    ``build_group_dag`` call below is a safety net whose ``GroupCycleError`` would
+    mean a bug in this repair, not a user-facing outcome.
 
     ``last_stage`` (R18) records which internal stage last *changed* the
-    partition's membership (contraction/louvain, lift, split, merge) — set after
-    every ``partition()`` call by comparing group membership after each stage,
-    not by re-running anything.
+    partition's membership (contraction/louvain, lift, split, merge, repair) — set
+    after every ``partition()`` call by comparing group membership after each
+    stage, not by re-running anything. ``flags`` (R10) accumulates one message per
+    repaired group that could not be re-split back under budget.
     """
 
     work_fn: WorkFn = lambda node: 1.0
     budget_cap: float | None = None
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
+    recorder: PartitionRecorder | None = None
     last_stage: str | None = field(default=None, init=False)
+    flags: list[str] = field(default_factory=list, init=False)
+
+    def _record_stage(self, name: str, partition: Partition) -> None:
+        if self.recorder is not None:
+            self.recorder.record_stage(name, partition)
 
     def partition(self, graph: TaskGraph) -> Partition:
+        self.flags = []
         if not graph.nodes:
             self.last_stage = None
             return {}
-        roles = detect_hub_roles(graph, threshold=self.hub_threshold)
+        roles = detect_hub_roles(graph, threshold=self.hub_threshold, recorder=self.recorder)
         atoms = slice_atoms(graph, roles)
         stages: list[tuple[str, Partition]] = []
         if atoms:
             unit_graph, self_loops, unit_of = _contract_slices(graph, atoms)
             unit_roles = {unit_of[node]: role for node, role in roles.items()}
             unit_partition = _hub_isolated_clustering(
-                unit_graph, unit_roles, self.louvain_resolution, self_loops
+                unit_graph, unit_roles, self.louvain_resolution, self_loops, recorder=self.recorder
             )
             partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
             stages.append(("contraction", dict(partition)))
+            self._record_stage("contraction", partition)
             unit_partition = lift_independent(unit_graph, unit_partition)
             partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
             stages.append(("lift", dict(partition)))
+            self._record_stage("lift", partition)
         else:
-            partition = _hub_isolated_clustering(graph, roles, self.louvain_resolution)
+            partition = _hub_isolated_clustering(
+                graph, roles, self.louvain_resolution, recorder=self.recorder
+            )
             stages.append(("louvain", dict(partition)))
+            self._record_stage("louvain", partition)
             partition = lift_independent(graph, partition)
             stages.append(("lift", dict(partition)))
+            self._record_stage("lift", partition)
         if self.budget_cap is not None:
-            partition = split_over_budget(graph, partition, self.work_fn, self.budget_cap)
+            partition = split_over_budget(
+                graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+            )
             stages.append(("split", dict(partition)))
-        partition = merge_small_groups(graph, partition, self.work_fn, self.budget_cap)
+            self._record_stage("split", partition)
+        partition = merge_small_groups(
+            graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+        )
         stages.append(("merge", dict(partition)))
+        self._record_stage("merge", partition)
+        partition = repair_cycles(
+            graph, partition, self.work_fn, self.budget_cap, self.flags, recorder=self.recorder
+        )
+        stages.append(("repair", dict(partition)))
+        self._record_stage("repair", partition)
         partition = _renumber(partition)
-        build_group_dag(graph, partition)  # cycles must fail loudly (plan U1)
+        self._record_stage("renumber", partition)
+        build_group_dag(graph, partition)  # an orchestrator bug if this still raises (plan U5)
         self.last_stage = _last_modifying_stage(stages)
         return partition
 
 
-def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD) -> dict[str, str]:
+def detect_hub_roles(
+    graph: TaskGraph,
+    threshold: float = DEFAULT_HUB_THRESHOLD,
+    recorder: PartitionRecorder | None = None,
+) -> dict[str, str]:
     """Degree-thresholded roles: utility_hub / aggregator_hub / core.
 
     Port of CoCoder ``detect_roles`` (common.py:43-63) by *behavior*: a node most
@@ -238,36 +367,48 @@ def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD)
     """
     n = len(graph.nodes)
     if n <= 1:
-        return {node: "core" for node in graph.nodes}
+        roles = {node: "core" for node in graph.nodes}
+        if recorder is not None:
+            for node in sorted(roles):
+                recorder.record_hub_role(node, "core", 0.0, 0.0, threshold)
+        return roles
     dependencies_of: dict[str, set[str]] = defaultdict(set)
     dependents_of: dict[str, set[str]] = defaultdict(set)
     for up, down in graph.dependencies:
         dependencies_of[down].add(up)
         dependents_of[up].add(down)
     roles = {}
-    for node in graph.nodes:
+    # Sorted, not `graph.nodes` (a frozenset — hash-seed order): this loop is
+    # the only place `record_hub_role` fires, and unsorted iteration would
+    # make the trace's `hub_roles` list order vary across runs (R18).
+    for node in sorted(graph.nodes):
         depends_on = len(dependencies_of[node]) / (n - 1)
         depended_by = len(dependents_of[node]) / (n - 1)
         if depends_on > threshold:
-            roles[node] = "aggregator_hub"
+            role = "aggregator_hub"
         elif depended_by > threshold:
-            roles[node] = "utility_hub"
+            role = "utility_hub"
         else:
-            roles[node] = "core"
+            role = "core"
+        roles[node] = role
+        if recorder is not None:
+            recorder.record_hub_role(node, role, depends_on, depended_by, threshold)
     return roles
 
 
 def slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]:
-    """Slice label → sorted core members with 2+ tasks (the real must-links).
+    """Slice label → sorted members with 2+ tasks (the real must-links).
 
-    Reads the ``slice`` node metadata the task map supplies. Hub-role nodes are
-    excluded — hubs are isolated before slices contract and are never absorbed
-    into a feature slice. Public: the R18 partition-only report surfaces these.
+    Reads the ``slice`` node metadata the task map supplies. A declared slice
+    outranks an inferred hub role: every member joins its atom regardless of
+    ``roles``, because the planner bound those tasks explicitly and hub
+    classification is only a degree-ratio inference (``detect_hub_roles``).
+    ``roles`` is accepted for signature stability and trace context, not to
+    filter membership. Hub isolation still applies to every task carrying no
+    slice label. Public: the R18 partition-only report surfaces these.
     """
     atoms: dict[str, list[str]] = defaultdict(list)
     for node in sorted(graph.nodes):
-        if roles.get(node) != "core":
-            continue
         label = graph.metadata.get(node, {}).get("slice")
         if isinstance(label, str) and label:
             atoms[label].append(node)
@@ -318,6 +459,7 @@ def _louvain(
     nodes: set[str],
     resolution: float,
     self_loops: Mapping[str, float] | None = None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """Seeded directed Louvain over the affinity weights restricted to ``nodes``.
 
@@ -349,6 +491,8 @@ def _louvain(
         g, weight="weight", resolution=resolution, seed=LOUVAIN_SEED
     )
     ordered = sorted((sorted(c) for c in communities), key=lambda c: c[0])
+    if recorder is not None:
+        recorder.record_louvain(resolution, LOUVAIN_SEED, ordered)
     return {node: gid for gid, members in enumerate(ordered) for node in members}
 
 
@@ -357,6 +501,7 @@ def _hub_isolated_clustering(
     roles: dict[str, str],
     resolution: float,
     self_loops: Mapping[str, float] | None = None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """CoCoder ``role_grouping`` (post_processing.py:13-33): cluster only the core.
 
@@ -366,7 +511,7 @@ def _hub_isolated_clustering(
     utility_hubs = sorted(n for n, r in roles.items() if r == "utility_hub")
     aggregator_hubs = sorted(n for n, r in roles.items() if r == "aggregator_hub")
     core = {n for n, r in roles.items() if r == "core"}
-    core_partition = _louvain(graph, core, resolution, self_loops)
+    core_partition = _louvain(graph, core, resolution, self_loops, recorder=recorder)
 
     partition: Partition = {}
     gid = 0
@@ -452,16 +597,46 @@ def lift_independent(graph: TaskGraph, partition: Partition) -> Partition:
     return new_partition
 
 
+def _slice_block_of(graph: TaskGraph) -> dict[str, str]:
+    """Node → indivisible block id: a declared slice's members share one id
+    (``slice::<label>``), every other node is its own block. The splitter and
+    the SCC re-split (plan U3/U5) both cut between blocks, never inside one."""
+    block_of: dict[str, str] = {}
+    for label, members in slice_atoms(graph, {}).items():
+        for node in members:
+            block_of[node] = f"slice::{label}"
+    for node in graph.nodes:
+        block_of.setdefault(node, node)
+    return block_of
+
+
+def _blocks_of(members: list[str], block_of: dict[str, str]) -> dict[str, list[str]]:
+    """Group ``members`` by block id, each list sorted for determinism."""
+    blocks: dict[str, list[str]] = defaultdict(list)
+    for node in members:
+        blocks[block_of[node]].append(node)
+    return {block_id: sorted(nodes) for block_id, nodes in blocks.items()}
+
+
 def split_over_budget(
-    graph: TaskGraph, partition: Partition, work_fn: WorkFn, budget_cap: float
+    graph: TaskGraph,
+    partition: Partition,
+    work_fn: WorkFn,
+    budget_cap: float,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """Split any group whose summed work exceeds the cap at its lowest-affinity boundary.
 
     Not in CoCoder (its clustering output is size-unbounded upward); required by
-    origin AE2. Reverse-Kruskal: drop the weakest internal affinity edges until the
-    group falls apart, recurse on any component still over budget. A single node
-    over budget stays a singleton — the estimator flags it downstream.
+    origin AE2. Cut candidates are computed *between indivisible blocks* — a
+    declared slice's members or a lone node (plan U3) — so a cut can separate a
+    slice from the rest of an over-budget group but never break the slice apart.
+    Reverse-Kruskal: drop the weakest internal block-to-block affinity until the
+    group falls apart, recurse on any component still over budget. A group made
+    of a single block over budget stays whole — the estimator flags it downstream
+    (or, for a slice, U6's overflow gate).
     """
+    block_of = _slice_block_of(graph)
     groups: dict[int, list[str]] = defaultdict(list)
     for node, gid in partition.items():
         groups[gid].append(node)
@@ -472,23 +647,47 @@ def split_over_budget(
     while pending:
         members = pending.pop(0)
         total = sum(work_fn(n) for n in members)
-        if total <= budget_cap or len(members) == 1:
+        blocks = _blocks_of(members, block_of)
+        if total <= budget_cap or len(blocks) == 1:
             for node in members:
                 new_partition[node] = next_gid
             next_gid += 1
             continue
         member_set = set(members)
+        block_affinity: dict[Pair, float] = defaultdict(float)
+        for (a, b), w in graph.affinity.items():
+            if a in member_set and b in member_set:
+                ba, bb = block_of[a], block_of[b]
+                if ba != bb:
+                    block_affinity[canonical_pair(ba, bb)] += w
+        block_ids = set(blocks)
         internal = sorted(
-            ((w, pair) for pair, w in graph.affinity.items() if set(pair) <= member_set),
+            ((w, pair) for pair, w in block_affinity.items()),
             key=lambda item: (item[0], item[1]),
         )
-        components = _components_after_cut(member_set, internal)
+        components = _components_after_cut(block_ids, internal)
         if len(components) == 1:
             # Fully cohesive at every weight level: cut the single weakest edge set
-            # couldn't separate it, so peel the smallest-work node deterministically.
-            peel = min(members, key=lambda n: (work_fn(n), n))
-            components = [[peel], sorted(member_set - {peel})]
-        pending = components + pending
+            # couldn't separate it, so peel the smallest-work block deterministically.
+            block_work = {b: sum(work_fn(n) for n in blocks[b]) for b in block_ids}
+            peel = min(block_ids, key=lambda b: (block_work[b], b))
+            components = [[peel], sorted(block_ids - {peel})]
+        if recorder is not None:
+            component_of = {b: i for i, comp in enumerate(components) for b in comp}
+            candidates = [
+                {
+                    "block_a": pair[0],
+                    "block_b": pair[1],
+                    "weight": w,
+                    "cut": component_of[pair[0]] != component_of[pair[1]],
+                }
+                for w, pair in internal
+            ]
+            recorder.record_split(members, total, budget_cap, candidates, components)
+        pending = [
+            sorted(node for block_id in component for node in blocks[block_id])
+            for component in components
+        ] + pending
     return new_partition
 
 
@@ -591,6 +790,7 @@ def merge_small_groups(
     partition: Partition,
     work_fn: WorkFn,
     budget_cap: float | None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """CoCoder ``merge_small_groups`` (post_processing.py:295-401), always on.
 
@@ -617,6 +817,7 @@ def merge_small_groups(
                     return False
         return True
 
+    merge_round = 0
     while True:
         groups: dict[int, list[str]] = defaultdict(list)
         for node, gid in partition.items():
@@ -643,14 +844,54 @@ def merge_small_groups(
         for (source, target), edge_weight in sorted(pair_edges.items()):
             merged_work = group_work(groups[source]) + group_work(groups[target])
             if budget_cap is not None and merged_work > budget_cap:
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round, source, target, False, "over_budget", merged_work, edge_weight
+                    )
                 continue
             if not chain_compatible(groups[source], groups[target]):
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "not_chain_compatible",
+                        merged_work,
+                        edge_weight,
+                    )
                 continue
             candidate = {
                 node: (target if gid == source else gid) for node, gid in partition.items()
             }
+            if not _is_acyclic(_group_edges(graph, candidate), set(candidate.values())):
+                # Plan U4 (M2): folding an upstream hub's group together with a
+                # downstream aggregator's group across an intermediate group
+                # inverts an edge in the quotient graph — refuse it here
+                # rather than let build_group_dag discover it at the end.
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "would_create_cycle",
+                        merged_work,
+                        edge_weight,
+                    )
+                continue
             candidate_makespan = _simulate_makespan(graph, candidate, work)
             if candidate_makespan > current_makespan + 1e-9:
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "makespan_regression",
+                        merged_work,
+                        edge_weight,
+                    )
                 continue
             removed_affinity = sum(
                 w
@@ -672,7 +913,13 @@ def merge_small_groups(
         if best is None:
             break
         source, target = best
+        if recorder is not None:
+            merged_work = group_work(groups[source]) + group_work(groups[target])
+            recorder.record_merge_candidate(
+                merge_round, source, target, True, "", merged_work, pair_edges[(source, target)]
+            )
         partition = {node: (target if gid == source else gid) for node, gid in partition.items()}
+        merge_round += 1
     return partition
 
 
@@ -695,3 +942,232 @@ def _compute_waves(graph: TaskGraph) -> dict[str, int]:
     for node in graph.nodes:
         layer.setdefault(node, 0)
     return layer
+
+
+def _strongly_connected_components(
+    edges: Mapping[_Node, set[_Node]], node_ids: set[_Node]
+) -> list[list[_Node]]:
+    """Kosaraju's SCC, sorted-order deterministic (plan U5): fixed traversal
+    order at both passes makes the assignment of nodes to components
+    reproducible across runs, which is what byte-stable repair (R18) needs
+    from this step. Generic over the node type: used both for the group
+    quotient graph (int ids) and the block-level graph inside a re-split
+    (str block ids, see _resplit_by_wave)."""
+    visited: set[_Node] = set()
+    finish_order: list[_Node] = []
+    for start in sorted(node_ids):
+        if start in visited:
+            continue
+        visited.add(start)
+        stack: list[tuple[_Node, list[_Node]]] = [(start, sorted(edges.get(start, ())))]
+        while stack:
+            node, remaining = stack[-1]
+            advanced = False
+            while remaining:
+                nxt = remaining.pop(0)
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append((nxt, sorted(edges.get(nxt, ()))))
+                    advanced = True
+                    break
+            if not advanced:
+                finish_order.append(node)
+                stack.pop()
+
+    reverse_edges: dict[_Node, set[_Node]] = defaultdict(set)
+    for u, downs in edges.items():
+        for v in downs:
+            reverse_edges[v].add(u)
+
+    assigned: set[_Node] = set()
+    components: list[list[_Node]] = []
+    for node_id in reversed(finish_order):
+        if node_id in assigned:
+            continue
+        assigned.add(node_id)
+        component = [node_id]
+        stack = [node_id]
+        while stack:
+            node = stack.pop()
+            for nxt in sorted(reverse_edges.get(node, ())):
+                if nxt not in assigned:
+                    assigned.add(nxt)
+                    component.append(nxt)
+                    stack.append(nxt)
+        components.append(sorted(component))
+    return components
+
+
+def _resplit_by_wave(
+    graph: TaskGraph, members: list[str], work_fn: WorkFn, budget_cap: float
+) -> list[list[str]]:
+    """Chunk a merged group's members along ascending dependency-wave
+    boundaries (plan U5), never splitting a slice block apart.
+
+    This is what makes the re-split provably cycle-safe: an external group X
+    cannot have edges in both directions against the members of a just-merged
+    SCC (if it did, X would have been part of that SCC), so X's relationship
+    to every chunk carved from those members is the same single direction as
+    its relationship to the whole merged set. Chunking by ascending wave
+    order — computed from dependencies internal to ``members`` only — means
+    no chunk can ever depend on a later chunk either. Together, no re-split
+    chunk boundary can introduce a new cross-group edge running the wrong way.
+    """
+    member_set = set(members)
+    block_of = _slice_block_of(graph)
+    blocks: dict[str, list[str]] = defaultdict(list)
+    for node in members:
+        blocks[block_of[node]].append(node)
+    for nodes in blocks.values():
+        nodes.sort()
+
+    block_edges: dict[str, set[str]] = defaultdict(set)
+    for up, down in graph.dependencies:
+        if up in member_set and down in member_set:
+            bu, bd = block_of[up], block_of[down]
+            if bu != bd:
+                block_edges[bu].add(bd)
+
+    # A slice can straddle two blocks that were only cyclic at the group
+    # level (see repair_cycles): e.g. a1/a2 share a slice while a1 -> b ->
+    # a2, so contracting a1+a2 makes the slice block and b's block depend on
+    # each other. Condensing this block graph's own SCCs first — the same
+    # theorem repair_cycles already relies on — guarantees the wave loop
+    # below always terminates instead of deadlocking on a mutual dependency.
+    block_ids = set(blocks)
+    super_of: dict[str, str] = {}
+    for component in _strongly_connected_components(block_edges, block_ids):
+        rep = min(component)
+        for block_id in component:
+            super_of[block_id] = rep
+    supers: dict[str, list[str]] = defaultdict(list)
+    for block_id, nodes in blocks.items():
+        supers[super_of[block_id]].extend(nodes)
+    for nodes in supers.values():
+        nodes.sort()
+
+    dependencies_of_super: dict[str, set[str]] = defaultdict(set)
+    for bu, downs in block_edges.items():
+        for bd in downs:
+            su, sd = super_of[bu], super_of[bd]
+            if su != sd:
+                dependencies_of_super[sd].add(su)
+
+    wave: dict[str, int] = {}
+    changed = True
+    while changed:
+        changed = False
+        for super_id in supers:
+            if super_id in wave:
+                continue
+            deps = dependencies_of_super.get(super_id, set())
+            if all(d in wave for d in deps):
+                wave[super_id] = max([0] + [wave[d] + 1 for d in deps])
+                changed = True
+    ordered = sorted(supers, key=lambda s: (wave[s], s))
+
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_work = 0.0
+    for super_id in ordered:
+        super_members = supers[super_id]
+        super_work = sum(work_fn(n) for n in super_members)
+        if current and current_work + super_work > budget_cap:
+            chunks.append(current)
+            current, current_work = [], 0.0
+        current.extend(super_members)
+        current_work += super_work
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def repair_cycles(
+    graph: TaskGraph,
+    partition: Partition,
+    work_fn: WorkFn,
+    budget_cap: float | None,
+    flags: list[str],
+    recorder: PartitionRecorder | None = None,
+) -> Partition:
+    """SCC-merge, then a mandatory dependency-safe re-split (plan U5).
+
+    A cycle surviving the U4 merge guard can only have originated earlier —
+    at Louvain, lift or split — so it is repaired here rather than raised to
+    the caller. Merging every cyclic group-SCC's members into one supergroup
+    always yields an acyclic condensation (standard SCC theorem); the
+    wave-ordered re-split that follows (``_resplit_by_wave``) never
+    reintroduces a cycle. A chunk that still cannot fit under budget after
+    re-splitting is left over budget with an entry appended to ``flags``
+    naming it and the overshoot, rather than failing — these are greenfield
+    estimates, and a hard failure here would be unactionable.
+    """
+    group_edges = _group_edges(graph, partition)
+    gids = set(partition.values())
+    components = _strongly_connected_components(group_edges, gids)
+    cyclic = [c for c in components if len(c) > 1]
+    if not cyclic:
+        return partition
+
+    def evidence_edges(component: list[int]) -> list[Pair]:
+        members = set(component)
+        return sorted(
+            (up, down)
+            for up, down in graph.dependencies
+            if partition[up] in members
+            and partition[down] in members
+            and partition[up] != partition[down]
+        )
+
+    merge_target = {gid: min(component) for component in cyclic for gid in component}
+    merged_partition = {node: merge_target.get(gid, gid) for node, gid in partition.items()}
+    if budget_cap is None:
+        if recorder is not None:
+            for component in cyclic:
+                recorder.record_repair(
+                    sorted(component), evidence_edges(component), min(component), [], []
+                )
+        return merged_partition
+
+    merged_groups: dict[int, list[str]] = defaultdict(list)
+    for node, gid in merged_partition.items():
+        merged_groups[gid].append(node)
+
+    result = dict(merged_partition)
+    next_gid = max(partition.values(), default=-1) + 1
+    for component in cyclic:
+        target = min(component)
+        members = sorted(merged_groups[target])
+        total = sum(work_fn(n) for n in members)
+        if total <= budget_cap:
+            if recorder is not None:
+                recorder.record_repair(sorted(component), evidence_edges(component), target, [], [])
+            continue
+        chunks = _resplit_by_wave(graph, members, work_fn, budget_cap)
+        overshoots: list[str] = []
+        for chunk in chunks:
+            chunk_work = sum(work_fn(n) for n in chunk)
+            if chunk_work > budget_cap:
+                message = (
+                    f"partition: group containing {chunk[0]!r} stays "
+                    f"{chunk_work - budget_cap:.0f} over the {budget_cap:.0f} cap "
+                    "after cycle repair (an acyclic re-split under budget did not exist)"
+                )
+                flags.append(message)
+                overshoots.append(message)
+        if recorder is not None:
+            recorder.record_repair(
+                sorted(component),
+                evidence_edges(component),
+                target,
+                [list(chunk) for chunk in chunks],
+                overshoots,
+            )
+        first, *rest = chunks
+        for node in first:
+            result[node] = target
+        for chunk in rest:
+            for node in chunk:
+                result[node] = next_gid
+            next_gid += 1
+    return result

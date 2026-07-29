@@ -3,9 +3,11 @@
 U4 ships the `group` command with `--dry-run` as the human checkpoint before any
 execution; U9 adds `run` / `status` / `resume` on top. Config resolution is
 CLI flags > `.orchestrator/config.toml` in the target repo > defaults (plan U9).
-`run` consumes the artifacts `group` wrote (`groups.json`, `base-context.md`) and
-wires the Phase B execution engine: one base session per run, a dependency-aware
-scheduler, per-group review loops, and integration-branch merges.
+`group` writes a named grouping directory (`.orchestrator/groupings/<name>/`,
+plan U10) holding `groups.json` + `base-context.md`; `run` selects one, snapshots
+it into the run directory, and wires the Phase B execution engine: one base
+session per run, a dependency-aware scheduler, per-group review loops, and
+integration-branch merges.
 """
 
 from __future__ import annotations
@@ -26,10 +28,16 @@ from orchestrator.execution.escalation import (
     pending_escalations,
 )
 from orchestrator.execution.manifest import (
+    GroupingNameError,
+    GroupingSelectionError,
     ManifestStore,
     RunPaths,
     atomic_write_text,
+    describe_groupings,
+    grouping_dir,
     log_event,
+    snapshot_grouping,
+    validate_grouping_name,
 )
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
@@ -55,7 +63,6 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
     GrouperError,
-    PartitionOutcome,
     compute_partition,
     group_label,
     run_grouping,
@@ -63,6 +70,7 @@ from orchestrator.grouping.pipeline import (
 )
 from orchestrator.grouping.plan_reader import strip_task_map
 from orchestrator.grouping.speccer import write_specs
+from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
     EscalationResponse,
     Group,
@@ -85,6 +93,12 @@ def main(
 
     group_cmd = subparsers.add_parser("group", help="compute groups from a plan document")
     group_cmd.add_argument("plan", type=Path, help="path to the plan document")
+    group_cmd.add_argument(
+        "--name",
+        default=None,
+        help="grouping name (default: the plan's filename stem); written to "
+        ".orchestrator/groupings/<name>/",
+    )
     group_cmd.add_argument(
         "--dry-run",
         action="store_true",
@@ -110,10 +124,24 @@ def main(
             "flag instead of failing the run (default: hard error)"
         ),
     )
+    group_cmd.add_argument(
+        "--allow-oversized-slice",
+        action="store_true",
+        help=(
+            "keep a slice whose summed work exceeds the budget cap as one flagged "
+            "group instead of failing (default: hard error, R5); equivalent to "
+            "[partition] allow_oversized_slice = true in config.toml"
+        ),
+    )
     _add_common_args(group_cmd)
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
     run_cmd.add_argument("--run-id", default=None, help="run identifier (default: r<timestamp>)")
+    run_cmd.add_argument(
+        "--grouping",
+        default=None,
+        help="named grouping to run (default: auto-select if exactly one exists)",
+    )
     _add_execution_args(run_cmd)
     _add_common_args(run_cmd)
 
@@ -121,6 +149,9 @@ def main(
     resume_cmd.add_argument("run_id", help="the run to resume (see `status`)")
     _add_execution_args(resume_cmd)
     _add_common_args(resume_cmd)
+
+    groupings_cmd = subparsers.add_parser("groupings", help="list named groupings")
+    groupings_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
     status_cmd = subparsers.add_parser("status", help="show run state and sessions")
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
@@ -145,6 +176,8 @@ def main(
         return _cmd_run(args, llm_runner, resume=False)
     if args.command == "resume":
         return _cmd_run(args, llm_runner, resume=True)
+    if args.command == "groupings":
+        return _cmd_groupings(args)
     if args.command == "status":
         return _cmd_status(args)
     if args.command == "answer":
@@ -209,6 +242,9 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
+    partition_updates: dict = {}
+    if getattr(args, "allow_oversized_slice", False):
+        partition_updates["allow_oversized_slice"] = True
     escalation_updates: dict = {}
     intensity = getattr(args, "intensity", None)
     if intensity:
@@ -228,6 +264,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         updates["execution"] = config.execution.model_copy(update=execution_updates)
     if estimator_updates:
         updates["estimator"] = config.estimator.model_copy(update=estimator_updates)
+    if partition_updates:
+        updates["partition"] = config.partition.model_copy(update=partition_updates)
     if escalation_updates:
         updates["escalation"] = config.escalation.model_copy(update=escalation_updates)
     return config.model_copy(update=updates) if updates else config
@@ -251,10 +289,20 @@ def _cmd_group(
     client: CodegraphClient | None,
 ) -> int:
     repo_root = args.repo.resolve()
+    name = getattr(args, "name", None) or args.plan.stem
+    try:
+        validate_grouping_name(name)
+    except GroupingNameError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     config = _load_config(args, repo_root)
     if config is None:
         return 1
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
+    out_dir = grouping_dir(repo_root, name)
+    trace_path = out_dir / "grouping-trace.json"
+    recorder = TraceRecorder()
 
     if getattr(args, "no_spec", False):
         try:
@@ -265,12 +313,14 @@ def _cmd_group(
                 llm_runner=llm_runner,
                 client=client,
                 allow_unknown_symbols=allow_unknown_symbols,
+                recorder=recorder,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            _write_failure_trace(out_dir, recorder, exc, trace_path)
             return 1
+        _write_trace(out_dir, recorder)
         _warn_self_modification(outcome.mapper_out.flags)
-        _print_partition_report(outcome)
+        _print_partition_report(recorder.trace)
         return 0
 
     try:
@@ -281,23 +331,44 @@ def _cmd_group(
             llm_runner=llm_runner,
             client=client,
             allow_unknown_symbols=allow_unknown_symbols,
+            recorder=recorder,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _write_failure_trace(out_dir, recorder, exc, trace_path)
         return 1
     _warn_self_modification(result.flags)
 
     if args.dry_run:
+        _write_trace(out_dir, recorder)
         _print_report(result)
         return 0
 
-    out_dir = repo_root / ".orchestrator"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "groups.json").write_text(serialize_grouping(result))
     (out_dir / "base-context.md").write_text(base_context)
+    _write_trace(out_dir, recorder)
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _write_trace(out_dir: Path, recorder: TraceRecorder) -> None:
+    """Every ``group`` mode writes the trace (plan U9), including modes that
+    write nothing else — explaining a partition or a failure is the point."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "grouping-trace.json").write_text(serialize_trace(recorder.trace))
+
+
+def _write_failure_trace(
+    out_dir: Path, recorder: TraceRecorder, exc: Exception, trace_path: Path
+) -> None:
+    """A grouping that raises still leaves a trace: whatever stages ran before
+    the failure, plus a ``failure`` section naming it — the CLI message points
+    at the file instead of losing that partial context."""
+    recorder.record_failure(exc)
+    _write_trace(out_dir, recorder)
+    print(f"error: {exc}", file=sys.stderr)
+    print(f"see {trace_path} for the partial trace", file=sys.stderr)
 
 
 def _warn_self_modification(flags: list[str]) -> None:
@@ -307,24 +378,30 @@ def _warn_self_modification(flags: list[str]) -> None:
         print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
 
 
-def _print_partition_report(outcome: PartitionOutcome) -> None:
+def _print_partition_report(trace: GroupingTrace) -> None:
     """R18: the zero-LLM, sub-second answer to "how would this plan group?" —
-    every field ``compute_partition`` returns, without paying for specs."""
+    rendered from the trace (plan U9) rather than ``PartitionOutcome`` fields,
+    so what is printed is exactly what ``grouping-trace.json`` also carries.
+    """
+    partition = trace.stages[-1].partition if trace.stages else {}
+    node_work = {entry.node: entry.total for entry in trace.node_work}
+    budget_cap = trace.budget.budget_cap if trace.budget else 0.0
+
     members_by_gid: dict[int, list[str]] = {}
-    for node, gid in outcome.partition.items():
+    for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
     print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
-        work = sum(outcome.node_work.get(node, 0.0) for node in members)
-        downstream = sorted(group_label(down) for down in outcome.dag.get(gid, ()))
+        work = sum(node_work.get(node, 0.0) for node in members)
+        downstream = sorted(group_label(down) for down in trace.dag.get(gid, ()))
         print(f"\n{gid_str}:")
         print(f"  tasks: {', '.join(sorted(members))}")
-        print(f"  node work: {work:.1f} / budget cap {outcome.budget_cap:.1f}")
+        print(f"  node work: {work:.1f} / budget cap {budget_cap:.1f}")
         print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
 
-    hub_roles = {node: role for node, role in outcome.hub_roles.items() if role != "core"}
+    hub_roles = {entry.node: entry.role for entry in trace.hub_roles if entry.role != "core"}
     print("\nhub roles:")
     if hub_roles:
         for node, role in sorted(hub_roles.items()):
@@ -333,18 +410,18 @@ def _print_partition_report(outcome: PartitionOutcome) -> None:
         print("  none")
 
     print("\nslice atoms:")
-    if outcome.slice_atoms:
-        for label, members in sorted(outcome.slice_atoms.items()):
-            print(f"  {label}: {', '.join(members)}")
+    if trace.slice_atoms:
+        for entry in sorted(trace.slice_atoms, key=lambda e: e.label):
+            print(f"  {entry.label}: {', '.join(entry.members)}")
     else:
         print("  none")
 
-    print(f"\nlast partition-modifying stage: {outcome.last_stage}")
-    print(f"budget cap: {outcome.budget_cap:.1f}")
+    print(f"\nlast partition-modifying stage: {trace.last_stage}")
+    print(f"budget cap: {budget_cap:.1f}")
 
-    if outcome.mapper_out.flags:
+    if trace.mapper_flags:
         print("\nflags:")
-        for flag in outcome.mapper_out.flags:
+        for flag in trace.mapper_flags:
             print(f"  - {flag}")
 
 
@@ -367,6 +444,56 @@ def _print_report(result: GroupingResult) -> None:
             print(f"  - {flag}")
 
 
+# ------------------------------------------------------------------ groupings
+
+
+def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
+    """`run`'s grouping selection (plan U10): an explicit ``--grouping`` wins;
+    with none, auto-select only when exactly one grouping exists. Ambiguity and
+    legacy top-level state are reported by name, never guessed — that
+    implicitness is the failure ADR 0002 records."""
+    if name:
+        source_dir = grouping_dir(repo_root, name)
+        if not (source_dir / "groups.json").is_file():
+            raise GroupingSelectionError(
+                f"no grouping named {name!r} at {source_dir} — run "
+                f"`smart-mcps-orchestrate group <plan> --name {name}` first"
+            )
+        return name, source_dir
+
+    infos = describe_groupings(repo_root)
+    if len(infos) == 1:
+        info = infos[0]
+        return info.name, grouping_dir(repo_root, info.name)
+    if len(infos) > 1:
+        listing = "; ".join(f"{info.name} ({info.plan_path})" for info in infos)
+        raise GroupingSelectionError(
+            f"multiple groupings present — pick one with --grouping <name>: {listing}"
+        )
+
+    legacy = repo_root / ".orchestrator" / "groups.json"
+    if legacy.is_file():
+        raise GroupingSelectionError(
+            f"found legacy grouping artifact {legacy} from before named groupings — "
+            "it is not used automatically; re-group with "
+            "`smart-mcps-orchestrate group <plan> --name <name>`"
+        )
+    raise GroupingSelectionError(
+        "no groupings found — run `smart-mcps-orchestrate group <plan>` first"
+    )
+
+
+def _cmd_groupings(args: argparse.Namespace) -> int:
+    repo_root = args.repo.resolve()
+    infos = describe_groupings(repo_root)
+    if not infos:
+        print("no groupings found")
+        return 0
+    for info in infos:
+        print(f"{info.name}: {info.plan_path} ({info.group_count} group(s))")
+    return 0
+
+
 # ----------------------------------------------------------------- run/resume
 
 
@@ -376,9 +503,39 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     if config is None:
         return 1
 
+    run_id = args.run_id if resume else (args.run_id or _default_run_id())
+    paths = RunPaths(repo_root, run_id)
     orch_dir = repo_root / ".orchestrator"
-    groups_path = orch_dir / "groups.json"
-    base_context_path = orch_dir / "base-context.md"
+
+    source_grouping_dir: Path | None = None
+    grouping_name: str | None = None
+    if resume:
+        if not paths.state_path.is_file():
+            print(
+                f"error: no run state at {paths.state_path} — check `status` for known runs",
+                file=sys.stderr,
+            )
+            return 1
+        groups_path = paths.run_dir / "groups.json"
+        base_context_path = paths.run_dir / "base-context.md"
+    else:
+        if paths.state_path.is_file():
+            print(
+                f"error: run {run_id} already exists — `resume {run_id}` to continue it, "
+                "or pick another --run-id",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            grouping_name, source_grouping_dir = _select_grouping(
+                repo_root, getattr(args, "grouping", None)
+            )
+        except (GroupingNameError, GroupingSelectionError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        groups_path = source_grouping_dir / "groups.json"
+        base_context_path = source_grouping_dir / "base-context.md"
+
     if not groups_path.is_file() or not base_context_path.is_file():
         print(
             f"error: {groups_path} or {base_context_path} missing — "
@@ -397,7 +554,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         plan_path = repo_root / plan_path
     if not plan_path.is_file():
         print(
-            f"error: plan document {plan_path} (referenced by groups.json) not found — "
+            f"error: plan document {plan_path} (referenced by the grouping) not found — "
             "re-run `group` against the current plan",
             file=sys.stderr,
         )
@@ -405,22 +562,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # Stripped before it ever reaches an LLM context (R27) — the rewrite provider
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
-
-    run_id = args.run_id if resume else (args.run_id or _default_run_id())
-    paths = RunPaths(repo_root, run_id)
-    if resume and not paths.state_path.is_file():
-        print(
-            f"error: no run state at {paths.state_path} — check `status` for known runs",
-            file=sys.stderr,
-        )
-        return 1
-    if not resume and paths.state_path.is_file():
-        print(
-            f"error: run {run_id} already exists — `resume {run_id}` to continue it, "
-            "or pick another --run-id",
-            file=sys.stderr,
-        )
-        return 1
 
     # R8: the effective execution config prints before any session spawns —
     # obs1's operator trap was a config file silently beating flag expectations,
@@ -455,6 +596,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     except SessionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # The run keeps its own frozen copy of the grouping it started with (plan
+    # U10): a later `group --name <same>` against a different plan must not be
+    # able to rewrite a finished run's history. Done only after preflight
+    # succeeds, so a dead worker CLI never leaves a run directory behind.
+    if not resume:
+        snapshot_grouping(source_grouping_dir, paths.run_dir)
 
     # Construction is circular on paper (scheduler → executor → deps → runner →
     # scheduler.tracker); the executor closes over a slot assigned once deps exist —
@@ -504,7 +652,10 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             return 1
         base_session_id = base.session_id
         manifest = RunManifest(
-            run_id=run_id, plan_path=grouping.plan_path, base_session_id=base_session_id
+            run_id=run_id,
+            plan_path=grouping.plan_path,
+            base_session_id=base_session_id,
+            grouping=grouping_name,
         )
         store.save(manifest)
 
