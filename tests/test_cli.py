@@ -14,9 +14,10 @@ import sys
 from pathlib import Path
 
 from orchestrator.cli import _print_outcomes, apply_overrides, main
-from orchestrator.config import load_config
+from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
+from orchestrator.grouping.graphing import CodegraphClient
 from orchestrator.grouping.pipeline import serialize_grouping
 from orchestrator.model import (
     EscalationRequest,
@@ -111,6 +112,108 @@ class TestPrecedence:
         loaded = load_config(config_file)
         assert loaded.escalation.timeout_s == 30.0  # escalation-wait timeout is untouched
         assert capsys.readouterr().err == ""
+
+
+class TestAllowOversizedSliceConfig:
+    """Plan U6: --allow-oversized-slice and [partition] allow_oversized_slice
+    must be exactly equivalent — neither is a stronger or weaker form of the
+    other, they are the same override reached two ways."""
+
+    def test_config_file_sets_it(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[partition]\nallow_oversized_slice = true\n")
+        loaded = load_config(config_file)
+        assert loaded.partition.allow_oversized_slice is True
+
+    def test_default_is_false(self):
+        assert OrchestratorConfig().partition.allow_oversized_slice is False
+
+    def test_flag_sets_it_with_no_config_file(self):
+        args = argparse.Namespace(allow_oversized_slice=True)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.partition.allow_oversized_slice is True
+
+    def test_absent_flag_leaves_it_false(self):
+        args = argparse.Namespace(allow_oversized_slice=False)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.partition.allow_oversized_slice is False
+
+    def test_flag_and_config_file_reach_the_same_effective_config(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[partition]\nallow_oversized_slice = true\n")
+        via_config_file = load_config(config_file)
+        via_flag = apply_overrides(
+            OrchestratorConfig(), argparse.Namespace(allow_oversized_slice=True)
+        )
+        assert via_config_file.partition.allow_oversized_slice is True
+        assert via_flag.partition.allow_oversized_slice is True
+
+
+def _stub_codegraph_runner(args):
+    if args[0] == "sync":
+        return ""
+    if args[0] == "files":
+        return "stub repo\n"
+    raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
+
+
+OVERSIZED_SLICE_PLAN = """# feat: oversized slice
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: reports-api
+    description: reporting API routes
+    slice: reports
+    files: [app/reports.py]
+  - task_id: reports-ui
+    description: reporting admin page
+    slice: reports
+    files: [web/reports.tsx]
+```
+"""
+
+
+class TestSliceOverflowGateCli:
+    """Plan U6, CLI surface: `group --no-spec` is the zero-LLM path, so it
+    exercises the gate end-to-end without needing a speccer stub."""
+
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(OVERSIZED_SLICE_PLAN)
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("[estimator]\ntoken_budget = 6000\n")
+        return repo, plan
+
+    def test_no_spec_without_override_exits_nonzero_naming_everything(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code != 0
+        err = capsys.readouterr().err
+        assert "reports" in err
+        assert "reports-api" in err
+        assert "reports-ui" in err
+        assert "cap" in err
+        assert not (repo / ".orchestrator" / "groupings").exists()
+
+    def test_no_spec_with_override_exits_zero_and_keeps_slice_whole(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec", "--allow-oversized-slice"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "reports-api" in out
+        assert "reports-ui" in out
 
 
 class TestEscalationOverrides:

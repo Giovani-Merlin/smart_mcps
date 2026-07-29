@@ -33,6 +33,7 @@ from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
     Partition,
+    WorkFn,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
@@ -45,6 +46,58 @@ from orchestrator.model import Group, GroupingResult
 
 class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
+
+
+def _assert_slice_integrity(atoms: dict[str, list[str]], partition: Partition) -> None:
+    """Safety net for plan U6: split_over_budget (U3), the acyclic merge guard
+    (U4) and the SCC repair's re-split (U5) all treat a declared slice as one
+    indivisible block, so no group should ever end up holding a strict subset
+    of one. A violation here means a bug in one of those stages, not something
+    a user did — enforcement lives at the stage that could break the
+    invariant; this is only the assertion on the final result.
+    """
+    for label, members in sorted(atoms.items()):
+        gids = {partition[m] for m in members}
+        if len(gids) > 1:
+            raise GrouperError(
+                f"internal error: slice {label!r} split across groups {sorted(gids)} "
+                f"(members: {', '.join(sorted(members))}) — this should be unreachable"
+            )
+
+
+def _check_slice_overflow(
+    atoms: dict[str, list[str]],
+    node_work_fn: WorkFn,
+    budget_cap: float,
+    allow_oversized_slice: bool,
+    flags: list[str],
+) -> None:
+    """R5: a slice's own summed work can exceed the cap no matter how the rest
+    of the graph is partitioned — ``split_over_budget`` (U3) already keeps such
+    a slice whole rather than dissolving it, so this is where the overshoot
+    itself is judged. Loud by default, naming the slice, every member and its
+    work, the cap and the overshoot; ``allow_oversized_slice`` (CLI
+    ``--allow-oversized-slice``, config ``[partition] allow_oversized_slice`` —
+    exactly equivalent) accepts the overshoot instead and records it in
+    ``flags`` for the caller to surface.
+    """
+    for label, members in sorted(atoms.items()):
+        work_by_member = {m: node_work_fn(m) for m in sorted(members)}
+        total = sum(work_by_member.values())
+        if total <= budget_cap:
+            continue
+        overshoot = total - budget_cap
+        detail = ", ".join(f"{m}={work_by_member[m]:.0f}" for m in sorted(work_by_member))
+        message = (
+            f"slice {label!r} cannot fit in one group: members [{detail}] sum to "
+            f"{total:.0f} work, exceeding the {budget_cap:.0f} cap by {overshoot:.0f}"
+        )
+        if not allow_oversized_slice:
+            raise GrouperError(message)
+        flags.append(
+            f"partition: slice {label!r} accepted {overshoot:.0f} over the "
+            f"{budget_cap:.0f} cap (--allow-oversized-slice / allow_oversized_slice)"
+        )
 
 
 SELF_MODIFICATION_FLAG = (
@@ -158,8 +211,18 @@ def compute_partition(
         louvain_resolution=config.partition.louvain_resolution,
     )
     partition = strategy.partition(graph)
-    dag = build_group_dag(graph, partition)
     roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
+    atoms = slice_atoms(graph, roles)
+    _assert_slice_integrity(atoms, partition)
+    flags = list(strategy.flags)
+    _check_slice_overflow(
+        atoms=atoms,
+        node_work_fn=node_work_fn,
+        budget_cap=budget_cap,
+        allow_oversized_slice=config.partition.allow_oversized_slice,
+        flags=flags,
+    )
+    dag = build_group_dag(graph, partition)
 
     return PartitionOutcome(
         plan_text=plan_text,
@@ -170,9 +233,9 @@ def compute_partition(
         node_work={node: node_work_fn(node) for node in graph.nodes},
         budget_cap=budget_cap,
         hub_roles=roles,
-        slice_atoms=slice_atoms(graph, roles),
+        slice_atoms=atoms,
         last_stage=strategy.last_stage,
-        flags=list(strategy.flags),
+        flags=flags,
         base_context=base_context,
         base_tokens=base_tokens,
     )
