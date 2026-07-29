@@ -169,6 +169,17 @@ def is_dirty(worktree: Path) -> bool:
     return bool(_git_ok(worktree, "status", "--porcelain").strip())
 
 
+def commit_all(worktree: Path, message: str) -> bool:
+    """Commit every uncommitted change (tracked and untracked) in ``worktree``.
+    False — a no-op — when the worktree is missing or already clean: the
+    resolve routine's "nothing lost" case (plan U2)."""
+    if not worktree.is_dir() or not is_dirty(worktree):
+        return False
+    _git_ok(worktree, "add", "-A")
+    _git_ok(worktree, "commit", "-m", message)
+    return True
+
+
 def diff_stat(worktree: Path, base_ref: str) -> str:
     """Best-effort diff summary for generation handoffs (plan U7); never raises."""
     committed = _git(worktree, "diff", "--stat", base_ref)

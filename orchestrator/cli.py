@@ -39,11 +39,13 @@ from orchestrator.execution.manifest import (
     snapshot_grouping,
     validate_grouping_name,
 )
-from orchestrator.execution.merge import IntegrationMerger
-from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
+from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    ResolveConflict,
+    ResolveDeps,
     RunAbort,
     RunState,
     Scheduler,
@@ -53,9 +55,11 @@ from orchestrator.execution.sessions import SessionError, SessionRunner
 from orchestrator.execution.worktrees import (
     WorktreeError,
     _git_ok,
+    commit_all,
     create_worktree,
     group_branch,
     provision_env,
+    worktree_path,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
@@ -615,6 +619,35 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     if not resume:
         snapshot_grouping(source_grouping_dir, paths.run_dir)
 
+    merger = IntegrationMerger(repo_root, run_id)
+    try:
+        merger.ensure()
+    except WorktreeError as exc:
+        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
+        return 1
+
+    # The lifecycle log is always on (R10): the run-start line lands in every
+    # mode; only the escalation channel itself is HITL-gated. Built before the
+    # Scheduler (plan U2): a FAILED group's resolve routine needs the same
+    # broker/policy the review loop's escalations already use.
+    if config.escalation.enabled:
+        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
+        policy: EscalationPolicy | None = EscalationPolicy(
+            config.escalation.intensity, config.escalation.source
+        )
+        log_event(
+            paths,
+            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
+            f"source={config.escalation.source}, "
+            f"timeout={config.escalation.timeout_s}",
+        )
+    else:
+        broker = None
+        policy = None
+        log_event(paths, f"run {run_id} started (autonomous)")
+
+    resolve_deps = _resolve_deps(repo_root, run_id, merger)
+
     # Construction is circular on paper (scheduler → executor → deps → runner →
     # scheduler.tracker); the executor closes over a slot assigned once deps exist —
     # it is only invoked inside scheduler.run().
@@ -630,18 +663,14 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             executor=executor,
             config=config.execution,
             resume=resume,
+            broker=broker,
+            policy=policy,
+            resolve=resolve_deps,
         )
     except SchedulerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker
-
-    merger = IntegrationMerger(repo_root, run_id)
-    try:
-        merger.ensure()
-    except WorktreeError as exc:
-        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
-        return 1
 
     store = ManifestStore(paths)
     if resume:
@@ -669,24 +698,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             grouping=grouping_name,
         )
         store.save(manifest)
-
-    # The lifecycle log is always on (R10): the run-start line lands in every
-    # mode; only the escalation channel itself is HITL-gated.
-    if config.escalation.enabled:
-        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
-        policy: EscalationPolicy | None = EscalationPolicy(
-            config.escalation.intensity, config.escalation.source
-        )
-        log_event(
-            paths,
-            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
-            f"source={config.escalation.source}, "
-            f"timeout={config.escalation.timeout_s}",
-        )
-    else:
-        broker = None
-        policy = None
-        log_event(paths, f"run {run_id} started (autonomous)")
 
     workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
     deps = ReviewDeps(
@@ -758,6 +769,40 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
         return tips[group.id]
 
     return workspace_for, base_ref_for
+
+
+def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> ResolveDeps:
+    """Wires the scheduler's resolve routine (plan U2) to real git, translating
+    ``MergeConflict`` into the scheduler's own ``ResolveConflict`` so scheduler.py
+    never has to import merge/review machinery (review.py already imports
+    scheduler.py — a reverse import there would cycle).
+    """
+
+    def branch_for(group: Group) -> str:
+        return group_branch(run_id, group.id)
+
+    def worktree_for(group: Group) -> Path:
+        return worktree_path(repo_root, group.id, group.name)
+
+    def commit_stranded(group: Group) -> bool:
+        return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
+
+    def commits_ahead_fn(group: Group) -> int:
+        return commits_ahead(merger.ensure(), merger.branch, branch_for(group))
+
+    def merge_for_resolve(group: Group) -> None:
+        try:
+            merger.merge_group(group, worktree_for(group))
+        except MergeConflict as exc:
+            raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+        except MergeError:
+            pass  # commits_ahead already gated this — defensive no-op
+
+    return ResolveDeps(
+        commit_stranded=commit_stranded,
+        commits_ahead=commits_ahead_fn,
+        merge_group=merge_for_resolve,
+    )
 
 
 def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path):

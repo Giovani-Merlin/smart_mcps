@@ -161,6 +161,7 @@ class EscalationKind(StrEnum):
     REVIEWER_STRUCTURAL = "reviewer_structural"
     MERGE_CONFLICT = "merge_conflict"
     CAPS_EXHAUSTED = "caps_exhausted"  # generation/rewrite cap about to FAIL the group
+    GROUP_RESOLVE = "group_resolve"  # FAILED group's stranded work needs resolving (plan U2)
     GROUP_START = "group_start"  # interactive: approve before launch
     RESPAWN = "respawn"  # interactive: approve a breaker respawn
     MERGE_APPROVE = "merge_approve"  # interactive: approve before merge
