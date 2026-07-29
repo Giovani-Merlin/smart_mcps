@@ -124,6 +124,15 @@ def main(
             "flag instead of failing the run (default: hard error)"
         ),
     )
+    group_cmd.add_argument(
+        "--allow-oversized-slice",
+        action="store_true",
+        help=(
+            "keep a slice whose summed work exceeds the budget cap as one flagged "
+            "group instead of failing (default: hard error, R5); equivalent to "
+            "[partition] allow_oversized_slice = true in config.toml"
+        ),
+    )
     _add_common_args(group_cmd)
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
@@ -233,6 +242,9 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
+    partition_updates: dict = {}
+    if getattr(args, "allow_oversized_slice", False):
+        partition_updates["allow_oversized_slice"] = True
     escalation_updates: dict = {}
     intensity = getattr(args, "intensity", None)
     if intensity:
@@ -252,6 +264,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         updates["execution"] = config.execution.model_copy(update=execution_updates)
     if estimator_updates:
         updates["estimator"] = config.estimator.model_copy(update=estimator_updates)
+    if partition_updates:
+        updates["partition"] = config.partition.model_copy(update=partition_updates)
     if escalation_updates:
         updates["escalation"] = config.escalation.model_copy(update=escalation_updates)
     return config.model_copy(update=updates) if updates else config

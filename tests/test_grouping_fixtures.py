@@ -7,13 +7,14 @@ codegraph: the stub runner below only ever answers `codegraph files`.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.graphing import CodegraphClient
-from orchestrator.grouping.pipeline import compute_partition
+from orchestrator.grouping.pipeline import GrouperError, compute_partition
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "grouping"
 
@@ -130,13 +131,20 @@ class TestBrownfieldCrossStack:
 
 class TestSliceOverBudget:
     """Plan U3: split_over_budget cuts between blocks, never inside a slice —
-    the oversized reports slice now stays whole, over budget, rather than
-    being dissolved into its two individual tasks (U6's overflow gate is
-    what reacts to the overshoot, not the splitter)."""
+    the oversized reports slice stays whole rather than being dissolved into
+    its two individual tasks. Plan U6: compute_partition then judges that
+    overshoot itself — a hard GrouperError by default (R5), or an accepted,
+    flagged group with --allow-oversized-slice / [partition]
+    allow_oversized_slice (exactly equivalent)."""
 
     def config(self):
         config = OrchestratorConfig()
         config.estimator.token_budget = 8_000
+        return config
+
+    def allowed_config(self):
+        config = self.config()
+        config.partition.allow_oversized_slice = True
         return config
 
     def test_slice_stays_whole_even_over_budget(self, tmp_path):
@@ -144,12 +152,43 @@ class TestSliceOverBudget:
         outcome = compute_partition(
             plan_path=plan,
             repo_root=repo,
-            config=self.config(),
+            config=self.allowed_config(),
             llm_runner=_llm_must_not_be_called,
             client=client_for(repo),
         )
         by_gid = members_by_group(outcome.partition)
         assert any({"reports-api", "reports-ui"} <= members for members in by_gid.values())
+
+    def test_default_config_rejects_the_overflow_naming_everything(self, tmp_path):
+        repo, plan = make_repo(tmp_path, "slice-over-budget")
+        with pytest.raises(GrouperError) as excinfo:
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                config=self.config(),
+                llm_runner=_llm_must_not_be_called,
+                client=client_for(repo),
+            )
+        message = str(excinfo.value)
+        assert "reports" in message
+        assert "reports-api" in message
+        assert "reports-ui" in message
+        assert "cap" in message
+        assert re.search(r"reports-api=\d", message)
+        assert re.search(r"reports-ui=\d", message)
+
+    def test_override_flag_records_the_accepted_overshoot(self, tmp_path):
+        repo, plan = make_repo(tmp_path, "slice-over-budget")
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=self.allowed_config(),
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+        by_gid = members_by_group(outcome.partition)
+        assert any({"reports-api", "reports-ui"} <= members for members in by_gid.values())
+        assert any("reports" in flag and "cap" in flag for flag in outcome.flags)
 
 
 class TestHubInTheMiddle:
@@ -272,6 +311,11 @@ class TestProperties:
         config = OrchestratorConfig()
         for key, value in config_overrides.items():
             setattr(config.estimator, key, value)
+        if fixture_name == "slice-over-budget":
+            # U6: its reports slice is a declared, intentional cap overshoot —
+            # accept it here so this property test can still exercise the
+            # accepted-overshoot path's determinism, not the plain error path.
+            config.partition.allow_oversized_slice = True
 
         repo_a, plan_a = make_repo(tmp_path / "a", fixture_name, real_files=real_files)
         outcome_a = compute_partition(

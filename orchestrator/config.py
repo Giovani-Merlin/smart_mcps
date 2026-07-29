@@ -41,6 +41,10 @@ class EdgeWeightsConfig(BaseModel):
 class PartitionConfig(BaseModel):
     hub_threshold: float = 0.4  # CoCoder's live ROLE_THRESHOLD
     louvain_resolution: float = 1.0
+    # R5/plan U6: a declared slice whose own summed work exceeds the budget cap
+    # is a hard GrouperError by default; this (and --allow-oversized-slice,
+    # exactly equivalent) keeps it whole as one flagged group instead.
+    allow_oversized_slice: bool = False
 
 
 class EstimatorConfig(BaseModel):
