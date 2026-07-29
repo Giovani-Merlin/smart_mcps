@@ -63,7 +63,6 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
     GrouperError,
-    PartitionOutcome,
     compute_partition,
     group_label,
     run_grouping,
@@ -71,6 +70,7 @@ from orchestrator.grouping.pipeline import (
 )
 from orchestrator.grouping.plan_reader import strip_task_map
 from orchestrator.grouping.speccer import write_specs
+from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
     EscalationResponse,
     Group,
@@ -286,6 +286,9 @@ def _cmd_group(
     if config is None:
         return 1
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
+    out_dir = grouping_dir(repo_root, name)
+    trace_path = out_dir / "grouping-trace.json"
+    recorder = TraceRecorder()
 
     if getattr(args, "no_spec", False):
         try:
@@ -296,12 +299,14 @@ def _cmd_group(
                 llm_runner=llm_runner,
                 client=client,
                 allow_unknown_symbols=allow_unknown_symbols,
+                recorder=recorder,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            _write_failure_trace(out_dir, recorder, exc, trace_path)
             return 1
+        _write_trace(out_dir, recorder)
         _warn_self_modification(outcome.mapper_out.flags)
-        _print_partition_report(outcome)
+        _print_partition_report(recorder.trace)
         return 0
 
     try:
@@ -312,23 +317,44 @@ def _cmd_group(
             llm_runner=llm_runner,
             client=client,
             allow_unknown_symbols=allow_unknown_symbols,
+            recorder=recorder,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _write_failure_trace(out_dir, recorder, exc, trace_path)
         return 1
     _warn_self_modification(result.flags)
 
     if args.dry_run:
+        _write_trace(out_dir, recorder)
         _print_report(result)
         return 0
 
-    out_dir = grouping_dir(repo_root, name)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "groups.json").write_text(serialize_grouping(result))
     (out_dir / "base-context.md").write_text(base_context)
+    _write_trace(out_dir, recorder)
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _write_trace(out_dir: Path, recorder: TraceRecorder) -> None:
+    """Every ``group`` mode writes the trace (plan U9), including modes that
+    write nothing else — explaining a partition or a failure is the point."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "grouping-trace.json").write_text(serialize_trace(recorder.trace))
+
+
+def _write_failure_trace(
+    out_dir: Path, recorder: TraceRecorder, exc: Exception, trace_path: Path
+) -> None:
+    """A grouping that raises still leaves a trace: whatever stages ran before
+    the failure, plus a ``failure`` section naming it — the CLI message points
+    at the file instead of losing that partial context."""
+    recorder.record_failure(exc)
+    _write_trace(out_dir, recorder)
+    print(f"error: {exc}", file=sys.stderr)
+    print(f"see {trace_path} for the partial trace", file=sys.stderr)
 
 
 def _warn_self_modification(flags: list[str]) -> None:
@@ -338,24 +364,30 @@ def _warn_self_modification(flags: list[str]) -> None:
         print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
 
 
-def _print_partition_report(outcome: PartitionOutcome) -> None:
+def _print_partition_report(trace: GroupingTrace) -> None:
     """R18: the zero-LLM, sub-second answer to "how would this plan group?" —
-    every field ``compute_partition`` returns, without paying for specs."""
+    rendered from the trace (plan U9) rather than ``PartitionOutcome`` fields,
+    so what is printed is exactly what ``grouping-trace.json`` also carries.
+    """
+    partition = trace.stages[-1].partition if trace.stages else {}
+    node_work = {entry.node: entry.total for entry in trace.node_work}
+    budget_cap = trace.budget.budget_cap if trace.budget else 0.0
+
     members_by_gid: dict[int, list[str]] = {}
-    for node, gid in outcome.partition.items():
+    for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
     print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
-        work = sum(outcome.node_work.get(node, 0.0) for node in members)
-        downstream = sorted(group_label(down) for down in outcome.dag.get(gid, ()))
+        work = sum(node_work.get(node, 0.0) for node in members)
+        downstream = sorted(group_label(down) for down in trace.dag.get(gid, ()))
         print(f"\n{gid_str}:")
         print(f"  tasks: {', '.join(sorted(members))}")
-        print(f"  node work: {work:.1f} / budget cap {outcome.budget_cap:.1f}")
+        print(f"  node work: {work:.1f} / budget cap {budget_cap:.1f}")
         print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
 
-    hub_roles = {node: role for node, role in outcome.hub_roles.items() if role != "core"}
+    hub_roles = {entry.node: entry.role for entry in trace.hub_roles if entry.role != "core"}
     print("\nhub roles:")
     if hub_roles:
         for node, role in sorted(hub_roles.items()):
@@ -364,18 +396,18 @@ def _print_partition_report(outcome: PartitionOutcome) -> None:
         print("  none")
 
     print("\nslice atoms:")
-    if outcome.slice_atoms:
-        for label, members in sorted(outcome.slice_atoms.items()):
-            print(f"  {label}: {', '.join(members)}")
+    if trace.slice_atoms:
+        for entry in sorted(trace.slice_atoms, key=lambda e: e.label):
+            print(f"  {entry.label}: {', '.join(entry.members)}")
     else:
         print("  none")
 
-    print(f"\nlast partition-modifying stage: {outcome.last_stage}")
-    print(f"budget cap: {outcome.budget_cap:.1f}")
+    print(f"\nlast partition-modifying stage: {trace.last_stage}")
+    print(f"budget cap: {budget_cap:.1f}")
 
-    if outcome.mapper_out.flags:
+    if trace.mapper_flags:
         print("\nflags:")
-        for flag in outcome.mapper_out.flags:
+        for flag in trace.mapper_flags:
             print(f"  - {flag}")
 
 
