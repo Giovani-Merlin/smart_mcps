@@ -74,11 +74,18 @@ def create_worktree(
 ) -> Path:
     """Create (or reuse) the group's worktree. Idempotent: an existing worktree
     already on ``branch`` is returned as-is; an existing branch without a worktree
-    is checked out where it left off (the resume case)."""
+    is checked out where it left off (the resume case).
+
+    Both re-entry paths refresh onto ``start_point`` (plan U1, amended R2) before
+    returning: a resumed group's branch is otherwise never brought up to date with
+    work merged while it was down, and worktrees are not removed on interrupt, so
+    the existing-worktree path is the *more* common resume case, not an edge one.
+    """
     path = worktree_path(repo_root, group_id, name)
     if path.exists():
         existing = _registered_branch(repo_root, path)
         if existing == branch:
+            _refresh_onto_tip(path, group_id=group_id, tip=start_point)
             return path
         raise WorktreeError(
             f"{path} exists but is not a worktree on {branch}"
@@ -87,9 +94,40 @@ def create_worktree(
     path.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(repo_root, branch):
         _git_ok(repo_root, "worktree", "add", str(path), branch)
+        _refresh_onto_tip(path, group_id=group_id, tip=start_point)
     else:
         _git_ok(repo_root, "worktree", "add", "-b", branch, str(path), start_point)
     return path
+
+
+def _refresh_onto_tip(worktree: Path, *, group_id: str, tip: str) -> None:
+    """Bring a re-entered group worktree's branch up to date with ``tip``.
+
+    Plain ``git merge``, never ``--ff-only`` and never a rebase (plan U1, amended
+    R2): a branch that has committed anything has diverged by definition, so
+    ``--ff-only`` would reject exactly the resumed groups this refresh exists to
+    rescue, and a rebase rewrites SHAs a warm coder session already has in
+    context. Fast-forwards silently when possible (no merge commit); makes a
+    merge commit when diverged; raises on a real content conflict or on git
+    refusing to touch uncommitted local changes — either way the working tree's
+    uncommitted changes are never discarded.
+    """
+    result = _git(worktree, "merge", tip, "-m", f"refresh({group_id}): onto {tip}")
+    if result.returncode == 0:
+        return
+    conflicted = _git_ok(worktree, "diff", "--name-only", "--diff-filter=U").splitlines()
+    if conflicted:
+        _git(worktree, "merge", "--abort")
+        raise WorktreeError(
+            f"refreshing group {group_id}'s worktree onto {tip} conflicted on: "
+            f"{', '.join(conflicted)}"
+        )
+    # git refused before starting the merge — e.g. uncommitted local changes
+    # would be overwritten. Nothing to abort (no MERGE_HEAD was created), and the
+    # uncommitted changes are exactly what must survive untouched.
+    raise WorktreeError(
+        f"refreshing group {group_id}'s worktree onto {tip} failed: {result.stderr.strip()[:500]}"
+    )
 
 
 def provision_env(

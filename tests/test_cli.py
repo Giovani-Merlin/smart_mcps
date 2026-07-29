@@ -555,6 +555,53 @@ class TestRunBanner:
         assert "HITL off" in banner
 
 
+class TestWorkspaceForFreshCut:
+    def test_workspace_for_cuts_a_fresh_worktree_from_the_integration_tip(self, tmp_path):
+        """Plan U1 (R3): workspace_for cuts each group's worktree from
+        merger.tip() at its ready→running transition, so a group started right
+        after a sibling merged already carries that sibling's work — no new cut
+        logic, just a regression test pinning the existing behaviour."""
+        from orchestrator.cli import _workspace_seams
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "--allow-empty", "-m", "i"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+
+        # a prior group merges its work onto the integration branch immediately
+        # before the next group's worktree is cut
+        upstream = make_group("g0")
+        wt0 = create_worktree(
+            repo,
+            group_id="g0",
+            name=upstream.name,
+            branch=group_branch("r1", "g0"),
+            start_point=merger.tip(),
+        )
+        (wt0 / "upstream.txt").write_text("from g0\n")
+        for args in (["add", "-A"], ["commit", "-m", "g0 work"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=wt0,
+                check=True,
+                capture_output=True,
+            )
+        merger.merge_group(upstream, wt0)
+
+        workspace_for, _ = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        path = workspace_for(make_group("g1"))
+        assert (path / "upstream.txt").read_text() == "from g0\n"
+
+
 class TestWorkspaceProvisioning:
     def test_workspace_for_provisions_the_env_after_creating_the_worktree(
         self, tmp_path, monkeypatch
