@@ -202,7 +202,14 @@ class TestSliceOverflowGateCli:
         assert "reports-api" in err
         assert "reports-ui" in err
         assert "cap" in err
-        assert not (repo / ".orchestrator" / "groupings").exists()
+        # A rejected grouping must leave nothing usable behind. Originally this
+        # asserted the groupings directory did not exist at all, but g7's failure
+        # trace (_write_failure_trace) deliberately persists grouping-trace.json so
+        # a rejected run can be debugged. The invariant that actually matters is
+        # that no *grouping* results — describe_groupings skips any directory
+        # without groups.json, so a trace-only directory is never selectable by
+        # `run --grouping`.
+        assert not list((repo / ".orchestrator" / "groupings").rglob("groups.json"))
 
     def test_no_spec_with_override_exits_zero_and_keeps_slice_whole(self, tmp_path, capsys):
         repo, plan = self._repo(tmp_path)

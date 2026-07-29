@@ -83,6 +83,58 @@ class PartitionStrategy(Protocol):
     def partition(self, graph: TaskGraph) -> Partition: ...
 
 
+class PartitionRecorder(Protocol):
+    """Structural type for the optional trace hook (plan U8).
+
+    This module never imports ``orchestrator.grouping.trace`` — a caller
+    passes anything satisfying this shape (duck typing; no inheritance
+    required), which keeps the dependency one-directional and this module's
+    import surface pure (``TestStrategySeam::test_module_imports_stay_pure``).
+    Every stage function below accepts ``recorder: PartitionRecorder | None =
+    None`` and only ever calls these methods — never reads them back into a
+    decision, so attaching a recorder cannot change the partition produced.
+    """
+
+    def record_stage(self, stage: str, partition: Partition) -> None: ...
+    def record_hub_role(
+        self,
+        node: str,
+        role: str,
+        depends_on_ratio: float,
+        depended_by_ratio: float,
+        threshold: float,
+    ) -> None: ...
+    def record_louvain(
+        self, resolution: float, seed: int, communities: list[list[str]]
+    ) -> None: ...
+    def record_split(
+        self,
+        members: list[str],
+        total_work: float,
+        budget_cap: float,
+        candidates: list[dict],
+        components: list[list[str]],
+    ) -> None: ...
+    def record_merge_candidate(
+        self,
+        round_: int,
+        source: int,
+        target: int,
+        accepted: bool,
+        reason: str,
+        merged_work: float,
+        edge_weight: float,
+    ) -> None: ...
+    def record_repair(
+        self,
+        cyclic_groups: list[int],
+        evidence_edges: list[Pair],
+        merge_target: int,
+        resplit_chunks: list[list[str]],
+        overshoots: list[str],
+    ) -> None: ...
+
+
 class SingleGroupStrategy:
     """Trivial passthrough: every task in one group. Proves the R22 seam."""
 
@@ -239,47 +291,72 @@ class DefaultPartitionStrategy:
     budget_cap: float | None = None
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
+    recorder: PartitionRecorder | None = None
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
+
+    def _record_stage(self, name: str, partition: Partition) -> None:
+        if self.recorder is not None:
+            self.recorder.record_stage(name, partition)
 
     def partition(self, graph: TaskGraph) -> Partition:
         self.flags = []
         if not graph.nodes:
             self.last_stage = None
             return {}
-        roles = detect_hub_roles(graph, threshold=self.hub_threshold)
+        roles = detect_hub_roles(graph, threshold=self.hub_threshold, recorder=self.recorder)
         atoms = slice_atoms(graph, roles)
         stages: list[tuple[str, Partition]] = []
         if atoms:
             unit_graph, self_loops, unit_of = _contract_slices(graph, atoms)
             unit_roles = {unit_of[node]: role for node, role in roles.items()}
             unit_partition = _hub_isolated_clustering(
-                unit_graph, unit_roles, self.louvain_resolution, self_loops
+                unit_graph, unit_roles, self.louvain_resolution, self_loops, recorder=self.recorder
             )
             partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
             stages.append(("contraction", dict(partition)))
+            self._record_stage("contraction", partition)
             unit_partition = lift_independent(unit_graph, unit_partition)
             partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
             stages.append(("lift", dict(partition)))
+            self._record_stage("lift", partition)
         else:
-            partition = _hub_isolated_clustering(graph, roles, self.louvain_resolution)
+            partition = _hub_isolated_clustering(
+                graph, roles, self.louvain_resolution, recorder=self.recorder
+            )
             stages.append(("louvain", dict(partition)))
+            self._record_stage("louvain", partition)
             partition = lift_independent(graph, partition)
             stages.append(("lift", dict(partition)))
+            self._record_stage("lift", partition)
         if self.budget_cap is not None:
-            partition = split_over_budget(graph, partition, self.work_fn, self.budget_cap)
+            partition = split_over_budget(
+                graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+            )
             stages.append(("split", dict(partition)))
-        partition = merge_small_groups(graph, partition, self.work_fn, self.budget_cap)
+            self._record_stage("split", partition)
+        partition = merge_small_groups(
+            graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+        )
         stages.append(("merge", dict(partition)))
-        partition = repair_cycles(graph, partition, self.work_fn, self.budget_cap, self.flags)
+        self._record_stage("merge", partition)
+        partition = repair_cycles(
+            graph, partition, self.work_fn, self.budget_cap, self.flags, recorder=self.recorder
+        )
         stages.append(("repair", dict(partition)))
+        self._record_stage("repair", partition)
         partition = _renumber(partition)
+        self._record_stage("renumber", partition)
         build_group_dag(graph, partition)  # an orchestrator bug if this still raises (plan U5)
         self.last_stage = _last_modifying_stage(stages)
         return partition
 
 
-def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD) -> dict[str, str]:
+def detect_hub_roles(
+    graph: TaskGraph,
+    threshold: float = DEFAULT_HUB_THRESHOLD,
+    recorder: PartitionRecorder | None = None,
+) -> dict[str, str]:
     """Degree-thresholded roles: utility_hub / aggregator_hub / core.
 
     Port of CoCoder ``detect_roles`` (common.py:43-63) by *behavior*: a node most
@@ -290,22 +367,32 @@ def detect_hub_roles(graph: TaskGraph, threshold: float = DEFAULT_HUB_THRESHOLD)
     """
     n = len(graph.nodes)
     if n <= 1:
-        return {node: "core" for node in graph.nodes}
+        roles = {node: "core" for node in graph.nodes}
+        if recorder is not None:
+            for node in sorted(roles):
+                recorder.record_hub_role(node, "core", 0.0, 0.0, threshold)
+        return roles
     dependencies_of: dict[str, set[str]] = defaultdict(set)
     dependents_of: dict[str, set[str]] = defaultdict(set)
     for up, down in graph.dependencies:
         dependencies_of[down].add(up)
         dependents_of[up].add(down)
     roles = {}
-    for node in graph.nodes:
+    # Sorted, not `graph.nodes` (a frozenset — hash-seed order): this loop is
+    # the only place `record_hub_role` fires, and unsorted iteration would
+    # make the trace's `hub_roles` list order vary across runs (R18).
+    for node in sorted(graph.nodes):
         depends_on = len(dependencies_of[node]) / (n - 1)
         depended_by = len(dependents_of[node]) / (n - 1)
         if depends_on > threshold:
-            roles[node] = "aggregator_hub"
+            role = "aggregator_hub"
         elif depended_by > threshold:
-            roles[node] = "utility_hub"
+            role = "utility_hub"
         else:
-            roles[node] = "core"
+            role = "core"
+        roles[node] = role
+        if recorder is not None:
+            recorder.record_hub_role(node, role, depends_on, depended_by, threshold)
     return roles
 
 
@@ -372,6 +459,7 @@ def _louvain(
     nodes: set[str],
     resolution: float,
     self_loops: Mapping[str, float] | None = None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """Seeded directed Louvain over the affinity weights restricted to ``nodes``.
 
@@ -403,6 +491,8 @@ def _louvain(
         g, weight="weight", resolution=resolution, seed=LOUVAIN_SEED
     )
     ordered = sorted((sorted(c) for c in communities), key=lambda c: c[0])
+    if recorder is not None:
+        recorder.record_louvain(resolution, LOUVAIN_SEED, ordered)
     return {node: gid for gid, members in enumerate(ordered) for node in members}
 
 
@@ -411,6 +501,7 @@ def _hub_isolated_clustering(
     roles: dict[str, str],
     resolution: float,
     self_loops: Mapping[str, float] | None = None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """CoCoder ``role_grouping`` (post_processing.py:13-33): cluster only the core.
 
@@ -420,7 +511,7 @@ def _hub_isolated_clustering(
     utility_hubs = sorted(n for n, r in roles.items() if r == "utility_hub")
     aggregator_hubs = sorted(n for n, r in roles.items() if r == "aggregator_hub")
     core = {n for n, r in roles.items() if r == "core"}
-    core_partition = _louvain(graph, core, resolution, self_loops)
+    core_partition = _louvain(graph, core, resolution, self_loops, recorder=recorder)
 
     partition: Partition = {}
     gid = 0
@@ -528,7 +619,11 @@ def _blocks_of(members: list[str], block_of: dict[str, str]) -> dict[str, list[s
 
 
 def split_over_budget(
-    graph: TaskGraph, partition: Partition, work_fn: WorkFn, budget_cap: float
+    graph: TaskGraph,
+    partition: Partition,
+    work_fn: WorkFn,
+    budget_cap: float,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """Split any group whose summed work exceeds the cap at its lowest-affinity boundary.
 
@@ -577,6 +672,18 @@ def split_over_budget(
             block_work = {b: sum(work_fn(n) for n in blocks[b]) for b in block_ids}
             peel = min(block_ids, key=lambda b: (block_work[b], b))
             components = [[peel], sorted(block_ids - {peel})]
+        if recorder is not None:
+            component_of = {b: i for i, comp in enumerate(components) for b in comp}
+            candidates = [
+                {
+                    "block_a": pair[0],
+                    "block_b": pair[1],
+                    "weight": w,
+                    "cut": component_of[pair[0]] != component_of[pair[1]],
+                }
+                for w, pair in internal
+            ]
+            recorder.record_split(members, total, budget_cap, candidates, components)
         pending = [
             sorted(node for block_id in component for node in blocks[block_id])
             for component in components
@@ -683,6 +790,7 @@ def merge_small_groups(
     partition: Partition,
     work_fn: WorkFn,
     budget_cap: float | None,
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """CoCoder ``merge_small_groups`` (post_processing.py:295-401), always on.
 
@@ -709,6 +817,7 @@ def merge_small_groups(
                     return False
         return True
 
+    merge_round = 0
     while True:
         groups: dict[int, list[str]] = defaultdict(list)
         for node, gid in partition.items():
@@ -735,8 +844,22 @@ def merge_small_groups(
         for (source, target), edge_weight in sorted(pair_edges.items()):
             merged_work = group_work(groups[source]) + group_work(groups[target])
             if budget_cap is not None and merged_work > budget_cap:
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round, source, target, False, "over_budget", merged_work, edge_weight
+                    )
                 continue
             if not chain_compatible(groups[source], groups[target]):
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "not_chain_compatible",
+                        merged_work,
+                        edge_weight,
+                    )
                 continue
             candidate = {
                 node: (target if gid == source else gid) for node, gid in partition.items()
@@ -746,9 +869,29 @@ def merge_small_groups(
                 # downstream aggregator's group across an intermediate group
                 # inverts an edge in the quotient graph — refuse it here
                 # rather than let build_group_dag discover it at the end.
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "would_create_cycle",
+                        merged_work,
+                        edge_weight,
+                    )
                 continue
             candidate_makespan = _simulate_makespan(graph, candidate, work)
             if candidate_makespan > current_makespan + 1e-9:
+                if recorder is not None:
+                    recorder.record_merge_candidate(
+                        merge_round,
+                        source,
+                        target,
+                        False,
+                        "makespan_regression",
+                        merged_work,
+                        edge_weight,
+                    )
                 continue
             removed_affinity = sum(
                 w
@@ -770,7 +913,13 @@ def merge_small_groups(
         if best is None:
             break
         source, target = best
+        if recorder is not None:
+            merged_work = group_work(groups[source]) + group_work(groups[target])
+            recorder.record_merge_candidate(
+                merge_round, source, target, True, "", merged_work, pair_edges[(source, target)]
+            )
         partition = {node: (target if gid == source else gid) for node, gid in partition.items()}
+        merge_round += 1
     return partition
 
 
@@ -939,6 +1088,7 @@ def repair_cycles(
     work_fn: WorkFn,
     budget_cap: float | None,
     flags: list[str],
+    recorder: PartitionRecorder | None = None,
 ) -> Partition:
     """SCC-merge, then a mandatory dependency-safe re-split (plan U5).
 
@@ -959,9 +1109,24 @@ def repair_cycles(
     if not cyclic:
         return partition
 
+    def evidence_edges(component: list[int]) -> list[Pair]:
+        members = set(component)
+        return sorted(
+            (up, down)
+            for up, down in graph.dependencies
+            if partition[up] in members
+            and partition[down] in members
+            and partition[up] != partition[down]
+        )
+
     merge_target = {gid: min(component) for component in cyclic for gid in component}
     merged_partition = {node: merge_target.get(gid, gid) for node, gid in partition.items()}
     if budget_cap is None:
+        if recorder is not None:
+            for component in cyclic:
+                recorder.record_repair(
+                    sorted(component), evidence_edges(component), min(component), [], []
+                )
         return merged_partition
 
     merged_groups: dict[int, list[str]] = defaultdict(list)
@@ -975,16 +1140,29 @@ def repair_cycles(
         members = sorted(merged_groups[target])
         total = sum(work_fn(n) for n in members)
         if total <= budget_cap:
+            if recorder is not None:
+                recorder.record_repair(sorted(component), evidence_edges(component), target, [], [])
             continue
         chunks = _resplit_by_wave(graph, members, work_fn, budget_cap)
+        overshoots: list[str] = []
         for chunk in chunks:
             chunk_work = sum(work_fn(n) for n in chunk)
             if chunk_work > budget_cap:
-                flags.append(
+                message = (
                     f"partition: group containing {chunk[0]!r} stays "
                     f"{chunk_work - budget_cap:.0f} over the {budget_cap:.0f} cap "
                     "after cycle repair (an acyclic re-split under budget did not exist)"
                 )
+                flags.append(message)
+                overshoots.append(message)
+        if recorder is not None:
+            recorder.record_repair(
+                sorted(component),
+                evidence_edges(component),
+                target,
+                [list(chunk) for chunk in chunks],
+                overshoots,
+            )
         first, *rest = chunks
         for node in first:
             result[node] = target

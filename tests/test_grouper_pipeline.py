@@ -491,7 +491,11 @@ class TestDryRunCli:
         out = capsys.readouterr().out
         assert "g1" in out
         assert "tokens" in out.lower()
-        assert not (repo / ".orchestrator").exists()
+        # Plan U9: dry-run still writes the trace — it's the only artifact a
+        # dry run leaves — but not groups.json or base-context.md.
+        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
+        assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
+        assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
 
     def test_group_writes_artifacts_without_dry_run(self, tmp_path):
         """Plan U10: with no --name, the grouping directory is named after the
@@ -666,6 +670,9 @@ class TestNoSpecCli:
         ):
             assert expected in out
         assert not (repo / ".orchestrator" / "groups.json").exists()
+        assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
+        assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
+        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
 
     def test_no_spec_completes_in_under_a_second(self, tmp_path):
         import time
@@ -683,6 +690,114 @@ class TestNoSpecCli:
         elapsed = time.monotonic() - start
         assert exit_code == 0
         assert elapsed < 1.0
+
+
+class TestGroupingTraceArtifact:
+    """U9: grouping-trace.json is written in every `group` mode, including
+    failure, and --no-spec's report is byte-for-byte reproducible from it."""
+
+    def test_full_group_writes_trace_alongside_groups_json(self, tmp_path):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo)],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        grouping_dir = repo / ".orchestrator" / "groupings" / "plan"
+        assert (grouping_dir / "groups.json").is_file()
+        assert (grouping_dir / "base-context.md").is_file()
+        assert (grouping_dir / "grouping-trace.json").is_file()
+
+    def test_no_spec_trace_is_byte_identical_across_repeated_runs(self, tmp_path):
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        first = trace_path.read_bytes()
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 0
+        second = trace_path.read_bytes()
+
+        assert first == second
+
+    def test_failing_group_still_writes_a_trace_naming_the_failure(self, tmp_path, capsys):
+        """A real, existing failure mode (an empty task map) exercises the same
+        _write_failure_trace path a future slice-overflow GrouperError (plan
+        U6) will also raise through — the CLI message points at the file and
+        the trace's failure section carries the exception verbatim."""
+        from orchestrator.cli import main
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(
+            "# feat: empty task map\n\n## Task Map\n\n```yaml\n"
+            "# orchestrator-task-map v1\ntasks: []\n```\n"
+        )
+        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo)],
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert str(trace_path) in err
+        assert trace_path.is_file()
+        from orchestrator.grouping.trace import GroupingTrace
+
+        trace = GroupingTrace.model_validate_json(trace_path.read_text())
+        assert trace.failure is not None
+        assert trace.failure.kind == "GrouperError"
+        assert "non-empty list" in trace.failure.message
+
+    def test_slice_overflow_shaped_failure_message_is_captured_verbatim(
+        self, tmp_path, monkeypatch
+    ):
+        """Stands in for U6's not-yet-landed --allow-oversized-slice gate: the
+        failure-trace path is generic over *any* GrouperError, so whatever
+        message that gate raises (naming the slice, its members, the cap, and
+        the overshoot) will be captured exactly like this one is."""
+        import orchestrator.cli as cli_module
+        from orchestrator.cli import main
+        from orchestrator.grouping.pipeline import GrouperError
+
+        repo, plan = make_repo(tmp_path)
+
+        def raise_slice_overflow(*args, **kwargs):
+            raise GrouperError(
+                "slice 'reports' (members: reports-api, reports-ui) totals 12000 "
+                "work against a cap of 8000 (4000 over)"
+            )
+
+        monkeypatch.setattr(cli_module, "run_grouping", raise_slice_overflow)
+        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo)],
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+        )
+        assert exit_code == 1
+        from orchestrator.grouping.trace import GroupingTrace
+
+        trace = GroupingTrace.model_validate_json(trace_path.read_text())
+        assert trace.failure is not None
+        assert "reports" in trace.failure.message
+        assert "8000" in trace.failure.message
 
 
 class TestSyncGate:

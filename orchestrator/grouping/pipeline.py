@@ -41,7 +41,37 @@ from orchestrator.grouping.partition import (
 )
 from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
 from orchestrator.grouping.speccer import write_specs
+from orchestrator.grouping.trace import (
+    BudgetArithmetic,
+    GroupDifficultyEntry,
+    NodeWorkEntry,
+    TraceRecorder,
+)
 from orchestrator.model import Group, GroupingResult
+
+
+def _node_work_entries(graph: TaskGraph, config) -> list[NodeWorkEntry]:
+    """Per-node work broken into its components (plan U8), mirroring
+    ``estimator.node_work``'s formula without importing it back in — this
+    module isn't in that unit's file list, and the arithmetic is one line."""
+    entries = []
+    for node in sorted(graph.nodes):
+        meta = graph.metadata.get(node, {})
+        source_bytes = int(meta.get("source_bytes", 0) or 0)
+        file_count = len(meta.get("files", ()) or ()) + len(meta.get("prospective_files", ()) or ())
+        bytes_tokens = source_bytes / config.bytes_per_token * config.slack_multiplier
+        file_allowance_tokens = file_count * config.per_file_tool_allowance
+        entries.append(
+            NodeWorkEntry(
+                node=node,
+                source_bytes=source_bytes,
+                file_count=file_count,
+                bytes_tokens=bytes_tokens,
+                file_allowance_tokens=file_allowance_tokens,
+                total=bytes_tokens + file_allowance_tokens,
+            )
+        )
+    return entries
 
 
 class GrouperError(Exception):
@@ -163,9 +193,15 @@ def compute_partition(
     llm_runner: JsonRunner | None = None,
     client: CodegraphClient | None = None,
     allow_unknown_symbols: bool = False,
+    recorder: TraceRecorder | None = None,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
-    does before handing off to the speccer, callable on its own."""
+    does before handing off to the speccer, callable on its own.
+
+    ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
+    fills a ``GroupingTrace`` alongside the computation without changing it —
+    every fixture partitions identically with or without one attached.
+    """
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
     config = config or OrchestratorConfig()
@@ -204,11 +240,30 @@ def compute_partition(
     def node_work_fn(node: str) -> float:
         return node_work(graph.metadata.get(node, {}), config.estimator)
 
+    if recorder is not None:
+        recorder.set_config(config.model_dump())
+        recorder.set_input_graph(graph.nodes, graph.affinity, graph.dependencies)
+        recorder.set_node_work(_node_work_entries(graph, config.estimator))
+        head = (
+            base_tokens + config.estimator.spec_tokens_allowance
+        ) * config.estimator.slack_multiplier
+        recorder.set_budget(
+            BudgetArithmetic(
+                base_tokens=base_tokens,
+                spec_tokens_allowance=config.estimator.spec_tokens_allowance,
+                slack_multiplier=config.estimator.slack_multiplier,
+                token_budget=config.estimator.token_budget,
+                head=head,
+                budget_cap=budget_cap,
+            )
+        )
+
     strategy = DefaultPartitionStrategy(
         work_fn=node_work_fn,
         budget_cap=budget_cap,
         hub_threshold=config.partition.hub_threshold,
         louvain_resolution=config.partition.louvain_resolution,
+        recorder=recorder,
     )
     partition = strategy.partition(graph)
     roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
@@ -223,6 +278,16 @@ def compute_partition(
         flags=flags,
     )
     dag = build_group_dag(graph, partition)
+
+    # g7's trace capture must run after g5's overflow gate, not before: the gate
+    # can append an override flag, and `dag` is what the recorder reads. Recording
+    # `flags` rather than `strategy.flags` keeps the trace honest about that
+    # appended flag — the two are identical unless an oversized slice was allowed.
+    if recorder is not None:
+        recorder.record_slice_atoms(atoms)
+        recorder.set_dag(dag)
+        recorder.set_last_stage(strategy.last_stage)
+        recorder.set_flags(mapper_out.flags, flags)
 
     return PartitionOutcome(
         plan_text=plan_text,
@@ -248,6 +313,7 @@ def run_grouping(
     llm_runner: JsonRunner | None = None,
     client: CodegraphClient | None = None,
     allow_unknown_symbols: bool = False,
+    recorder: TraceRecorder | None = None,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
@@ -262,6 +328,7 @@ def run_grouping(
         llm_runner=llm_runner,
         client=client,
         allow_unknown_symbols=allow_unknown_symbols,
+        recorder=recorder,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -322,6 +389,23 @@ def run_grouping(
             verification_items=len(spec.verification),
         )
         difficulty = difficulty_score(signals, config.difficulty)
+        intensity = intensity_for(difficulty, config.difficulty)
+        if recorder is not None:
+            recorder.record_group_difficulty(
+                GroupDifficultyEntry(
+                    group_id=gid_str,
+                    files_touched=signals.files_touched,
+                    max_fan_in=signals.max_fan_in,
+                    max_fan_out=signals.max_fan_out,
+                    hub_touches=signals.hub_touches,
+                    cross_group_edges=signals.cross_group_edges,
+                    verification_items=signals.verification_items,
+                    difficulty=difficulty,
+                    intensity=intensity.value,
+                    d_review=config.difficulty.d_review,
+                    d_hard=config.difficulty.d_hard,
+                )
+            )
         groups.append(
             Group(
                 id=gid_str,
@@ -329,7 +413,7 @@ def run_grouping(
                 summary=spec.summary,
                 spec=spec.spec,
                 difficulty=difficulty,
-                intensity=intensity_for(difficulty, config.difficulty),
+                intensity=intensity,
                 dependencies=sorted(group_label(up) for up in upstream_of[gid]),
                 verification=spec.verification,
                 tasks=sorted(members),
@@ -341,6 +425,8 @@ def run_grouping(
     result = GroupingResult(
         plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags
     )
+    if recorder is not None:
+        recorder.set_final_flags(flags)
     return result, base_context
 
 
