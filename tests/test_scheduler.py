@@ -27,6 +27,7 @@ from orchestrator.execution.scheduler import (
     SchedulerError,
 )
 from orchestrator.execution.sessions import ReportError, SessionError
+from orchestrator.grouping.llm import LlmError, LlmProcessError
 from orchestrator.model import Group, ReviewIntensity
 
 
@@ -272,13 +273,39 @@ async def test_session_error_marks_the_group_interrupted_with_failure_text(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_llm_process_error_marks_the_group_interrupted_not_failed(tmp_path):
+    """A usage limit on the one-shot `claude -p` path must resume like one on the
+    session path. On run r20260726-grouping a single limit interrupted g5/g7 via
+    SessionError but wedged g6 in terminal FAILED via LlmError, where `resume`
+    could never reach it again."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise LlmProcessError("claude -p failed (1): ")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.INTERRUPTED
+    assert persisted.groups["g1"].failure == "LlmProcessError: claude -p failed (1): "
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "exc",
     [
         ReportError("no valid report block after 2 nudges"),
         GroupFailure("coder blocked: missing dependency"),
+        # Validation exhaustion is the model failing, not the harness — the
+        # LlmProcessError sibling above resumes, this one stays terminal.
+        LlmError("mapper output failed validation after 3 attempts: bad JSON"),
     ],
-    ids=["report_error_is_a_work_failure", "group_failure_is_a_work_failure"],
+    ids=[
+        "report_error_is_a_work_failure",
+        "group_failure_is_a_work_failure",
+        "llm_validation_exhaustion_is_a_work_failure",
+    ],
 )
 async def test_work_failures_still_mark_the_group_failed(tmp_path, exc):
     paths = RunPaths(tmp_path, "r1")

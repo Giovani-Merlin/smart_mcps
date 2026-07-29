@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from orchestrator.config import ExecutionConfig
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError, SessionError
+from orchestrator.grouping.llm import LlmProcessError
 from orchestrator.model import Group
 
 
@@ -270,9 +271,16 @@ class Scheduler:
             # report was judged only after the session's warm corrective nudges —
             # the harness was healthy, the agent failed.
             return self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
-        except SessionError as exc:
+        except (SessionError, LlmProcessError) as exc:
             # Envelope failure (R1/R2): the claude process/API died under the
             # group, not the work — non-terminal so `resume` re-enters it.
+            # LlmProcessError is the same outage arriving on the one-shot
+            # `claude -p` path (run-time spec rewrites) instead of the session
+            # path; observed on run r20260726-grouping, where one usage limit
+            # interrupted g5/g7 but wedged g6 in terminal FAILED, unreachable by
+            # `resume`. Only the process-died subclass qualifies — a plain
+            # LlmError is validation exhaustion, i.e. the model failing, and
+            # stays terminal below.
             return self._classify(gid, GroupState.INTERRUPTED, f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
             return self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")

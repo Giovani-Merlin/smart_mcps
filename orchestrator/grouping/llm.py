@@ -28,6 +28,18 @@ class LlmError(Exception):
     """The model never produced output that passed validation."""
 
 
+class LlmProcessError(LlmError):
+    """The ``claude -p`` process itself died — a non-zero exit, not bad output.
+
+    Same envelope-failure class as ``SessionError`` on the session path: the CLI or
+    API went away under the caller, so the work was never attempted and re-running
+    it is free. Usage limits land here, with an empty stderr and exit 1. Kept
+    distinct from its parent so the scheduler can classify it ``INTERRUPTED``
+    (resumable) rather than ``FAILED`` (terminal) — a validation exhaustion is the
+    model failing and stays terminal.
+    """
+
+
 def claude_json_runner(prompt: str, schema: dict) -> str:
     """Production runner: one blocking `claude -p` call with a JSON schema.
 
@@ -40,7 +52,9 @@ def claude_json_runner(prompt: str, schema: dict) -> str:
         text=True,
     )
     if result.returncode != 0:
-        raise LlmError(f"claude -p failed ({result.returncode}): {result.stderr.strip()[:500]}")
+        raise LlmProcessError(
+            f"claude -p failed ({result.returncode}): {result.stderr.strip()[:500]}"
+        )
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
