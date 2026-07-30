@@ -94,9 +94,15 @@ class DifficultyConfig(BaseModel):
 
 
 class BreakerConfig(BaseModel):
-    """Circuit-breaker thresholds (origin R14; plan Key Technical Decisions)."""
+    """Circuit-breaker thresholds (origin R14; plan Key Technical Decisions).
 
-    context_token_limit: int = 120_000
+    ``context_token_limit`` default matches measured reality (plan U7): the
+    120k default retired healthy coders whose real occupancy was nowhere near
+    it, once the RoundUsage fix (plan context-token P0) made the signal
+    accurate.
+    """
+
+    context_token_limit: int = 200_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
 
