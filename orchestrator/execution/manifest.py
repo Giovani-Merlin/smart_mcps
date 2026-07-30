@@ -136,6 +136,13 @@ class RunPaths:
         """Correlation-ID request/response files for the human channel (plan Phase D)."""
         return self.run_dir / "escalations"
 
+    @property
+    def surprises_path(self) -> Path:
+        """Persisted SurpriseBoard state (plan U7): an in-memory-only board dies
+        with the process, silently dropping a surprise marked for a group that
+        has not yet run when the run restarts."""
+        return self.run_dir / "surprises.json"
+
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
 

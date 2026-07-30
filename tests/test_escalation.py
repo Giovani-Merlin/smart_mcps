@@ -90,16 +90,17 @@ class TestEscalationPolicy:
         policy = EscalationPolicy("autonomous", WORKERS)
         assert not any(policy.should_escalate(kind) for kind in ALL_KINDS)
 
-    def test_on_failure_escalates_only_caps_exhausted(self):
+    def test_on_failure_escalates_caps_exhausted_and_group_resolve(self):
         policy = EscalationPolicy("on_failure", WORKERS)
         escalated = {kind for kind in ALL_KINDS if policy.should_escalate(kind)}
-        assert escalated == {EscalationKind.CAPS_EXHAUSTED}
+        assert escalated == {EscalationKind.CAPS_EXHAUSTED, EscalationKind.GROUP_RESOLVE}
 
     def test_on_stuck_covers_stuck_and_failure_but_not_approval_gates(self):
         policy = EscalationPolicy("on_stuck", WORKERS)
         escalated = {kind for kind in ALL_KINDS if policy.should_escalate(kind)}
         assert escalated == {
             EscalationKind.CAPS_EXHAUSTED,
+            EscalationKind.GROUP_RESOLVE,
             EscalationKind.CODER_QUESTION,
             EscalationKind.CODER_BLOCKED,
             EscalationKind.REVIEWER_TOO_HARD,
@@ -136,7 +137,7 @@ class TestEscalationPolicy:
 class TestEscalationConfig:
     def test_defaults_load_without_a_file(self):
         config = load_config(None)
-        assert config.escalation.enabled is False
+        assert config.escalation.enabled is True  # plan U2: HITL on by default
         assert config.escalation.intensity == "on_stuck"
         assert config.escalation.source == "workers_via_orchestrator"
         assert config.escalation.timeout_s is None

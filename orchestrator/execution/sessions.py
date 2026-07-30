@@ -203,14 +203,21 @@ class SessionRunner:
         prompt: str,
         name: str,
         cwd: Path,
+        session_id: str | None = None,
         json_schema: dict | None = None,
     ) -> RoundResult:
         """Fork the base session and run the first round in one blocking call.
 
         Serialized: the session store has no documented locking (plan Key Technical
         Decisions); forking is fast, so this never serializes the groups themselves.
+
+        ``session_id``, when given, lets the caller record the id in the manifest
+        *before* this blocking call runs (plan U7): a crash mid-call would
+        otherwise leave no manifest entry for a group interrupted during its
+        very first round, so a later resume forks a brand new session instead
+        of finding the one already recorded.
         """
-        session_id = str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         with self._fork_lock:
             return self._call(
                 prompt,

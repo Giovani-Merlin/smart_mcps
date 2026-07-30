@@ -413,9 +413,21 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     # Concurrency>1 is required for the race: under the serial default the groups
     # stack (g2 branches from the tip that already has g1's conflict.txt) and no
     # conflict ever arises — which is the whole point of serial. Force parallel to
-    # exercise the conflict→rewrite path.
+    # exercise the conflict→rewrite path. Escalation defaults on (plan U2); this
+    # scenario tests the conflict→rewrite path itself, not HITL, so it stays headless.
     exit_code = main(
-        ["run", "--repo", str(repo), "--run-id", run_id, "--concurrency", "2"], llm_runner=stub
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--concurrency",
+            "2",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=stub,
     )
     assert exit_code == 0
     state = state_of(repo, run_id)
@@ -445,8 +457,20 @@ def test_reject_forever_fails_group_and_strands_dependent(repo, fake_home, capsy
         verdict_entry("changes_required", ["never good enough"]),
     )
 
+    # Escalation defaults on (plan U2); this scenario tests the reject-forever /
+    # generation-cap path itself, not HITL, so it stays headless.
     exit_code = main(
-        ["run", "--repo", str(repo), "--run-id", run_id, "--sequential"], llm_runner=StubLlm()
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--sequential",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=StubLlm(),
     )
     assert exit_code == 1
     err = capsys.readouterr().err
@@ -495,6 +519,10 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
     assert state["groups"]["g2"]["state"] == "completed"
+    # plan U8: g2's earlier interrupted-attempt failure text must not survive
+    # into its later successful completion — `status` would otherwise print a
+    # stale failure line for a group recorded as completed.
+    assert state["groups"]["g2"].get("failure") is None
 
     # the resumed run reused the original base session instead of starting one
     base_calls = named_calls(fake_home, f"{run_id}-base")
@@ -657,6 +685,10 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
         {
             "coder_question": ("answer", "use the JSON serializer"),
             "reviewer_too_hard": ("skip", ""),
+            # plan U2: skipping g2 raises a follow-up group_resolve escalation
+            # for its committed-but-unreviewed work; the operator declines that
+            # too, so g2 stays failed rather than getting silently resolved.
+            "group_resolve": ("skip", ""),
         },
     )
     thread.join(timeout=25)
@@ -668,7 +700,7 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
     assert state["groups"]["g1"]["state"] == "completed"
     assert state["groups"]["g2"]["state"] == "failed"
     assert "operator skipped" in state["groups"]["g2"]["failure"]
-    assert set(handled) == {"coder_question", "reviewer_too_hard"}
+    assert set(handled) == {"coder_question", "reviewer_too_hard", "group_resolve"}
 
     # the coder was resumed warm with the operator's answer (resume rounds carry no
     # --name, so search every call's prompt), and no extra session was forked

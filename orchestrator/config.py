@@ -94,9 +94,15 @@ class DifficultyConfig(BaseModel):
 
 
 class BreakerConfig(BaseModel):
-    """Circuit-breaker thresholds (origin R14; plan Key Technical Decisions)."""
+    """Circuit-breaker thresholds (origin R14; plan Key Technical Decisions).
 
-    context_token_limit: int = 120_000
+    ``context_token_limit`` default matches measured reality (plan U7): the
+    120k default retired healthy coders whose real occupancy was nowhere near
+    it, once the RoundUsage fix (plan context-token P0) made the signal
+    accurate.
+    """
+
+    context_token_limit: int = 200_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
 
@@ -149,18 +155,21 @@ class SessionConfig(BaseModel):
 class EscalationConfig(BaseModel):
     """Human-in-the-loop escalation surface (plan Phase D).
 
-    ``enabled`` is off by default: an unattended ``run`` stays fully autonomous
-    (all 190 pre-Phase-D tests unchanged). When on, the ``intensity`` tier decides
-    which hard moments pause for the operator (``autonomous`` < ``on_failure`` <
-    ``on_stuck`` < ``interactive``) and ``source`` decides whether a coder's
-    ``needs_input`` question reaches the operator (``workers_via_orchestrator``)
-    or is downgraded to a blocked-style rewrite (``orchestrator_only``).
+    ``enabled`` is on by default (plan U2): a group ending failed or interrupted
+    must never let an overlapping successor start silently, and that gate needs
+    an operator channel to be meaningful by default. When on, the ``intensity``
+    tier decides which hard moments pause for the operator (``autonomous`` <
+    ``on_failure`` < ``on_stuck`` < ``interactive``) and ``source`` decides
+    whether a coder's ``needs_input`` question reaches the operator
+    (``workers_via_orchestrator``) or is downgraded to a blocked-style rewrite
+    (``orchestrator_only``). ``--intensity autonomous`` (or ``[escalation]
+    intensity = "autonomous"``) forces this back off for an unattended run.
 
     ``timeout_s = None`` blocks indefinitely (the HITL default — a live operator
     is expected); when set, an unanswered escalation falls back per ``on_timeout``.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     intensity: Literal["autonomous", "on_failure", "on_stuck", "interactive"] = "on_stuck"
     source: Literal["orchestrator_only", "workers_via_orchestrator"] = "workers_via_orchestrator"
     timeout_s: float | None = None
