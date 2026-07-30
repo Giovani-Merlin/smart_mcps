@@ -29,7 +29,13 @@ from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.grouping.llm import LlmProcessError
-from orchestrator.model import EscalationKind, EscalationRequest, Group, HumanAction
+from orchestrator.model import (
+    EscalationKind,
+    EscalationRequest,
+    Group,
+    HumanAction,
+    PermissionDenied,
+)
 
 
 class SchedulerError(Exception):
@@ -325,7 +331,7 @@ class Scheduler:
             # report was judged only after the session's warm corrective nudges —
             # the harness was healthy, the agent failed.
             final = self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
-        except (SessionError, LlmProcessError) as exc:
+        except (SessionError, LlmProcessError, PermissionDenied) as exc:
             # Envelope failure (R1/R2): the claude process/API died under the
             # group, not the work — non-terminal so `resume` re-enters it.
             # LlmProcessError is the same outage arriving on the one-shot
@@ -336,6 +342,9 @@ class Scheduler:
             # LlmError is validation exhaustion, i.e. the model failing, and
             # stays terminal below. INTERRUPTED never resolves (plan U2): it is
             # not lost work, it is unfinished work a plain `resume` will finish.
+            # PermissionDenied (plan U3) joins this tuple for the same reason: a
+            # denial is the harness reporting a real-world block, not the coder's
+            # work being wrong — `resume` re-enters the same worktree unchanged.
             return self._classify(gid, GroupState.INTERRUPTED, f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
             final = self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")

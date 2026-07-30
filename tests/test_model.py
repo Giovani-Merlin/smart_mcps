@@ -118,6 +118,28 @@ class TestReportSchemas:
                 {"status": "completed", "surprises": [{"kind": "not_a_kind"}]}
             )
 
+    def test_permission_denied_requires_nonblank_denied_command(self):
+        """Plan U3: a blank or whitespace-only denied_command is invalid on a
+        permission_denied report, mirroring needs_input's question validator."""
+        with pytest.raises(ValidationError, match="denied_command"):
+            CoderReport.model_validate({"status": "permission_denied", "denied_command": ""})
+        with pytest.raises(ValidationError, match="denied_command"):
+            CoderReport.model_validate({"status": "permission_denied", "denied_command": "   "})
+
+    def test_permission_denied_with_command_validates(self):
+        report = CoderReport.model_validate(
+            {"status": "permission_denied", "denied_command": "rm -rf /etc"}
+        )
+        assert report.status == "permission_denied"
+        assert report.denied_command == "rm -rf /etc"
+
+    def test_blocked_report_with_blank_denied_command_still_validates(self):
+        """A blocked report is never discriminated by denied_command emptiness
+        (plan decision) — the validator only fires for permission_denied."""
+        report = CoderReport.model_validate({"status": "blocked", "summary": "stuck"})
+        assert report.status == "blocked"
+        assert report.denied_command == ""
+
     def test_verdict_requires_status(self):
         with pytest.raises(ValidationError, match="status"):
             ReviewerVerdict.model_validate({"notes": "looks fine"})

@@ -210,11 +210,124 @@ class TestNoTimestampByteStable:
         assert serialize_trace(recorder.trace) == serialize_trace(recorder.trace)
 
     def test_two_runs_of_the_same_fixture_serialize_identically(self, tmp_path):
+        """Plan U5 (added 2026-07-30): provenance carries a real wall-clock
+        ``timestamp`` — the one field in the whole trace that is *expected* to
+        differ run to run, by design (it records *when* the grouping ran, not
+        what it computed). Byte-stability of everything else still holds;
+        this test excludes just that one leaf field rather than the whole
+        ``provenance`` section, so a real content drift inside provenance
+        (e.g. the index fingerprint) would still be caught."""
         recorder_a = TraceRecorder()
         _compute(tmp_path / "a", "no-affinity-sink", None, {}, recorder_a)
         recorder_b = TraceRecorder()
         _compute(tmp_path / "b", "no-affinity-sink", None, {}, recorder_b)
-        assert serialize_trace(recorder_a.trace) == serialize_trace(recorder_b.trace)
+        exclude = {"provenance": {"timestamp"}}
+        assert recorder_a.trace.model_dump(exclude=exclude) == recorder_b.trace.model_dump(
+            exclude=exclude
+        )
+
+
+class TestScorecardRecorded:
+    """Plan U5: the scorecard is computed once and recorded verbatim — the
+    values ``group --no-spec`` prints come straight from this same entry, so
+    they can never drift from what lands in grouping-trace.json (see
+    tests/test_cli.py::TestScorecardPrinting for the CLI-surface half)."""
+
+    def test_scorecard_present_and_internally_consistent(self, tmp_path):
+        recorder = TraceRecorder()
+        outcome = _compute(tmp_path, "pure-backend", None, {}, recorder)
+        sc = recorder.trace.scorecard
+        assert sc is not None
+        by_gid: dict[int, int] = {}
+        for gid in outcome.partition.values():
+            by_gid[gid] = by_gid.get(gid, 0) + 1
+        assert sc.group_count == len(by_gid)
+        assert sc.slice_integrity_ok is True
+        assert 0.0 <= sc.work_fraction_min <= sc.work_fraction_mean <= sc.work_fraction_max
+        assert sc.critical_path_length >= 1
+
+    def test_no_partition_produced_means_no_scorecard(self, tmp_path):
+        """A grouping that raises before producing a partition (plan U5) must
+        not carry a stale or partial scorecard."""
+        recorder = TraceRecorder()
+        repo, plan = make_fixture_repo(tmp_path, "slice-over-budget")
+        config = OrchestratorConfig()
+        config.estimator.token_budget = 8_000  # forces the slice-overflow GrouperError
+        with pytest.raises(Exception):
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                config=config,
+                llm_runner=_llm_must_not_be_called,
+                client=client_for(repo, "slice-over-budget"),
+                recorder=recorder,
+            )
+        assert recorder.trace.scorecard is None
+
+
+class TestProvenanceAndIndexFingerprint:
+    """Plan U5: timestamp, plan path, plan content hash, repo commit SHA,
+    worktree-dirty flag, and an index fingerprint — sufficient to attribute a
+    partition to the exact plan, repo state, and index that produced it."""
+
+    def test_all_fields_recorded(self, tmp_path):
+        recorder = TraceRecorder()
+        _compute(tmp_path, "pure-backend", None, {}, recorder)
+        prov = recorder.trace.provenance
+        assert prov is not None
+        assert prov.timestamp  # non-empty ISO string
+        assert prov.plan_path.endswith("plan.md")
+        assert len(prov.plan_content_sha256) == 64  # sha256 hex digest
+        assert isinstance(prov.worktree_dirty, bool)
+        assert len(prov.index_fingerprint) == 64
+
+    def test_same_plan_repo_commit_and_index_produce_the_same_fingerprint(self, tmp_path):
+        recorder_a = TraceRecorder()
+        _compute(tmp_path / "a", "pure-backend", None, {}, recorder_a)
+        recorder_b = TraceRecorder()
+        _compute(tmp_path / "b", "pure-backend", None, {}, recorder_b)
+        assert (
+            recorder_a.trace.provenance.index_fingerprint
+            == recorder_b.trace.provenance.index_fingerprint
+        )
+
+    def test_resyncing_the_index_after_a_source_change_changes_the_fingerprint(self, tmp_path):
+        from orchestrator.grouping.graphing import CodegraphClient
+        from tests.test_grouping_fixtures import (
+            STATUS_JSON,
+            STATUS_JSON_RESYNCED,
+            stub_codegraph_runner,
+        )
+        from tests.test_grouping_fixtures import make_repo as make_stub_repo
+
+        repo, plan = make_stub_repo(tmp_path, "pure-backend")
+
+        recorder_before = TraceRecorder()
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=CodegraphClient(
+                repo_root=repo, runner=lambda a: stub_codegraph_runner(a, STATUS_JSON)
+            ),
+            recorder=recorder_before,
+        )
+
+        recorder_after = TraceRecorder()
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=CodegraphClient(
+                repo_root=repo, runner=lambda a: stub_codegraph_runner(a, STATUS_JSON_RESYNCED)
+            ),
+            recorder=recorder_after,
+        )
+
+        assert (
+            recorder_before.trace.provenance.index_fingerprint
+            != recorder_after.trace.provenance.index_fingerprint
+        )
 
 
 class TestAcceptedOvershootRecorded:

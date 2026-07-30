@@ -11,9 +11,15 @@ module: it accepts a structurally-typed ``PartitionRecorder`` (see its
 one-directional and ``partition.py``'s own import surface pure (see
 ``tests/test_partition.py::TestStrategySeam::test_module_imports_stay_pure``).
 
-No field here carries a timestamp (R18): file mtime and the run snapshot
-supply time, this model supplies content, and two runs against the same input
-must serialize to identical bytes.
+R18's original discipline: no field here carries a timestamp, so two runs
+against the same input serialize to identical bytes — file mtime and the run
+snapshot already supply time, this model supplies content. Plan U5 (added
+2026-07-30) narrows that: ``ProvenanceEntry.timestamp`` is a deliberate,
+single exception, added because the plan's own verification requires the
+trace to record *when* a grouping ran, not just what it computed. Every other
+field is still exactly reproducible for the same input — see
+tests/test_grouping_trace.py::TestNoTimestampByteStable, which now excludes
+only that one leaf field rather than the whole trace.
 """
 
 from __future__ import annotations
@@ -169,6 +175,38 @@ class FailureEntry(BaseModel):
     message: str
 
 
+class ScorecardEntry(BaseModel):
+    """Plan U5: the fixed set of quality numbers computed once per partition —
+    see ``orchestrator/grouping/scorecard.py``. ``group --no-spec`` prints
+    these values read straight from this entry, so the printed report and
+    this trace can never drift apart."""
+
+    group_count: int
+    cross_group_edges: int
+    work_fraction_min: float
+    work_fraction_mean: float
+    work_fraction_max: float
+    critical_path_length: int
+    modularity: float
+    slice_integrity_ok: bool
+
+
+class ProvenanceEntry(BaseModel):
+    """Plan U5: what a partition can be attributed to. ``index_fingerprint`` is
+    a sha256 of canonical ``codegraph status -j`` — counts, not a content hash
+    of the index itself (see ``graphing.index_fingerprint``); the residual is
+    covered by ``worktree_dirty`` and the fingerprint's own embedded
+    ``pendingChanges``, which distinguish a stale index from a synced one at
+    the same repo commit."""
+
+    timestamp: str
+    plan_path: str
+    plan_content_sha256: str
+    repo_commit_sha: str
+    worktree_dirty: bool
+    index_fingerprint: str
+
+
 class GroupingTrace(BaseModel):
     """Everything recorded for one ``group`` invocation.
 
@@ -196,6 +234,8 @@ class GroupingTrace(BaseModel):
     partition_flags: list[str] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
     failure: FailureEntry | None = None
+    scorecard: ScorecardEntry | None = None
+    provenance: ProvenanceEntry | None = None
 
 
 def serialize_trace(trace: GroupingTrace) -> str:
@@ -258,6 +298,36 @@ class TraceRecorder:
 
     def record_failure(self, exc: BaseException) -> None:
         self.trace.failure = FailureEntry(kind=type(exc).__name__, message=str(exc))
+
+    def set_scorecard(self, scorecard) -> None:
+        self.trace.scorecard = ScorecardEntry(
+            group_count=scorecard.group_count,
+            cross_group_edges=scorecard.cross_group_edges,
+            work_fraction_min=scorecard.work_fraction_min,
+            work_fraction_mean=scorecard.work_fraction_mean,
+            work_fraction_max=scorecard.work_fraction_max,
+            critical_path_length=scorecard.critical_path_length,
+            modularity=scorecard.modularity,
+            slice_integrity_ok=scorecard.slice_integrity_ok,
+        )
+
+    def set_provenance(
+        self,
+        timestamp: str,
+        plan_path: str,
+        plan_content_sha256: str,
+        repo_commit_sha: str,
+        worktree_dirty: bool,
+        index_fingerprint: str,
+    ) -> None:
+        self.trace.provenance = ProvenanceEntry(
+            timestamp=timestamp,
+            plan_path=plan_path,
+            plan_content_sha256=plan_content_sha256,
+            repo_commit_sha=repo_commit_sha,
+            worktree_dirty=worktree_dirty,
+            index_fingerprint=index_fingerprint,
+        )
 
     # -------------------------------------------------------------- partition-level
     # (structurally satisfy partition.py's PartitionRecorder protocol)

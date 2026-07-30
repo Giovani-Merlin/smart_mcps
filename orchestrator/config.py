@@ -50,6 +50,13 @@ class PartitionConfig(BaseModel):
     # Hard error by default (this used to be a flag nobody blocked on, so `group`
     # exited 0 with a single 3.8x-over-cap group); this accepts it instead.
     allow_degenerate_partition: bool = False
+    # Plan U4: the granularity dial. "independent" enforces both merge_small_groups
+    # guards and reproduces today's default partition byte-for-byte; "balanced"
+    # drops chain_compatible but still rejects a merge that regresses the
+    # simulated makespan; "monolithic" also drops the makespan check. The budget
+    # cap, slice must-link and cycle checks stay hard at every level. CLI
+    # `--granularity` wins over this when both are set.
+    granularity: Literal["independent", "balanced", "monolithic"] = "independent"
 
 
 class EstimatorConfig(BaseModel):

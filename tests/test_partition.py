@@ -575,3 +575,151 @@ class TestStageAttribution:
         strategy = DefaultPartitionStrategy()
         strategy.partition(graph([]))
         assert strategy.last_stage is None
+
+
+def _granularity_ladder_graph():
+    """Three branches of uneven length converging on one leaf — the same shape
+    as tests/fixtures/grouping/granularity-ladder.md, at the partition level
+    directly (no estimator/mapper involved). Every cross-branch pair fails
+    chain_compatible (the branches are genuinely parallel), so `independent`
+    keeps all three apart; `balanced` relaxes chain_compatible and accepts one
+    cross-branch merge that does not regress the simulated makespan, rejecting
+    a second on makespan alone; `monolithic` also drops the makespan check."""
+    return graph(
+        "root alpha1 alpha2 beta1 beta2 beta3 gamma1 leaf".split(),
+        dependencies={
+            ("root", "alpha1"): 1.0,
+            ("alpha1", "alpha2"): 1.0,
+            ("root", "beta1"): 1.0,
+            ("beta1", "beta2"): 1.0,
+            ("beta2", "beta3"): 1.0,
+            ("root", "gamma1"): 1.0,
+            ("alpha2", "leaf"): 1.0,
+            ("beta3", "leaf"): 1.0,
+            ("gamma1", "leaf"): 1.0,
+        },
+    )
+
+
+class TestGranularityDial:
+    """Plan U4: --granularity relaxes merge_small_groups' two guards in order —
+    `balanced` drops chain_compatible (keeping the makespan check as the sole
+    acceptance test), `monolithic` also drops the makespan check."""
+
+    def test_independent_is_the_default_and_equals_todays_behaviour(self):
+        g = _granularity_ladder_graph()
+        default = DefaultPartitionStrategy().partition(g)
+        explicit = DefaultPartitionStrategy(granularity="independent").partition(g)
+        assert groups_of(default) == groups_of(explicit)
+        assert len(groups_of(default)) == 3
+
+    def test_balanced_strictly_reduces_group_count(self):
+        g = _granularity_ladder_graph()
+        independent = DefaultPartitionStrategy(granularity="independent").partition(g)
+        balanced = DefaultPartitionStrategy(granularity="balanced").partition(g)
+        assert len(groups_of(balanced)) < len(groups_of(independent))
+        assert len(groups_of(balanced)) == 2
+
+    def test_monolithic_is_no_more_groups_than_balanced(self):
+        g = _granularity_ladder_graph()
+        balanced = DefaultPartitionStrategy(granularity="balanced").partition(g)
+        monolithic = DefaultPartitionStrategy(granularity="monolithic").partition(g)
+        assert len(groups_of(monolithic)) <= len(groups_of(balanced))
+        assert groups_of(monolithic) == {frozenset(g.nodes)}
+
+    def test_balanced_relaxes_chain_compatible_via_merge_reject_reasons(self):
+        """Direct evidence at the merge_small_groups level: independent rejects
+        the cross-branch candidate as not_chain_compatible; balanced accepts one
+        such merge and then rejects a further one specifically on
+        makespan_regression — proving the makespan guard, not chain_compatible,
+        is what still gates monolithic-only merges at the balanced level."""
+        g = _granularity_ladder_graph()
+        # Pre-cluster into the three branch groups DefaultPartitionStrategy would
+        # form before its own merge stage, so merge_small_groups sees the same
+        # input either way.
+        partition = {
+            "root": 1,
+            "beta1": 1,
+            "beta2": 1,
+            "beta3": 0,
+            "alpha1": 0,
+            "alpha2": 0,
+            "leaf": 0,
+            "gamma1": 2,
+        }
+        work = lambda n: 1.0  # noqa: E731
+        independent_recorder = _RecordingRecorder()
+        merge_small_groups(
+            g, dict(partition), work, None, recorder=independent_recorder, granularity="independent"
+        )
+        assert any(
+            not m["accepted"] and m["reason"] == "not_chain_compatible"
+            for m in independent_recorder.merges
+        )
+        balanced_recorder = _RecordingRecorder()
+        merge_small_groups(
+            g, dict(partition), work, None, recorder=balanced_recorder, granularity="balanced"
+        )
+        assert not any(m["reason"] == "not_chain_compatible" for m in balanced_recorder.merges)
+        assert any(
+            not m["accepted"] and m["reason"] == "makespan_regression"
+            for m in balanced_recorder.merges
+        )
+
+    def test_granularity_is_deterministic_across_runs(self):
+        g = _granularity_ladder_graph()
+        for gran in ("independent", "balanced", "monolithic"):
+            results = {
+                tuple(sorted(DefaultPartitionStrategy(granularity=gran).partition(g).items()))
+                for _ in range(5)
+            }
+            assert len(results) == 1
+
+    def test_budget_cap_and_slices_stay_hard_at_every_level(self):
+        """Slice must-link, the budget cap, and acyclicity are never relaxed by
+        the dial — only chain_compatible and the makespan check are."""
+        g = graph(
+            "a1 a2 x".split(),
+            affinity={("a1", "a2"): 10.0},
+            dependencies={("a2", "x"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        for gran in ("independent", "balanced", "monolithic"):
+            strategy = DefaultPartitionStrategy(
+                work_fn=lambda n: 3.0, budget_cap=7.0, granularity=gran
+            )
+            partition = strategy.partition(g)
+            slice_members = {"a1", "a2"}
+            by_gid = {}
+            for node, gid in partition.items():
+                by_gid.setdefault(gid, set()).add(node)
+            assert any(slice_members <= members for members in by_gid.values())
+            for members in by_gid.values():
+                assert sum(3.0 for _ in members) <= 7.0 or slice_members <= members
+
+
+class _RecordingRecorder:
+    """Minimal PartitionRecorder capturing only merge candidates, as plain dicts."""
+
+    def __init__(self):
+        self.merges = []
+
+    def record_stage(self, stage, partition):
+        pass
+
+    def record_hub_role(self, *a, **k):
+        pass
+
+    def record_louvain(self, *a, **k):
+        pass
+
+    def record_split(self, *a, **k):
+        pass
+
+    def record_merge_candidate(
+        self, round_, source, target, accepted, reason, merged_work, edge_weight
+    ):
+        self.merges.append({"accepted": accepted, "reason": reason})
+
+    def record_repair(self, *a, **k):
+        pass

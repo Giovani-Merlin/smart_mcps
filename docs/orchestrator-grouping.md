@@ -309,7 +309,16 @@ changing either: `merge_small_groups` + `_simulate_makespan` is **Sarkar's
 edge-zeroing** with a makespan-non-regression acceptance test (Sarkar, *Partitioning
 and Scheduling Parallel Programs for Multiprocessors*, MIT Press 1989), and
 `chain_compatible` is the **linear-clustering** admissibility test (Kim & Browne,
-ICPP 1988). Relaxing them in order is "keep Sarkar, drop linearity".
+ICPP 1988). Relaxing them in order is "keep Sarkar, drop linearity" — plan U4's
+`balanced` level drops `chain_compatible` first and keeps the makespan check;
+`monolithic` drops both. This is not the more obvious reading of "in order" (drop
+Sarkar first); it is the one the register's fixtures verify actually changes
+anything: on every acyclic graph this partitioner produces, `chain_compatible`
+passing already implies the makespan check passes too (that total-order
+condition is exactly Sarkar's sufficient condition for a non-regressing merge),
+so dropping the makespan check alone while keeping `chain_compatible` is
+observably a no-op — see `tests/fixtures/grouping/granularity-ladder.md` and
+`orchestrator-grouping-config.md`'s `[partition] granularity` entry.
 
 Two limits of `louvain_resolution` that a granularity flag cannot fix:
 

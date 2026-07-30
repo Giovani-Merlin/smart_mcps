@@ -23,15 +23,39 @@ def _llm_must_not_be_called(prompt, schema):
     raise AssertionError("fixture tests must stay zero-token")
 
 
-def stub_codegraph_runner(args):
+# Plan U5: a fixed `codegraph status -j` payload so fixture tests can attach a
+# TraceRecorder (which now always calls client.status() for the index
+# fingerprint) without needing a real index. STATUS_JSON_VARIANTS lets a test
+# simulate "re-syncing after a source change" by asking for a variant whose
+# fingerprint differs.
+STATUS_JSON = {
+    "initialized": True,
+    "projectPath": "/stub",
+    "fileCount": 3,
+    "nodeCount": 10,
+    "edgeCount": 5,
+    "dbSizeBytes": 4096,
+    "backend": "stub",
+    "journalMode": "wal",
+    "nodesByKind": {"function": 5},
+    "languages": ["python"],
+    "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+}
+STATUS_JSON_RESYNCED = {**STATUS_JSON, "nodeCount": 11, "edgeCount": 6}
+
+
+def stub_codegraph_runner(args, status=STATUS_JSON):
     """Zero real codegraph for the no-symbols fixtures: the only calls the
-    pipeline issues are `codegraph sync` (R13) and `codegraph files` for the base
-    context. Anything else means a fixture accidentally started using symbols
+    pipeline issues are `codegraph sync` (R13), `codegraph files` for the base
+    context, and `codegraph status` for the trace's index fingerprint (plan
+    U5). Anything else means a fixture accidentally started using symbols
     without switching to the cassette runner below."""
     if args[0] == "sync":
         return ""
     if args[0] == "files":
         return "stub repo (fixture test — no queries expected)\n"
+    if args[0] == "status":
+        return json.dumps(status)
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 
@@ -51,6 +75,8 @@ def cassette_codegraph_runner(args):
         return ""
     if args[0] == "files":
         return "stub repo (cassette fixture)\n"
+    if args[0] == "status":
+        return json.dumps(STATUS_JSON)
     command, symbol = args[0], args[1]
     path = CASSETTE_DIR / f"{command}_{symbol}.json"
     if path.is_file():
@@ -298,6 +324,59 @@ class TestObservatoryRoundA:
             client=client_for(repo),
         )
         _assert_cross_stack_slices_intact(outcome.partition)
+
+
+class TestGranularityLadderFixture:
+    """Plan U4: the register's dedicated granularity fixture, exercised through
+    the full pipeline (mapper/task-map -> graph -> partition), not just at the
+    partition level (see tests/test_partition.py::TestGranularityDial for the
+    unit-level equivalent of this same shape)."""
+
+    def _outcome(self, tmp_path, granularity):
+        repo, plan = make_repo(tmp_path, "granularity-ladder")
+        config = OrchestratorConfig()
+        config.partition.granularity = granularity
+        return compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(repo),
+        )
+
+    def test_omitting_the_flag_matches_independent(self, tmp_path):
+        default = compute_partition(
+            plan_path=make_repo(tmp_path / "a", "granularity-ladder")[1],
+            repo_root=(tmp_path / "a" / "repo"),
+            llm_runner=_llm_must_not_be_called,
+            client=client_for(tmp_path / "a" / "repo"),
+        )
+        explicit = self._outcome(tmp_path / "b", "independent")
+        assert serialize_partition(default.partition) == serialize_partition(explicit.partition)
+
+    def test_ladder_is_strictly_monotone_non_increasing(self, tmp_path):
+        counts = {}
+        for granularity in ("independent", "balanced", "monolithic"):
+            outcome = self._outcome(tmp_path / granularity, granularity)
+            counts[granularity] = len(members_by_group(outcome.partition))
+        assert counts["balanced"] < counts["independent"]
+        assert counts["monolithic"] <= counts["balanced"]
+
+    def test_no_slice_split_no_cycle_no_over_cap_at_every_level(self, tmp_path):
+        for granularity in ("independent", "balanced", "monolithic"):
+            outcome = self._outcome(tmp_path / granularity, granularity)
+            outcome.graph.assert_acyclic_dependencies()
+            for members in members_by_group(outcome.partition).values():
+                total = sum(outcome.node_work[n] for n in members)
+                assert total <= outcome.budget_cap
+
+    def test_deterministic_across_runs_at_every_level(self, tmp_path):
+        for granularity in ("independent", "balanced", "monolithic"):
+            outcome_a = self._outcome(tmp_path / f"{granularity}-a", granularity)
+            outcome_b = self._outcome(tmp_path / f"{granularity}-b", granularity)
+            assert serialize_partition(outcome_a.partition) == serialize_partition(
+                outcome_b.partition
+            )
 
 
 ALL_FIXTURES = [

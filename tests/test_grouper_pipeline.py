@@ -108,6 +108,16 @@ def codegraph_response(args):
         return ""
     if command == "files":
         return "repo files: server.py, test_server.py"
+    if command == "status":
+        return json.dumps(
+            {
+                "initialized": True,
+                "fileCount": 2,
+                "nodeCount": 4,
+                "edgeCount": 1,
+                "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+            }
+        )
     symbol = args[1]
     if command == "query":
         if symbol in ("real_fn", "test_real_fn"):
@@ -737,7 +747,13 @@ class TestGroupingTraceArtifact:
         assert (grouping_dir / "grouping-trace.json").is_file()
 
     def test_no_spec_trace_is_byte_identical_across_repeated_runs(self, tmp_path):
+        """Plan U5 (added 2026-07-30): provenance.timestamp is the one field in
+        the whole trace expected to differ run to run by design — it records
+        *when* grouping ran. Parsed back and compared with that one leaf
+        excluded, so real content drift (including elsewhere in provenance,
+        e.g. the index fingerprint) would still fail this test."""
         from orchestrator.cli import main
+        from orchestrator.grouping.trace import GroupingTrace
 
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
@@ -749,7 +765,7 @@ class TestGroupingTraceArtifact:
             client=make_client(repo),
         )
         assert exit_code == 0
-        first = trace_path.read_bytes()
+        first = GroupingTrace.model_validate_json(trace_path.read_text())
 
         exit_code = main(
             ["group", str(plan), "--repo", str(repo), "--no-spec"],
@@ -757,9 +773,10 @@ class TestGroupingTraceArtifact:
             client=make_client(repo),
         )
         assert exit_code == 0
-        second = trace_path.read_bytes()
+        second = GroupingTrace.model_validate_json(trace_path.read_text())
 
-        assert first == second
+        exclude = {"provenance": {"timestamp"}}
+        assert first.model_dump(exclude=exclude) == second.model_dump(exclude=exclude)
 
     def test_failing_group_still_writes_a_trace_naming_the_failure(self, tmp_path, capsys):
         """A real, existing failure mode (an empty task map) exercises the same

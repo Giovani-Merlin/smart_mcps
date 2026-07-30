@@ -37,6 +37,7 @@ from orchestrator.model import (
     EscalationResponse,
     Group,
     HumanAction,
+    PermissionDenied,
     ReviewIntensity,
 )
 
@@ -302,6 +303,27 @@ async def test_llm_process_error_marks_the_group_interrupted_not_failed(tmp_path
     persisted = RunState.model_validate_json(paths.state_path.read_text())
     assert persisted.groups["g1"].state == GroupState.INTERRUPTED
     assert persisted.groups["g1"].failure == "LlmProcessError: claude -p failed (1): "
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_marks_the_group_interrupted_with_command_verbatim(tmp_path):
+    """Plan U3: a typed denial is an envelope failure like SessionError/
+    LlmProcessError above, not a work failure — `resume` must reach it again,
+    and the denied command must survive verbatim in the failure text."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise PermissionDenied("group g1 denied command: rm -rf /some/protected/path")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.INTERRUPTED
+    assert (
+        persisted.groups["g1"].failure
+        == "PermissionDenied: group g1 denied command: rm -rf /some/protected/path"
+    )
 
 
 @pytest.mark.asyncio
