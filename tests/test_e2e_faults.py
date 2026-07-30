@@ -18,7 +18,6 @@ import subprocess
 import threading
 import time
 
-import pytest
 
 from orchestrator.cli import main
 from orchestrator.execution.escalation import pending_escalations
@@ -128,13 +127,6 @@ def test_fault_empty_branch_is_refused_and_never_completes(repo, fake_home, caps
 # --------------------------------------------------------------- stale base
 
 
-@pytest.mark.skip(
-    reason="U6 WIP: this scenario blocks indefinitely instead of failing, wedging the whole "
-    "suite. Its coder was cut off by a usage limit before finishing it. The other four "
-    "scenarios in this file pass. Un-skip when finishing U6 — the likely cause is an "
-    "escalation wait that never gets an answer, since this is the one scenario that drives "
-    "a resume across a sibling merge."
-)
 def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo, fake_home):  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
     """g1 and g2 start concurrently (their worktrees are cut from the same,
     pre-merge tip); g2 is interrupted on its very first round while g1 goes on
@@ -157,6 +149,10 @@ def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo,
         {"delay_s": 0.2, **_files_and_commit({"g1.out": "one\n"}, "g1: work")},
     )
     script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    # g2's reviewer only runs after the resume, but its script must exist up
+    # front: fake_claude binds a session to scripts/<name>.jsonl at creation
+    # time, and an unbound session falls back to the (empty) shared queue.
+    script_session(fake_home, name_of(run_id, "g2", "reviewer"), verdict_entry("approved"))
     # g2's coder dies at fork on its first round — an envelope failure, not a
     # work failure, so the group lands interrupted (plan U1/R1-R3).
     script_session(
@@ -188,7 +184,13 @@ def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo,
         name_of(run_id, "g2", "coder"),
         coder_entry_completed({"g2.out": "two\n"}, "g2: work"),
     )
-    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
+    # `resume` must re-state --intensity autonomous: escalation config is not
+    # persisted with the run, so an omitted flag silently restores the
+    # EscalationConfig default (enabled, timeout_s=None) and the resumed group's
+    # gate blocks forever on an escalation no one is answering.
+    exit_code = main(
+        ["resume", run_id, "--repo", str(repo), "--intensity", "autonomous"], llm_runner=StubLlm()
+    )
     assert exit_code == 0
     state = state_of(repo, run_id)
     assert state["groups"]["g2"]["state"] == "completed"
