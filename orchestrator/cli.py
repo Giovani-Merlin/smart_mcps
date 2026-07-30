@@ -85,6 +85,15 @@ from orchestrator.model import (
     Surprise,
 )
 
+# Reviewer sessions one group at a given intensity spawns (plan U8's
+# --review-intensity warning): self-verify skips the reviewer entirely,
+# paired-plus adds one mandatory extra verification pass (origin R15).
+_REVIEWER_SESSIONS: dict[ReviewIntensity, int] = {
+    ReviewIntensity.SELF_VERIFY: 0,
+    ReviewIntensity.PAIRED: 1,
+    ReviewIntensity.PAIRED_PLUS: 2,
+}
+
 
 def main(
     argv: list[str] | None = None,
@@ -406,15 +415,24 @@ def _print_partition_report(trace: GroupingTrace) -> None:
     for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
+    # trace.dag maps upstream_gid -> {downstream_gids} (build_group_dag), so a
+    # group's own *upstream* dependencies are found by inverting it — printing
+    # trace.dag.get(gid) directly would list gid's dependents, mislabeled as
+    # what gid "depends on" (plan U8).
+    upstream_by_gid: dict[int, list[int]] = {}
+    for up_gid, down_gids in trace.dag.items():
+        for down_gid in down_gids:
+            upstream_by_gid.setdefault(down_gid, []).append(up_gid)
+
     print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
         work = sum(node_work.get(node, 0.0) for node in members)
-        downstream = sorted(group_label(down) for down in trace.dag.get(gid, ()))
+        upstream = sorted(group_label(up) for up in upstream_by_gid.get(gid, ()))
         print(f"\n{gid_str}:")
         print(f"  tasks: {', '.join(sorted(members))}")
         print(f"  node work: {work:.1f} / budget cap {budget_cap:.1f}")
-        print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
+        print(f"  depends on: {', '.join(upstream) if upstream else 'none'}")
 
     hub_roles = {entry.node: entry.role for entry in trace.hub_roles if entry.role != "core"}
     print("\nhub roles:")
@@ -560,9 +578,18 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         return 1
     grouping = GroupingResult.model_validate_json(groups_path.read_text())
     groups = grouping.groups
+    intensity_override_line: str | None = None
     if getattr(args, "review_intensity", None):
         intensity = ReviewIntensity(args.review_intensity)
+        changed = sum(1 for group in groups if group.intensity != intensity)
         groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
+        if changed:
+            sessions = changed * _REVIEWER_SESSIONS[intensity]
+            intensity_override_line = (
+                f"warning: --review-intensity {intensity.value} overrides {changed} "
+                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
+                "for those groups (omit the flag to keep each group's recorded intensity)"
+            )
 
     plan_path = Path(grouping.plan_path)
     if not plan_path.is_absolute():
@@ -595,6 +622,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}"
     )
+    if intensity_override_line is not None:
+        print(intensity_override_line)
 
     session = config.session
     runner = SessionRunner(

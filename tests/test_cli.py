@@ -590,6 +590,82 @@ class TestRunBanner:
         assert "HITL off" in banner
 
 
+class TestReviewIntensityWarning:
+    """Plan U8: --review-intensity gets a warning on the effective-config line,
+    naming how many groups it changes and the reviewer sessions that implies;
+    omitting it warns nothing and never touches the recorded groups.json."""
+
+    def _setup(self, tmp_path, monkeypatch) -> Path:
+        write_run_artifacts(
+            tmp_path,
+            [
+                make_group("g1", intensity=ReviewIntensity.PAIRED),
+                make_group("g2", intensity=ReviewIntensity.SELF_VERIFY),
+            ],
+        )
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "init"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+        fake_home = tmp_path / "fake-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
+        monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+        (fake_home / "script.jsonl").write_text(
+            json.dumps({"exit_code": 1, "stderr": "spawn died"}) + "\n"
+        )
+        return fake_home
+
+    def _groups_json(self, tmp_path) -> str:
+        return (tmp_path / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+
+    def test_overriding_intensity_warns_naming_groups_and_sessions(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        self._setup(tmp_path, monkeypatch)
+        before = self._groups_json(tmp_path)
+        exit_code = main(
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r12",
+                "--sequential",
+                "--intensity",
+                "autonomous",
+                "--review-intensity",
+                "paired_plus",
+            ]
+        )
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        # g1 (paired → paired_plus) and g2 (self_verify → paired_plus) both change;
+        # paired_plus spawns 2 reviewer sessions per group (plan _REVIEWER_SESSIONS).
+        assert "overrides 2 group(s)" in out
+        assert "implies 4 reviewer session(s)" in out
+        # groups.json on disk is never rewritten by the override.
+        assert self._groups_json(tmp_path) == before
+
+    def test_omitting_intensity_warns_nothing_and_keeps_recorded_intensity(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        self._setup(tmp_path, monkeypatch)
+        before = self._groups_json(tmp_path)
+        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r13", "--sequential"])
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "overrides" not in out
+        assert "reviewer session" not in out
+        assert self._groups_json(tmp_path) == before
+
+
 class TestWorkspaceForFreshCut:
     def test_workspace_for_cuts_a_fresh_worktree_from_the_integration_tip(self, tmp_path):
         """Plan U1 (R3): workspace_for cuts each group's worktree from
@@ -834,3 +910,31 @@ class TestStatus:
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out and "r2" in out
+
+
+class TestPartitionReportDependencyDirection:
+    """Plan U8: trace.dag maps upstream_gid -> {downstream_gids} (build_group_dag
+    in orchestrator/grouping/partition.py), so printing it directly under each
+    group listed a group's *dependents*, mislabeled as what it "depends on"."""
+
+    def test_prints_upstream_dependencies_not_downstream_dependents(self, capsys):
+        from orchestrator.cli import _print_partition_report
+        from orchestrator.grouping.trace import GroupingTrace, StageSnapshot
+
+        trace = GroupingTrace(
+            stages=[StageSnapshot(stage="final", partition={"a": 0, "b": 1, "c": 2})],
+            dag={0: [1, 2]},  # g1 (task a) is upstream of g2 (task b) and g3 (task c)
+        )
+        _print_partition_report(trace)
+        out = capsys.readouterr().out
+        sections = {}
+        for block in out.split("\n\n"):
+            lines = block.strip().splitlines()
+            if lines and lines[0].rstrip(":") in ("g1", "g2", "g3"):
+                sections[lines[0].rstrip(":")] = block
+
+        assert "depends on: none" in sections["g1"]
+        assert "depends on: g1" in sections["g2"]
+        assert "depends on: g1" in sections["g3"]
+        # the old (buggy) label never appears again
+        assert "downstream" not in out

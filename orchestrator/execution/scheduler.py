@@ -178,11 +178,16 @@ class Scheduler:
         atomic_write_text(self.paths.state_path, self.state.model_dump_json(indent=2) + "\n")
 
     def set_state(self, group_id: str, state: GroupState, *, failure: str | None = None) -> None:
+        """``failure`` always overwrites (plan U8): a transition made with no
+        failure text — READY on resume, RUNNING at the top of a fresh attempt —
+        clears whatever an earlier attempt left behind, so a group that later
+        reaches COMPLETED never carries a stale failure line into ``status``.
+        Only ``_classify`` ever passes an explicit ``failure``.
+        """
         with self._lock:
             entry = self.state.groups[group_id]
             entry.state = state
-            if failure is not None:
-                entry.failure = failure
+            entry.failure = failure
             self._persist()
 
     def set_generation(self, group_id: str, generation: int) -> None:

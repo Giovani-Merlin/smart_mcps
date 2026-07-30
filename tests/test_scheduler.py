@@ -396,6 +396,30 @@ async def test_resume_relaunches_an_interrupted_group(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completing_after_a_resume_clears_the_stale_failure_text(tmp_path):
+    # Plan U8: set_state wrote `failure` only when non-None, so the text from an
+    # earlier interrupted attempt survived into a later successful completion —
+    # `status` would print a failure line for a group recorded as completed.
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={"g1": GroupRunState(state=GroupState.INTERRUPTED, failure="SessionError: x")},
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states == {"g1": GroupState.COMPLETED}
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].failure is None
+
+
+@pytest.mark.asyncio
 async def test_no_progress_watchdog_aborts_a_wedged_run_naming_blocked_groups(tmp_path):
     # A dependency cycle sneaking past partition-time detection must fail loudly.
     scheduler = Scheduler(

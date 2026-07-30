@@ -519,6 +519,10 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
     assert state["groups"]["g2"]["state"] == "completed"
+    # plan U8: g2's earlier interrupted-attempt failure text must not survive
+    # into its later successful completion — `status` would otherwise print a
+    # stale failure line for a group recorded as completed.
+    assert state["groups"]["g2"].get("failure") is None
 
     # the resumed run reused the original base session instead of starting one
     base_calls = named_calls(fake_home, f"{run_id}-base")
