@@ -120,11 +120,20 @@ class CoderReport(BaseModel):
     non-empty ``question``; the orchestrator escalates and resumes it with the
     answer. Headless ``claude -p`` workers cannot pause mid-turn to ask, so the
     only supported channel is report-then-resume (docs/research/design-deviations.md).
+
+    ``permission_denied`` is the typed denial channel (plan U3): a coder that hit
+    a permission denial after exhausting its identical-retry budget ends its turn
+    with this status and the verbatim ``denied_command``. This is deliberately not
+    a ``blocked`` report discriminated by field emptiness — that would make an
+    unrelated blocked report's envelope classification depend on whether a coder
+    happened to leave a field blank — and deliberately not a ``Surprise``, since a
+    denial names no other group.
     """
 
-    status: Literal["completed", "blocked", "failed", "needs_input"]
+    status: Literal["completed", "blocked", "failed", "needs_input", "permission_denied"]
     summary: str = ""
     question: str = ""  # required when status == "needs_input"
+    denied_command: str = ""  # required when status == "permission_denied"
     verification_results: list[VerificationResult] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
 
@@ -132,6 +141,12 @@ class CoderReport(BaseModel):
     def _needs_input_requires_question(self) -> CoderReport:
         if self.status == "needs_input" and not self.question.strip():
             raise ValueError("status 'needs_input' requires a non-empty 'question'")
+        return self
+
+    @model_validator(mode="after")
+    def _permission_denied_requires_command(self) -> CoderReport:
+        if self.status == "permission_denied" and not self.denied_command.strip():
+            raise ValueError("status 'permission_denied' requires a non-empty 'denied_command'")
         return self
 
 
@@ -207,3 +222,14 @@ class EscalationResponse(BaseModel):
     action: HumanAction
     answer: str = ""
     answered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PermissionDenied(Exception):
+    """A coder reported ``permission_denied`` (plan U3): the harness is healthy,
+    but a sandboxed command was refused after the coder's identical-retry budget.
+    Routes the group to INTERRUPTED, never FAILED — the work is unfinished, not
+    wrong, and a plain ``resume`` re-enters the same worktree. Raised directly by
+    the review loop (never through its rewrite path), so this costs no rewrite.
+    Lives here, not in ``execution/review.py``, so ``execution/scheduler.py`` can
+    catch it without importing from ``review.py`` (which imports from
+    ``scheduler.py``, and a cycle isn't worth it for one exception type)."""

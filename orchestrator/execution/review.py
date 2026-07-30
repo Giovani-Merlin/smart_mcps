@@ -61,6 +61,7 @@ from orchestrator.model import (
     EscalationResponse,
     Group,
     HumanAction,
+    PermissionDenied,
     ReviewerVerdict,
     ReviewIntensity,
     RunManifest,
@@ -268,6 +269,11 @@ class _GroupExecution:
                 self.gid, artifact_name("report", self.generation, rounds), report
             )
             self._spread(report.surprises)
+            if report.status == "permission_denied":
+                # Typed denial (plan U3): interrupted, not failed, and no rewrite
+                # spent — bypasses _on_coder_stuck/_rewrite entirely.
+                self._log(f"{self._round_tag(rounds)}: ended (permission_denied)")
+                raise PermissionDenied(f"group {self.gid} denied command: {report.denied_command}")
             if report.status != "completed":
                 self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
                 await self._on_coder_stuck(report, report_path)

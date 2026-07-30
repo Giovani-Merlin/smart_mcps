@@ -32,6 +32,7 @@ from orchestrator.model import (
     Group,
     GroupManifestEntry,
     HumanAction,
+    PermissionDenied,
     ReviewIntensity,
     RunManifest,
     SessionEntry,
@@ -42,7 +43,10 @@ from orchestrator.model import (
 
 
 def coder_report(
-    status: str = "completed", surprises: list[dict] | None = None, question: str = ""
+    status: str = "completed",
+    surprises: list[dict] | None = None,
+    question: str = "",
+    denied_command: str = "",
 ) -> str:
     body: dict = {
         "status": status,
@@ -52,6 +56,8 @@ def coder_report(
     }
     if question:
         body["question"] = question
+    if denied_command:
+        body["denied_command"] = denied_command
     return f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>'
 
 
@@ -497,6 +503,63 @@ async def test_blocked_coder_report_escalates_to_rewriting(tmp_path):
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
     assert len(harness.rewritten) == 1
+
+
+# ------------------------------------------------------------ U3: typed denial
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_raises_and_costs_no_rewrite(tmp_path):
+    # Plan U3: bypasses _on_coder_stuck/_rewrite entirely — no escalation, no
+    # rewrite, the denied command survives verbatim on the raised exception so
+    # the scheduler can record it in the group's failure text.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="rm -rf /etc")]}
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied, match=re.escape("rm -rf /etc")):
+        await harness.run(make_group())
+    assert harness.rewritten == []  # same rewrite count as a group that never reported
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_leaves_the_coder_session_live_for_resume(tmp_path):
+    # The coder entry was recorded before the fork (plan U7); a denial must not
+    # retire it, so a later plain `resume` warm-resumes the same session in the
+    # same worktree instead of forking fresh.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="rm -rf /etc")]}
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied):
+        await harness.run(make_group())
+    entry = harness.manifest.groups["g1"].sessions[-1]
+    assert entry.role == SessionRole.CODER
+    assert entry.retirement_reason is None
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_resumes_via_plain_resume_in_existing_worktree(tmp_path):
+    # Full round trip: interrupted by a denial, then a plain `resume` re-enters
+    # the SAME coder session (no second fork) and the group completes normally.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report("permission_denied", denied_command="rm -rf /etc")],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied):
+        await harness.run(make_group())
+    sess_id = runner.session_ids["r1-g1-coder-g1"]
+
+    # simulates the resumed process: same manifest, same worktree, one more round
+    runner.session_queues[sess_id] = [coder_report()]
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]  # no second coder fork
+    lines = run_log_lines(harness)
+    assert any(line.endswith(f"group g1 re-entry: resumed session {sess_id}") for line in lines)
 
 
 # ------------------------------------------------------------ HITL escalation (Phase D)
