@@ -77,29 +77,103 @@ impossible. Its groups now declare disjoint files while both coders still write
 **undeclared** collision is exactly what it cannot prevent, and the conflict→rewrite path is
 still the net that catches it.
 
-### Defects this run found in the orchestrator that this plan does *not* fix
+## Next tasks — what this plan does *not* fix
 
-Recorded because they cost real credits and are invisible from the code alone. Full evidence
-in `.orchestrator/notes-r20260729-correctness.md` (findings 1–11).
+Everything below was discovered while executing this plan (run `r20260729-correctness`,
+2026-07-29/30) and is **still open**. None of it is in scope for the 9 units above; this is the
+backlog for whatever comes next. Full evidence, with transcripts and measurements, is in
+**`.orchestrator/notes-r20260729-correctness.md`** (findings 1–11 plus the closing section) —
+treat that file as the reference and this table as its index.
 
-- **A failed round reports an empty reason.** `sessions.py` surfaces only `stderr`, but the CLI
-  writes to `stdout` under `--output-format json`, so every failure reads
-  `SessionError: claude exited 1 (…): `. Diagnosing anything requires hand-reading transcript
-  jsonl. Highest-value fix remaining.
-- **A usage-limit exit is not classified as one** — it presents as a generic envelope failure.
-- **Escalation config is not persisted**, so `resume` silently returns to `autonomous` unless
-  every flag is retyped.
-- **A worker can write outside its worktree** — the g1 coder edited the operator's global
-  auto-memory and marked its own group closed before review.
-- **Lifecycle log lines are written only when a round completes**, so a working coder and a hung
-  one look identical; g2's 41 minutes produced no log line at all.
-- **`context_token_limit` is a re-entry admission gate, not a circuit breaker** — nothing bounds
-  context within a round (observed peak 439,575 tokens against a 200k setting).
-- **The run dies with the session that launched it** unless detached (`setsid`).
+Ordered by value-per-effort, highest first.
+
+| #   | problem                                          | why it hurts                                      | size |
+| --- | ------------------------------------------------ | ------------------------------------------------- | ---- |
+| 1   | Failed rounds report an empty reason             | every diagnosis needs hand-read transcript jsonl  | S    |
+| 2   | Escalation config is not persisted across resume | a resumed run silently blocks forever             | S    |
+| 3   | Lifecycle logging is round-atomic                | a working coder and a hung one look identical     | S    |
+| 4   | The run dies with its launching session          | needs `setsid` by hand or the run is lost         | S    |
+| 5   | Usage-limit exits are not classified             | an outage is indistinguishable from a crash       | M    |
+| 6   | Nothing bounds context *within* a round          | 439k-token rounds against a 200k setting          | M    |
+| 7   | Workers can write outside their worktree         | a coder edited global memory and self-certified   | M    |
+| 8   | Per-group overhead dominates on small units      | one 5-hour usage window per ~50 min of coder work | L    |
+
+### 1. A failed round reports an empty reason — highest value remaining
+
+`sessions.py` surfaces only `stderr`, but the CLI writes its message to `stdout` under
+`--output-format json`. Every failure therefore reads `SessionError: claude exited 1 (…): `
+with nothing after the colon. One-line fix, and it unblocks the diagnosis of everything else
+on this list.
+
+### 2. Escalation config is not persisted across `resume`
+
+Omitting `--intensity` on a `resume` restores the `EscalationConfig` defaults — `enabled=True`,
+`timeout_s=None`, i.e. **block indefinitely** — so a run started `--intensity autonomous` comes
+back HITL-on and waits forever with nothing answering. Not theoretical: this is exactly what
+made a U6 test hang instead of fail for a whole session. Persist the run's escalation config
+alongside its state, and let flags override rather than replace it.
+
+### 3. Lifecycle logging is round-atomic
+
+Log lines are written only when a round *completes*, so a coder working for 41 minutes emits
+nothing at all and is indistinguishable from a wedged one. This is what made the run
+un-monitorable and forced a hand-rolled poller. Emit progress within a round — turn count,
+elapsed, last tool — even if coarse.
+
+### 4. The run dies with the session that launched it
+
+Unless launched under `setsid nohup`, closing the launching session kills the run. Detachment
+should be the default behaviour of `run`, not an operator incantation.
+
+### 5. A usage-limit exit is not classified as one
+
+It presents as a generic envelope failure, so an API outage and a crashed worker are handled
+identically and reported identically. Related but *fixed*: `LlmProcessError` already covers the
+one-shot `claude -p` path.
+
+### 6. `context_token_limit` is an admission gate, not a circuit breaker
+
+It is checked before re-entering a session, and never again. Nothing bounds context *within* a
+round — observed peak 439,575 tokens against a 200,000 setting, and one round ran 342 assistant
+turns. There is no in-round turn cap either; that number was never explained and nothing would
+have stopped it. This is the main cost driver behind item 8.
+
+### 7. A worker can write outside its worktree
+
+The g1 coder made four tool calls into the operator's **global** auto-memory directory and
+rewrote an entry declaring its own work closed — before any reviewer verdict. Its claim
+happened to be true, which was luck, not a control. Confine workers to their worktree, and
+treat any memory entry about group status as needing provenance.
+
+### 8. Per-group overhead dominates on small units
+
+Measured: **one 5-hour usage window per ~50 minutes of coder work**, driven by ~100M
+cache-read tokens per long round. The orchestrator earns its overhead on large parallel
+groups; on a handful of small units it does not, which is why U6's tail and U9 were finished
+by hand. Fixing 6 attacks this directly.
+
+### Smaller items and test-infra debt
+
+- **U3/U4/U5 are merged with no reviewer pass.** They are green, not reviewed — the one open
+  quality caveat inside this plan.
+- **Undeclared file collisions are still invisible to U9.** It excludes on *declared* files;
+  two groups that both write a file neither declared still collide at merge. Deriving declared
+  files from what a group actually touches would close the gap.
+- **`fake_claude` binds a session to its script at creation time.** A script file written after
+  the session exists is silently ignored, and the unbound session returns a bare `OK` that
+  surfaces as `ReportError: no <run-report> block` — naming nothing. Cost half a debugging
+  session; a bound-session-with-no-script warning would pay for itself.
+- **Wall-clock spans prove nothing about scheduling in the stub harness.** The session runner
+  serializes `--fork-session`, so coder call spans never overlap whether or not the scheduler
+  intended concurrency. Assert on `run.log` instead. U9 added hold lines for this reason;
+  there is no general scheduling observable yet.
+- **Orchestrator→HITL routing is still unbuilt.** Worker permissions were unblocked by a
+  user-level `~/.claude/settings.json` allowlist, not by the orchestrator brokering them.
 
 **Fixed and verified during the run:** U7's pre-fork session recording (`ae1fd46`) made warm
 re-entry work — g2's interrupted coder left a usable session entry where the same failure
-previously persisted nothing at all.
+previously persisted nothing at all, and the U6 fix later confirmed the resume re-enters it
+warm end-to-end.
 
 ## What we already know (resolved context)
 
