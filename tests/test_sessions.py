@@ -144,6 +144,26 @@ def test_start_base_pre_assigns_uuid_and_sets_display_name(fake_home, tmp_path):
     assert "shared context" in call["prompt"]
 
 
+def test_thinking_budget_is_pinned_on_every_worker_call(fake_home, tmp_path):
+    """Left unpinned the CLI picks its own thinking level, which is invisible in every
+    run artifact and lands on output tokens — the measured cost driver (run
+    r20260729-correctness: 588k output tokens in one round)."""
+    runner = make_runner(fake_home, max_thinking_tokens=4000, thinking="adaptive")
+    runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    argv = call["argv"]
+    assert argv[argv.index("--max-thinking-tokens") + 1] == "4000"
+    assert argv[argv.index("--thinking") + 1] == "adaptive"
+
+
+def test_thinking_flags_are_omitted_when_unset(fake_home, tmp_path):
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert "--max-thinking-tokens" not in call["argv"]
+    assert "--thinking" not in call["argv"]
+
+
 def test_fork_records_parent_base_and_every_id_is_unique(fake_home, tmp_path):
     runner = make_runner(fake_home)
     base = runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)

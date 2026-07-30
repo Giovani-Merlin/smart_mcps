@@ -601,6 +601,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         transcript_root=(
             Path(session.transcript_root).expanduser() if session.transcript_root else None
         ),
+        max_thinking_tokens=session.max_thinking_tokens,
+        thinking=session.thinking,
     )
     try:
         runner.preflight()

@@ -156,9 +156,13 @@ class SessionRunner:
         transcript_root: Path | None = None,
         env: dict[str, str] | None = None,
         tracker: SubprocessTracker | None = None,
+        max_thinking_tokens: int | None = None,
+        thinking: str | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
+        self.max_thinking_tokens = max_thinking_tokens
+        self.thinking = thinking
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
@@ -256,6 +260,10 @@ class SessionRunner:
             argv += ["--allowedTools", ",".join(self.allowed_tools)]
         if self.model:
             argv += ["--model", self.model]
+        if self.max_thinking_tokens is not None:
+            argv += ["--max-thinking-tokens", str(self.max_thinking_tokens)]
+        if self.thinking:
+            argv += ["--thinking", self.thinking]
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)

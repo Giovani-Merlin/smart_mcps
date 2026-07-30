@@ -127,6 +127,23 @@ class SessionConfig(BaseModel):
     model: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
     transcript_root: str | None = None
+    # Thinking budget per worker turn. Left unset the CLI picks its own default,
+    # which is neither pinned nor visible in any run artifact — and thinking counts
+    # as *output* tokens, so it lands squarely on the cost driver measured on run
+    # r20260729-correctness (588k output tokens across 342 turns in one round).
+    # The CLI's level names map to budgets by the documented convention:
+    # medium 4000 / high 10000 / xhigh 31999. Default to medium; raise per-run in
+    # config.toml when a group genuinely needs deeper reasoning.
+    # NB: `--max-thinking-tokens` is hidden from `claude --help`, so it must never
+    # go in REQUIRED_CLI_FLAGS or preflight would reject every real CLI.
+    max_thinking_tokens: int | None = 4000
+    # Orthogonal to the budget above: `--thinking` gates *whether* a turn thinks
+    # (enabled = always, adaptive = the model decides, disabled = never), while
+    # max_thinking_tokens caps how far it may go when it does. Measured on one probe
+    # (sonnet, same prompt): adaptive 62 output tokens vs enabled 140 vs disabled 253
+    # — adaptive was both cheapest and correct, so it is the default. Pairing it with
+    # the medium ceiling means "think only when it helps, never more than medium".
+    thinking: str | None = "adaptive"
 
 
 class EscalationConfig(BaseModel):

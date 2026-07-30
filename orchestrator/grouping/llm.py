@@ -23,6 +23,19 @@ JsonRunner = Callable[[str, dict], str]
 
 DEFAULT_MAX_RETRIES = 2
 
+# Thinking policy for the orchestrator's *own* reasoning calls (mapper/speccer),
+# as distinct from worker sessions. These are the decisions a whole run is built
+# on — a bad partition costs every group downstream — and there are only a handful
+# of them per run, so they get the larger budget: `high` (10000) against the
+# workers' `medium` (4000) in SessionConfig. `adaptive` on both, so a call that
+# needs no reasoning pays for none (measured: adaptive 62 output tokens vs enabled
+# 140 vs disabled 253 on one sonnet probe).
+#
+# NB: `--max-thinking-tokens` is hidden from `claude --help`. It works, but never
+# add it to a preflight flag check.
+ORCHESTRATOR_MAX_THINKING_TOKENS = 10000
+ORCHESTRATOR_THINKING = "adaptive"
+
 
 class LlmError(Exception):
     """The model never produced output that passed validation."""
@@ -47,7 +60,19 @@ def claude_json_runner(prompt: str, schema: dict) -> str:
     print mode is enough; the execution engine (U5) owns session lifecycles.
     """
     result = subprocess.run(
-        ["claude", "-p", prompt, "--output-format", "json", "--json-schema", json.dumps(schema)],
+        [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema),
+            "--max-thinking-tokens",
+            str(ORCHESTRATOR_MAX_THINKING_TOKENS),
+            "--thinking",
+            ORCHESTRATOR_THINKING,
+        ],
         capture_output=True,
         text=True,
     )

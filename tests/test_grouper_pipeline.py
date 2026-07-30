@@ -6,6 +6,7 @@ determinism is asserted on the serialized output.
 """
 
 import json
+import subprocess
 
 import pytest
 
@@ -13,6 +14,8 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.base_context import compile_base_context
 from orchestrator.grouping.graphing import CodegraphClient
 from orchestrator.grouping.estimator import estimate_group_tokens, partition_budget_cap
+from orchestrator.config import SessionConfig
+from orchestrator.grouping import llm as llm_module
 from orchestrator.grouping.llm import LlmError, call_llm_json
 from orchestrator.grouping.mapper import MapperOutput
 from orchestrator.grouping.pipeline import (
@@ -196,6 +199,28 @@ def grouping(tmp_path, llm=None, config=None, allow_unknown_symbols=False):
         allow_unknown_symbols=allow_unknown_symbols,
     )
     return result, base_context
+
+
+class TestOrchestratorThinkingPolicy:
+    """The orchestrator's own reasoning calls get a larger thinking budget than
+    workers do: a bad partition costs every group downstream, and there are only a
+    handful of these per run."""
+
+    def test_mapper_speccer_calls_pin_adaptive_thinking_at_the_high_budget(self, monkeypatch):
+        captured: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            captured.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout='{"result": "{}"}', stderr="")
+
+        monkeypatch.setattr(llm_module.subprocess, "run", fake_run)
+        llm_module.claude_json_runner("prompt", {"type": "object"})
+
+        (argv,) = captured
+        assert argv[argv.index("--thinking") + 1] == "adaptive"
+        assert argv[argv.index("--max-thinking-tokens") + 1] == "10000"
+        # Strictly above the workers' medium budget, or this policy is pointless.
+        assert llm_module.ORCHESTRATOR_MAX_THINKING_TOKENS > SessionConfig().max_thinking_tokens
 
 
 class TestCallLlmJson:
