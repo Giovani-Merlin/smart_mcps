@@ -708,7 +708,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         base_session_id=base_session_id,
         breaker=config.breaker,
         execution=config.execution,
-        board=SurpriseBoard(),
+        board=SurpriseBoard(paths),
         workspace_for=workspace_for,
         merge_group=merger.merge_group,
         rewrite_spec=_rewrite_provider(
