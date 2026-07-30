@@ -21,36 +21,61 @@ same run surfaced (R16–R24).
 All 24 R-IDs are covered. Three were amended against the code during planning and
 are marked **[amended]** where they appear.
 
-## Execution status — updated 2026-07-30 (run `r20260729-correctness`)
+## Execution status — COMPLETE, updated 2026-07-30 (run `r20260729-correctness`)
 
-**7.5 of 9 units are done and merged into `feat/multiagent-orchestrator`.** The run was
-stopped after g2 because the orchestrator's own per-group overhead was not worth the
-remaining work; U6's tail and U9 are to be finished in a single monolithic session.
+**All 9 units are done and merged into `feat/multiagent-orchestrator`.** 580 tests green,
+ruff clean. U1–U5, U7, U8 landed through the orchestrator itself; U6's tail and U9 were
+finished monolithically after the run was stopped — its per-group overhead was not worth
+the two small units that remained.
 
-| unit                      | status                                 | evidence                        |
-| ------------------------- | -------------------------------------- | ------------------------------- |
-| U1 merge-integrity        | ✅ done, reviewed, merged              | `28b930b`                       |
-| U2 failure-gate           | ✅ done, reviewed, merged              | `98ee16a`                       |
-| U7 durability             | ✅ done, reviewed, merged              | `089a0c6`, `ae1fd46`, `cd2b6c0` |
-| U8 operator-surface       | ✅ done, reviewed, merged              | `6464cb5`                       |
-| U3 typed-denial           | ✅ done, merged (no reviewer pass)     | `e1c7ab8`                       |
-| U4 granularity            | ✅ done, merged (no reviewer pass)     | `d4a4f4b`                       |
-| U5 scorecard              | ✅ done, merged (no reviewer pass)     | `6bc20bf`, `7bdfe37`            |
-| **U6 fault-injection**    | ⚠️ **4 of 5 scenarios green, 1 hangs** | `875d47c`                       |
-| **U9 conflict-exclusion** | ❌ **not started**                     | —                               |
+| unit                  | status                             | evidence                        |
+| --------------------- | ---------------------------------- | ------------------------------- |
+| U1 merge-integrity    | ✅ done, reviewed, merged          | `28b930b`                       |
+| U2 failure-gate       | ✅ done, reviewed, merged          | `98ee16a`                       |
+| U7 durability         | ✅ done, reviewed, merged          | `089a0c6`, `ae1fd46`, `cd2b6c0` |
+| U8 operator-surface   | ✅ done, reviewed, merged          | `6464cb5`                       |
+| U3 typed-denial       | ✅ done, merged (no reviewer pass) | `e1c7ab8`                       |
+| U4 granularity        | ✅ done, merged (no reviewer pass) | `d4a4f4b`                       |
+| U5 scorecard          | ✅ done, merged (no reviewer pass) | `6bc20bf`, `7bdfe37`            |
+| U6 fault-injection    | ✅ done — all 5 scenarios green    | `875d47c`, `bc27e3a`            |
+| U9 conflict-exclusion | ✅ done                            | see below                       |
 
 g1 (U1/U2/U7/U8) completed the full loop including reviewer approval and merged cleanly.
 g2 (U3/U4/U5/U6) was cut off mid-U6 by a usage limit, so its four units landed **without a
-reviewer pass** — they are merged on the strength of a green suite, not a review.
+reviewer pass** — they are merged on the strength of a green suite, not a review. That
+remains the one open quality caveat in this plan.
 
-### What is left, precisely
+### How U6 and U9 closed
 
-1. **U6** — `tests/test_e2e_faults.py::test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge`
-   **blocks indefinitely instead of failing**, which wedges the whole suite, so it is
-   `@pytest.mark.skip`-ed. Un-skip and fix it. The other four scenarios pass. Likely cause: an
-   escalation wait that never receives an answer — it is the one scenario driving a resume
-   across a sibling merge.
-2. **U9** — conflict-exclusion, untouched. `self_verify` intensity, the smallest unit in the plan.
+**U6.** The hanging scenario had two defects, both in its own setup rather than in the
+orchestrator. Its `resume` omitted `--intensity autonomous`; because escalation config is
+not persisted with a run, the omitted flag restored the `EscalationConfig` default
+(`enabled`, `timeout_s=None`) and the resumed group blocked forever on an escalation
+nothing was answering — hence a hang rather than a failure. Second, g2's reviewer was never
+scripted: `fake_claude` binds a session to `scripts/<name>.jsonl` at creation time, so an
+unbound session fell back to the empty shared queue and returned a bare `OK`. Warm re-entry
+itself was never at fault — the manifest carries g2's pre-fork coder session (U7's
+`ae1fd46`) and the resume re-enters it warm, exactly as designed.
+
+**U9.** `ACTIVE_STATES` (running/reviewing/rewriting/merging) now excludes every
+not-yet-started group declaring a file in common, checked at admission and re-checked
+*within* a single scheduling pass — `_admissible()` is computed before any group in that
+pass transitions to RUNNING, so without the re-check two overlapping groups would still
+launch together. Holds are recorded on `GroupRunState.holds` as typed `GroupHold` values
+(`dag_dependency` / `failure_gate` / `file_overlap`), which is what lets `status` name the
+locking group and the shared files without loading `groups.json`, and what makes the three
+situations read differently. `run.log` gets one line per hold when it starts.
+
+No config field was added: the plan calls for a scheduler invariant, and a run at
+`--concurrency 4` has no other defence. At `concurrency = 1` the cap already excludes
+everything, so no group is ever held for overlap and admission is unchanged.
+
+One existing test had to be restaged. `test_merge_conflict_routes_group_through_rewrite_to_completion`
+deliberately ran two groups *declaring* `conflict.txt` concurrently — which U9 now makes
+impossible. Its groups now declare disjoint files while both coders still write
+`conflict.txt`, which is the more honest scenario anyway: U9 keys off declarations, so an
+**undeclared** collision is exactly what it cannot prevent, and the conflict→rewrite path is
+still the net that catches it.
 
 ### Defects this run found in the orchestrator that this plan does *not* fix
 

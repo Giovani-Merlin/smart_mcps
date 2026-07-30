@@ -284,6 +284,21 @@ integration tip at its ready→running transition, so one-at-a-time stacks each
 group on the previous one's merged work: no cross-group merge conflicts, and a
 usage-limit hit costs at most one in-flight group.
 
+**Above `concurrency = 1`, file overlap excludes.** Two groups declaring a file
+in common are never both running, even when the group DAG leaves them unordered.
+This has no config field and cannot be turned off — it is a scheduler invariant,
+not a policy, because a run at `--concurrency 4` has no other defence against two
+groups editing `cli.py` at once and colliding at merge. The relation is symmetric:
+whichever group is admitted first holds the other for as long as it is active, no
+dependency edge is created, and either order is correct. `status` names the hold
+and the shared files (`held (file_overlap) by g1 on cli.py`), and `run.log`
+records it once when it starts.
+
+The exclusion keys off each group's **declared** files, so it covers files a group
+plans to create as well as ones it edits — but it cannot see an *undeclared*
+collision. Two groups that both write a file neither declared still conflict at
+merge, and the conflict→rewrite path remains the net that catches them.
+
 > ⚠️ `acceptEdits` covers **edits, not Bash.** Orchestrated coders cannot run
 > `pytest` or `git commit` unless an approver is wired up — a large hidden cost
 > driver, since a coder that cannot verify burns rounds guessing.

@@ -99,11 +99,43 @@ class GroupState(StrEnum):
 
 TERMINAL_STATES = frozenset({GroupState.COMPLETED, GroupState.FAILED, GroupState.RESOLVED})
 
+# A group with a live worktree it is still writing to (plan U9). Anything here
+# excludes every not-yet-started group declaring a file in common: the two would
+# otherwise edit the same file concurrently and collide at merge. INTERRUPTED and
+# unsettled-FAILED are deliberately absent — U2's failure gate already holds
+# overlapping groups against those, with different release semantics.
+ACTIVE_STATES = frozenset(
+    {GroupState.RUNNING, GroupState.REVIEWING, GroupState.REWRITING, GroupState.MERGING}
+)
+
+
+class HoldReason(StrEnum):
+    """Why a group is not admissible right now (plan U9 keeps these distinct)."""
+
+    DAG_DEPENDENCY = "dag_dependency"  # an upstream group has not completed
+    FAILURE_GATE = "failure_gate"  # U2: overlaps a failed/interrupted group
+    FILE_OVERLAP = "file_overlap"  # U9: overlaps a *healthy* in-flight group
+
+
+class GroupHold(BaseModel):
+    """One reason one group is held, recorded at the moment the scheduler
+    declined to admit it so ``status`` can report it verbatim rather than
+    re-deriving the DAG (``status`` reads only the run state, not groups.json).
+    """
+
+    reason: HoldReason
+    group_id: str  # the group holding the lock
+    files: list[str] = Field(default_factory=list)  # shared files; overlap holds only
+
 
 class GroupRunState(BaseModel):
     state: GroupState = GroupState.PENDING
     generation: int = 1
     failure: str | None = None
+    # Why this group did not launch on the scheduler's last admission pass
+    # (plan U9). Advisory reporting only — never an input to admission, which is
+    # always recomputed fresh — and empty for anything already running or terminal.
+    holds: list[GroupHold] = Field(default_factory=list)
     # plan U2: a FAILED group's resolve routine has completed (any outcome) —
     # its file-overlap hold on other groups clears. Persisted (not computed from
     # ``state`` alone) because a FAILED group is terminal: it never re-enters
@@ -194,6 +226,10 @@ class Scheduler:
             entry = self.state.groups[group_id]
             entry.state = state
             entry.failure = failure
+            if state not in (GroupState.PENDING, GroupState.READY):
+                # A group that has started (or finished) is not waiting on
+                # anything — a stale hold list would misreport it in `status`.
+                entry.holds = []
             self._persist()
 
     def set_generation(self, group_id: str, generation: int) -> None:
@@ -252,6 +288,15 @@ class Scheduler:
                 for gid in self._admissible():
                     if len(in_flight) >= cap:
                         break
+                    # Re-check against groups admitted earlier in *this* pass:
+                    # _admissible() was computed before any of them transitioned
+                    # to RUNNING, so two overlapping groups both appear in it.
+                    # Without this, the U9 exclusion would hold only across
+                    # cycles and let a same-pass pair launch together.
+                    holds = self._holds_on(gid)
+                    if holds:
+                        self._record_holds(gid, holds)
+                        continue
                     self.set_state(gid, GroupState.READY)
                     self.set_state(gid, GroupState.RUNNING)
                     task = asyncio.create_task(self._run_group(gid), name=f"group-{gid}")
@@ -292,24 +337,90 @@ class Scheduler:
             for task in in_flight:
                 task.cancel()
 
-    def _deps_met(self, gid: str) -> bool:
+    def _unmet_deps(self, gid: str) -> list[str]:
         # RESOLVED releases dependents the same as COMPLETED (plan U2): its
         # work genuinely landed on the integration branch.
-        return all(
-            self.state.groups[dep].state in (GroupState.COMPLETED, GroupState.RESOLVED)
+        return sorted(
+            dep
             for dep in self.groups[gid].dependencies
+            if self.state.groups[dep].state not in (GroupState.COMPLETED, GroupState.RESOLVED)
         )
 
     def _admissible(self) -> list[str]:
-        """Every group launchable right now: PENDING or (resumed) READY, its
-        DAG dependencies met, and no file-overlap hold (plan U2) against it."""
-        return sorted(
-            gid
-            for gid, entry in self.state.groups.items()
-            if entry.state in (GroupState.PENDING, GroupState.READY)
-            and self._deps_met(gid)
-            and not self._held_by(gid)
-        )
+        """Every group launchable right now: PENDING or (resumed) READY, with no
+        hold against it — DAG dependencies met, no U2 failure-gate hold, and no
+        U9 exclusion against a healthy in-flight group sharing a file.
+
+        Records each held group's reasons as a side effect so ``status`` can
+        report them; admission itself is always recomputed from live state.
+        """
+        launchable: list[str] = []
+        for gid in sorted(self.state.groups):
+            if self.state.groups[gid].state not in (GroupState.PENDING, GroupState.READY):
+                continue
+            holds = self._holds_on(gid)
+            self._record_holds(gid, holds)
+            if not holds:
+                launchable.append(gid)
+        return launchable
+
+    def _holds_on(self, gid: str) -> list[GroupHold]:
+        """Every distinct reason ``gid`` cannot start right now (plan U9)."""
+        holds = [
+            GroupHold(reason=HoldReason.DAG_DEPENDENCY, group_id=dep)
+            for dep in self._unmet_deps(gid)
+        ]
+        holds += [
+            GroupHold(
+                reason=HoldReason.FAILURE_GATE,
+                group_id=other,
+                files=self._shared_files(gid, other),
+            )
+            for other in sorted(self._held_by(gid))
+        ]
+        holds += [
+            GroupHold(
+                reason=HoldReason.FILE_OVERLAP,
+                group_id=other,
+                files=self._shared_files(gid, other),
+            )
+            for other in sorted(self._excluded_by(gid))
+        ]
+        return holds
+
+    def _excluded_by(self, gid: str) -> set[str]:
+        """U9's mutual exclusion: healthy in-flight groups sharing a declared
+        file with ``gid``. Symmetric and stateless — whichever of the two the
+        scheduler admits first holds the other for as long as it is active, and
+        no ordering between them is created or recorded.
+        """
+        return {
+            other_gid
+            for other_gid, entry in self.state.groups.items()
+            if other_gid != gid
+            and entry.state in ACTIVE_STATES
+            and self._files_overlap(gid, other_gid)
+        }
+
+    def _record_holds(self, gid: str, holds: list[GroupHold]) -> None:
+        """Persist ``gid``'s hold reasons, and log the ones that are new.
+
+        Only on change, so a group held across many scheduling cycles produces
+        one line per hold rather than one per cycle — a held group is otherwise
+        completely silent, indistinguishable from one nobody scheduled.
+        """
+        with self._lock:
+            entry = self.state.groups[gid]
+            if entry.holds == holds:
+                return
+            fresh = [hold for hold in holds if hold not in entry.holds]
+            entry.holds = holds
+            self._persist()
+        for hold in fresh:
+            shared = f" on {', '.join(hold.files)}" if hold.files else ""
+            log_event(
+                self.paths, f"group {gid}: held ({hold.reason.value}) by {hold.group_id}{shared}"
+            )
 
     async def _run_group(self, gid: str) -> GroupState:
         entry = self.state.groups[gid]
@@ -454,7 +565,14 @@ class Scheduler:
     # ----------------------------------------------------- overlap holds (U2)
 
     def _files_overlap(self, gid: str, other_gid: str) -> bool:
+        # ``Group.files`` is what the group *declares* it will touch, which is
+        # already the union of existing and prospective files — two groups that
+        # both plan to create the same not-yet-existing file overlap here, with
+        # no filesystem lookup involved (plan U9).
         return bool(set(self.groups[gid].files) & set(self.groups[other_gid].files))
+
+    def _shared_files(self, gid: str, other_gid: str) -> list[str]:
+        return sorted(set(self.groups[gid].files) & set(self.groups[other_gid].files))
 
     def _held_by(self, gid: str) -> set[str]:
         """Source group ids currently holding ``gid`` from starting: a FAILED

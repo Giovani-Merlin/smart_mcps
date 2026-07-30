@@ -22,6 +22,7 @@ from orchestrator.execution.scheduler import (
     TERMINAL_STATES,
     GroupRunState,
     GroupState,
+    HoldReason,
     NoProgressError,
     ResolveConflict,
     ResolveDeps,
@@ -892,3 +893,273 @@ async def test_groups_with_no_overlap_are_unaffected_by_a_sibling_failure(tmp_pa
     states = await scheduler.run()
     assert states["g2"] == GroupState.COMPLETED
     assert started == ["g2"]
+
+
+# --------------------------------------------------- U9: conflict exclusion
+
+
+def _tracking_executor(gate: asyncio.Event, live: set[str], overlaps: list[frozenset[str]]):
+    """Holds every group open on ``gate`` and records the set of groups live at
+    the moment each one starts, so an illegal concurrent pair is caught even if
+    it lasts microseconds."""
+
+    async def executor(ctx):
+        live.add(ctx.group.id)
+        overlaps.append(frozenset(live))
+        await gate.wait()
+        live.discard(ctx.group.id)
+        return GroupState.COMPLETED
+
+    return executor
+
+
+@pytest.mark.asyncio
+async def test_overlapping_groups_never_run_concurrently_at_high_concurrency(tmp_path):
+    """The core U9 invariant: two groups sharing a declared file are never both
+    running, even with slots free and the DAG leaving them unordered."""
+    live: set[str] = set()
+    overlaps: list[frozenset[str]] = []
+    gate = asyncio.Event()
+
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["shared.py", "one.py"]),
+            make_group("g2", files=["shared.py", "two.py"]),
+            make_group("g3", files=["three.py"]),
+        ],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=_tracking_executor(gate, live, overlaps),
+        config=ExecutionConfig(concurrency=4),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: len(live) == 2)  # g1 and g3; g2 is excluded by g1
+    await asyncio.sleep(0.05)
+    assert live == {"g1", "g3"}
+    gate.set()
+    states = await run
+
+    assert set(states.values()) == {GroupState.COMPLETED}
+    assert not any({"g1", "g2"} <= snapshot for snapshot in overlaps)
+
+
+@pytest.mark.asyncio
+async def test_groups_sharing_no_file_still_run_concurrently(tmp_path):
+    """The exclusion holds back real overlaps only — it must not serialize a run."""
+    peak = 0
+    concurrent = 0
+    gate = asyncio.Event()
+
+    async def executor(ctx):
+        nonlocal peak, concurrent
+        concurrent += 1
+        peak = max(peak, concurrent)
+        await gate.wait()
+        concurrent -= 1
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group(f"g{i}", files=[f"{i}.py"]) for i in range(1, 5)],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=4),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: concurrent == 4)
+    gate.set()
+    await run
+    assert peak == 4
+
+
+@pytest.mark.asyncio
+async def test_either_admission_order_completes_both_overlapping_groups(tmp_path):
+    """No ordering is required between two overlapping groups: whichever the
+    scheduler admits first, both run exactly once and both reach completed."""
+    for groups in (
+        [make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])],
+        [make_group("g2", files=["shared.py"]), make_group("g1", files=["shared.py"])],
+    ):
+        started: list[str] = []
+        scheduler = Scheduler(
+            groups=groups,
+            paths=RunPaths(tmp_path / "".join(g.id for g in groups), "r1"),
+            executor=completing_executor(started),
+            config=ExecutionConfig(concurrency=4),
+        )
+        states = await scheduler.run()
+        assert states == {"g1": GroupState.COMPLETED, "g2": GroupState.COMPLETED}
+        assert sorted(started) == ["g1", "g2"]
+
+
+@pytest.mark.asyncio
+async def test_file_overlap_creates_no_dependency_edge(tmp_path):
+    """Exclusion is symmetric and transient — it must never become a DAG edge."""
+    groups = [
+        make_group("g1", files=["shared.py"]),
+        make_group("g2", files=["shared.py"]),
+    ]
+    scheduler = Scheduler(
+        groups=groups,
+        paths=RunPaths(tmp_path, "r1"),
+        executor=completing_executor(),
+        config=ExecutionConfig(concurrency=4),
+    )
+    await scheduler.run()
+    assert all(group.dependencies == [] for group in scheduler.groups.values())
+    assert scheduler._dependents == {"g1": [], "g2": []}
+    assert scheduler._unmet_deps("g1") == [] and scheduler._unmet_deps("g2") == []
+
+
+@pytest.mark.asyncio
+async def test_an_overlap_hold_is_reported_distinctly_and_names_the_shared_files(tmp_path):
+    """U9's hold reads differently from a DAG block and from U2's failure gate,
+    and it names both the shared file(s) and the group holding the lock."""
+    paths = RunPaths(tmp_path, "r1")
+    live: set[str] = set()
+    gate = asyncio.Event()
+
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["shared.py"]),
+            make_group("g2", files=["shared.py", "extra.py"]),
+            make_group("g3", deps=["g1"], files=["other.py"]),
+        ],
+        paths=paths,
+        executor=_tracking_executor(gate, live, []),
+        config=ExecutionConfig(concurrency=4),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: bool(scheduler.state.groups["g2"].holds))
+
+    # Persisted, so `status` reads it straight out of the state file.
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    overlap = persisted.groups["g2"].holds
+    assert [hold.reason for hold in overlap] == [HoldReason.FILE_OVERLAP]
+    assert overlap[0].group_id == "g1"
+    assert overlap[0].files == ["shared.py"]  # only the shared one, not extra.py
+
+    dag = persisted.groups["g3"].holds
+    assert [hold.reason for hold in dag] == [HoldReason.DAG_DEPENDENCY]
+    assert dag[0].group_id == "g1" and dag[0].files == []
+
+    gate.set()
+    await run
+    # A group that has started or finished carries no stale hold.
+    assert all(not entry.holds for entry in scheduler.state.groups.values())
+
+
+@pytest.mark.asyncio
+async def test_failure_gate_and_overlap_holds_are_distinguishable(tmp_path):
+    """U2's gate (overlapping a *failed* group) and U9's exclusion (overlapping a
+    *healthy in-flight* one) are different situations with different fixes."""
+    paths = RunPaths(tmp_path, "r1")
+    _seed_state(
+        paths,
+        {
+            "g1": GroupRunState(state=GroupState.FAILED, failure="boom"),
+            "g2": GroupRunState(state=GroupState.PENDING),
+        },
+    )
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    holds = scheduler._holds_on("g2")
+    assert [hold.reason for hold in holds] == [HoldReason.FAILURE_GATE]
+    assert holds[0].group_id == "g1" and holds[0].files == ["shared.py"]
+
+
+@pytest.mark.asyncio
+async def test_two_groups_creating_the_same_new_file_exclude_each_other(tmp_path):
+    """Overlap is the union of existing and prospective files: a declared file
+    that does not exist yet still excludes, with no filesystem lookup."""
+    live: set[str] = set()
+    overlaps: list[frozenset[str]] = []
+    gate = asyncio.Event()
+
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["does/not/exist/yet.py"]),
+            make_group("g2", files=["does/not/exist/yet.py"]),
+        ],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=_tracking_executor(gate, live, overlaps),
+        config=ExecutionConfig(concurrency=4),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: len(live) == 1)
+    await asyncio.sleep(0.05)
+    assert len(live) == 1
+    gate.set()
+    await run
+    assert not any(len(snapshot) > 1 for snapshot in overlaps)
+
+
+@pytest.mark.asyncio
+async def test_serial_default_admits_exactly_as_before(tmp_path):
+    """At concurrency 1 this unit changes nothing: the cap already excludes
+    everything, so no group is ever held for overlap."""
+    started: list[str] = []
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["shared.py"]),
+            make_group("g2", files=["shared.py"]),
+            make_group("g3", files=["shared.py"]),
+        ],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=completing_executor(started),
+        config=ExecutionConfig(concurrency=1),
+    )
+    states = await scheduler.run()
+    assert started == ["g1", "g2", "g3"]  # unchanged topo/id order
+    assert set(states.values()) == {GroupState.COMPLETED}
+    assert all(
+        hold.reason != HoldReason.FILE_OVERLAP
+        for entry in scheduler.state.groups.values()
+        for hold in entry.holds
+    )
+
+
+@pytest.mark.asyncio
+async def test_exclusion_survives_a_resume(tmp_path):
+    """A run interrupted with one of two overlapping groups in flight must not
+    admit the other before the first is re-entered and finished."""
+    paths = RunPaths(tmp_path, "r1")
+    groups = [make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])]
+
+    hang = asyncio.Event()
+
+    async def hanging_executor(ctx):
+        await hang.wait()
+        return GroupState.COMPLETED
+
+    first = Scheduler(
+        groups=groups,
+        paths=paths,
+        executor=hanging_executor,
+        config=ExecutionConfig(concurrency=4),
+    )
+    run = asyncio.create_task(first.run())
+    await wait_until(lambda: first.state.groups["g1"].state == GroupState.RUNNING)
+    assert first.state.groups["g2"].state == GroupState.PENDING
+    run.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await run
+
+    # Both come back READY on resume; the exclusion has to be re-derived from
+    # live state, not from anything the crashed process left behind.
+    live: set[str] = set()
+    overlaps: list[frozenset[str]] = []
+    gate = asyncio.Event()
+    gate.set()
+    second = Scheduler(
+        groups=groups,
+        paths=paths,
+        executor=_tracking_executor(gate, live, overlaps),
+        config=ExecutionConfig(concurrency=4),
+        resume=True,
+    )
+    states = await second.run()
+    assert states == {"g1": GroupState.COMPLETED, "g2": GroupState.COMPLETED}
+    assert not any(len(snapshot) > 1 for snapshot in overlaps)

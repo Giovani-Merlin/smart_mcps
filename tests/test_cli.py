@@ -18,7 +18,13 @@ import pytest
 from orchestrator.cli import _print_outcomes, apply_overrides, main
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
-from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
+from orchestrator.execution.scheduler import (
+    GroupHold,
+    GroupRunState,
+    GroupState,
+    HoldReason,
+    RunState,
+)
 from orchestrator.grouping.graphing import CodegraphClient
 from orchestrator.grouping.pipeline import serialize_grouping
 from orchestrator.model import (
@@ -547,6 +553,51 @@ class TestAnswerCommand:
         out = capsys.readouterr().out
         assert "pending escalations" in out
         assert "e9" in out and "merge_conflict" in out
+
+
+class TestStatusReportsHolds:
+    """Plan U9: a held group says *why*, and the three reasons read differently."""
+
+    def _status_out(self, tmp_path, capsys, holds: list[GroupHold]) -> str:
+        paths = RunPaths(tmp_path, "r1")
+        paths.run_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            paths.state_path,
+            RunState(
+                run_id="r1", groups={"g2": GroupRunState(state=GroupState.PENDING, holds=holds)}
+            ).model_dump_json(),
+        )
+        assert main(["status", "r1", "--repo", str(tmp_path)]) == 0
+        return capsys.readouterr().out
+
+    def test_overlap_hold_names_the_locking_group_and_the_shared_files(self, tmp_path, capsys):
+        out = self._status_out(
+            tmp_path,
+            capsys,
+            [
+                GroupHold(
+                    reason=HoldReason.FILE_OVERLAP, group_id="g1", files=["cli.py", "model.py"]
+                )
+            ],
+        )
+        assert "held (file_overlap) by g1 on cli.py, model.py" in out
+
+    def test_the_three_hold_reasons_are_distinguishable(self, tmp_path, capsys):
+        out = self._status_out(
+            tmp_path,
+            capsys,
+            [
+                GroupHold(reason=HoldReason.DAG_DEPENDENCY, group_id="g0"),
+                GroupHold(reason=HoldReason.FAILURE_GATE, group_id="g1", files=["cli.py"]),
+                GroupHold(reason=HoldReason.FILE_OVERLAP, group_id="g3", files=["cli.py"]),
+            ],
+        )
+        assert "held (dag_dependency) by g0" in out  # no files: not a file relation
+        assert "held (failure_gate) by g1 on cli.py" in out
+        assert "held (file_overlap) by g3 on cli.py" in out
+
+    def test_an_unheld_group_prints_no_hold_line(self, tmp_path, capsys):
+        assert "held (" not in self._status_out(tmp_path, capsys, [])
 
 
 class TestRunEarlyExits:

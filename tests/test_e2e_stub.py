@@ -370,8 +370,14 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     write_run_artifacts(
         repo,
         [
-            make_group("g1", files=["conflict.txt"]),
-            make_group("g2", files=["conflict.txt"]),
+            # Deliberately *disjoint* declarations, even though both coders go on
+            # to write conflict.txt: plan U9's exclusion keys off declared files,
+            # so two groups declaring conflict.txt could no longer run at once
+            # and the race below would be impossible to stage. An undeclared
+            # collision like this one is exactly what U9 cannot prevent — and
+            # what the conflict→rewrite path still has to catch.
+            make_group("g1", files=["g1.out"]),
+            make_group("g2", files=["g2.out"]),
         ],
     )
     write_config(repo, fake_home)
@@ -739,3 +745,67 @@ def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
     assert "ESCALATION" not in run_log  # escalation behaviour itself is unchanged
     assert f"run {run_id} started (autonomous)" in run_log
     assert "group g1: completed" in run_log  # lifecycle events in autonomous mode (R10)
+
+
+def test_overlapping_groups_are_serialized_end_to_end_and_both_land(repo, fake_home):
+    """Plan U9, through the whole stack: two groups declaring shared.py at
+    --concurrency 4 are held apart while a third, sharing nothing, is not — and
+    every group's work still reaches the integration branch.
+
+    The assertion is on the run log rather than on wall-clock spans: the session
+    runner serializes *forks* regardless (fake_claude's fork.lock proves it), so
+    coder call spans never overlap here whether U9 is in force or not.
+    """
+    run_id = "r9"
+    write_run_artifacts(
+        repo,
+        [
+            make_group("g1", files=["shared.py", "one.py"]),
+            make_group("g2", files=["shared.py", "two.py"]),
+            make_group("g3", files=["three.py"]),
+        ],
+    )
+    write_config(repo, fake_home)
+    for gid in ("g1", "g2", "g3"):
+        script_session(
+            fake_home,
+            name_of(run_id, gid, "coder"),
+            coder_entry(delay_s=0.3, files={f"{gid}.out": f"{gid}\n"}, commit=f"{gid}: work"),
+        )
+        script_session(fake_home, name_of(run_id, gid, "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--concurrency",
+            "4",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert {gid: state["groups"][gid]["state"] for gid in ("g1", "g2", "g3")} == {
+        "g1": "completed",
+        "g2": "completed",
+        "g3": "completed",
+    }
+
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    # Whichever of the pair was admitted first holds the other — no ordering
+    # between them is required, so either line satisfies the invariant.
+    assert (
+        "group g2: held (file_overlap) by g1 on shared.py" in run_log
+        or "group g1: held (file_overlap) by g2 on shared.py" in run_log
+    )
+    # g3 shares nothing: the exclusion must not have held it back too.
+    assert "group g3: held" not in run_log
+
+    # Whichever order was chosen, every group's work reached integration.
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    assert all(f"merge({run_id}): {gid}" in log for gid in ("g1", "g2", "g3"))

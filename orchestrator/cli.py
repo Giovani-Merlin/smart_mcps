@@ -984,6 +984,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
         line = f"\n{gid}: {entry.state.value} (generation {entry.generation})"
         if entry.failure:
             line += f"\n  failure: {entry.failure}"
+        for hold in entry.holds:
+            # Each hold reason reads differently on purpose (plan U9): a DAG
+            # dependency, U2's failure gate, and U9's concurrent-overlap
+            # exclusion are three different situations with three different fixes.
+            shared = f" on {', '.join(hold.files)}" if hold.files else ""
+            line += f"\n  held ({hold.reason.value}) by {hold.group_id}{shared}"
         print(line)
         if manifest is not None and gid in manifest.groups:
             group_entry = manifest.groups[gid]
