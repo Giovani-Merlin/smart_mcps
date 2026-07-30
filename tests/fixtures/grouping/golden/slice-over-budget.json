@@ -1,0 +1,17 @@
+{
+  "budget_cap": 3938.7999999999997,
+  "group_count": 4,
+  "group_work": {
+    "0": 2000.0,
+    "1": 2000.0,
+    "2": 4000.0,
+    "3": 2000.0
+  },
+  "partition": {
+    "config": 0,
+    "docs": 1,
+    "reports-api": 2,
+    "reports-ui": 2,
+    "scaffold": 3
+  }
+}
