@@ -180,7 +180,6 @@ def test_merge_refuses_a_branch_with_zero_commits_ahead(repo):
     tip_before = merger.tip()
     g1 = make_group("g1")
     wt1 = group_worktree(repo, merger, g1)  # cut from the tip, no coder commit made
-    branch = group_branch("r1", "g1")
     with pytest.raises(MergeError, match=r"g1.*orchestrator/r1-g1"):
         merger.merge_group(g1, wt1)
     assert merger.tip() == tip_before  # nothing touched
