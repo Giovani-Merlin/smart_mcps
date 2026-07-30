@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 Pair = tuple[str, str]
 # node → group id. Group ids are contiguous ints; deterministic across runs.
@@ -31,6 +31,14 @@ Partition = dict[str, int]
 # Injected estimator hook: relative work for one task node (tokens, symbols — any
 # consistent unit). Never imported from the estimator module: keeps this module pure.
 WorkFn = Callable[[str], float]
+
+# Plan U4: the granularity dial relaxes merge_small_groups' two guards, in order.
+# `independent` (default) enforces both and reproduces today's behaviour byte-for-
+# byte; `balanced` drops the makespan no-regression check; `monolithic` also drops
+# chain_compatible. The budget cap, slice must-link and cycle checks stay hard at
+# every level (docs/orchestrator-grouping.md §"Prior art and known limits of the dial").
+Granularity = Literal["independent", "balanced", "monolithic"]
+GRANULARITY_LEVELS: tuple[Granularity, ...] = ("independent", "balanced", "monolithic")
 
 DEFAULT_HUB_THRESHOLD = 0.4  # CoCoder's live ROLE_THRESHOLD (partition_into_groups.py:37)
 LOUVAIN_SEED = 42
@@ -326,6 +334,7 @@ class DefaultPartitionStrategy:
     budget_cap: float | None = None
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
+    granularity: Granularity = "independent"
     recorder: PartitionRecorder | None = None
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
@@ -371,7 +380,12 @@ class DefaultPartitionStrategy:
             stages.append(("split", dict(partition)))
             self._record_stage("split", partition)
         partition = merge_small_groups(
-            graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+            graph,
+            partition,
+            self.work_fn,
+            self.budget_cap,
+            recorder=self.recorder,
+            granularity=self.granularity,
         )
         stages.append(("merge", dict(partition)))
         self._record_stage("merge", partition)
@@ -826,16 +840,34 @@ def merge_small_groups(
     work_fn: WorkFn,
     budget_cap: float | None,
     recorder: PartitionRecorder | None = None,
+    granularity: Granularity = "independent",
 ) -> Partition:
     """CoCoder ``merge_small_groups`` (post_processing.py:295-401), always on.
 
     Bottom-up merge along dependency edges only — a group may merge only into a
     group it depends on — accepted only when the merged summed work stays within
-    ``budget_cap`` (if set) and the simulated zero-communication makespan does not
-    regress. CoCoder gates this behind an env var, off by default; unbounded
-    clustering output is exactly the over-fragmentation this system exists to
-    prevent, so here it always runs.
+    ``budget_cap`` (if set), and, depending on ``granularity`` (plan U4): the pair
+    is ``chain_compatible`` (dependency-ordered — never a merge of truly parallel
+    work into one serial worker) and the simulated zero-communication makespan
+    does not regress. ``independent`` enforces both (today's default behaviour).
+
+    Empirically (not just per Kim & Browne 1988), on every acyclic graph this
+    partitioner ever produces, ``chain_compatible`` passing already guarantees
+    the makespan check passes too — the total cross-group order it demands is
+    exactly Sarkar's sufficient condition for a non-regressing merge. So
+    relaxing the makespan check alone (independent -> drop only Sarkar) changes
+    nothing observable; the guard that actually gates additional merges is
+    ``chain_compatible``. ``balanced`` therefore drops ``chain_compatible``
+    while keeping the makespan check as the sole acceptance test (Sarkar's test
+    stands on its own without the total-order guarantee — it still rejects a
+    merge that would genuinely serialize independent work); ``monolithic`` also
+    drops the makespan check. ``over_budget`` and ``would_create_cycle`` are
+    never relaxed. CoCoder gates this behind an env var, off by default;
+    unbounded clustering output is exactly the over-fragmentation this system
+    exists to prevent, so here it always runs.
     """
+    relax_chain = granularity in ("balanced", "monolithic")
+    relax_makespan = granularity == "monolithic"
     work = {node: work_fn(node) for node in graph.nodes}
     reachability = _build_reachability(graph)
     node_waves = _compute_waves(graph)
@@ -884,7 +916,7 @@ def merge_small_groups(
                         merge_round, source, target, False, "over_budget", merged_work, edge_weight
                     )
                 continue
-            if not chain_compatible(groups[source], groups[target]):
+            if not relax_chain and not chain_compatible(groups[source], groups[target]):
                 if recorder is not None:
                     recorder.record_merge_candidate(
                         merge_round,
@@ -916,7 +948,7 @@ def merge_small_groups(
                     )
                 continue
             candidate_makespan = _simulate_makespan(graph, candidate, work)
-            if candidate_makespan > current_makespan + 1e-9:
+            if not relax_makespan and candidate_makespan > current_makespan + 1e-9:
                 if recorder is not None:
                     recorder.record_merge_candidate(
                         merge_round,

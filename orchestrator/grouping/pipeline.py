@@ -297,6 +297,7 @@ def compute_partition(
         budget_cap=budget_cap,
         hub_threshold=config.partition.hub_threshold,
         louvain_resolution=config.partition.louvain_resolution,
+        granularity=config.partition.granularity,
         recorder=recorder,
     )
     partition = strategy.partition(graph)

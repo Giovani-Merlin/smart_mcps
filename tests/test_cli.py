@@ -151,6 +151,111 @@ class TestAllowOversizedSliceConfig:
         assert via_flag.partition.allow_oversized_slice is True
 
 
+class TestGranularityConfigAndFlag:
+    """Plan U4: --granularity and [partition] granularity must be exactly
+    equivalent, and the flag wins when both are set."""
+
+    def test_default_is_independent(self):
+        assert OrchestratorConfig().partition.granularity == "independent"
+
+    def test_config_file_sets_it(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[partition]\ngranularity = "balanced"\n')
+        assert load_config(config_file).partition.granularity == "balanced"
+
+    def test_flag_sets_it_with_no_config_file(self):
+        args = argparse.Namespace(granularity="monolithic")
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.partition.granularity == "monolithic"
+
+    def test_absent_flag_leaves_the_config_file_value(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[partition]\ngranularity = "balanced"\n')
+        loaded = load_config(config_file)
+        merged = apply_overrides(loaded, argparse.Namespace(granularity=None))
+        assert merged.partition.granularity == "balanced"
+
+    def test_flag_wins_over_config_file(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[partition]\ngranularity = "balanced"\n')
+        loaded = load_config(config_file)
+        merged = apply_overrides(loaded, argparse.Namespace(granularity="monolithic"))
+        assert merged.partition.granularity == "monolithic"
+
+    def test_invalid_value_in_config_file_rejected(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[partition]\ngranularity = "extreme"\n')
+        with pytest.raises(Exception):
+            load_config(config_file)
+
+
+GRANULARITY_LADDER_PLAN = """# feat: granularity ladder
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: root
+    description: root
+    files: [app/root.py]
+  - task_id: alpha1
+    description: alpha1
+    files: [app/alpha1.py]
+    depends_on: [root]
+  - task_id: alpha2
+    description: alpha2
+    files: [app/alpha2.py]
+    depends_on: [alpha1]
+  - task_id: beta1
+    description: beta1
+    files: [app/beta1.py]
+    depends_on: [root]
+  - task_id: beta2
+    description: beta2
+    files: [app/beta2.py]
+    depends_on: [beta1]
+  - task_id: beta3
+    description: beta3
+    files: [app/beta3.py]
+    depends_on: [beta2]
+  - task_id: gamma1
+    description: gamma1
+    files: [app/gamma1.py]
+    depends_on: [root]
+  - task_id: leaf
+    description: leaf
+    files: [app/leaf.py]
+    depends_on: [alpha2, beta3, gamma1]
+```
+"""
+
+
+class TestGranularityCliFlag:
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(GRANULARITY_LADDER_PLAN)
+        return repo, plan
+
+    def test_accepts_the_three_named_levels(self, tmp_path):
+        repo, plan = self._repo(tmp_path)
+        for level in ("independent", "balanced", "monolithic"):
+            exit_code = main(
+                ["group", str(plan), "--repo", str(repo), "--no-spec", "--granularity", level],
+                client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+            )
+            assert exit_code == 0
+
+    def test_rejects_an_unknown_value(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        with pytest.raises(SystemExit) as excinfo:
+            main(["group", str(plan), "--repo", str(repo), "--granularity", "bogus"])
+        assert excinfo.value.code != 0
+        assert "invalid choice" in capsys.readouterr().err
+
+
 def _stub_codegraph_runner(args):
     if args[0] == "sync":
         return ""

@@ -100,11 +100,12 @@ ______________________________________________________________________
 
 [`PartitionConfig`](../orchestrator/config.py), `config.py:41`.
 
-| Field                   | Default | Effect                                                                            | CLI                       |
-| ----------------------- | ------- | --------------------------------------------------------------------------------- | ------------------------- |
-| `hub_threshold`         | 0.4     | fraction-of-all-tasks degree at which a node is reclassified from `core` to a hub | —                         |
-| `louvain_resolution`    | 1.0     | Louvain resolution γ — **higher = more, smaller communities**                     | —                         |
-| `allow_oversized_slice` | `false` | accept a declared slice that alone exceeds the budget cap, as one flagged group   | `--allow-oversized-slice` |
+| Field                   | Default         | Effect                                                                            | CLI                       |
+| ----------------------- | --------------- | --------------------------------------------------------------------------------- | ------------------------- |
+| `hub_threshold`         | 0.4             | fraction-of-all-tasks degree at which a node is reclassified from `core` to a hub | —                         |
+| `louvain_resolution`    | 1.0             | Louvain resolution γ — **higher = more, smaller communities**                     | —                         |
+| `allow_oversized_slice` | `false`         | accept a declared slice that alone exceeds the budget cap, as one flagged group   | `--allow-oversized-slice` |
+| `granularity`           | `"independent"` | how eagerly `merge_small_groups` folds small groups together (plan U4)            | `--granularity`           |
 
 **`hub_threshold` is a fraction, not a count** — this surprises people. In a
 10-task plan, a task with 4 upstreams crosses 0.4 and becomes a hub. Hub roles
@@ -128,6 +129,31 @@ Default behaviour is a hard `GrouperError` naming the slice, every member, each
 member's work, the cap, and the overshoot
 ([`_check_slice_overflow`](../orchestrator/grouping/pipeline.py), `pipeline.py:98`).
 The override keeps the slice whole as one over-cap group and records a flag.
+
+**`granularity` and `--granularity` are exactly equivalent; the flag wins when
+both are set (plan U4).** Three levels, each relaxing one more guard on
+[`merge_small_groups`](../orchestrator/grouping/partition.py) (`partition.py:823`)
+than the last — the budget cap, slice must-link, and cycle checks are never
+relaxed at any level:
+
+- `independent` (default) enforces both `chain_compatible` and the makespan
+  no-regression check — today's behaviour, byte-for-byte, on every fixture in
+  the register.
+- `balanced` drops `chain_compatible` but still rejects a merge that would
+  regress the simulated zero-communication makespan. In practice this is the
+  level that actually changes anything: on every acyclic graph this
+  partitioner produces, `chain_compatible` passing already implies the
+  makespan check passes too (Kim & Browne 1988's admissibility test is a
+  sufficient condition for Sarkar's), so relaxing the makespan check *alone*
+  (independent → drop only Sarkar) is a no-op — see "Prior art and known
+  limits of the dial" below.
+- `monolithic` also drops the makespan check, collapsing as much as the hard
+  guards allow.
+
+See `tests/fixtures/grouping/granularity-ladder.md` for a worked shape where
+`independent` → `balanced` → `monolithic` strictly reduces the group count, and
+`grep -rn "granularity" tests/test_partition.py tests/test_grouping_fixtures.py`
+for the tests pinning it.
 
 ______________________________________________________________________
 

@@ -155,6 +155,22 @@ def main(
             "[partition] allow_degenerate_partition = true in config.toml"
         ),
     )
+    group_cmd.add_argument(
+        "--granularity",
+        default=None,
+        choices=["independent", "balanced", "monolithic"],
+        help=(
+            "how eagerly merge_small_groups folds small groups together: "
+            "'independent' (default) enforces chain-compatibility and the makespan "
+            "no-regression check (today's behaviour); 'balanced' drops "
+            "chain-compatibility but still rejects a merge that regresses the "
+            "simulated makespan; 'monolithic' also drops the makespan check. The "
+            "budget cap, slice must-link and cycle checks stay hard at every level. "
+            "Equivalent "
+            "to [partition] granularity in config.toml; this flag wins when both "
+            "are set."
+        ),
+    )
     _add_common_args(group_cmd)
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
@@ -269,6 +285,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         partition_updates["allow_oversized_slice"] = True
     if getattr(args, "allow_degenerate_partition", False):
         partition_updates["allow_degenerate_partition"] = True
+    if getattr(args, "granularity", None) is not None:
+        partition_updates["granularity"] = args.granularity
     escalation_updates: dict = {}
     intensity = getattr(args, "intensity", None)
     if intensity:
