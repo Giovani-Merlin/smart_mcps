@@ -15,6 +15,7 @@ import time
 import pytest
 
 from orchestrator.config import ExecutionConfig
+from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.execution.review import GroupFailure
 from orchestrator.execution.scheduler import (
@@ -22,16 +23,25 @@ from orchestrator.execution.scheduler import (
     GroupRunState,
     GroupState,
     NoProgressError,
+    ResolveConflict,
+    ResolveDeps,
+    RunAbort,
     RunState,
     Scheduler,
     SchedulerError,
 )
 from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.grouping.llm import LlmError, LlmProcessError
-from orchestrator.model import Group, ReviewIntensity
+from orchestrator.model import (
+    EscalationRequest,
+    EscalationResponse,
+    Group,
+    HumanAction,
+    ReviewIntensity,
+)
 
 
-def make_group(gid: str, deps: list[str] | None = None) -> Group:
+def make_group(gid: str, deps: list[str] | None = None, files: list[str] | None = None) -> Group:
     return Group(
         id=gid,
         name=f"group {gid}",
@@ -40,6 +50,7 @@ def make_group(gid: str, deps: list[str] | None = None) -> Group:
         difficulty=0.2,
         intensity=ReviewIntensity.SELF_VERIFY,
         dependencies=deps or [],
+        files=files or [],
     )
 
 
@@ -254,7 +265,9 @@ async def test_executor_exception_fails_the_group_and_records_the_failure(tmp_pa
 def test_interrupted_is_a_known_non_terminal_state():
     assert GroupState.INTERRUPTED.value == "interrupted"
     assert GroupState.INTERRUPTED not in TERMINAL_STATES
-    assert TERMINAL_STATES == frozenset({GroupState.COMPLETED, GroupState.FAILED})
+    assert TERMINAL_STATES == frozenset(
+        {GroupState.COMPLETED, GroupState.FAILED, GroupState.RESOLVED}
+    )
 
 
 @pytest.mark.asyncio
@@ -383,6 +396,30 @@ async def test_resume_relaunches_an_interrupted_group(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completing_after_a_resume_clears_the_stale_failure_text(tmp_path):
+    # Plan U8: set_state wrote `failure` only when non-None, so the text from an
+    # earlier interrupted attempt survived into a later successful completion —
+    # `status` would print a failure line for a group recorded as completed.
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={"g1": GroupRunState(state=GroupState.INTERRUPTED, failure="SessionError: x")},
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states == {"g1": GroupState.COMPLETED}
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].failure is None
+
+
+@pytest.mark.asyncio
 async def test_no_progress_watchdog_aborts_a_wedged_run_naming_blocked_groups(tmp_path):
     # A dependency cycle sneaking past partition-time detection must fail loudly.
     scheduler = Scheduler(
@@ -470,3 +507,366 @@ def test_unknown_dependency_is_rejected_at_construction(tmp_path):
             paths=RunPaths(tmp_path, "r1"),
             executor=completing_executor(),
         )
+
+
+# --------------------------------------------------- U2: resolve + overlap gate
+
+
+class StubResolve:
+    """Records what the resolve routine did instead of touching real git."""
+
+    def __init__(self, *, commits_ahead: int = 1, conflict: bool = False):
+        self.commits_ahead_value = commits_ahead
+        self.conflict = conflict
+        self.committed: list[str] = []
+        self.merged: list[str] = []
+
+    def commit_stranded(self, group: Group) -> bool:
+        self.committed.append(group.id)
+        return True
+
+    def commits_ahead(self, group: Group) -> int:
+        return self.commits_ahead_value
+
+    def merge_group(self, group: Group) -> None:
+        if self.conflict:
+            raise ResolveConflict(f"conflict merging {group.id}")
+        self.merged.append(group.id)
+
+    def deps(self) -> ResolveDeps:
+        return ResolveDeps(
+            commit_stranded=self.commit_stranded,
+            commits_ahead=self.commits_ahead,
+            merge_group=self.merge_group,
+        )
+
+
+class StubBroker:
+    """Canned operator: returns a scripted response and records every request."""
+
+    def __init__(self, response: EscalationResponse | None):
+        self.response = response
+        self.raised: list[EscalationRequest] = []
+        self.aborted = False
+
+    def raise_escalation(self, request: EscalationRequest) -> EscalationResponse | None:
+        self.raised.append(request)
+        return self.response
+
+    def trigger_abort(self) -> None:
+        self.aborted = True
+
+
+def failing_executor(exc: Exception):
+    async def executor(ctx):
+        raise exc
+
+    return executor
+
+
+def _seed_state(paths: RunPaths, groups: dict[str, GroupRunState]) -> None:
+    atomic_write_text(
+        paths.state_path, RunState(run_id=paths.run_id, groups=groups).model_dump_json()
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_group_with_stranded_commits_resolves_autonomously(tmp_path):
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("coder crashed mid-round")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.RESOLVED  # never completed — no review verdict
+    assert resolve.committed == ["g1"]
+    assert resolve.merged == ["g1"]
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.RESOLVED
+    assert persisted.groups["g1"].resolve_settled is True
+    assert "RuntimeError" in persisted.groups["g1"].failure
+
+
+@pytest.mark.asyncio
+async def test_failed_group_with_nothing_lost_stays_failed_and_settles(tmp_path):
+    resolve = StubResolve(commits_ahead=0)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert resolve.committed == ["g1"]  # commit is still attempted
+    assert resolve.merged == []  # nothing ahead — merge never attempted
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.FAILED
+    assert persisted.groups["g1"].resolve_settled is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_conflict_stops_the_run(tmp_path):
+    resolve = StubResolve(commits_ahead=1, conflict=True)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+    )
+    with pytest.raises(ResolveConflict):
+        await scheduler.run()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_without_resolve_deps_leaves_failed_group_unchanged(tmp_path):
+    # Byte-identical to pre-U2 behaviour when resolve isn't wired at all.
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_interrupted_group_is_never_resolved(tmp_path):
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(SessionError("claude exited 1")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    assert resolve.committed == []
+    assert resolve.merged == []
+
+
+# ------------------------------------------------- U2: escalation-driven resolve
+
+
+@pytest.mark.asyncio
+async def test_escalation_names_the_failed_group_overlap_and_successors(tmp_path):
+    broker = StubBroker(EscalationResponse(id="x", action=HumanAction.SKIP))
+    resolve = StubResolve(commits_ahead=1)
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise RuntimeError("boom")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["shared.py"]),
+            make_group("g2", files=["shared.py", "g2.py"]),
+            make_group("g3", files=["unrelated.py"]),
+        ],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
+    )
+    states = await scheduler.run()
+    assert states == {
+        "g1": GroupState.FAILED,
+        "g2": GroupState.COMPLETED,
+        "g3": GroupState.COMPLETED,
+    }
+    assert len(broker.raised) == 1
+    request = broker.raised[0]
+    assert request.kind.value == "group_resolve"
+    assert request.group_id == "g1"
+    assert "g1" in request.prompt
+    assert "g2" in request.prompt
+    assert "shared.py" in request.prompt
+    assert "g3" not in request.prompt  # no overlap with g3 — not named
+    assert resolve.merged == []  # operator declined — SKIP never merges
+
+
+@pytest.mark.asyncio
+async def test_escalation_skip_leaves_the_group_failed_and_settled(tmp_path):
+    broker = StubBroker(EscalationResponse(id="x", action=HumanAction.SKIP))
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].resolve_settled is True
+
+
+@pytest.mark.asyncio
+async def test_escalation_answer_delegates_to_autonomous_resolve(tmp_path):
+    broker = StubBroker(EscalationResponse(id="x", action=HumanAction.ANSWER, answer="go ahead"))
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.RESOLVED
+    assert resolve.merged == ["g1"]
+
+
+@pytest.mark.asyncio
+async def test_escalation_abort_raises_run_abort(tmp_path):
+    broker = StubBroker(EscalationResponse(id="x", action=HumanAction.ABORT))
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
+    )
+    with pytest.raises(RunAbort):
+        await scheduler.run()
+    assert broker.aborted is True
+
+
+@pytest.mark.asyncio
+async def test_escalation_timeout_falls_back_to_autonomous_resolve(tmp_path):
+    broker = StubBroker(None)  # mirrors on_timeout=autonomous
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_policy_not_covering_group_resolve_falls_back_to_autonomous(tmp_path):
+    broker = StubBroker(EscalationResponse(id="x", action=HumanAction.SKIP))
+    resolve = StubResolve(commits_ahead=1)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(RuntimeError("boom")),
+        resolve=resolve.deps(),
+        broker=broker,
+        policy=EscalationPolicy("autonomous", "workers_via_orchestrator"),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.RESOLVED  # autonomous tier never escalates
+    assert broker.raised == []
+
+
+# ---------------------------------------------------------- U2: overlap holds
+
+
+@pytest.mark.asyncio
+async def test_overlap_holds_a_pending_successor_until_the_failed_group_settles(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    _seed_state(
+        paths,
+        {
+            "g1": GroupRunState(state=GroupState.FAILED, failure="boom"),
+            "g2": GroupRunState(state=GroupState.PENDING),
+        },
+    )
+    started: list[str] = []
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])],
+        paths=paths,
+        executor=completing_executor(started),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert started == []  # g2 never ran — held by g1's unsettled failure
+    assert states["g1"] == GroupState.FAILED
+    assert states["g2"] == GroupState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_settled_failed_group_no_longer_holds_its_overlap(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    _seed_state(
+        paths,
+        {
+            "g1": GroupRunState(state=GroupState.FAILED, failure="boom", resolve_settled=True),
+            "g2": GroupRunState(state=GroupState.PENDING),
+        },
+    )
+    started: list[str] = []
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])],
+        paths=paths,
+        executor=completing_executor(started),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states["g2"] == GroupState.COMPLETED
+    assert started == ["g2"]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_group_holds_only_overlapping_successors(tmp_path):
+    started: list[str] = []
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise SessionError("claude exited 1")
+        started.append(ctx.group.id)
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[
+            make_group("g1", files=["shared.py"]),
+            make_group("g2", files=["shared.py"]),
+            make_group("g3", files=["unrelated.py"]),
+        ],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=1),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    assert states["g3"] == GroupState.COMPLETED
+    assert states["g2"] == GroupState.PENDING  # held, never ran
+    assert "g2" not in started
+    assert "g3" in started
+
+
+@pytest.mark.asyncio
+async def test_groups_with_no_overlap_are_unaffected_by_a_sibling_failure(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    _seed_state(
+        paths,
+        {
+            "g1": GroupRunState(state=GroupState.FAILED, failure="boom"),
+            "g2": GroupRunState(state=GroupState.PENDING),
+        },
+    )
+    started: list[str] = []
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=paths,
+        executor=completing_executor(started),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states["g2"] == GroupState.COMPLETED
+    assert started == ["g2"]

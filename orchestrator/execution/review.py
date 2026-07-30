@@ -16,6 +16,7 @@ review (origin R12, R16). Completed groups are never rewritten.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import uuid
 from collections.abc import Callable
@@ -26,7 +27,9 @@ from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import (
     ManifestStore,
+    RunPaths,
     artifact_name,
+    atomic_write_text,
     completed_round_count,
     log_event,
     record_session,
@@ -83,17 +86,30 @@ class MergeConflict(Exception):
 class SurpriseBoard:
     """Cross-group surprise registry. A mark is consumed by the named group's
     executor at its next checkpoint (before launch, or before accepting an
-    approval); marks for completed/failed groups are simply never read."""
+    approval); marks for completed/failed groups are simply never read.
 
-    def __init__(self) -> None:
-        self._pending: dict[str, list[Surprise]] = {}
+    Persisted to the run directory when constructed with ``paths`` (plan U7):
+    a plain in-memory dict dies with the process, silently dropping a surprise
+    marked for a group that has not yet run. ``paths=None`` keeps every
+    existing in-process test byte-identical.
+    """
+
+    def __init__(self, paths: RunPaths | None = None) -> None:
+        self._paths = paths
         self._lock = threading.Lock()
+        self._pending: dict[str, list[Surprise]] = {}
+        if paths is not None and paths.surprises_path.is_file():
+            raw = json.loads(paths.surprises_path.read_text())
+            self._pending = {
+                gid: [Surprise.model_validate(item) for item in items] for gid, items in raw.items()
+            }
 
     def mark(self, surprise: Surprise, *, source_group: str | None = None) -> None:
         with self._lock:
             for gid in surprise.affected_groups:
                 if gid != source_group:
                     self._pending.setdefault(gid, []).append(surprise)
+            self._persist()
 
     def pending_for(self, group_id: str) -> list[Surprise]:
         with self._lock:
@@ -101,7 +117,19 @@ class SurpriseBoard:
 
     def consume(self, group_id: str) -> list[Surprise]:
         with self._lock:
-            return self._pending.pop(group_id, [])
+            surprises = self._pending.pop(group_id, [])
+            if surprises:
+                self._persist()
+            return surprises
+
+    def _persist(self) -> None:
+        if self._paths is None:
+            return
+        payload = {
+            gid: [surprise.model_dump() for surprise in surprises]
+            for gid, surprises in self._pending.items()
+        }
+        atomic_write_text(self._paths.surprises_path, json.dumps(payload, indent=2) + "\n")
 
 
 @dataclass
@@ -190,16 +218,23 @@ class _GroupExecution:
         if first is None:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
             self.handoff_prompt = None
+            # The session id is generated and recorded *before* the blocking fork
+            # call, not after (plan U7): a crash mid-call would otherwise leave no
+            # manifest entry for a group interrupted during its very first round,
+            # so a later resume would fork a brand new session instead of finding
+            # the one already under way.
+            self.coder_sid = str(uuid.uuid4())
+            self.reviewer_sid = None
+            self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
                 base_id=self.deps.base_session_id,
                 prompt=prompt,
                 name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                 cwd=self.workspace,
+                session_id=self.coder_sid,
             )
-            self.coder_sid = first.session_id
-            self.coder_entry = self._record(SessionRole.CODER, first.session_id)
-            self.reviewer_sid = None
+            self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
         # Re-entry (warm-resumed or fallback-forked) continues this generation's
         # numbering rather than starting over, so round-numbered artifacts don't
@@ -339,6 +374,27 @@ class _GroupExecution:
         self.coder_entry.last_context_tokens = context
         self.deps.store.save(self.deps.manifest)
 
+    def _refresh_transcript(self, entry: SessionEntry) -> None:
+        """Fill in a pre-registered entry's transcript path once its session
+        actually exists on disk (plan U7) — recorded before the fork call, so
+        the path itself isn't known until the call returns."""
+        entry.transcript_path = _transcript_str(self.deps.runner, entry.session_id)
+        self.deps.store.save(self.deps.manifest)
+
+    def _persist_reviewer_usage(self, session_id: str) -> None:
+        """Record the reviewer's latest context size on its manifest entry after
+        every round (plan U7), mirroring ``_persist_coder_usage``: the reviewer
+        entry otherwise carries a zero context-token count forever."""
+        group_entry = self.deps.manifest.groups.get(self.gid)
+        if group_entry is None:
+            return
+        context = self.deps.runner.usage_of(session_id).last_context_tokens
+        for entry in reversed(group_entry.sessions):
+            if entry.role == SessionRole.REVIEWER and entry.session_id == session_id:
+                entry.last_context_tokens = context
+                self.deps.store.save(self.deps.manifest)
+                return
+
     # ------------------------------------------------------------ review
 
     async def _review_round(
@@ -374,6 +430,7 @@ class _GroupExecution:
         verdict, result = await asyncio.to_thread(
             nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
         )
+        self._persist_reviewer_usage(self.reviewer_sid)
         verdict_path = self.deps.store.save_group_artifact(
             self.gid, artifact_name("verdict", self.generation, rounds), verdict
         )
@@ -396,6 +453,7 @@ class _GroupExecution:
             verdict, result = await asyncio.to_thread(
                 nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
             )
+            self._persist_reviewer_usage(self.reviewer_sid)
             verdict_path = self.deps.store.save_group_artifact(
                 self.gid, f"verdict-g{self.generation}-r{rounds}-extra.json", verdict
             )

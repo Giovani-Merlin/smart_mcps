@@ -31,6 +31,16 @@ class MergeError(Exception):
     """A git operation failed for a reason other than a content conflict."""
 
 
+def commits_ahead(worktree: Path, base: str, branch: str) -> int:
+    """Commits on ``branch`` not yet reachable from ``base``.
+
+    Must be read *before* a merge, not after (plan U1): once ``branch`` merges
+    cleanly its commits are reachable from ``base`` too, so this same count reads
+    zero afterwards — a post-merge check cannot tell a real merge from a no-op.
+    """
+    return int(_git_ok(worktree, "rev-list", "--count", f"{base}..{branch}").strip())
+
+
 class IntegrationMerger:
     """Owns the per-run integration branch; matches the ReviewDeps.merge_group seam."""
 
@@ -67,6 +77,12 @@ class IntegrationMerger:
             branch = _git_ok(worktree, "branch", "--show-current").strip()
             if not branch:
                 raise MergeError(f"worktree {worktree} is not on a branch")
+            ahead = commits_ahead(integration_wt, self.branch, branch)
+            if ahead == 0:
+                raise MergeError(
+                    f"group {group.id} branch {branch} has no commits ahead of "
+                    f"{self.branch} — refusing to merge nothing"
+                )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
             if result.returncode != 0:

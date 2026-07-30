@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from orchestrator.cli import _print_outcomes, apply_overrides, main
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
@@ -238,9 +240,11 @@ class TestEscalationOverrides:
         base.update(overrides)
         return argparse.Namespace(**base)
 
-    def test_default_is_disabled_autonomous(self):
+    def test_default_is_enabled_on_stuck(self):
+        # plan U2: HITL is on by default so the failure-overlap gate has an
+        # operator channel without requiring an explicit --hitl flag.
         merged = apply_overrides(load_config(None), self._args())
-        assert merged.escalation.enabled is False
+        assert merged.escalation.enabled is True
         assert merged.escalation.intensity == "on_stuck"
 
     def test_hitl_flag_enables_with_default_tier(self):
@@ -490,6 +494,24 @@ class TestPrintOutcomes:
         assert _print_outcomes(state) == 2
         assert "smart-mcps-orchestrate resume r9" in capsys.readouterr().err
 
+    def test_resolved_group_is_reported_distinctly_from_completed(self, capsys):
+        """Plan U2: a resolved group's stranded work landed, but it never
+        claimed a review verdict — the listing must not blur it into 'completed'."""
+        state = RunState(
+            run_id="r11",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.RESOLVED, failure="GroupFailure: reviewer said too_hard"
+                ),
+                "g2": GroupRunState(state=GroupState.COMPLETED),
+            },
+        )
+        assert _print_outcomes(state) == 1  # not "all completed" — g1 needs inspection
+        out = capsys.readouterr().out
+        assert "g1: resolved" in out
+        assert "g2: completed" in out
+        assert "g1: completed" not in out
+
 
 class TestRunBanner:
     """R8: the effective execution config prints before any session spawns."""
@@ -547,12 +569,265 @@ class TestRunBanner:
 
     def test_banner_names_concurrency_and_disabled_hitl(self, tmp_path, capsys, monkeypatch):
         self._setup(tmp_path, monkeypatch, failures=1)
-        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r10", "--concurrency", "4"])
+        # plan U2: HITL defaults on, so disabling it for this assertion is explicit.
+        exit_code = main(
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r10",
+                "--concurrency",
+                "4",
+                "--intensity",
+                "autonomous",
+            ]
+        )
         assert exit_code == 1
         banner = capsys.readouterr().out.splitlines()[0]
         assert "run r10" in banner
         assert "concurrency 4" in banner
         assert "HITL off" in banner
+
+
+class TestReviewIntensityWarning:
+    """Plan U8: --review-intensity gets a warning on the effective-config line,
+    naming how many groups it changes and the reviewer sessions that implies;
+    omitting it warns nothing and never touches the recorded groups.json."""
+
+    def _setup(self, tmp_path, monkeypatch) -> Path:
+        write_run_artifacts(
+            tmp_path,
+            [
+                make_group("g1", intensity=ReviewIntensity.PAIRED),
+                make_group("g2", intensity=ReviewIntensity.SELF_VERIFY),
+            ],
+        )
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "init"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+        fake_home = tmp_path / "fake-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
+        monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+        (fake_home / "script.jsonl").write_text(
+            json.dumps({"exit_code": 1, "stderr": "spawn died"}) + "\n"
+        )
+        return fake_home
+
+    def _groups_json(self, tmp_path) -> str:
+        return (tmp_path / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+
+    def test_overriding_intensity_warns_naming_groups_and_sessions(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        self._setup(tmp_path, monkeypatch)
+        before = self._groups_json(tmp_path)
+        exit_code = main(
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r12",
+                "--sequential",
+                "--intensity",
+                "autonomous",
+                "--review-intensity",
+                "paired_plus",
+            ]
+        )
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        # g1 (paired → paired_plus) and g2 (self_verify → paired_plus) both change;
+        # paired_plus spawns 2 reviewer sessions per group (plan _REVIEWER_SESSIONS).
+        assert "overrides 2 group(s)" in out
+        assert "implies 4 reviewer session(s)" in out
+        # groups.json on disk is never rewritten by the override.
+        assert self._groups_json(tmp_path) == before
+
+    def test_omitting_intensity_warns_nothing_and_keeps_recorded_intensity(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        self._setup(tmp_path, monkeypatch)
+        before = self._groups_json(tmp_path)
+        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r13", "--sequential"])
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "overrides" not in out
+        assert "reviewer session" not in out
+        assert self._groups_json(tmp_path) == before
+
+
+class TestWorkspaceForFreshCut:
+    def test_workspace_for_cuts_a_fresh_worktree_from_the_integration_tip(self, tmp_path):
+        """Plan U1 (R3): workspace_for cuts each group's worktree from
+        merger.tip() at its ready→running transition, so a group started right
+        after a sibling merged already carries that sibling's work — no new cut
+        logic, just a regression test pinning the existing behaviour."""
+        from orchestrator.cli import _workspace_seams
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "--allow-empty", "-m", "i"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+
+        # a prior group merges its work onto the integration branch immediately
+        # before the next group's worktree is cut
+        upstream = make_group("g0")
+        wt0 = create_worktree(
+            repo,
+            group_id="g0",
+            name=upstream.name,
+            branch=group_branch("r1", "g0"),
+            start_point=merger.tip(),
+        )
+        (wt0 / "upstream.txt").write_text("from g0\n")
+        for args in (["add", "-A"], ["commit", "-m", "g0 work"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=wt0,
+                check=True,
+                capture_output=True,
+            )
+        merger.merge_group(upstream, wt0)
+
+        workspace_for, _ = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        path = workspace_for(make_group("g1"))
+        assert (path / "upstream.txt").read_text() == "from g0\n"
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
+
+
+class TestResolveDeps:
+    """Plan U2: cli._resolve_deps wires the scheduler's resolve routine to real
+    git — exercised directly here against a real repo, since the scheduler-level
+    tests (test_scheduler.py) stub this seam out entirely."""
+
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "commit", "--allow-empty", "-m", "init")
+        return repo
+
+    def test_autonomous_resolve_commits_stranded_changes_and_merges(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        group = make_group("g1")
+        worktree = create_worktree(
+            repo,
+            group_id="g1",
+            name=group.name,
+            branch=group_branch("r1", "g1"),
+            start_point=merger.tip(),
+        )
+        (worktree / "stranded.txt").write_text("uncommitted work\n")  # never committed
+
+        deps = _resolve_deps(repo, "r1", merger)
+        assert deps.commit_stranded(group) is True
+        assert deps.commits_ahead(group) == 1
+        deps.merge_group(group)  # must not raise
+        integration_wt = merger.ensure()
+        tree = subprocess.run(
+            ["git", "ls-tree", "--name-only", merger.branch],
+            cwd=integration_wt,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "stranded.txt" in tree
+
+    def test_commit_stranded_is_a_no_op_on_a_clean_worktree(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        group = make_group("g1")
+        create_worktree(
+            repo,
+            group_id="g1",
+            name=group.name,
+            branch=group_branch("r1", "g1"),
+            start_point=merger.tip(),
+        )
+        deps = _resolve_deps(repo, "r1", merger)
+        assert deps.commit_stranded(group) is False
+        assert deps.commits_ahead(group) == 0
+
+    def test_merge_translates_a_real_conflict_into_resolve_conflict(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolveConflict
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = self._repo(tmp_path)
+        (repo / "shared.txt").write_text("original\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "shared")
+
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g1 = make_group("g1", files=["shared.txt"])
+        wt1 = create_worktree(
+            repo,
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=merger.tip(),
+        )
+        (wt1 / "shared.txt").write_text("g1 version\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-m", "g1 edits")
+
+        g2 = make_group("g2", files=["shared.txt"])
+        wt2 = create_worktree(
+            repo,
+            group_id="g2",
+            name=g2.name,
+            branch=group_branch("r1", "g2"),
+            start_point=merger.tip(),
+        )
+        (wt2 / "shared.txt").write_text("g2 version\n")
+        _git(wt2, "add", "-A")
+        _git(wt2, "commit", "-m", "g2 edits")
+        merger.merge_group(g1, wt1)
+        tip_before = merger.tip()
+
+        deps = _resolve_deps(repo, "r1", merger)
+        with pytest.raises(ResolveConflict, match="g2"):
+            deps.merge_group(g2)
+        assert merger.tip() == tip_before  # U1's gate left the integration tip untouched
 
 
 class TestWorkspaceProvisioning:
@@ -635,3 +910,31 @@ class TestStatus:
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out and "r2" in out
+
+
+class TestPartitionReportDependencyDirection:
+    """Plan U8: trace.dag maps upstream_gid -> {downstream_gids} (build_group_dag
+    in orchestrator/grouping/partition.py), so printing it directly under each
+    group listed a group's *dependents*, mislabeled as what it "depends on"."""
+
+    def test_prints_upstream_dependencies_not_downstream_dependents(self, capsys):
+        from orchestrator.cli import _print_partition_report
+        from orchestrator.grouping.trace import GroupingTrace, StageSnapshot
+
+        trace = GroupingTrace(
+            stages=[StageSnapshot(stage="final", partition={"a": 0, "b": 1, "c": 2})],
+            dag={0: [1, 2]},  # g1 (task a) is upstream of g2 (task b) and g3 (task c)
+        )
+        _print_partition_report(trace)
+        out = capsys.readouterr().out
+        sections = {}
+        for block in out.split("\n\n"):
+            lines = block.strip().splitlines()
+            if lines and lines[0].rstrip(":") in ("g1", "g2", "g3"):
+                sections[lines[0].rstrip(":")] = block
+
+        assert "depends on: none" in sections["g1"]
+        assert "depends on: g1" in sections["g2"]
+        assert "depends on: g1" in sections["g3"]
+        # the old (buggy) label never appears again
+        assert "downstream" not in out

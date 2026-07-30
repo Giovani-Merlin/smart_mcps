@@ -39,11 +39,13 @@ from orchestrator.execution.manifest import (
     snapshot_grouping,
     validate_grouping_name,
 )
-from orchestrator.execution.merge import IntegrationMerger
-from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
+from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    ResolveConflict,
+    ResolveDeps,
     RunAbort,
     RunState,
     Scheduler,
@@ -53,9 +55,11 @@ from orchestrator.execution.sessions import SessionError, SessionRunner
 from orchestrator.execution.worktrees import (
     WorktreeError,
     _git_ok,
+    commit_all,
     create_worktree,
     group_branch,
     provision_env,
+    worktree_path,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
@@ -80,6 +84,15 @@ from orchestrator.model import (
     RunManifest,
     Surprise,
 )
+
+# Reviewer sessions one group at a given intensity spawns (plan U8's
+# --review-intensity warning): self-verify skips the reviewer entirely,
+# paired-plus adds one mandatory extra verification pass (origin R15).
+_REVIEWER_SESSIONS: dict[ReviewIntensity, int] = {
+    ReviewIntensity.SELF_VERIFY: 0,
+    ReviewIntensity.PAIRED: 1,
+    ReviewIntensity.PAIRED_PLUS: 2,
+}
 
 
 def main(
@@ -402,15 +415,24 @@ def _print_partition_report(trace: GroupingTrace) -> None:
     for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
+    # trace.dag maps upstream_gid -> {downstream_gids} (build_group_dag), so a
+    # group's own *upstream* dependencies are found by inverting it — printing
+    # trace.dag.get(gid) directly would list gid's dependents, mislabeled as
+    # what gid "depends on" (plan U8).
+    upstream_by_gid: dict[int, list[int]] = {}
+    for up_gid, down_gids in trace.dag.items():
+        for down_gid in down_gids:
+            upstream_by_gid.setdefault(down_gid, []).append(up_gid)
+
     print(f"groups: {len(members_by_gid)} (partition-only — no specs, no LLM calls)")
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
         work = sum(node_work.get(node, 0.0) for node in members)
-        downstream = sorted(group_label(down) for down in trace.dag.get(gid, ()))
+        upstream = sorted(group_label(up) for up in upstream_by_gid.get(gid, ()))
         print(f"\n{gid_str}:")
         print(f"  tasks: {', '.join(sorted(members))}")
         print(f"  node work: {work:.1f} / budget cap {budget_cap:.1f}")
-        print(f"  depends on (downstream): {', '.join(downstream) if downstream else 'none'}")
+        print(f"  depends on: {', '.join(upstream) if upstream else 'none'}")
 
     hub_roles = {entry.node: entry.role for entry in trace.hub_roles if entry.role != "core"}
     print("\nhub roles:")
@@ -556,9 +578,18 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         return 1
     grouping = GroupingResult.model_validate_json(groups_path.read_text())
     groups = grouping.groups
+    intensity_override_line: str | None = None
     if getattr(args, "review_intensity", None):
         intensity = ReviewIntensity(args.review_intensity)
+        changed = sum(1 for group in groups if group.intensity != intensity)
         groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
+        if changed:
+            sessions = changed * _REVIEWER_SESSIONS[intensity]
+            intensity_override_line = (
+                f"warning: --review-intensity {intensity.value} overrides {changed} "
+                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
+                "for those groups (omit the flag to keep each group's recorded intensity)"
+            )
 
     plan_path = Path(grouping.plan_path)
     if not plan_path.is_absolute():
@@ -591,6 +622,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}"
     )
+    if intensity_override_line is not None:
+        print(intensity_override_line)
 
     session = config.session
     runner = SessionRunner(
@@ -615,6 +648,35 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     if not resume:
         snapshot_grouping(source_grouping_dir, paths.run_dir)
 
+    merger = IntegrationMerger(repo_root, run_id)
+    try:
+        merger.ensure()
+    except WorktreeError as exc:
+        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
+        return 1
+
+    # The lifecycle log is always on (R10): the run-start line lands in every
+    # mode; only the escalation channel itself is HITL-gated. Built before the
+    # Scheduler (plan U2): a FAILED group's resolve routine needs the same
+    # broker/policy the review loop's escalations already use.
+    if config.escalation.enabled:
+        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
+        policy: EscalationPolicy | None = EscalationPolicy(
+            config.escalation.intensity, config.escalation.source
+        )
+        log_event(
+            paths,
+            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
+            f"source={config.escalation.source}, "
+            f"timeout={config.escalation.timeout_s}",
+        )
+    else:
+        broker = None
+        policy = None
+        log_event(paths, f"run {run_id} started (autonomous)")
+
+    resolve_deps = _resolve_deps(repo_root, run_id, merger)
+
     # Construction is circular on paper (scheduler → executor → deps → runner →
     # scheduler.tracker); the executor closes over a slot assigned once deps exist —
     # it is only invoked inside scheduler.run().
@@ -630,18 +692,14 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             executor=executor,
             config=config.execution,
             resume=resume,
+            broker=broker,
+            policy=policy,
+            resolve=resolve_deps,
         )
     except SchedulerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker
-
-    merger = IntegrationMerger(repo_root, run_id)
-    try:
-        merger.ensure()
-    except WorktreeError as exc:
-        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
-        return 1
 
     store = ManifestStore(paths)
     if resume:
@@ -670,24 +728,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         store.save(manifest)
 
-    # The lifecycle log is always on (R10): the run-start line lands in every
-    # mode; only the escalation channel itself is HITL-gated.
-    if config.escalation.enabled:
-        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
-        policy: EscalationPolicy | None = EscalationPolicy(
-            config.escalation.intensity, config.escalation.source
-        )
-        log_event(
-            paths,
-            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
-            f"source={config.escalation.source}, "
-            f"timeout={config.escalation.timeout_s}",
-        )
-    else:
-        broker = None
-        policy = None
-        log_event(paths, f"run {run_id} started (autonomous)")
-
     workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
     deps = ReviewDeps(
         run_id=run_id,
@@ -697,7 +737,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         base_session_id=base_session_id,
         breaker=config.breaker,
         execution=config.execution,
-        board=SurpriseBoard(),
+        board=SurpriseBoard(paths),
         workspace_for=workspace_for,
         merge_group=merger.merge_group,
         rewrite_spec=_rewrite_provider(
@@ -758,6 +798,40 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
         return tips[group.id]
 
     return workspace_for, base_ref_for
+
+
+def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> ResolveDeps:
+    """Wires the scheduler's resolve routine (plan U2) to real git, translating
+    ``MergeConflict`` into the scheduler's own ``ResolveConflict`` so scheduler.py
+    never has to import merge/review machinery (review.py already imports
+    scheduler.py — a reverse import there would cycle).
+    """
+
+    def branch_for(group: Group) -> str:
+        return group_branch(run_id, group.id)
+
+    def worktree_for(group: Group) -> Path:
+        return worktree_path(repo_root, group.id, group.name)
+
+    def commit_stranded(group: Group) -> bool:
+        return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
+
+    def commits_ahead_fn(group: Group) -> int:
+        return commits_ahead(merger.ensure(), merger.branch, branch_for(group))
+
+    def merge_for_resolve(group: Group) -> None:
+        try:
+            merger.merge_group(group, worktree_for(group))
+        except MergeConflict as exc:
+            raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+        except MergeError:
+            pass  # commits_ahead already gated this — defensive no-op
+
+    return ResolveDeps(
+        commit_stranded=commit_stranded,
+        commits_ahead=commits_ahead_fn,
+        merge_group=merge_for_resolve,
+    )
 
 
 def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path):
