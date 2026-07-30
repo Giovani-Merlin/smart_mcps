@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 import tomllib
 from datetime import UTC, datetime
@@ -361,6 +362,7 @@ def _cmd_group(
             _write_failure_trace(out_dir, recorder, exc, trace_path)
             return 1
         _write_trace(out_dir, recorder)
+        _append_metrics_log(repo_root, recorder.trace)
         _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(recorder.trace)
         return 0
@@ -382,6 +384,7 @@ def _cmd_group(
 
     if args.dry_run:
         _write_trace(out_dir, recorder)
+        _append_metrics_log(repo_root, recorder.trace)
         _print_report(result)
         return 0
 
@@ -389,6 +392,7 @@ def _cmd_group(
     (out_dir / "groups.json").write_text(serialize_grouping(result))
     (out_dir / "base-context.md").write_text(base_context)
     _write_trace(out_dir, recorder)
+    _append_metrics_log(repo_root, recorder.trace)
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
@@ -399,6 +403,28 @@ def _write_trace(out_dir: Path, recorder: TraceRecorder) -> None:
     write nothing else — explaining a partition or a failure is the point."""
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "grouping-trace.json").write_text(serialize_trace(recorder.trace))
+
+
+def _append_metrics_log(repo_root: Path, trace: GroupingTrace) -> None:
+    """Append one row to the durable, append-only metrics log (plan U5).
+
+    Called only from the success paths in ``_cmd_group`` — a grouping that
+    raises before producing a partition never reaches here, so
+    ``.orchestrator/grouping-metrics.jsonl`` gains no line for it. Re-running
+    the same grouping name appends a second line rather than replacing the
+    first (unlike ``grouping-trace.json``, which ``cli.py``'s ``--name``
+    handling overwrites) — this file is a log, not a snapshot.
+    """
+    if trace.scorecard is None or trace.provenance is None:
+        return
+    metrics_path = repo_root / ".orchestrator" / "grouping-metrics.jsonl"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "scorecard": trace.scorecard.model_dump(),
+        "provenance": trace.provenance.model_dump(),
+    }
+    with metrics_path.open("a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 def _write_failure_trace(
@@ -469,6 +495,19 @@ def _print_partition_report(trace: GroupingTrace) -> None:
 
     print(f"\nlast partition-modifying stage: {trace.last_stage}")
     print(f"budget cap: {budget_cap:.1f}")
+
+    if trace.scorecard is not None:
+        sc = trace.scorecard
+        print("\nscorecard:")
+        print(f"  groups: {sc.group_count}")
+        print(f"  cross-group edges: {sc.cross_group_edges}")
+        print(
+            "  work fraction of cap (min/mean/max): "
+            f"{sc.work_fraction_min:.2f} / {sc.work_fraction_mean:.2f} / {sc.work_fraction_max:.2f}"
+        )
+        print(f"  critical path length: {sc.critical_path_length}")
+        print(f"  modularity: {sc.modularity:.3f}")
+        print(f"  slice integrity: {'pass' if sc.slice_integrity_ok else 'FAIL'}")
 
     if trace.mapper_flags:
         print("\nflags:")

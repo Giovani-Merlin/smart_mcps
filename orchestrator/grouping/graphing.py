@@ -16,6 +16,7 @@ against the structural layer's total mass.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -54,6 +55,19 @@ _NOT_FOUND = re.compile(r"Symbol \".*\" not found")
 
 class GraphBuildError(Exception):
     """codegraph output could not be turned into a task graph."""
+
+
+def index_fingerprint(status: dict) -> str:
+    """sha256 of ``codegraph status -j``, canonicalized (plan U5): key order and
+    JSON separators are pinned so two invocations against the same index
+    produce byte-identical input to the hash regardless of dict insertion
+    order. This is deliberately not a content hash of the index itself — the
+    ``.db`` file churns under WAL even with no real change — so it is paired
+    with the repo commit SHA (distinguishes repo content) and the digest
+    already contains ``pendingChanges`` (distinguishes a stale index from a
+    synced one at the same commit)."""
+    canonical = json.dumps(status, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,17 @@ class CodegraphClient:
         pipeline's first read of it — grouping against a stale index silently drops
         real symbols and files that exist on disk."""
         self._run(["sync"])
+
+    def status(self) -> dict:
+        """`codegraph status -j`, parsed (plan U5): the JSON summary used to
+        fingerprint the index (see ``index_fingerprint`` below) — counts, not a
+        content hash, so a stale-vs-synced index at the same repo commit is
+        distinguished by ``pendingChanges`` inside it, not by the fingerprint
+        alone."""
+        payload = self._json(["status"])
+        if not isinstance(payload, dict):
+            raise GraphBuildError("codegraph status output is not a JSON object")
+        return payload
 
     def _parsed(self, args: Sequence[str], expect_key: str) -> list[dict]:
         payload = self._json(args)

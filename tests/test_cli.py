@@ -256,11 +256,119 @@ class TestGranularityCliFlag:
         assert "invalid choice" in capsys.readouterr().err
 
 
+class TestScorecardAndMetricsLogCli:
+    """Plan U5: `group --no-spec` prints the scorecard, the printed values
+    equal what's recorded in grouping-trace.json, and one line is appended to
+    .orchestrator/grouping-metrics.jsonl per invocation that produces a
+    partition — never on a rejected grouping."""
+
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(GRANULARITY_LADDER_PLAN)
+        return repo, plan
+
+    def test_no_spec_prints_the_scorecard(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "scorecard:" in out
+        assert "cross-group edges:" in out
+        assert "work fraction of cap" in out
+        assert "critical path length:" in out
+        assert "modularity:" in out
+        assert "slice integrity:" in out
+
+    def test_printed_scorecard_matches_the_trace(self, tmp_path, capsys):
+        from orchestrator.grouping.trace import GroupingTrace
+
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        trace = GroupingTrace.model_validate_json(trace_path.read_text())
+        sc = trace.scorecard
+        assert sc is not None
+        assert f"groups: {sc.group_count}" in out
+        assert f"cross-group edges: {sc.cross_group_edges}" in out
+        assert f"critical path length: {sc.critical_path_length}" in out
+        assert f"modularity: {sc.modularity:.3f}" in out
+
+    def test_metrics_log_appends_one_line_per_invocation(self, tmp_path):
+        repo, plan = self._repo(tmp_path)
+        metrics_path = repo / ".orchestrator" / "grouping-metrics.jsonl"
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        lines = metrics_path.read_text().splitlines()
+        assert len(lines) == 1
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        lines = metrics_path.read_text().splitlines()
+        assert len(lines) == 2
+
+    def test_every_metrics_line_parses_and_carries_scorecard_and_provenance(self, tmp_path):
+        repo, plan = self._repo(tmp_path)
+        metrics_path = repo / ".orchestrator" / "grouping-metrics.jsonl"
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        for line in metrics_path.read_text().splitlines():
+            record = json.loads(line)
+            assert "scorecard" in record and record["scorecard"] is not None
+            assert "provenance" in record and record["provenance"] is not None
+
+    def test_a_grouping_that_fails_appends_no_metrics_line(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(OVERSIZED_SLICE_PLAN)
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("[estimator]\ntoken_budget = 6000\n")
+        metrics_path = repo / ".orchestrator" / "grouping-metrics.jsonl"
+
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code != 0
+        assert not metrics_path.exists()
+
+
 def _stub_codegraph_runner(args):
     if args[0] == "sync":
         return ""
     if args[0] == "files":
         return "stub repo\n"
+    if args[0] == "status":
+        return json.dumps(
+            {
+                "initialized": True,
+                "fileCount": 1,
+                "nodeCount": 1,
+                "edgeCount": 0,
+                "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+            }
+        )
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 

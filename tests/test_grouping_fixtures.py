@@ -23,15 +23,39 @@ def _llm_must_not_be_called(prompt, schema):
     raise AssertionError("fixture tests must stay zero-token")
 
 
-def stub_codegraph_runner(args):
+# Plan U5: a fixed `codegraph status -j` payload so fixture tests can attach a
+# TraceRecorder (which now always calls client.status() for the index
+# fingerprint) without needing a real index. STATUS_JSON_VARIANTS lets a test
+# simulate "re-syncing after a source change" by asking for a variant whose
+# fingerprint differs.
+STATUS_JSON = {
+    "initialized": True,
+    "projectPath": "/stub",
+    "fileCount": 3,
+    "nodeCount": 10,
+    "edgeCount": 5,
+    "dbSizeBytes": 4096,
+    "backend": "stub",
+    "journalMode": "wal",
+    "nodesByKind": {"function": 5},
+    "languages": ["python"],
+    "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+}
+STATUS_JSON_RESYNCED = {**STATUS_JSON, "nodeCount": 11, "edgeCount": 6}
+
+
+def stub_codegraph_runner(args, status=STATUS_JSON):
     """Zero real codegraph for the no-symbols fixtures: the only calls the
-    pipeline issues are `codegraph sync` (R13) and `codegraph files` for the base
-    context. Anything else means a fixture accidentally started using symbols
+    pipeline issues are `codegraph sync` (R13), `codegraph files` for the base
+    context, and `codegraph status` for the trace's index fingerprint (plan
+    U5). Anything else means a fixture accidentally started using symbols
     without switching to the cassette runner below."""
     if args[0] == "sync":
         return ""
     if args[0] == "files":
         return "stub repo (fixture test — no queries expected)\n"
+    if args[0] == "status":
+        return json.dumps(status)
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 
@@ -51,6 +75,8 @@ def cassette_codegraph_runner(args):
         return ""
     if args[0] == "files":
         return "stub repo (cassette fixture)\n"
+    if args[0] == "status":
+        return json.dumps(STATUS_JSON)
     command, symbol = args[0], args[1]
     path = CASSETTE_DIR / f"{command}_{symbol}.json"
     if path.is_file():

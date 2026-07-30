@@ -7,7 +7,10 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 
 from __future__ import annotations
 
+import hashlib
+import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import OrchestratorConfig
@@ -26,6 +29,7 @@ from orchestrator.grouping.graphing import (
     EdgeWeights,
     TaskGraph,
     build_task_graph,
+    index_fingerprint,
     source_bytes_of,
 )
 from orchestrator.grouping.llm import JsonRunner, claude_json_runner
@@ -40,6 +44,7 @@ from orchestrator.grouping.partition import (
     slice_atoms,
 )
 from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
+from orchestrator.grouping.scorecard import compute_scorecard
 from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.trace import (
     BudgetArithmetic,
@@ -48,6 +53,32 @@ from orchestrator.grouping.trace import (
     TraceRecorder,
 )
 from orchestrator.model import Group, GroupingResult
+
+
+def _git_provenance(repo_root: Path) -> tuple[str, bool]:
+    """Repo commit SHA and worktree-dirty flag (plan U5). Best-effort: a plan
+    document grouped outside a git repo (or with no git binary available)
+    records empty/clean rather than failing the grouping over provenance."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return "", False
+    return sha, dirty
 
 
 def _node_work_entries(graph: TaskGraph, config) -> list[NodeWorkEntry]:
@@ -325,11 +356,31 @@ def compute_partition(
     # can append an override flag, and `dag` is what the recorder reads. Recording
     # `flags` rather than `strategy.flags` keeps the trace honest about that
     # appended flag — the two are identical unless an oversized slice was allowed.
+    node_work_map = {node: node_work_fn(node) for node in graph.nodes}
     if recorder is not None:
         recorder.record_slice_atoms(atoms)
         recorder.set_dag(dag)
         recorder.set_last_stage(strategy.last_stage)
         recorder.set_flags(mapper_out.flags, flags)
+        recorder.set_scorecard(
+            compute_scorecard(
+                graph=graph,
+                partition=partition,
+                node_work=node_work_map,
+                budget_cap=budget_cap,
+                dag=dag,
+                slice_atoms=atoms,
+            )
+        )
+        repo_commit_sha, worktree_dirty = _git_provenance(repo_root)
+        recorder.set_provenance(
+            timestamp=datetime.now(UTC).isoformat(),
+            plan_path=_portable_path(plan_path, repo_root),
+            plan_content_sha256=hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),
+            repo_commit_sha=repo_commit_sha,
+            worktree_dirty=worktree_dirty,
+            index_fingerprint=index_fingerprint(client.status()),
+        )
 
     return PartitionOutcome(
         plan_text=plan_text,
@@ -337,7 +388,7 @@ def compute_partition(
         graph=graph,
         partition=partition,
         dag=dag,
-        node_work={node: node_work_fn(node) for node in graph.nodes},
+        node_work=node_work_map,
         budget_cap=budget_cap,
         hub_roles=roles,
         slice_atoms=atoms,
