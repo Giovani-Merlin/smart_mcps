@@ -21,6 +21,61 @@ same run surfaced (R16–R24).
 All 24 R-IDs are covered. Three were amended against the code during planning and
 are marked **[amended]** where they appear.
 
+## Execution status — updated 2026-07-30 (run `r20260729-correctness`)
+
+**7.5 of 9 units are done and merged into `feat/multiagent-orchestrator`.** The run was
+stopped after g2 because the orchestrator's own per-group overhead was not worth the
+remaining work; U6's tail and U9 are to be finished in a single monolithic session.
+
+| unit                      | status                                 | evidence                        |
+| ------------------------- | -------------------------------------- | ------------------------------- |
+| U1 merge-integrity        | ✅ done, reviewed, merged              | `28b930b`                       |
+| U2 failure-gate           | ✅ done, reviewed, merged              | `98ee16a`                       |
+| U7 durability             | ✅ done, reviewed, merged              | `089a0c6`, `ae1fd46`, `cd2b6c0` |
+| U8 operator-surface       | ✅ done, reviewed, merged              | `6464cb5`                       |
+| U3 typed-denial           | ✅ done, merged (no reviewer pass)     | `e1c7ab8`                       |
+| U4 granularity            | ✅ done, merged (no reviewer pass)     | `d4a4f4b`                       |
+| U5 scorecard              | ✅ done, merged (no reviewer pass)     | `6bc20bf`, `7bdfe37`            |
+| **U6 fault-injection**    | ⚠️ **4 of 5 scenarios green, 1 hangs** | `875d47c`                       |
+| **U9 conflict-exclusion** | ❌ **not started**                     | —                               |
+
+g1 (U1/U2/U7/U8) completed the full loop including reviewer approval and merged cleanly.
+g2 (U3/U4/U5/U6) was cut off mid-U6 by a usage limit, so its four units landed **without a
+reviewer pass** — they are merged on the strength of a green suite, not a review.
+
+### What is left, precisely
+
+1. **U6** — `tests/test_e2e_faults.py::test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge`
+   **blocks indefinitely instead of failing**, which wedges the whole suite, so it is
+   `@pytest.mark.skip`-ed. Un-skip and fix it. The other four scenarios pass. Likely cause: an
+   escalation wait that never receives an answer — it is the one scenario driving a resume
+   across a sibling merge.
+2. **U9** — conflict-exclusion, untouched. `self_verify` intensity, the smallest unit in the plan.
+
+### Defects this run found in the orchestrator that this plan does *not* fix
+
+Recorded because they cost real credits and are invisible from the code alone. Full evidence
+in `.orchestrator/notes-r20260729-correctness.md` (findings 1–11).
+
+- **A failed round reports an empty reason.** `sessions.py` surfaces only `stderr`, but the CLI
+  writes to `stdout` under `--output-format json`, so every failure reads
+  `SessionError: claude exited 1 (…): `. Diagnosing anything requires hand-reading transcript
+  jsonl. Highest-value fix remaining.
+- **A usage-limit exit is not classified as one** — it presents as a generic envelope failure.
+- **Escalation config is not persisted**, so `resume` silently returns to `autonomous` unless
+  every flag is retyped.
+- **A worker can write outside its worktree** — the g1 coder edited the operator's global
+  auto-memory and marked its own group closed before review.
+- **Lifecycle log lines are written only when a round completes**, so a working coder and a hung
+  one look identical; g2's 41 minutes produced no log line at all.
+- **`context_token_limit` is a re-entry admission gate, not a circuit breaker** — nothing bounds
+  context within a round (observed peak 439,575 tokens against a 200k setting).
+- **The run dies with the session that launched it** unless detached (`setsid`).
+
+**Fixed and verified during the run:** U7's pre-fork session recording (`ae1fd46`) made warm
+re-entry work — g2's interrupted coder left a usable session entry where the same failure
+previously persisted nothing at all.
+
 ## What we already know (resolved context)
 
 Established by reading the code this session. A worker should not re-derive any of it.
