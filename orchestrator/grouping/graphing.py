@@ -167,7 +167,7 @@ class CodegraphClient:
         content hash, so a stale-vs-synced index at the same repo commit is
         distinguished by ``pendingChanges`` inside it, not by the fingerprint
         alone."""
-        payload = self._json(["status"])
+        payload = self._json(["status", "-j"])
         if not isinstance(payload, dict):
             raise GraphBuildError("codegraph status output is not a JSON object")
         return payload
