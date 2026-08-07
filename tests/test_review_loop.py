@@ -457,10 +457,38 @@ async def test_paired_plus_runs_one_mandatory_extra_verification_pass(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_merge_conflict_routes_to_rewriting_and_fans_out_a_surprise(tmp_path):
+async def test_merge_conflict_resolves_in_place_on_the_warm_coder_session(tmp_path):
+    # U1: the first conflict resumes the same coder session (not a fresh fork)
+    # and the resolve attempt clears it — no rewrite needed at all.
     runner = StubRunner(
         {
-            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    harness.merge_failures.append(MergeConflict("g1 conflicts with g0", ["g0", "g2"]))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert GroupState.MERGING in harness.states
+    assert GroupState.REWRITING not in harness.states  # resolved in place, no rewrite spent
+    assert harness.merged == ["g1"]
+    assert not harness.rewritten
+    assert harness.board.pending_for("g2")  # conflict surprise still reached others
+    coder_sid = runner.session_ids["r1-g1-coder-g1"]
+    prompts = runner.prompts[coder_sid]
+    assert len(prompts) == 2  # same warm session: initial prompt + the resolve prompt
+    assert "conflict" in prompts[1].lower()
+
+
+@pytest.mark.asyncio
+async def test_merge_conflict_routes_to_rewriting_and_fans_out_a_surprise(tmp_path):
+    # The resolve attempt itself clears cleanly, but the merge conflicts again on
+    # retry — the single resolve attempt (default cap 1) is exhausted, so the
+    # group falls through to the proven rewrite path exactly as before U1.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
             "r1-g1-reviewer-g1": [verdict("approved")],
             "r1-g1-coder-g2": [coder_report()],
             "r1-g1-reviewer-g2": [verdict("approved")],
@@ -468,11 +496,22 @@ async def test_merge_conflict_routes_to_rewriting_and_fans_out_a_surprise(tmp_pa
     )
     harness = Harness(tmp_path, runner)
     harness.merge_failures.append(MergeConflict("g1 conflicts with g0", ["g0", "g2"]))
+    harness.merge_failures.append(MergeConflict("g1 conflicts with g0 again", ["g0", "g2"]))
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
     assert GroupState.MERGING in harness.states and GroupState.REWRITING in harness.states
     assert harness.merged == ["g1"]
+    assert len(harness.rewritten) == 1  # resolve attempt exhausted, then one rewrite
     assert harness.board.pending_for("g2")  # conflict surprise reached others
+    # the resolve attempt itself resumed the pre-conflict coder session, not a
+    # fresh fork — confirmed by the fork list only ever containing generation 2
+    # once the rewrite actually happens.
+    assert runner.forks == [
+        "r1-g1-coder-g1",
+        "r1-g1-reviewer-g1",
+        "r1-g1-coder-g2",
+        "r1-g1-reviewer-g2",
+    ]
 
 
 @pytest.mark.asyncio
@@ -739,10 +778,8 @@ async def test_autonomous_run_writes_the_full_lifecycle_log(tmp_path):
 async def test_autonomous_merge_conflict_writes_the_conflict_line(tmp_path):
     runner = StubRunner(
         {
-            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-coder-g1": [coder_report(), coder_report()],
             "r1-g1-reviewer-g1": [verdict("approved")],
-            "r1-g1-coder-g2": [coder_report()],
-            "r1-g1-reviewer-g2": [verdict("approved")],
         }
     )
     harness = Harness(tmp_path, runner)
@@ -751,7 +788,7 @@ async def test_autonomous_merge_conflict_writes_the_conflict_line(tmp_path):
     assert state == GroupState.COMPLETED
     lines = run_log_lines(harness)
     assert any(line.endswith("group g1: merge conflict (g1 conflicts with g0)") for line in lines)
-    # the retry after the rewrite still logged its attempt and result
+    # the retry after the in-place resolve still logged its attempt and result
     assert sum(line.endswith("group g1: merge attempt") for line in lines) == 2
     assert any(line.endswith("group g1: merged into the integration branch") for line in lines)
 

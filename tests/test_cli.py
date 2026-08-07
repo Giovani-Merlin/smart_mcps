@@ -78,6 +78,13 @@ class TestPrecedence:
         assert loaded.estimator.token_budget == 50_000
         assert loaded.execution.permission_mode == "acceptEdits"  # untouched default
 
+    def test_config_file_overrides_max_conflict_resolve_attempts(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[execution]\nmax_conflict_resolve_attempts = 0\n")
+        loaded = load_config(config_file)
+        assert loaded.execution.max_conflict_resolve_attempts == 0
+        assert loaded.execution.max_rewrites == 2  # untouched default
+
     def test_flags_beat_config_file(self, tmp_path):
         config_file = tmp_path / "config.toml"
         config_file.write_text(

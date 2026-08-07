@@ -75,6 +75,20 @@ def render_reentry_prompt(group: Group) -> str:
     return Template(load_template("reentry")).substitute(group_name=group.name)
 
 
+def render_conflict_resolve_prompt(
+    group: Group, *, conflict_summary: str, integration_branch: str
+) -> str:
+    """Resume trigger for a merge conflict (plan U1): warm-resumes the coder that
+    just built the work to resolve it in place, before falling back to a full
+    spec rewrite. Re-orientation only, like ``render_reentry_prompt`` — the
+    session already holds its identity and spec."""
+    return Template(load_template("conflict_resolve")).substitute(
+        group_name=group.name,
+        conflict_summary=conflict_summary,
+        integration_branch=integration_branch,
+    )
+
+
 def render_coder_answer_prompt(answer: str) -> str:
     """Resume trigger feeding an operator's answer back to a coder that ended its
     turn with ``needs_input`` (plan Phase D)."""

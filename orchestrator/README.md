@@ -102,6 +102,7 @@ concurrency = 3               # parallel groups (--concurrency)
 sequential = false            # one-at-a-time debug mode (--sequential)
 permission_mode = "acceptEdits"  # claude CLI permission mode (--permission-mode)
 max_rewrites = 2              # spec rewrites per group before it fails
+max_conflict_resolve_attempts = 1  # warm-resume attempts to resolve a merge conflict before rewriting
 
 [breaker]                     # circuit breaker per coder session
 context_token_limit = 120000  # latest-round context tokens before retirement
