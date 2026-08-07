@@ -276,7 +276,9 @@ class SessionRunner:
         context = _argv_context(extra)
         returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context)
         if returncode != 0:
-            raise SessionError(f"claude exited {returncode} ({context}): {stderr.strip()[:500]}")
+            raise SessionError(
+                f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
+            )
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError as exc:
@@ -331,6 +333,22 @@ def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
             if entry and entry != venv and not entry.startswith(prefix)
         )
     return env
+
+
+def _error_detail(stdout: str, stderr: str) -> str:
+    """Best available error text for a non-zero exit (plan U4).
+
+    A usage-limit failure exits non-zero with empty ``stderr`` — the useful text
+    sits in ``stdout``'s JSON envelope instead. Try that first; fall back to
+    ``stderr`` unchanged if ``stdout`` doesn't parse or has no usable ``result``.
+    """
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        envelope = None
+    if isinstance(envelope, dict) and envelope.get("result"):
+        return str(envelope["result"])[:500]
+    return stderr.strip()[:500]
 
 
 def _argv_context(extra: list[str]) -> str:
