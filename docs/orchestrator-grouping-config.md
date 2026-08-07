@@ -43,7 +43,7 @@ token_budget = 100000
 d_review = 0.35
 
 [breaker]
-context_token_limit = 120000
+context_token_limit = 200000
 
 [execution]
 concurrency = 1
@@ -52,7 +52,7 @@ concurrency = 1
 model = "claude-opus-5"
 
 [escalation]
-enabled = false
+enabled = true
 ```
 
 ______________________________________________________________________
@@ -258,7 +258,7 @@ ______________________________________________________________________
 
 | Field                       | Default | Effect                                                                     |
 | --------------------------- | ------- | -------------------------------------------------------------------------- |
-| `context_token_limit`       | 120,000 | context occupancy at which the current coder session is retired and forked |
+| `context_token_limit`       | 200,000 | context occupancy at which the current coder session is retired and forked |
 | `max_rounds_per_generation` | 3       | review rounds one coder generation may run before a fork                   |
 | `max_generations`           | 3       | coder generations before the group is failed                               |
 
@@ -323,17 +323,19 @@ ______________________________________________________________________
 
 ## `[escalation]` — human-in-the-loop
 
-[`EscalationConfig`](../orchestrator/config.py), `config.py:127`. Off by default;
-an unattended `run` stays fully autonomous.
+[`EscalationConfig`](../orchestrator/config.py), `config.py:127`. **On by
+default** at `on_stuck`; an unattended `run` needs `--intensity autonomous` (or
+`enabled = false`) to stay fully autonomous, otherwise it can block indefinitely
+waiting on an unanswered escalation.
 
-| Field             | Default                    | Effect                                                              | CLI                    |
-| ----------------- | -------------------------- | ------------------------------------------------------------------- | ---------------------- |
-| `enabled`         | `false`                    | master switch                                                       | `--hitl`               |
-| `intensity`       | `on_stuck`                 | which moments pause for the operator                                | `--intensity`          |
-| `source`          | `workers_via_orchestrator` | whether a coder's `needs_input` reaches the operator                | `--escalation-source`  |
-| `timeout_s`       | `null` (block forever)     | seconds to wait for an answer                                       | `--escalation-timeout` |
-| `on_timeout`      | `autonomous`               | fallback when an escalation times out (`autonomous`/`skip`/`abort`) | —                      |
-| `poll_interval_s` | 1.0                        | broker poll interval                                                | —                      |
+| Field             | Default                    | Effect                                                              | CLI                                 |
+| ----------------- | -------------------------- | ------------------------------------------------------------------- | ----------------------------------- |
+| `enabled`         | `true`                     | master switch                                                       | `--intensity autonomous` to disable |
+| `intensity`       | `on_stuck`                 | which moments pause for the operator                                | `--intensity`                       |
+| `source`          | `workers_via_orchestrator` | whether a coder's `needs_input` reaches the operator                | `--escalation-source`               |
+| `timeout_s`       | `null` (block forever)     | seconds to wait for an answer                                       | `--escalation-timeout`              |
+| `on_timeout`      | `autonomous`               | fallback when an escalation times out (`autonomous`/`skip`/`abort`) | —                                   |
+| `poll_interval_s` | 1.0                        | broker poll interval                                                | —                                   |
 
 Tiers, increasing: `autonomous` < `on_failure` < `on_stuck` < `interactive`.
 

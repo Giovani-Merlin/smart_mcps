@@ -52,10 +52,12 @@ smart-mcps-orchestrate answer RUN_ID ESC_ID [--action answer|skip|abort] [--text
 
 ## Human-in-the-loop (HITL)
 
-By default a `run` is fully autonomous — every hard moment (a coder reporting
-`blocked`, a reviewer `too_hard`/`structural`, a merge conflict, an exhausted
-generation/rewrite cap) is auto-resolved or, at the terminal cap, marked
-`failed`. `--hitl` opts the run into escalating those moments to **you** instead.
+By default a `run` has HITL escalation **on**, at the `on_stuck` intensity tier:
+every hard moment (a coder reporting `blocked`, a reviewer `too_hard`/`structural`,
+a merge conflict, an exhausted generation/rewrite cap) pauses and escalates to
+**you** instead of auto-resolving. Pass `--hitl` to be explicit about this (it's
+redundant against the default but documents intent), or `--intensity autonomous`
+to run unattended and auto-resolve/fail everything instead.
 
 Because headless `claude -p` workers cannot pause mid-turn to ask a question, the
 only channel is **report-then-resume**: a coder that needs a human decision ends
@@ -69,12 +71,12 @@ orchestrator process stays alive the whole time — a pause is just an `await`.
 
 **Intensity tiers** (`--intensity`, or `[escalation] intensity`):
 
-| Tier          | Escalates                                                                                                              |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `autonomous`  | nothing (identical to a no-`--hitl` run)                                                                               |
-| `on_failure`  | only a generation/rewrite cap about to fail a group                                                                    |
-| `on_stuck`    | *(the `--hitl` default)* coder `blocked`/`needs_input`, reviewer `too_hard`/`structural`, merge conflict, terminal cap |
-| `interactive` | additionally approve before group launch, before each respawn, and before each merge                                   |
+| Tier          | Escalates                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `autonomous`  | nothing — run unattended (pass `--intensity autonomous` explicitly to get this)                                   |
+| `on_failure`  | only a generation/rewrite cap about to fail a group                                                               |
+| `on_stuck`    | *(the run default)* coder `blocked`/`needs_input`, reviewer `too_hard`/`structural`, merge conflict, terminal cap |
+| `interactive` | additionally approve before group launch, before each respawn, and before each merge                              |
 
 Routine `changes_required` review rounds and routine breaker respawns stay
 autonomous under `on_stuck` — only genuinely stuck moments pause.
@@ -88,8 +90,11 @@ expected). Set `--escalation-timeout <s>` (or `[escalation] timeout_s`) to fall
 back after a wait — per `[escalation] on_timeout` = `autonomous` | `skip` |
 `abort`.
 
-`--hitl` is opt-in: with no flag the CLI stays autonomous and unattended runs
-never hang, so `--intensity autonomous` and a plain `run` behave identically.
+HITL is **on by default** (`enabled = true`, `on_stuck`) — an unattended run
+needs `--intensity autonomous` (or `[escalation] intensity = "autonomous"` in
+config) to opt back out, otherwise it can block indefinitely on an unanswered
+escalation. `--hitl` alone is a no-op against the default; it only matters
+when a config file has turned escalation off.
 
 ## Configuration
 
@@ -98,14 +103,14 @@ is **CLI flags > config file > defaults**; every field has a working default.
 
 ```toml
 [execution]
-concurrency = 3               # parallel groups (--concurrency)
+concurrency = 1                # parallel groups (--concurrency)
 sequential = false            # one-at-a-time debug mode (--sequential)
 permission_mode = "acceptEdits"  # claude CLI permission mode (--permission-mode)
 max_rewrites = 2              # spec rewrites per group before it fails
 max_conflict_resolve_attempts = 1  # warm-resume attempts to resolve a merge conflict before rewriting
 
 [breaker]                     # circuit breaker per coder session
-context_token_limit = 120000  # latest-round context tokens before retirement
+context_token_limit = 200000  # latest-round context tokens before retirement
 max_rounds_per_generation = 3
 max_generations = 3           # respawns before the group fails to the operator
 
@@ -122,8 +127,8 @@ transcript_root = ""          # default: ~/.claude/projects
 d_review = 0.35               # below: self_verify (no reviewer session)
 d_hard = 0.65                 # above: paired_plus (mandatory extra pass)
 
-[escalation]                  # human-in-the-loop (off by default)
-enabled = false               # true, or pass --hitl
+[escalation]                  # human-in-the-loop (on by default)
+enabled = true                 # false to run unattended, or pass --intensity autonomous
 intensity = "on_stuck"        # autonomous | on_failure | on_stuck | interactive
 source = "workers_via_orchestrator"  # or orchestrator_only
 # timeout_s = 30.0            # omit to block indefinitely; else on_timeout fires
