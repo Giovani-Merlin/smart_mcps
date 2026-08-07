@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from orchestrator.config import OrchestratorConfig, load_config
+from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
 from orchestrator.execution.escalation import (
     EscalationBroker,
     EscalationPolicy,
@@ -314,10 +314,26 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     return config.model_copy(update=updates) if updates else config
 
 
-def _load_config(args: argparse.Namespace, repo_root: Path) -> OrchestratorConfig | None:
+def _load_config(
+    args: argparse.Namespace,
+    repo_root: Path,
+    *,
+    persisted_escalation: EscalationConfig | None = None,
+) -> OrchestratorConfig | None:
+    """Load config.toml, then layer CLI flags on top (flag > config-file > default).
+
+    ``persisted_escalation`` — a resumed run's own recorded escalation tier (plan
+    U2) — slots in as a fourth rung *under* the config file and *above* the
+    library default, so an omitted flag on resume restores the run's original
+    tier instead of resetting to ``EscalationConfig()``'s on_stuck/HITL-on
+    default; an explicit flag on resume still wins via ``apply_overrides``.
+    """
     config_path = args.config or repo_root / ".orchestrator" / "config.toml"
     try:
-        return apply_overrides(load_config(config_path), args)
+        loaded = load_config(config_path)
+        if persisted_escalation is not None:
+            loaded = loaded.model_copy(update={"escalation": persisted_escalation})
+        return apply_overrides(loaded, args)
     except (ValidationError, tomllib.TOMLDecodeError) as exc:
         print(f"error: invalid config {config_path}: {exc}", file=sys.stderr)
         return None
@@ -589,13 +605,28 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
 
 def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
     repo_root = args.repo.resolve()
-    config = _load_config(args, repo_root)
-    if config is None:
-        return 1
-
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)
     orch_dir = repo_root / ".orchestrator"
+
+    # Peeked early (before config is resolved) so a resumed run's own recorded
+    # escalation tier can slot into `_load_config` beneath CLI flags but above
+    # the library default (plan U2) — reused below at the manifest-load site
+    # instead of reading `manifest.json` twice.
+    store = ManifestStore(paths)
+    persisted_manifest: RunManifest | None = None
+    if resume and store.exists():
+        persisted_manifest = store.load()
+
+    config = _load_config(
+        args,
+        repo_root,
+        persisted_escalation=(
+            persisted_manifest.escalation if persisted_manifest is not None else None
+        ),
+    )
+    if config is None:
+        return 1
 
     source_grouping_dir: Path | None = None
     grouping_name: str | None = None
@@ -760,12 +791,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         return 1
     runner.tracker = scheduler.tracker
 
-    store = ManifestStore(paths)
     if resume:
-        if not store.exists():
+        if persisted_manifest is None:
             print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
             return 1
-        manifest = store.load()
+        manifest = persisted_manifest
         if not manifest.base_session_id:
             print("error: manifest has no base session — start a fresh run", file=sys.stderr)
             return 1
@@ -784,6 +814,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             plan_path=grouping.plan_path,
             base_session_id=base_session_id,
             grouping=grouping_name,
+            escalation=config.escalation,
         )
         store.save(manifest)
 
