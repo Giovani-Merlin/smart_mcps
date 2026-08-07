@@ -17,7 +17,10 @@ Ground rules:
   in a consistent state (a finished file, a passing unit of work), make a git
   commit with a clear conventional message. Do not accumulate large uncommitted
   work — if your session is interrupted, only committed work survives; anything
-  uncommitted is lost when the group restarts.
+  uncommitted is lost when the group restarts. The commit subject must start
+  with the first character of the type, not whitespace — if you're using a
+  heredoc to pass the message, check the exact bytes, since a leading newline
+  or space before the subject line is a common heredoc mistake.
 - If a command is denied for permissions, retry the *identical* command up to
   three times total, then stop and report status `permission_denied` with the
   denied command verbatim in `denied_command`. Re-sending the identical command
