@@ -126,6 +126,12 @@ class ExecutionConfig(BaseModel):
     # Spec rewrites per group before it fails. The plan bounds respawns via the
     # generation cap but leaves the rewrite loop bound to implementation (U7).
     max_rewrites: int = 2
+    # Warm-resume attempts at the group's own coder session to resolve a merge
+    # conflict in place, before falling back to a full spec rewrite (plan U1).
+    # Serial-by-default (concurrency=1) makes cross-group conflicts rare, so one
+    # attempt from the session that just built the work is the right cost/benefit
+    # ahead of the proven (but expensive) rewrite path.
+    max_conflict_resolve_attempts: int = 1
 
 
 class SessionConfig(BaseModel):

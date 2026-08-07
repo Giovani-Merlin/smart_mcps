@@ -227,6 +227,12 @@ def main() -> int:
 
         exit_code = int(scripted.get("exit_code", 0))
         if exit_code:
+            # A usage-limit failure exits non-zero with an *empty* stderr but a
+            # populated JSON envelope on stdout (plan U4) — "stdout" lets a
+            # scripted entry reproduce that shape exactly, distinct from the
+            # stderr-only failure every other scripted failure uses.
+            if "stdout" in scripted:
+                print(scripted["stdout"])
             print(scripted.get("stderr", "scripted failure"), file=sys.stderr)
             return finish(exit_code)
 

@@ -37,6 +37,7 @@ from orchestrator.execution.manifest import (
 from orchestrator.execution.prompting import (
     render_coder_answer_prompt,
     render_coder_prompt,
+    render_conflict_resolve_prompt,
     render_extra_pass_prompt,
     render_handoff_prompt,
     render_re_review_prompt,
@@ -52,7 +53,7 @@ from orchestrator.execution.sessions import (
     nudge_until_report,
     session_display_name,
 )
-from orchestrator.execution.worktrees import diff_stat
+from orchestrator.execution.worktrees import diff_stat, integration_branch
 from orchestrator.model import (
     CoderReport,
     EscalationContext,
@@ -471,27 +472,67 @@ class _GroupExecution:
 
     async def _merge(self) -> bool:
         assert self.workspace is not None
-        self.ctx.set_state(GroupState.MERGING)
-        self._log(f"group {self.gid}: merge attempt")
+        attempts_left = self.deps.execution.max_conflict_resolve_attempts
+        while True:
+            self.ctx.set_state(GroupState.MERGING)
+            self._log(f"group {self.gid}: merge attempt")
+            try:
+                await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
+            except MergeConflict as exc:
+                self._log(f"group {self.gid}: merge conflict ({exc})")
+                conflict = Surprise(
+                    kind="merge_conflict", description=str(exc), affected_groups=exc.affected_groups
+                )
+                self._spread([conflict])
+                if attempts_left > 0:
+                    attempts_left -= 1
+                    if await self._resolve_conflict_in_place(exc):
+                        continue  # retry the merge with the resolved worktree
+                response = await self._escalate(
+                    EscalationKind.MERGE_CONFLICT,
+                    prompt=f"merge conflict for {self.gid}: {exc}",
+                    surprises=[conflict],
+                )
+                extra = [conflict]
+                if response is not None:
+                    extra.append(_operator_surprise(self.gid, response.answer))
+                await self._rewrite(f"merge conflict: {exc}", extra=extra)
+                return False
+            self._log(f"group {self.gid}: merged into the integration branch")
+            return True
+
+    async def _resolve_conflict_in_place(self, exc: MergeConflict) -> bool:
+        """One warm-resume attempt at the group's own coder session (plan U1),
+        tried before falling back to a full spec rewrite: the session that just
+        built this work still holds full context of it. Returns True when the
+        coder finished cleanly and the merge should be retried; False when the
+        resume/report itself failed, so the caller falls straight through to
+        escalate-then-rewrite without a second merge attempt."""
+        assert self.workspace is not None
+        self._log(f"group {self.gid}: attempting in-place conflict resolution")
         try:
-            await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
-        except MergeConflict as exc:
-            self._log(f"group {self.gid}: merge conflict ({exc})")
-            conflict = Surprise(
-                kind="merge_conflict", description=str(exc), affected_groups=exc.affected_groups
+            result = await asyncio.to_thread(
+                self.deps.runner.resume,
+                session_id=self.coder_sid,
+                prompt=render_conflict_resolve_prompt(
+                    self.group,
+                    conflict_summary=str(exc),
+                    integration_branch=integration_branch(self.deps.run_id),
+                ),
+                cwd=self.workspace,
             )
-            self._spread([conflict])
-            response = await self._escalate(
-                EscalationKind.MERGE_CONFLICT,
-                prompt=f"merge conflict for {self.gid}: {exc}",
-                surprises=[conflict],
+            report, _ = await asyncio.to_thread(
+                nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
             )
-            extra = [conflict]
-            if response is not None:
-                extra.append(_operator_surprise(self.gid, response.answer))
-            await self._rewrite(f"merge conflict: {exc}", extra=extra)
+        except SessionError as inner_exc:
+            self._log(f"group {self.gid}: conflict resolve attempt failed: {inner_exc}")
             return False
-        self._log(f"group {self.gid}: merged into the integration branch")
+        self._persist_coder_usage()
+        self._spread(report.surprises)
+        if report.status != "completed":
+            self._log(f"group {self.gid}: conflict resolve ended ({report.status})")
+            return False
+        self._log(f"group {self.gid}: conflict resolve attempt reported completed")
         return True
 
     async def _rewrite(self, why: str, extra: list[Surprise] | None = None) -> None:

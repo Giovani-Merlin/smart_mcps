@@ -184,13 +184,9 @@ def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo,
         name_of(run_id, "g2", "coder"),
         coder_entry_completed({"g2.out": "two\n"}, "g2: work"),
     )
-    # `resume` must re-state --intensity autonomous: escalation config is not
-    # persisted with the run, so an omitted flag silently restores the
-    # EscalationConfig default (enabled, timeout_s=None) and the resumed group's
-    # gate blocks forever on an escalation no one is answering.
-    exit_code = main(
-        ["resume", run_id, "--repo", str(repo), "--intensity", "autonomous"], llm_runner=StubLlm()
-    )
+    # `resume` restores the run's persisted escalation config (plan U2) — no
+    # need to re-state --intensity autonomous here.
+    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
     assert exit_code == 0
     state = state_of(repo, run_id)
     assert state["groups"]["g2"]["state"] == "completed"
@@ -205,6 +201,78 @@ def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo,
     # sibling's merge before it landed its own work, not merely alongside it.
     result = subprocess.run(["git", "merge-base", "--is-ancestor", g1_sha, g2_branch_tip], cwd=repo)
     assert result.returncode == 0, "g1's commit is not reachable from g2's own branch tip"
+
+
+def test_resume_restores_the_run_s_persisted_escalation_config_without_reflag(  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
+    repo, fake_home, capsys
+):
+    """plan U2 regression: `run --intensity autonomous` persists that tier onto
+    the manifest; a bare `resume` (no escalation flags at all) must restore it
+    rather than reverting to EscalationConfig()'s on_stuck/HITL-on default —
+    verified via the persisted manifest and the banner's HITL line, never by
+    re-triggering an actual escalation block."""
+    run_id = "rf-esc"
+    write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
+    write_config(repo, fake_home)
+    # g1's coder dies at fork on its first round, so the run stops resumable
+    # (INTERRUPTED) without ever finishing — resume is required to complete it.
+    script_session(
+        fake_home, name_of(run_id, "g1", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--intensity", "autonomous"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 2
+    manifest = manifest_of(repo, run_id)
+    assert manifest["escalation"]["intensity"] == "autonomous"
+    capsys.readouterr()
+
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry_completed({"g1.out": "one\n"}, "g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
+    assert exit_code == 0
+    banner = capsys.readouterr().out.splitlines()[0]
+    assert "HITL off" in banner
+    manifest = manifest_of(repo, run_id)
+    assert manifest["escalation"]["intensity"] == "autonomous"
+
+
+def test_resume_explicit_intensity_flag_overrides_the_persisted_value(  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
+    repo, fake_home, capsys
+):
+    """An explicit --intensity on resume still wins over the persisted value,
+    matching today's flag > config-file precedence."""
+    run_id = "rf-esc2"
+    write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
+    write_config(repo, fake_home)
+    script_session(
+        fake_home, name_of(run_id, "g1", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--intensity", "autonomous"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 2
+    capsys.readouterr()
+
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry_completed({"g1.out": "one\n"}, "g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    exit_code = main(
+        ["resume", run_id, "--repo", str(repo), "--intensity", "on_stuck"], llm_runner=StubLlm()
+    )
+    banner = capsys.readouterr().out.splitlines()[0]
+    assert "HITL on (intensity=on_stuck" in banner
+    assert exit_code == 0
 
 
 def _files_and_commit(files: dict, commit: str) -> dict:
