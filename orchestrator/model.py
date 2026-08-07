@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from orchestrator.config import EscalationConfig
+
 # Downstream session titles derived from summaries cap at 120 chars
 # (docs/research/infinity-skills-analysis.md); validated here, never truncated later.
 SUMMARY_MAX_CHARS = 120
@@ -95,6 +97,10 @@ class RunManifest(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     base_session_id: str | None = None
     grouping: str | None = None  # named grouping this run snapshotted (plan U10)
+    # Persisted at run time so `resume` restores the original run's HITL tier
+    # instead of silently reverting to EscalationConfig()'s on_stuck default
+    # (plan U2). None on manifests written before this field existed.
+    escalation: EscalationConfig | None = None
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 
 

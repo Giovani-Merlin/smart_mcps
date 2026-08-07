@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.cli import _print_outcomes, apply_overrides, main
-from orchestrator.config import OrchestratorConfig, load_config
+from orchestrator.cli import _load_config, _print_outcomes, apply_overrides, main
+from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import (
     GroupHold,
@@ -504,6 +504,49 @@ class TestEscalationOverrides:
         merged = apply_overrides(load_config(config_file), self._args())
         assert merged.escalation.enabled is True
         assert merged.escalation.intensity == "on_failure"
+
+
+class TestLoadConfigPersistedEscalation:
+    """Plan U2: `_load_config`'s `persisted_escalation` param is the fourth rung
+    (below CLI flags, above the library default) that lets `resume` restore a
+    run's own recorded escalation tier."""
+
+    def _args(self, **overrides) -> argparse.Namespace:
+        base = dict(
+            config=None,
+            sequential=False,
+            concurrency=None,
+            permission_mode=None,
+            token_budget=None,
+            allow_oversized_slice=False,
+            allow_degenerate_partition=False,
+            granularity=None,
+            hitl=False,
+            intensity=None,
+            escalation_source=None,
+            escalation_timeout=None,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_no_persisted_value_keeps_library_default(self, tmp_path):
+        config = _load_config(self._args(), tmp_path)
+        assert config.escalation.intensity == "on_stuck"
+        assert config.escalation.enabled is True
+
+    def test_persisted_value_replaces_the_default_when_no_flag_is_passed(self, tmp_path):
+        persisted = EscalationConfig(enabled=False, intensity="autonomous")
+        config = _load_config(self._args(), tmp_path, persisted_escalation=persisted)
+        assert config.escalation.intensity == "autonomous"
+        assert config.escalation.enabled is False
+
+    def test_explicit_flag_still_overrides_the_persisted_value(self, tmp_path):
+        persisted = EscalationConfig(enabled=False, intensity="autonomous")
+        config = _load_config(
+            self._args(intensity="on_stuck"), tmp_path, persisted_escalation=persisted
+        )
+        assert config.escalation.intensity == "on_stuck"
+        assert config.escalation.enabled is True
 
 
 class TestAnswerCommand:

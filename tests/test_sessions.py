@@ -304,6 +304,31 @@ def test_scripted_cli_failure_surfaces_stderr(fake_home, tmp_path):
         runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
 
 
+def test_usage_limit_style_failure_surfaces_stdout_result_over_empty_stderr(fake_home, tmp_path):
+    """Plan U4: a usage-limit exit has empty stderr but a populated JSON
+    envelope on stdout — the error message must carry that text, not be empty."""
+    runner = make_runner(fake_home)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps({"result": "Claude AI usage limit reached|1700000000"}),
+        },
+    )
+    with pytest.raises(SessionError, match="Claude AI usage limit reached"):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+
+
+def test_failure_with_unparseable_stdout_falls_back_to_stderr_unchanged(fake_home, tmp_path):
+    runner = make_runner(fake_home)
+    script(fake_home, {"exit_code": 1, "stderr": "", "stdout": "not json at all"})
+    with pytest.raises(SessionError) as excinfo:
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert "not json at all" not in str(excinfo.value)
+    assert str(excinfo.value).endswith(": ")
+
+
 def test_transcript_path_is_discoverable_by_session_uuid(fake_home, tmp_path):
     runner = make_runner(fake_home)
     base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
