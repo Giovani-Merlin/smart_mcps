@@ -37,10 +37,50 @@ function formatJson(value: unknown): string {
 
 // -------------------------------------------------------------- transcript
 
-/** One normalized transcript moment. The three renderable kinds — assistant
- * text, tool call (name + input), tool result — each get a distinct visual
+/** A thinking block, collapsed by default behind a one-line identifier.
+ *
+ * Collapsed because reasoning is long and the reader is usually scanning for
+ * the moment a decision was made, not reading every word; the one-liner is what
+ * makes scanning possible. Rendered at all — rather than filtered out, as it
+ * used to be — because an omitted block claims the agent went straight from one
+ * tool call to the next, which is a different and false statement about what
+ * happened. */
+function ThinkingCard({ event }: { event: TranscriptEvent }) {
+  const redacted = event.kind === "redacted_thinking";
+  const withheld = redacted || event.thinking_withheld;
+  const summary = withheld
+    ? redacted
+      ? "thinking — redacted"
+      : "thinking — not persisted in this transcript"
+    : firstLine(event.text ?? "");
+
+  return (
+    <li className={`transcript-entry transcript-entry--thinking${withheld ? " transcript-entry--thinking-empty" : ""}`}>
+      <details>
+        <summary className="transcript-entry__head">
+          <span className="transcript-entry__badge">thinking</span>
+          <span className="transcript-entry__summary">{summary}</span>
+        </summary>
+        <p className="transcript-entry__text">{event.text ?? ""}</p>
+      </details>
+    </li>
+  );
+}
+
+/** The identifying one-liner for a collapsed card: enough to recognise the
+ * moment without expanding it. */
+function firstLine(text: string): string {
+  const line = text.trim().split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
+  return line.length > 110 ? `${line.slice(0, 109)}…` : line;
+}
+
+/** One normalized transcript moment. Each renderable kind — assistant text,
+ * thinking, tool call (name + input), tool result — gets a distinct visual
  * treatment so a human can follow what the agent actually did. */
 function TranscriptEntryView({ event }: { event: TranscriptEvent }) {
+  if (event.kind === "thinking" || event.kind === "redacted_thinking") {
+    return <ThinkingCard event={event} />;
+  }
   if (event.kind === "tool_use") {
     return (
       <li className="transcript-entry transcript-entry--tool-use">
@@ -261,14 +301,25 @@ function GroupDrillIn({ project, runId, snapshot, revision }: GroupDrillInProps)
     const activeSession = sessionId;
     let cancelled = false;
     let inflight = false;
+    // The highest `seq` already held. Every tick after the first asks only for
+    // what is new — the poll was otherwise re-downloading the whole transcript
+    // every three seconds, which for a 342-turn session is the bulk of what
+    // this pane costs. `seq` counts from the start of the file, so appending is
+    // safe and no event can arrive twice.
+    let highestSeq = 0;
 
     async function poll(): Promise<void> {
       if (inflight) return; // a slow response outlives the tick — skip, never stack
       inflight = true;
       try {
-        const events = await getTranscript(project, runId, activeSession);
+        const events = await getTranscript(project, runId, activeSession, highestSeq);
         if (!cancelled) {
-          setTranscript(events);
+          if (events.length > 0) {
+            highestSeq = events[events.length - 1].seq;
+          }
+          setTranscript((current) =>
+            current === null ? events : events.length === 0 ? current : [...current, ...events],
+          );
           setTranscriptError(null);
         }
       } catch (err) {

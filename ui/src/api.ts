@@ -107,12 +107,22 @@ export function answerEscalation(
   });
 }
 
+/**
+ * A session's transcript. Pass `afterSeq` — the highest `seq` already held —
+ * to fetch only what is new; the poll was otherwise re-downloading a whole
+ * 342-turn transcript every three seconds. `seq` is stable across full and
+ * incremental fetches, so the two can be concatenated directly.
+ */
 export function getTranscript(
   project: string,
   run: string,
   sessionId: string,
+  afterSeq = 0,
 ): Promise<TranscriptEvent[]> {
-  return request<TranscriptEvent[]>(`${runPath(project, run)}/sessions/${enc(sessionId)}/transcript`);
+  const query = afterSeq > 0 ? `?after_seq=${afterSeq}` : "";
+  return request<TranscriptEvent[]>(
+    `${runPath(project, run)}/sessions/${enc(sessionId)}/transcript${query}`,
+  );
 }
 
 export function getArtifacts(

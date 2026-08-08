@@ -291,17 +291,48 @@ export interface AnswerResult {
   response_path: string;
 }
 
+// EventUsage (transcripts.py) — one assistant turn's token usage, four classes
+// kept apart. Cache reads are the cheap class: a session whose spend is mostly
+// cache-read is healthy, not expensive, and should be de-emphasised visually.
+export interface EventUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+}
+
+export type TranscriptKind =
+  | "text"
+  | "thinking"
+  | "redacted_thinking"
+  | "tool_use"
+  | "tool_result";
+
 // TranscriptEvent (transcripts.py) — one normalized, renderable moment.
+//
+// `seq` counts emitted events from the start of the file, so it is stable
+// across a full fetch and an `?after_seq=` incremental one — which is what
+// makes a `?seq=` deep link keep pointing at the same turn.
 export interface TranscriptEvent {
   seq: number;
   role: string; // assistant | user
-  kind: string; // text | tool_use | tool_result
+  kind: TranscriptKind;
   text?: string | null;
   tool_name?: string | null;
   tool_input?: unknown;
   tool_result?: string | null;
   is_error: boolean;
   timestamp?: string | null;
+  // Present on assistant rows; null on user rows and on transcripts written
+  // before usage was recorded. Null and "all four are zero" are different
+  // claims and the UI must not conflate them.
+  usage?: EventUsage | null;
+  model?: string | null;
+  // A thinking block whose prose the transcript did not keep — which is every
+  // thinking block in every transcript observed so far. Render the card with
+  // the marker, so "the agent thought here" stays distinguishable from "the
+  // agent went straight to the next tool call".
+  thinking_withheld: boolean;
 }
 
 // Artifact (artifacts.py) — a parsed `report-*.json` / `verdict-*.json` file.

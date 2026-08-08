@@ -476,3 +476,53 @@
 .artifact-card__muted {
   color: #55565c;
 }
+
+/* Thinking cards.
+ *
+ * Collapsed by default and visually quieter than the tool calls around them:
+ * reasoning is long, and the reader is usually scanning for the moment a
+ * decision was made. The dashed left edge marks a card whose prose the
+ * transcript did not keep — visibly different from one that has content to
+ * expand, so an empty expand is never a surprise. */
+.transcript-entry--thinking {
+  border-left: 3px solid #6b5ba8;
+  background: rgba(107, 91, 168, 0.06);
+}
+
+.transcript-entry--thinking-empty {
+  border-left-style: dashed;
+  opacity: 0.72;
+}
+
+.transcript-entry--thinking details > summary {
+  cursor: pointer;
+  list-style: none;
+  align-items: baseline;
+}
+
+.transcript-entry--thinking details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.transcript-entry--thinking details > summary::before {
+  content: "▸";
+  margin-right: 0.4rem;
+  color: #6b5ba8;
+}
+
+.transcript-entry--thinking details[open] > summary::before {
+  content: "▾";
+}
+
+.transcript-entry__summary {
+  font-style: italic;
+  color: #4a4458;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transcript-entry--thinking .transcript-entry__text {
+  white-space: pre-wrap;
+  margin-top: 0.5rem;
+}
