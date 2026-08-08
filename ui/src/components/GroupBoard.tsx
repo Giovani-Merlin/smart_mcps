@@ -5,21 +5,16 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { failureIsCurrent, statusOf } from "../status";
 import type { GroupState, RunSnapshot, SnapshotGroup } from "../types";
 import "./GroupBoard.css";
 
-const STATE_LABELS: Record<GroupState, string> = {
-  pending: "Pending",
-  ready: "Ready",
-  running: "Running",
-  reviewing: "Reviewing",
-  rewriting: "Rewriting",
-  merging: "Merging",
-  completed: "Completed",
-  failed: "Failed",
-  resolved: "Resolved",
-  interrupted: "Interrupted",
-};
+// Labels come from `status.ts`, which is the one place a state becomes a label
+// and a colour. A second map here is how `resolved` and `interrupted` managed
+// to render as empty badges once already.
+function stateLabel(state: GroupState): string {
+  return statusOf(state).label;
+}
 
 export interface GroupBoardProps {
   project: string;
@@ -174,7 +169,7 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                     <div className="group-card__head">
                       <span className="group-card__id">{group.group_id}</span>
                       <span className={`group-card__state group-card__state--${group.state}`}>
-                        {STATE_LABELS[group.state]}
+                        {stateLabel(group.state)}
                       </span>
                     </div>
                     {group.name && <div className="group-card__name">{group.name}</div>}
@@ -182,7 +177,21 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                     {group.depends_on.length > 0 && (
                       <div className="group-card__deps">after {group.depends_on.join(", ")}</div>
                     )}
-                    {group.failure && <div className="group-card__failure">{group.failure}</div>}
+                    {group.failure &&
+                      (failureIsCurrent(group) ? (
+                        <div className="group-card__failure">{group.failure}</div>
+                      ) : (
+                        // `GroupRunState` is last-writer-wins and cannot say
+                        // "failed once, then succeeded" — it says `resolved`
+                        // with the old failure string still attached. Showing
+                        // that as a failure would be the likeliest wrong thing
+                        // this board could do, and three groups on
+                        // r20260726-grouping look exactly like this today.
+                        <div className="group-card__stale-failure" title={group.failure}>
+                          <span className="group-card__stale-tag">stale failure text</span>
+                          {group.failure}
+                        </div>
+                      ))}
                   </div>
                 ))}
               </div>

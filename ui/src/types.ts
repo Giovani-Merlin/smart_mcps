@@ -342,3 +342,170 @@ export interface Artifact {
   content?: unknown;
   error?: string | null;
 }
+
+// ------------------------------------------------------------- grouping tab
+
+// Mirrors `orchestrator/observatory/grouping.py`. Everything except
+// `stage_diffs` is `grouping-trace.json` passed through unchanged, so the trace
+// on disk and what the tab shows can never disagree.
+
+export type DagSourceKind =
+  | "run_snapshot"
+  | "named_grouping"
+  | "shared_fallback"
+  | "missing";
+
+// Where the DAG was resolved from. `stale_dag` means exactly what it means on
+// the board — this run has no frozen groups.json of its own — and resolving a
+// better source than the shared file does not change that.
+export interface DagSource {
+  kind: DagSourceKind;
+  directory?: string | null;
+  groups_path?: string | null;
+  grouping_name?: string | null;
+  stale_dag: boolean;
+  reason: string;
+}
+
+// An artifact the tab wanted and did not find. `expected_path` is the point:
+// the operator's next move is to go look there.
+export interface MissingArtifact {
+  artifact: string;
+  expected_path: string;
+  explanation: string;
+}
+
+// What changed between two consecutive pipeline stages. `moved` is computed
+// from co-membership, not group ids — `renumber` relabels every group without
+// moving anything, and an id diff would light up the whole graph.
+export interface StageDiff {
+  stage: string;
+  previous_stage?: string | null;
+  moved: string[];
+  added: string[];
+  removed: string[];
+  group_count: number;
+}
+
+/** One `stages[]` entry: the whole partition as it stood after that stage. */
+export interface StageSnapshot {
+  stage: string;
+  partition: Record<string, number>;
+}
+
+export interface HubRole {
+  node: string;
+  role: string;
+  depends_on_ratio: number;
+  depended_by_ratio: number;
+  threshold: number;
+}
+
+export interface SliceAtom {
+  label: string;
+  members: string[];
+}
+
+export interface LouvainEntry {
+  resolution: number;
+  seed: number;
+  communities: string[][];
+}
+
+export interface MergeCandidate {
+  round: number;
+  source: number;
+  target: number;
+  accepted: boolean;
+  reason: string;
+  merged_work: number;
+  edge_weight: number;
+}
+
+export interface Scorecard {
+  group_count: number;
+  cross_group_edges: number;
+  work_fraction_min: number;
+  work_fraction_mean: number;
+  work_fraction_max: number;
+  critical_path_length: number;
+  modularity: number;
+  slice_integrity_ok: boolean;
+}
+
+export interface GroupingProvenance {
+  timestamp: string;
+  plan_path: string;
+  plan_content_sha256: string;
+  repo_commit_sha: string;
+  worktree_dirty: boolean;
+  index_fingerprint: string;
+}
+
+/** `[from, to, weight]`, as the trace stores it. */
+export type WeightedEdge = [string, string, number];
+
+export interface GraphSnapshot {
+  nodes: string[];
+  affinity: WeightedEdge[];
+  dependencies: WeightedEdge[];
+}
+
+export interface NodeWork {
+  node: string;
+  source_bytes: number;
+  file_count: number;
+  bytes_tokens: number;
+  file_allowance_tokens: number;
+  total: number;
+}
+
+export interface GroupDifficulty {
+  group_id: string;
+  files_touched: number;
+  max_fan_in: number;
+  max_fan_out: number;
+  hub_touches: number;
+  cross_group_edges: number;
+  verification_items: number;
+  difficulty: number;
+  intensity: ReviewIntensity;
+  d_review: number;
+  d_hard: number;
+}
+
+// GroupingView (grouping.py) — one body with everything the tab renders.
+export interface GroupingView {
+  project: string;
+  run_id: string;
+  plan_path: string;
+  dag_source: DagSource;
+  missing: MissingArtifact[];
+  trace_path?: string | null;
+  trace_schema_version?: number | null;
+  trace_schema_known: boolean;
+  input_graph?: GraphSnapshot | null;
+  node_work: NodeWork[];
+  budget?: Record<string, number> | null;
+  config: Record<string, unknown>;
+  hub_roles: HubRole[];
+  slice_atoms: SliceAtom[];
+  stages: StageSnapshot[];
+  louvain: LouvainEntry[];
+  splits: Record<string, unknown>[];
+  merges: MergeCandidate[];
+  repairs: Record<string, unknown>[];
+  group_difficulty: GroupDifficulty[];
+  scorecard?: Scorecard | null;
+  provenance?: GroupingProvenance | null;
+  last_stage?: string | null;
+  flags: string[];
+  mapper_flags: string[];
+  partition_flags: string[];
+  failure?: { kind: string; message: string } | null;
+  stage_diffs: StageDiff[];
+  // Not written by any orchestrator on disk yet; null means "look in `missing`
+  // for where it was expected", not "there is no provenance".
+  edge_provenance?: Record<string, unknown> | null;
+  paths: Record<string, string>;
+}

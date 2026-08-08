@@ -21,6 +21,7 @@ import type {
   AnswerResult,
   Artifact,
   EscalationRequest,
+  GroupingView,
   Project,
   RunInfo,
   RunSnapshot,
@@ -123,6 +124,13 @@ export function getTranscript(
   return request<TranscriptEvent[]>(
     `${runPath(project, run)}/sessions/${enc(sessionId)}/transcript${query}`,
   );
+}
+
+/** Everything the Grouping tab renders, in one request. Never 404s on a
+ * missing artifact — an absent trace is the normal state of an older run, and
+ * the response says which artifact was missing and where it was looked for. */
+export function getGrouping(project: string, run: string): Promise<GroupingView> {
+  return request<GroupingView>(`${runPath(project, run)}/grouping`);
 }
 
 export function getArtifacts(

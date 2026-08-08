@@ -232,3 +232,31 @@
     box-shadow: 0 0 0 6px rgba(255, 194, 51, 0);
   }
 }
+
+/* A `failure` string left attached to a state that is not a failure.
+ *
+ * Muted and explicitly tagged rather than red: this is history, not the group's
+ * current condition. `GroupRunState` is single-valued and last-writer-wins, so
+ * a group that failed and was then resolved has no way to drop the old text —
+ * `manifest.json`'s append-only session list is the record of what happened. */
+.group-card__stale-failure {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  color: #7b8087;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group-card__stale-tag {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0 0.3rem;
+  border: 1px solid #c3c7cd;
+  border-radius: 3px;
+  font-style: normal;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
