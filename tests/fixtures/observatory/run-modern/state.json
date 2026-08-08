@@ -1,0 +1,22 @@
+{
+  "run_id": "modern1",
+  "groups": {
+    "g1": {
+      "state": "resolved",
+      "generation": 2,
+      "failure": "reviewer called it structural",
+      "holds": [],
+      "resolve_settled": true
+    },
+    "g2": {
+      "state": "interrupted",
+      "generation": 1,
+      "failure": "claude -p exited 1: usage limit reached",
+      "holds": [],
+      "resolve_settled": false
+    }
+  },
+  "live_pids": {
+    "41234": "g2"
+  }
+}

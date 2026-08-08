@@ -1,0 +1,8 @@
+{
+  "status": "permission_denied",
+  "summary": "Blocked before the verification step could run.",
+  "question": "",
+  "denied_command": "npm install --prefix ui",
+  "verification_results": [],
+  "surprises": []
+}

@@ -1,0 +1,132 @@
+{
+  "plan_path": "frontend-plan.md",
+  "groups": [
+    {
+      "id": "g1",
+      "name": "types-sample-and-views",
+      "summary": "Define shared TS types + sample fixture, then build GroupBoard/EventLog and wire into App.tsx.",
+      "spec": "Implement T2 and T3 from the plan. This group builds on the `ui/` skeleton created by the scaffolding group (`ui/src/main.tsx`, `ui/src/App.tsx`, `ui/src/styles.css` already exist as placeholders) \u2014 you are filling in the real types, data, and view logic.\n\nPart 1 \u2014 shared contracts and sample fixture (T2):\n- `ui/src/types.ts`: define TypeScript types mirroring the orchestrator's models \u2014 a `GroupState` union type with exactly the values `\"pending\" | \"ready\" | \"running\" | \"reviewing\" | \"rewriting\" | \"merging\" | \"completed\" | \"failed\"`; a `GroupRunState` type with fields `state` (GroupState), `generation` (number), and `failure` (optional/nullable); a `RunState` type with `run_id` (string) and `groups: Record<string, GroupRunState>`; a `Manifest` shape with `run_id`, `base_session_id`, and `groups` mapping to sessions that each have `name`/`role`; and an `Escalation` shape with `id`, `kind`, `group_id`, `prompt`.\n- `ui/src/sample-run.ts`: export a typed sample object (or objects) built from the `types.ts` contracts \u2014 a `RunState` with a handful of groups spanning different `GroupState` values, a matching `Manifest`, several event-log lines (strings, representing lines as they'd appear in `logs/run.log`), and at least one pending `Escalation`. This is the only data source for the UI in this version (no backend/network).\n\nPart 2 \u2014 view components wired into App (T3):\n- `ui/src/components/GroupBoard.tsx`: takes the `RunState` as a prop and renders one card per group, each showing the group id, its `generation`, and its `state`, with a visually distinct color per `GroupState` value (e.g. via a state\u2192color mapping in the component or in `styles.css`).\n- `ui/src/components/EventLog.tsx`: renders the event-log lines in order, and separately lists any pending escalations, each showing its `kind`, `group_id`, and `prompt`.\n- `ui/src/App.tsx`: replace the scaffolded placeholder with a real composition \u2014 a header, then `GroupBoard`, then `EventLog` \u2014 passing in data from `ui/src/sample-run.ts`.\n\nConstraints from the plan apply throughout: create source files only (no `npm install`/dev server/build \u2014 there is no network); keep the implementation small and readable; no router, no state management library; use plain CSS in `styles.css` for any additional styling needed by these components.",
+      "difficulty": 0.2738095238095238,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g2"
+      ],
+      "verification": [
+        {
+          "id": "g1-types-groupstate",
+          "description": "ui/src/types.ts defines GroupState as the exact union \"pending\" | \"ready\" | \"running\" | \"reviewing\" | \"rewriting\" | \"merging\" | \"completed\" | \"failed\".",
+          "required": true
+        },
+        {
+          "id": "g1-types-other-shapes",
+          "description": "ui/src/types.ts defines GroupRunState (state, generation, failure), RunState (run_id, groups: Record<string, GroupRunState>), Manifest (run_id, base_session_id, groups with per-session name/role), and Escalation (id, kind, group_id, prompt).",
+          "required": true
+        },
+        {
+          "id": "g1-sample-run",
+          "description": "ui/src/sample-run.ts exports a typed sample using the types.ts contracts: a RunState with multiple groups across different states, a Manifest, several event-log lines, and at least one pending Escalation.",
+          "required": true
+        },
+        {
+          "id": "g1-group-board",
+          "description": "ui/src/components/GroupBoard.tsx renders one card per group from a RunState, showing id, generation, and state, with a distinct color per state.",
+          "required": true
+        },
+        {
+          "id": "g1-event-log",
+          "description": "ui/src/components/EventLog.tsx renders event-log lines in order and lists pending escalations with kind, group, and prompt.",
+          "required": true
+        },
+        {
+          "id": "g1-app-composition",
+          "description": "ui/src/App.tsx composes a header, GroupBoard, and EventLog using data imported from sample-run.ts, replacing the scaffolded placeholder.",
+          "required": true
+        },
+        {
+          "id": "g1-no-build-artifacts",
+          "description": "No npm install, dev server, or build was run to verify this group \u2014 verification is by reading file contents/structure only.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "build-view-components",
+        "define-shared-types-and-sample"
+      ],
+      "files": [],
+      "estimated_tokens": 3429
+    },
+    {
+      "id": "g2",
+      "name": "scaffold-vite-project",
+      "summary": "Scaffold the Vite + React + TypeScript project skeleton under ui/ (config, entry, base styles).",
+      "spec": "Implement T1 from the plan: scaffold the Vite + React + TypeScript project under `ui/`. This is the foundational group \u2014 create only the project skeleton, no view logic. Create these files under `ui/`:\n\n- `ui/package.json` \u2014 name/version fields are your choice; dependencies: `react`, `react-dom`; devDependencies: `vite`, `typescript`, `@vitejs/plugin-react`, `@types/react`, `@types/react-dom`; scripts: `\"dev\": \"vite\"` and `\"build\": \"tsc && vite build\"`.\n- `ui/tsconfig.json` \u2014 strict mode enabled, `\"jsx\": \"react-jsx\"`, `\"target\": \"ES2020\"`, and whatever module/moduleResolution/lib settings are needed for a Vite + React + TS project to type-check cleanly (e.g. `\"module\": \"ESNext\"`, `\"moduleResolution\": \"bundler\"`, DOM lib).\n- `ui/vite.config.ts` \u2014 uses `@vitejs/plugin-react`.\n- `ui/index.html` \u2014 contains a `<div id=\"root\"></div>` and a `<script type=\"module\" src=\"/src/main.tsx\"></script>`.\n- `ui/src/main.tsx` \u2014 creates the React root on `#root` and renders `<App />` wrapped in `<React.StrictMode>`; imports `./styles.css`.\n- `ui/src/App.tsx` \u2014 a minimal placeholder component (this will be filled in by the group that builds the view components; keep it small, e.g. a functional component returning a simple wrapper element).\n- `ui/src/styles.css` \u2014 a clean, minimal base stylesheet (resets/typography/layout basics); imported from `main.tsx`.\n\nHard constraint from the plan: do NOT run `npm install`, `npm create`, a dev server, or a production build \u2014 there is no network available. Only create source files by hand. Keep everything small and readable; no router, no state management library.",
+      "difficulty": 0.08791208791208792,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g2-package-json",
+          "description": "ui/package.json exists with dependencies react, react-dom; devDependencies vite, typescript, @vitejs/plugin-react, @types/react, @types/react-dom; and scripts dev=\"vite\", build=\"tsc && vite build\".",
+          "required": true
+        },
+        {
+          "id": "g2-tsconfig",
+          "description": "ui/tsconfig.json exists with strict mode on, jsx set to react-jsx, and target ES2020.",
+          "required": true
+        },
+        {
+          "id": "g2-vite-config",
+          "description": "ui/vite.config.ts exists and configures the @vitejs/plugin-react plugin.",
+          "required": true
+        },
+        {
+          "id": "g2-index-html",
+          "description": "ui/index.html contains a div with id=\"root\" and a module script tag loading /src/main.tsx.",
+          "required": true
+        },
+        {
+          "id": "g2-main-tsx",
+          "description": "ui/src/main.tsx creates the root, renders <App/> inside React.StrictMode, and imports ./styles.css.",
+          "required": true
+        },
+        {
+          "id": "g2-app-placeholder",
+          "description": "ui/src/App.tsx exists as a minimal placeholder React component.",
+          "required": true
+        },
+        {
+          "id": "g2-styles-css",
+          "description": "ui/src/styles.css exists with a clean base style.",
+          "required": true
+        },
+        {
+          "id": "g2-no-build-artifacts",
+          "description": "No npm install was run and no node_modules/, package-lock.json, dist/, or build output was created \u2014 only hand-written source files.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "scaffold-vite-project"
+      ],
+      "files": [],
+      "estimated_tokens": 3199
+    }
+  ],
+  "flags": [
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/package.json \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/tsconfig.json \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/vite.config.ts \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/index.html \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/src/main.tsx \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/src/App.tsx \u2014 dropped",
+    "mapper: task scaffold-vite-project mapped nonexistent file ui/src/styles.css \u2014 dropped",
+    "mapper: task scaffold-vite-project has no verifiable regions \u2014 carried as region-less node with prose-affinity fallback",
+    "mapper: task define-shared-types-and-sample mapped nonexistent file ui/src/types.ts \u2014 dropped",
+    "mapper: task define-shared-types-and-sample mapped nonexistent file ui/src/sample-run.ts \u2014 dropped",
+    "mapper: task define-shared-types-and-sample mapped unknown symbol EscalationRequest \u2014 dropped",
+    "mapper: task define-shared-types-and-sample mapped unknown symbol EscalationKind \u2014 dropped",
+    "mapper: task build-view-components mapped nonexistent file ui/src/components/GroupBoard.tsx \u2014 dropped",
+    "mapper: task build-view-components mapped nonexistent file ui/src/components/EventLog.tsx \u2014 dropped",
+    "mapper: task build-view-components mapped nonexistent file ui/src/App.tsx \u2014 dropped"
+  ]
+}

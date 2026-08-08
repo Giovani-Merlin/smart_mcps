@@ -1,0 +1,883 @@
+{
+  "schema_version": 1,
+  "input_graph": {
+    "nodes": [
+      "u1-merge-integrity",
+      "u2-failure-gate",
+      "u3-typed-denial",
+      "u4-granularity",
+      "u5-scorecard",
+      "u6-fault-injection",
+      "u7-durability",
+      "u8-operator-surface",
+      "u9-conflict-exclusion"
+    ],
+    "affinity": [
+      [
+        "u1-merge-integrity",
+        "u2-failure-gate",
+        145.5
+      ],
+      [
+        "u1-merge-integrity",
+        "u3-typed-denial",
+        34.0
+      ],
+      [
+        "u1-merge-integrity",
+        "u4-granularity",
+        62.0
+      ],
+      [
+        "u1-merge-integrity",
+        "u5-scorecard",
+        65.0
+      ],
+      [
+        "u1-merge-integrity",
+        "u6-fault-injection",
+        100.5
+      ],
+      [
+        "u1-merge-integrity",
+        "u7-durability",
+        119.0
+      ],
+      [
+        "u1-merge-integrity",
+        "u8-operator-surface",
+        63.0
+      ],
+      [
+        "u1-merge-integrity",
+        "u9-conflict-exclusion",
+        48.0
+      ],
+      [
+        "u2-failure-gate",
+        "u3-typed-denial",
+        192.5
+      ],
+      [
+        "u2-failure-gate",
+        "u4-granularity",
+        86.5
+      ],
+      [
+        "u2-failure-gate",
+        "u5-scorecard",
+        75.0
+      ],
+      [
+        "u2-failure-gate",
+        "u6-fault-injection",
+        120.0
+      ],
+      [
+        "u2-failure-gate",
+        "u7-durability",
+        120.0
+      ],
+      [
+        "u2-failure-gate",
+        "u8-operator-surface",
+        188.5
+      ],
+      [
+        "u2-failure-gate",
+        "u9-conflict-exclusion",
+        308.5
+      ],
+      [
+        "u3-typed-denial",
+        "u4-granularity",
+        13.5
+      ],
+      [
+        "u3-typed-denial",
+        "u5-scorecard",
+        13.5
+      ],
+      [
+        "u3-typed-denial",
+        "u6-fault-injection",
+        76.5
+      ],
+      [
+        "u3-typed-denial",
+        "u7-durability",
+        187.5
+      ],
+      [
+        "u3-typed-denial",
+        "u8-operator-surface",
+        74.5
+      ],
+      [
+        "u3-typed-denial",
+        "u9-conflict-exclusion",
+        178.0
+      ],
+      [
+        "u4-granularity",
+        "u5-scorecard",
+        365.5
+      ],
+      [
+        "u4-granularity",
+        "u6-fault-injection",
+        27.0
+      ],
+      [
+        "u4-granularity",
+        "u7-durability",
+        57.0
+      ],
+      [
+        "u4-granularity",
+        "u8-operator-surface",
+        87.5
+      ],
+      [
+        "u4-granularity",
+        "u9-conflict-exclusion",
+        73.0
+      ],
+      [
+        "u5-scorecard",
+        "u6-fault-injection",
+        24.0
+      ],
+      [
+        "u5-scorecard",
+        "u7-durability",
+        34.5
+      ],
+      [
+        "u5-scorecard",
+        "u8-operator-surface",
+        96.0
+      ],
+      [
+        "u5-scorecard",
+        "u9-conflict-exclusion",
+        64.5
+      ],
+      [
+        "u6-fault-injection",
+        "u7-durability",
+        79.5
+      ],
+      [
+        "u6-fault-injection",
+        "u8-operator-surface",
+        72.0
+      ],
+      [
+        "u6-fault-injection",
+        "u9-conflict-exclusion",
+        106.5
+      ],
+      [
+        "u7-durability",
+        "u8-operator-surface",
+        71.5
+      ],
+      [
+        "u7-durability",
+        "u9-conflict-exclusion",
+        134.5
+      ],
+      [
+        "u8-operator-surface",
+        "u9-conflict-exclusion",
+        181.0
+      ]
+    ],
+    "dependencies": [
+      [
+        "u1-merge-integrity",
+        "u2-failure-gate",
+        46.5
+      ],
+      [
+        "u1-merge-integrity",
+        "u6-fault-injection",
+        7.0
+      ],
+      [
+        "u2-failure-gate",
+        "u6-fault-injection",
+        11.5
+      ],
+      [
+        "u2-failure-gate",
+        "u9-conflict-exclusion",
+        152.0
+      ],
+      [
+        "u3-typed-denial",
+        "u4-granularity",
+        13.5
+      ],
+      [
+        "u3-typed-denial",
+        "u5-scorecard",
+        13.5
+      ],
+      [
+        "u3-typed-denial",
+        "u6-fault-injection",
+        7.0
+      ],
+      [
+        "u6-fault-injection",
+        "u4-granularity",
+        27.0
+      ],
+      [
+        "u6-fault-injection",
+        "u5-scorecard",
+        24.0
+      ],
+      [
+        "u7-durability",
+        "u5-scorecard",
+        34.5
+      ]
+    ]
+  },
+  "node_work": [
+    {
+      "node": "u1-merge-integrity",
+      "source_bytes": 73993,
+      "file_count": 5,
+      "bytes_tokens": 24047.725000000002,
+      "file_allowance_tokens": 10000.0,
+      "total": 34047.725000000006
+    },
+    {
+      "node": "u2-failure-gate",
+      "source_bytes": 98978,
+      "file_count": 7,
+      "bytes_tokens": 32167.850000000002,
+      "file_allowance_tokens": 14000.0,
+      "total": 46167.850000000006
+    },
+    {
+      "node": "u3-typed-denial",
+      "source_bytes": 91623,
+      "file_count": 6,
+      "bytes_tokens": 29777.475000000002,
+      "file_allowance_tokens": 12000.0,
+      "total": 41777.475000000006
+    },
+    {
+      "node": "u4-granularity",
+      "source_bytes": 159271,
+      "file_count": 7,
+      "bytes_tokens": 51763.075000000004,
+      "file_allowance_tokens": 14000.0,
+      "total": 65763.07500000001
+    },
+    {
+      "node": "u5-scorecard",
+      "source_bytes": 103691,
+      "file_count": 6,
+      "bytes_tokens": 33699.575000000004,
+      "file_allowance_tokens": 12000.0,
+      "total": 45699.575000000004
+    },
+    {
+      "node": "u6-fault-injection",
+      "source_bytes": 10296,
+      "file_count": 2,
+      "bytes_tokens": 3346.2000000000003,
+      "file_allowance_tokens": 4000.0,
+      "total": 7346.200000000001
+    },
+    {
+      "node": "u7-durability",
+      "source_bytes": 113481,
+      "file_count": 6,
+      "bytes_tokens": 36881.325000000004,
+      "file_allowance_tokens": 12000.0,
+      "total": 48881.325000000004
+    },
+    {
+      "node": "u8-operator-surface",
+      "source_bytes": 77284,
+      "file_count": 3,
+      "bytes_tokens": 25117.3,
+      "file_allowance_tokens": 6000.0,
+      "total": 31117.3
+    },
+    {
+      "node": "u9-conflict-exclusion",
+      "source_bytes": 110261,
+      "file_count": 6,
+      "bytes_tokens": 35834.825000000004,
+      "file_allowance_tokens": 12000.0,
+      "total": 47834.825000000004
+    }
+  ],
+  "budget": {
+    "base_tokens": 12229,
+    "spec_tokens_allowance": 3000,
+    "slack_multiplier": 1.3,
+    "token_budget": 200000,
+    "head": 19797.7,
+    "budget_cap": 180202.3
+  },
+  "config": {
+    "edge_weights": {
+      "shared_file": 1.0,
+      "call": 2.0,
+      "impact": 1.5,
+      "prose_neighbor": 0.5,
+      "semantic": 1.5,
+      "semantic_floor": 0.5,
+      "semantic_ceil": 3.0
+    },
+    "partition": {
+      "hub_threshold": 0.4,
+      "louvain_resolution": 1.0,
+      "allow_oversized_slice": false,
+      "allow_degenerate_partition": false
+    },
+    "estimator": {
+      "token_budget": 200000,
+      "bytes_per_token": 4.0,
+      "slack_multiplier": 1.3,
+      "per_file_tool_allowance": 2000,
+      "spec_tokens_allowance": 3000,
+      "size_hint_small": 500,
+      "size_hint_medium": 2000,
+      "size_hint_large": 5000
+    },
+    "difficulty": {
+      "weight_files_touched": 1.0,
+      "weight_max_fan": 1.5,
+      "weight_hub_touches": 2.0,
+      "weight_cross_group_edges": 1.5,
+      "weight_verification_items": 1.0,
+      "scale_files_touched": 6.0,
+      "scale_max_fan": 10.0,
+      "scale_hub_touches": 1.0,
+      "scale_cross_group_edges": 3.0,
+      "scale_verification_items": 5.0,
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    "breaker": {
+      "context_token_limit": 200000,
+      "max_rounds_per_generation": 3,
+      "max_generations": 3
+    },
+    "execution": {
+      "concurrency": 1,
+      "sequential": true,
+      "permission_mode": "acceptEdits",
+      "max_rewrites": 2
+    },
+    "session": {
+      "claude_bin": "claude",
+      "model": "sonnet",
+      "allowed_tools": [],
+      "transcript_root": null
+    },
+    "escalation": {
+      "enabled": false,
+      "intensity": "on_stuck",
+      "source": "workers_via_orchestrator",
+      "timeout_s": null,
+      "on_timeout": "autonomous",
+      "poll_interval_s": 1.0
+    }
+  },
+  "hub_roles": [
+    {
+      "node": "u1-merge-integrity",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.25,
+      "threshold": 0.4
+    },
+    {
+      "node": "u2-failure-gate",
+      "role": "core",
+      "depends_on_ratio": 0.125,
+      "depended_by_ratio": 0.25,
+      "threshold": 0.4
+    },
+    {
+      "node": "u3-typed-denial",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.375,
+      "threshold": 0.4
+    },
+    {
+      "node": "u4-granularity",
+      "role": "core",
+      "depends_on_ratio": 0.25,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u5-scorecard",
+      "role": "core",
+      "depends_on_ratio": 0.375,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u6-fault-injection",
+      "role": "core",
+      "depends_on_ratio": 0.375,
+      "depended_by_ratio": 0.25,
+      "threshold": 0.4
+    },
+    {
+      "node": "u7-durability",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.125,
+      "threshold": 0.4
+    },
+    {
+      "node": "u8-operator-surface",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u9-conflict-exclusion",
+      "role": "core",
+      "depends_on_ratio": 0.125,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    }
+  ],
+  "slice_atoms": [
+    {
+      "label": "merge-integrity",
+      "members": [
+        "u1-merge-integrity",
+        "u2-failure-gate"
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "stage": "contraction",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 0,
+        "u4-granularity": 1,
+        "u5-scorecard": 1,
+        "u6-fault-injection": 0,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 0
+      }
+    },
+    {
+      "stage": "lift",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 0,
+        "u4-granularity": 2,
+        "u5-scorecard": 2,
+        "u6-fault-injection": 0,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 1
+      }
+    },
+    {
+      "stage": "split",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 1,
+        "u4-granularity": 4,
+        "u5-scorecard": 4,
+        "u6-fault-injection": 2,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 3
+      }
+    },
+    {
+      "stage": "merge",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 1,
+        "u4-granularity": 1,
+        "u5-scorecard": 1,
+        "u6-fault-injection": 1,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 3
+      }
+    },
+    {
+      "stage": "repair",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 1,
+        "u4-granularity": 1,
+        "u5-scorecard": 1,
+        "u6-fault-injection": 1,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 3
+      }
+    },
+    {
+      "stage": "renumber",
+      "partition": {
+        "u1-merge-integrity": 0,
+        "u2-failure-gate": 0,
+        "u3-typed-denial": 1,
+        "u4-granularity": 1,
+        "u5-scorecard": 1,
+        "u6-fault-injection": 1,
+        "u7-durability": 0,
+        "u8-operator-surface": 0,
+        "u9-conflict-exclusion": 2
+      }
+    }
+  ],
+  "louvain": [
+    {
+      "resolution": 1.0,
+      "seed": 42,
+      "communities": [
+        [
+          "slice::merge-integrity",
+          "u3-typed-denial",
+          "u6-fault-injection",
+          "u7-durability",
+          "u8-operator-surface",
+          "u9-conflict-exclusion"
+        ],
+        [
+          "u4-granularity",
+          "u5-scorecard"
+        ]
+      ]
+    }
+  ],
+  "splits": [
+    {
+      "group_members": [
+        "u1-merge-integrity",
+        "u2-failure-gate",
+        "u3-typed-denial",
+        "u6-fault-injection",
+        "u7-durability",
+        "u8-operator-surface"
+      ],
+      "total_work": 212337.87500000003,
+      "budget_cap": 180202.3,
+      "candidates": [
+        {
+          "block_a": "u7-durability",
+          "block_b": "u8-operator-surface",
+          "weight": 71.5,
+          "cut": false
+        },
+        {
+          "block_a": "u6-fault-injection",
+          "block_b": "u8-operator-surface",
+          "weight": 72.0,
+          "cut": true
+        },
+        {
+          "block_a": "u3-typed-denial",
+          "block_b": "u8-operator-surface",
+          "weight": 74.5,
+          "cut": false
+        },
+        {
+          "block_a": "u3-typed-denial",
+          "block_b": "u6-fault-injection",
+          "weight": 76.5,
+          "cut": true
+        },
+        {
+          "block_a": "u6-fault-injection",
+          "block_b": "u7-durability",
+          "weight": 79.5,
+          "cut": true
+        },
+        {
+          "block_a": "u3-typed-denial",
+          "block_b": "u7-durability",
+          "weight": 187.5,
+          "cut": false
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u6-fault-injection",
+          "weight": 220.5,
+          "cut": true
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u3-typed-denial",
+          "weight": 226.5,
+          "cut": false
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u7-durability",
+          "weight": 239.0,
+          "cut": false
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u8-operator-surface",
+          "weight": 251.5,
+          "cut": false
+        }
+      ],
+      "resulting_components": [
+        [
+          "slice::merge-integrity",
+          "u3-typed-denial",
+          "u7-durability",
+          "u8-operator-surface"
+        ],
+        [
+          "u6-fault-injection"
+        ]
+      ]
+    },
+    {
+      "group_members": [
+        "u1-merge-integrity",
+        "u2-failure-gate",
+        "u3-typed-denial",
+        "u7-durability",
+        "u8-operator-surface"
+      ],
+      "total_work": 201991.67500000002,
+      "budget_cap": 180202.3,
+      "candidates": [
+        {
+          "block_a": "u7-durability",
+          "block_b": "u8-operator-surface",
+          "weight": 71.5,
+          "cut": false
+        },
+        {
+          "block_a": "u3-typed-denial",
+          "block_b": "u8-operator-surface",
+          "weight": 74.5,
+          "cut": true
+        },
+        {
+          "block_a": "u3-typed-denial",
+          "block_b": "u7-durability",
+          "weight": 187.5,
+          "cut": true
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u3-typed-denial",
+          "weight": 226.5,
+          "cut": true
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u7-durability",
+          "weight": 239.0,
+          "cut": false
+        },
+        {
+          "block_a": "slice::merge-integrity",
+          "block_b": "u8-operator-surface",
+          "weight": 251.5,
+          "cut": false
+        }
+      ],
+      "resulting_components": [
+        [
+          "slice::merge-integrity",
+          "u7-durability",
+          "u8-operator-surface"
+        ],
+        [
+          "u3-typed-denial"
+        ]
+      ]
+    }
+  ],
+  "merges": [
+    {
+      "round": 0,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 170560.40000000002,
+      "edge_weight": 18.5
+    },
+    {
+      "round": 0,
+      "source": 3,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 208049.02500000002,
+      "edge_weight": 152.0
+    },
+    {
+      "round": 0,
+      "source": 4,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 270176.85000000003,
+      "edge_weight": 34.5
+    },
+    {
+      "round": 0,
+      "source": 4,
+      "target": 1,
+      "accepted": false,
+      "reason": "would_create_cycle",
+      "merged_work": 151740.125,
+      "edge_weight": 27.0
+    },
+    {
+      "round": 0,
+      "source": 4,
+      "target": 2,
+      "accepted": true,
+      "reason": "",
+      "merged_work": 120308.85,
+      "edge_weight": 51.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 280523.05000000005,
+      "edge_weight": 53.0
+    },
+    {
+      "round": 1,
+      "source": 3,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 208049.02500000002,
+      "edge_weight": 152.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 1,
+      "accepted": true,
+      "reason": "",
+      "merged_work": 162086.325,
+      "edge_weight": 34.0
+    },
+    {
+      "round": 2,
+      "source": 1,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 322300.525,
+      "edge_weight": 53.0
+    },
+    {
+      "round": 2,
+      "source": 3,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 208049.02500000002,
+      "edge_weight": 152.0
+    }
+  ],
+  "repairs": [],
+  "dag": {
+    "0": [
+      1,
+      2
+    ]
+  },
+  "last_stage": "merge",
+  "groups": [
+    {
+      "group_id": "g1",
+      "files_touched": 15,
+      "max_fan_in": 9,
+      "max_fan_out": 11,
+      "hub_touches": 0,
+      "cross_group_edges": 4,
+      "verification_items": 28,
+      "difficulty": 0.4579468150896723,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g2",
+      "files_touched": 19,
+      "max_fan_in": 17,
+      "max_fan_out": 27,
+      "hub_touches": 0,
+      "cross_group_edges": 3,
+      "verification_items": 31,
+      "difficulty": 0.4951008151008151,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g3",
+      "files_touched": 6,
+      "max_fan_in": 1,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 10,
+      "difficulty": 0.23971861471861472,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    }
+  ],
+  "mapper_flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u4-granularity file tests/fixtures/grouping/granularity-ladder.md does not exist yet — retained as prospective",
+    "task map: task u5-scorecard file orchestrator/grouping/scorecard.py does not exist yet — retained as prospective",
+    "task map: task u6-fault-injection file tests/test_e2e_faults.py does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "graph: withdrew 57 inferred precedence edge(s) between 31 mutually-referencing task pair(s) — kept as affinity (a reference is coupling, not ordering)"
+  ],
+  "partition_flags": [],
+  "flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u4-granularity file tests/fixtures/grouping/granularity-ladder.md does not exist yet — retained as prospective",
+    "task map: task u5-scorecard file orchestrator/grouping/scorecard.py does not exist yet — retained as prospective",
+    "task map: task u6-fault-injection file tests/test_e2e_faults.py does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "graph: withdrew 57 inferred precedence edge(s) between 31 mutually-referencing task pair(s) — kept as affinity (a reference is coupling, not ordering)"
+  ],
+  "failure": null
+}

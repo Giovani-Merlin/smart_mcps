@@ -1,0 +1,116 @@
+{
+  "run_id": "modern1",
+  "plan_path": "frontend-plan.md",
+  "created_at": "2026-07-16T20:29:32.588182Z",
+  "base_session_id": "3cede97b-336c-4a54-9d39-809890cb0d50",
+  "groups": {
+    "g2": {
+      "group_id": "g2",
+      "group_name": "scaffold-vite-project",
+      "summary": "Scaffold the Vite + React + TypeScript project skeleton under ui/ (config, entry, base styles).",
+      "sessions": [
+        {
+          "session_id": "04b22720-cf20-4305-870f-645739694708",
+          "role": "coder",
+          "generation": 1,
+          "name": "smoke1-g2-coder-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g2-scaffold-vite-project/04b22720-cf20-4305-870f-645739694708.jsonl",
+          "rounds_completed": 3,
+          "last_context_tokens": 48211,
+          "total_input_tokens": 9130,
+          "total_output_tokens": 21440,
+          "total_cache_read_tokens": 1840223,
+          "total_cache_creation_tokens": 96110,
+          "model": "claude-opus-5",
+          "started_at": "2026-07-29T09:14:02Z",
+          "ended_at": "2026-07-29T10:02:51Z"
+        },
+        {
+          "session_id": "77d92f6a-0b5d-428f-9c27-23006ac0d0cd",
+          "role": "reviewer",
+          "generation": 1,
+          "name": "smoke1-g2-reviewer-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g2-scaffold-vite-project/77d92f6a-0b5d-428f-9c27-23006ac0d0cd.jsonl",
+          "rounds_completed": 1,
+          "last_context_tokens": 22904,
+          "total_input_tokens": 3011,
+          "total_output_tokens": 4820,
+          "total_cache_read_tokens": 402118,
+          "total_cache_creation_tokens": 31002,
+          "model": "claude-opus-5",
+          "started_at": "2026-07-29T10:03:10Z",
+          "ended_at": "2026-07-29T10:09:44Z"
+        }
+      ]
+    },
+    "g1": {
+      "group_id": "g1",
+      "group_name": "types-sample-and-views",
+      "summary": "Define shared TS types + sample fixture, then build GroupBoard/EventLog and wire into App.tsx.",
+      "sessions": [
+        {
+          "session_id": "11111111-1111-4111-8111-111111111111",
+          "role": "coder",
+          "generation": 1,
+          "name": "modern1-g1-coder-g1",
+          "retirement_reason": "context tokens 7618531 exceeded limit 120000",
+          "transcript_path": null,
+          "rounds_completed": 1,
+          "last_context_tokens": 119880,
+          "total_input_tokens": 9130,
+          "total_output_tokens": 21440,
+          "total_cache_read_tokens": 1840223,
+          "total_cache_creation_tokens": 96110,
+          "model": "claude-opus-5",
+          "started_at": "2026-07-29T09:14:02Z",
+          "ended_at": "2026-07-29T10:02:51Z"
+        },
+        {
+          "session_id": "0c92ac57-2e9f-4e02-b7dc-acc1f154c872",
+          "role": "coder",
+          "generation": 1,
+          "name": "smoke1-g1-coder-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g1-types-sample-and-views/0c92ac57-2e9f-4e02-b7dc-acc1f154c872.jsonl",
+          "rounds_completed": 3,
+          "last_context_tokens": 48211,
+          "total_input_tokens": 9130,
+          "total_output_tokens": 21440,
+          "total_cache_read_tokens": 1840223,
+          "total_cache_creation_tokens": 96110,
+          "model": "claude-opus-5",
+          "started_at": "2026-07-29T09:14:02Z",
+          "ended_at": "2026-07-29T10:02:51Z"
+        },
+        {
+          "session_id": "a4aa1be9-1a36-4aea-a52f-3757afee6c30",
+          "role": "reviewer",
+          "generation": 1,
+          "name": "smoke1-g1-reviewer-g1",
+          "retirement_reason": null,
+          "transcript_path": "/home/gbm1996/.claude/projects/-home-gbm1996-wksp-smart-mcps-fe-test--worktrees-g1-types-sample-and-views/a4aa1be9-1a36-4aea-a52f-3757afee6c30.jsonl",
+          "rounds_completed": 1,
+          "last_context_tokens": 22904,
+          "total_input_tokens": 3011,
+          "total_output_tokens": 4820,
+          "total_cache_read_tokens": 402118,
+          "total_cache_creation_tokens": 31002,
+          "model": "claude-opus-5",
+          "started_at": "2026-07-29T10:03:10Z",
+          "ended_at": "2026-07-29T10:09:44Z"
+        }
+      ]
+    }
+  },
+  "grouping": "2026-07-29-001-fix-orchestrator-correctness-and-measurement-plan",
+  "escalation": {
+    "enabled": true,
+    "intensity": "on_stuck",
+    "source": "workers_via_orchestrator",
+    "timeout_s": null,
+    "on_timeout": "autonomous",
+    "poll_interval_s": 1.0
+  }
+}

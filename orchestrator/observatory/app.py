@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from orchestrator.observatory import artifacts, escalations, events, transcripts
+from orchestrator.observatory import artifacts, escalations, events, grouping, transcripts
 from orchestrator.observatory.registry import Project
 from orchestrator.observatory.runs import (
     ObservatoryContext,
@@ -72,6 +72,7 @@ def create_app(
     app.include_router(escalations.router)
     app.include_router(transcripts.router)
     app.include_router(artifacts.router)
+    app.include_router(grouping.router)
 
     _mount_spa(app, dist_dir if dist_dir is not None else default_dist_dir())
     return app
