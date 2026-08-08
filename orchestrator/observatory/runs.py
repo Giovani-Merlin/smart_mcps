@@ -139,6 +139,23 @@ def runs_dir_of(repo: Path) -> Path:
     return repo / ".orchestrator" / "runs"
 
 
+def run_groups_path(paths: RunPaths) -> Path:
+    """This run's frozen DAG snapshot — the one place the Observatory names it.
+
+    ``RunPaths.groups_path`` is the orchestrator's own spelling and stays
+    authoritative while it exists. It has been proposed for removal more than
+    once, and it was referenced directly from two modules, so both would have
+    started raising ``AttributeError`` mid-request the moment it went. Routing
+    both through here means a removal degrades to the literal layout instead of
+    a 500, and ``test_observatory_drift.py``'s attribute audit fails at test
+    time so the drift is still reported rather than papered over.
+    """
+    own = getattr(paths, "groups_path", None)
+    if isinstance(own, Path):
+        return own
+    return paths.run_dir / "groups.json"
+
+
 def list_runs(repo: Path) -> list[RunInfo]:
     """Newest first. An absent ``runs/`` dir is the normal state of a repo that
     has planned but never run, so it lists as empty rather than erroring."""
@@ -186,8 +203,9 @@ def load_dag(paths: RunPaths) -> tuple[GroupingResult | None, bool]:
     that never belonged to this run — hence the flag rather than a silent read
     (ADR 0002). Runs that predate the snapshot always take the fallback.
     """
-    if paths.groups_path.is_file():
-        return GroupingResult.model_validate_json(paths.groups_path.read_text()), False
+    snapshot = run_groups_path(paths)
+    if snapshot.is_file():
+        return GroupingResult.model_validate_json(snapshot.read_text()), False
     shared = paths.repo_root / ".orchestrator" / "groups.json"
     if shared.is_file():
         return GroupingResult.model_validate_json(shared.read_text()), True

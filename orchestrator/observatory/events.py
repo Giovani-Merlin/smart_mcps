@@ -34,7 +34,7 @@ from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
 from orchestrator.execution.manifest import RunPaths
-from orchestrator.observatory.runs import resolve_run
+from orchestrator.observatory.runs import resolve_run, run_groups_path
 
 router = APIRouter(tags=["events"])
 
@@ -112,7 +112,7 @@ def _signature(paths: RunPaths) -> tuple:
     folding them in here would make every event line re-fetch the snapshot.
     """
     parts: list[tuple] = []
-    for path in (paths.state_path, paths.manifest_path, paths.groups_path):
+    for path in (paths.state_path, paths.manifest_path, run_groups_path(paths)):
         parts.append((path.name, _stat(path)))
     for directory in (paths.escalations_dir, paths.run_dir / "groups"):
         if not directory.is_dir():
