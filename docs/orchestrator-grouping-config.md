@@ -15,11 +15,11 @@ CLI flag  >  .orchestrator/config.toml  >  built-in default
 ```
 
 - Defaults load with **no config file present** — the file is always optional
-  ([`load_config`](../orchestrator/config.py), `config.py:160`).
+  ([`load_config`](../orchestrator/config.py), `config.py:204`).
 - The conventional path is `<repo>/.orchestrator/config.toml`; override with
   `--config <path>`.
 - CLI flags are layered on top by [`apply_overrides`](../orchestrator/cli.py)
-  (`cli.py:233`). **Only the fields marked "CLI" below have a flag** — everything
+  (`cli.py:272`). **Only the fields marked "CLI" below have a flag** — everything
   else is config-file-only.
 - Unknown TOML keys are silently ignored by pydantic. One deprecated key is
   detected explicitly and warned about (`[session] timeout_s`, removed with the
@@ -100,12 +100,13 @@ ______________________________________________________________________
 
 [`PartitionConfig`](../orchestrator/config.py), `config.py:41`.
 
-| Field                   | Default         | Effect                                                                            | CLI                       |
-| ----------------------- | --------------- | --------------------------------------------------------------------------------- | ------------------------- |
-| `hub_threshold`         | 0.4             | fraction-of-all-tasks degree at which a node is reclassified from `core` to a hub | —                         |
-| `louvain_resolution`    | 1.0             | Louvain resolution γ — **higher = more, smaller communities**                     | —                         |
-| `allow_oversized_slice` | `false`         | accept a declared slice that alone exceeds the budget cap, as one flagged group   | `--allow-oversized-slice` |
-| `granularity`           | `"independent"` | how eagerly `merge_small_groups` folds small groups together (plan U4)            | `--granularity`           |
+| Field                        | Default         | Effect                                                                                           | CLI                       |
+| ---------------------------- | --------------- | ------------------------------------------------------------------------------------------------ | ------------------------- |
+| `hub_threshold`              | 0.4             | fraction-of-all-tasks degree at which a node is reclassified from `core` to a hub                | —                         |
+| `louvain_resolution`         | 1.0             | Louvain resolution γ — **higher = more, smaller communities**                                    | —                         |
+| `allow_oversized_slice`      | `false`         | accept a declared slice that alone exceeds the budget cap, as one flagged group                  | `--allow-oversized-slice` |
+| `allow_degenerate_partition` | `false`         | accept a partition whose cycle-repair left a group over the cap instead of a hard `GrouperError` | —                         |
+| `granularity`                | `"independent"` | how eagerly `merge_small_groups` folds small groups together (plan U4)                           | `--granularity`           |
 
 **`hub_threshold` is a fraction, not a count** — this surprises people. In a
 10-task plan, a task with 4 upstreams crosses 0.4 and becomes a hub. Hub roles
@@ -159,7 +160,7 @@ ______________________________________________________________________
 
 ## `[estimator]` — token pricing and the budget cap
 
-[`EstimatorConfig`](../orchestrator/config.py), `config.py:50`. This is the only
+[`EstimatorConfig`](../orchestrator/config.py), `config.py:62`. This is the only
 group of knobs that changes **how many groups you get**, because the cap is what
 `split_over_budget` enforces.
 
@@ -219,7 +220,7 @@ ______________________________________________________________________
 
 ## `[difficulty]` — which groups get a reviewer
 
-[`DifficultyConfig`](../orchestrator/config.py), `config.py:66`. Affects **cost at
+[`DifficultyConfig`](../orchestrator/config.py), `config.py:78`. Affects **cost at
 `run` time**, never group boundaries.
 
 Each signal is normalized as `x / (x + scale)` — so `scale` is *the raw value at
@@ -254,7 +255,7 @@ ______________________________________________________________________
 
 ## `[breaker]` — when a worker is retired mid-run
 
-[`BreakerConfig`](../orchestrator/config.py), `config.py:91`. Execution-time only.
+[`BreakerConfig`](../orchestrator/config.py), `config.py:103`. Execution-time only.
 
 | Field                       | Default | Effect                                                                     |
 | --------------------------- | ------- | -------------------------------------------------------------------------- |
@@ -270,14 +271,15 @@ ______________________________________________________________________
 
 ## `[execution]` — parallelism and worker permissions
 
-[`ExecutionConfig`](../orchestrator/config.py), `config.py:99`.
+[`ExecutionConfig`](../orchestrator/config.py), `config.py:117`.
 
-| Field             | Default       | Effect                                               | CLI                 |
-| ----------------- | ------------- | ---------------------------------------------------- | ------------------- |
-| `concurrency`     | 1             | max groups running at once                           | `--concurrency N`   |
-| `sequential`      | `false`       | deterministic one-at-a-time debug mode               | `--sequential`      |
-| `permission_mode` | `acceptEdits` | permission mode passed to each worker's `claude` CLI | `--permission-mode` |
-| `max_rewrites`    | 2             | spec rewrites for a stuck group before it fails      | —                   |
+| Field                           | Default       | Effect                                                                                                                                | CLI                 |
+| ------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `concurrency`                   | 1             | max groups running at once                                                                                                            | `--concurrency N`   |
+| `sequential`                    | `false`       | deterministic one-at-a-time debug mode                                                                                                | `--sequential`      |
+| `permission_mode`               | `acceptEdits` | permission mode passed to each worker's `claude` CLI                                                                                  | `--permission-mode` |
+| `max_rewrites`                  | 2             | spec rewrites for a stuck group before it fails                                                                                       | —                   |
+| `max_conflict_resolve_attempts` | 1             | warm-resume attempts at the group's own coder session to resolve a merge conflict in place before falling back to a full spec rewrite | —                   |
 
 **Serial is the default on purpose.** Each group's worktree is cut from the
 integration tip at its ready→running transition, so one-at-a-time stacks each
@@ -307,23 +309,25 @@ ______________________________________________________________________
 
 ## `[session]` — how the `claude` CLI is shelled
 
-[`SessionConfig`](../orchestrator/config.py), `config.py:113`.
+[`SessionConfig`](../orchestrator/config.py), `config.py:137`.
 
-| Field             | Default    | Effect                                                                  |
-| ----------------- | ---------- | ----------------------------------------------------------------------- |
-| `claude_bin`      | `"claude"` | binary to shell; accepts a list so tests point it at a stub interpreter |
-| `model`           | `null`     | model for worker sessions; `null` = CLI default                         |
-| `allowed_tools`   | `[]`       | extra `--allowedTools` entries                                          |
-| `transcript_root` | `null`     | override `~/.claude/projects` (tests)                                   |
+| Field                 | Default      | Effect                                                                                                                                                             |
+| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude_bin`          | `"claude"`   | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                            |
+| `model`               | `null`       | model for worker sessions; `null` = CLI default                                                                                                                    |
+| `allowed_tools`       | `[]`         | extra `--allowedTools` entries                                                                                                                                     |
+| `transcript_root`     | `null`       | override `~/.claude/projects` (tests)                                                                                                                              |
+| `max_thinking_tokens` | `4000`       | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning |
+| `thinking`            | `"adaptive"` | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                      |
 
 `[session] timeout_s` is **removed**. A config still carrying it gets an explicit
-stderr warning (`config.py:170-179`) instead of being silently dropped.
+stderr warning (`config.py:220`) instead of being silently dropped.
 
 ______________________________________________________________________
 
 ## `[escalation]` — human-in-the-loop
 
-[`EscalationConfig`](../orchestrator/config.py), `config.py:127`. **On by
+[`EscalationConfig`](../orchestrator/config.py), `config.py:168`. **On by
 default** at `on_stuck`; an unattended `run` needs `--intensity autonomous` (or
 `enabled = false`) to stay fully autonomous, otherwise it can block indefinitely
 waiting on an unanswered escalation.
@@ -391,15 +395,15 @@ ______________________________________________________________________
 ## Field inventory
 
 Every field in `orchestrator/config.py`, for cross-checking that this reference
-stays complete. 8 models, 47 fields.
+stays complete. 8 models, 52 fields.
 
 | Section        | Fields                                                                                                                                                                                                                                                            |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `edge_weights` | `shared_file`, `call`, `impact`, `prose_neighbor`, `semantic`, `semantic_floor`, `semantic_ceil`                                                                                                                                                                  |
-| `partition`    | `hub_threshold`, `louvain_resolution`, `allow_oversized_slice`                                                                                                                                                                                                    |
+| `partition`    | `hub_threshold`, `louvain_resolution`, `allow_oversized_slice`, `allow_degenerate_partition`, `granularity`                                                                                                                                                       |
 | `estimator`    | `token_budget`, `bytes_per_token`, `slack_multiplier`, `per_file_tool_allowance`, `spec_tokens_allowance`, `size_hint_small`, `size_hint_medium`, `size_hint_large`                                                                                               |
 | `difficulty`   | `weight_files_touched`, `weight_max_fan`, `weight_hub_touches`, `weight_cross_group_edges`, `weight_verification_items`, `scale_files_touched`, `scale_max_fan`, `scale_hub_touches`, `scale_cross_group_edges`, `scale_verification_items`, `d_review`, `d_hard` |
 | `breaker`      | `context_token_limit`, `max_rounds_per_generation`, `max_generations`                                                                                                                                                                                             |
-| `execution`    | `concurrency`, `sequential`, `permission_mode`, `max_rewrites`                                                                                                                                                                                                    |
-| `session`      | `claude_bin`, `model`, `allowed_tools`, `transcript_root`                                                                                                                                                                                                         |
+| `execution`    | `concurrency`, `sequential`, `permission_mode`, `max_rewrites`, `max_conflict_resolve_attempts`                                                                                                                                                                   |
+| `session`      | `claude_bin`, `model`, `allowed_tools`, `transcript_root`, `max_thinking_tokens`, `thinking`                                                                                                                                                                      |
 | `escalation`   | `enabled`, `intensity`, `source`, `timeout_s`, `on_timeout`, `poll_interval_s`                                                                                                                                                                                    |
