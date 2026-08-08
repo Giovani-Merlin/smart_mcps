@@ -1,0 +1,11 @@
+{
+  "symbol": "call_tool",
+  "callers": [
+    {
+      "name": "_forward",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 66
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "symbol": "_forward",
+  "callers": [
+    {
+      "name": "context",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 93
+    },
+    {
+      "name": "explore",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 109
+    },
+    {
+      "name": "trace",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 130
+    },
+    {
+      "name": "impact",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 148
+    },
+    {
+      "name": "files",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 160
+    },
+    {
+      "name": "search",
+      "kind": "function",
+      "filePath": "codegraph_mcp/server.py",
+      "startLine": 174
+    }
+  ]
+}

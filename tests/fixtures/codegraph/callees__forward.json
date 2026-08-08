@@ -1,0 +1,11 @@
+{
+  "symbol": "_forward",
+  "callees": [
+    {
+      "name": "call_tool",
+      "kind": "method",
+      "filePath": "tests/test_codegraph_server.py",
+      "startLine": 35
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+[
+ {
+  "node": {
+   "name": "Gate",
+   "filePath": "app/gate.py",
+   "kind": "class"
+  },
+  "score": 1.0
+ }
+]

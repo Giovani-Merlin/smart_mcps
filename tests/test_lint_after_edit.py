@@ -148,7 +148,7 @@ def test_malformed_json_exits_zero():
 @pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx not available")
 def test_frontmatter_survives_real_mdformat(tmp_path):
     """Integration: the hook must not corrupt YAML frontmatter in skill files."""
-    source = REPO_ROOT / "skills" / "codegraph" / "SKILL.md"
+    source = REPO_ROOT / "skills" / "codegraph" / "REFERENCE_SKILL.md"
     doc = tmp_path / "SKILL.md"
     doc.write_text(source.read_text())
     frontmatter_before = doc.read_text().split("---")[1]

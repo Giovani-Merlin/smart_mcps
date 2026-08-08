@@ -1,0 +1,15 @@
+{
+  "budget_cap": 95685.3,
+  "group_count": 3,
+  "group_work": {
+    "0": 4000.0,
+    "1": 8000.0,
+    "2": 4000.0
+  },
+  "partition": {
+    "gate-unit": 0,
+    "merge-unit": 1,
+    "report-unit": 2,
+    "verify-unit": 1
+  }
+}

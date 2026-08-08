@@ -1,0 +1,21 @@
+{
+  "budget_cap": 95881.6,
+  "group_count": 4,
+  "group_work": {
+    "0": 6000.0,
+    "1": 4000.0,
+    "2": 4000.0,
+    "3": 4000.0
+  },
+  "partition": {
+    "auth-api": 0,
+    "auth-ui": 0,
+    "backend-hub": 1,
+    "items-api": 2,
+    "items-ui": 2,
+    "profile-api": 3,
+    "profile-ui": 3,
+    "spa-hub": 1,
+    "verify": 0
+  }
+}
