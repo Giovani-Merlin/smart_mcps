@@ -60,10 +60,6 @@ class PreflightError(SessionError):
     """The installed CLI does not support the flags this design pins."""
 
 
-class RoundTimeout(SessionError):
-    """A round exceeded the per-round subprocess timeout."""
-
-
 class ReportError(SessionError):
     """The round's final message never produced a valid report block."""
 
@@ -88,28 +84,51 @@ class RoundUsage:
 
     @classmethod
     def from_envelope(cls, envelope: dict) -> RoundUsage:
+        """Context occupancy of the round's final turn.
+
+        The envelope's top-level ``usage`` *sums* every turn of the round, so on a
+        multi-turn round its cache-read total grows without bound and has nothing to
+        do with how full the context actually is — a 190-turn coder round reported
+        18.6M against a real occupancy of 262k. ``usage.iterations`` carries the
+        per-turn entries, and the last of them is the context the next round would
+        resume into. Envelopes without ``iterations`` (older CLIs, the test stub)
+        fall back to the top level, where the two are identical for a single turn.
+        """
         usage = envelope.get("usage") or {}
+        iterations = usage.get("iterations") or []
+        latest = iterations[-1] if isinstance(iterations, list) and iterations else usage
         return cls(
-            input_tokens=int(usage.get("input_tokens", 0) or 0),
-            output_tokens=int(usage.get("output_tokens", 0) or 0),
-            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
-            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            input_tokens=int(latest.get("input_tokens", 0) or 0),
+            output_tokens=int(latest.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(latest.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(latest.get("cache_creation_input_tokens", 0) or 0),
         )
 
 
 @dataclass
 class SessionUsage:
-    """Cumulative usage for one session across rounds (breaker input, plan U5)."""
+    """Cumulative usage for one session across rounds (breaker input, plan U5).
+
+    The four token classes stay separate rather than being folded into one input
+    total: a run whose spend is mostly ``cache_read`` is cheap and healthy, and
+    collapsing it into ``total_input_tokens`` (as this did originally) makes an
+    efficient run and an expensive one indistinguishable. ``last_context_tokens``
+    is unchanged — the circuit breaker reads it and must not shift behaviour.
+    """
 
     rounds: int = 0
-    total_input_tokens: int = 0
+    total_input_tokens: int = 0  # uncached input only
     total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
     last_context_tokens: int = 0
 
     def add(self, usage: RoundUsage) -> None:
         self.rounds += 1
-        self.total_input_tokens += usage.input_tokens + usage.cache_creation_input_tokens
+        self.total_input_tokens += usage.input_tokens
         self.total_output_tokens += usage.output_tokens
+        self.total_cache_read_tokens += usage.cache_read_input_tokens
+        self.total_cache_creation_tokens += usage.cache_creation_input_tokens
         self.last_context_tokens = usage.context_tokens
 
 
@@ -142,21 +161,23 @@ class SessionRunner:
         self,
         *,
         claude_bin: str | Sequence[str] = "claude",
-        timeout_s: float = 1800.0,
         model: str | None = None,
         permission_mode: str | None = "acceptEdits",
         allowed_tools: Sequence[str] | None = None,
         transcript_root: Path | None = None,
         env: dict[str, str] | None = None,
         tracker: SubprocessTracker | None = None,
+        max_thinking_tokens: int | None = None,
+        thinking: str | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
-        self.timeout_s = timeout_s
         self.model = model
+        self.max_thinking_tokens = max_thinking_tokens
+        self.thinking = thinking
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
-        self._env = {**os.environ, **env} if env is not None else None
+        self._env = _scrub_virtualenv({**os.environ, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
@@ -193,14 +214,21 @@ class SessionRunner:
         prompt: str,
         name: str,
         cwd: Path,
+        session_id: str | None = None,
         json_schema: dict | None = None,
     ) -> RoundResult:
         """Fork the base session and run the first round in one blocking call.
 
         Serialized: the session store has no documented locking (plan Key Technical
         Decisions); forking is fast, so this never serializes the groups themselves.
+
+        ``session_id``, when given, lets the caller record the id in the manifest
+        *before* this blocking call runs (plan U7): a crash mid-call would
+        otherwise leave no manifest entry for a group interrupted during its
+        very first round, so a later resume forks a brand new session instead
+        of finding the one already recorded.
         """
-        session_id = str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         with self._fork_lock:
             return self._call(
                 prompt,
@@ -250,12 +278,18 @@ class SessionRunner:
             argv += ["--allowedTools", ",".join(self.allowed_tools)]
         if self.model:
             argv += ["--model", self.model]
+        if self.max_thinking_tokens is not None:
+            argv += ["--max-thinking-tokens", str(self.max_thinking_tokens)]
+        if self.thinking:
+            argv += ["--thinking", self.thinking]
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
         returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context)
         if returncode != 0:
-            raise SessionError(f"claude exited {returncode} ({context}): {stderr.strip()[:500]}")
+            raise SessionError(
+                f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
+            )
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError as exc:
@@ -285,15 +319,47 @@ class SessionRunner:
         if self.tracker is not None:
             self.tracker.spawned(proc.pid, context)
         try:
-            stdout, stderr = proc.communicate(timeout=self.timeout_s)
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            proc.communicate()
-            raise RoundTimeout(f"round exceeded {self.timeout_s}s ({context})") from exc
+            # No per-round timeout (R7): a round runs as long as the CLI does —
+            # wall-clock is a terrible proxy for stuck, and long rounds are normal.
+            stdout, stderr = proc.communicate()
         finally:
             if self.tracker is not None:
                 self.tracker.exited(proc.pid)
         return proc.returncode, stdout, stderr
+
+
+def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
+    """Drop the orchestrator's own venv from the worker env (plan U6, R16).
+
+    A worker inheriting ``VIRTUAL_ENV`` and its PATH entries resolves
+    ``python``/``pytest`` to the parent checkout's venv from inside its
+    worktree — the worktree's own venv (provisioned at creation) must win.
+    """
+    venv = env.pop("VIRTUAL_ENV", None)
+    if venv and env.get("PATH"):
+        prefix = venv.rstrip(os.sep) + os.sep
+        env["PATH"] = os.pathsep.join(
+            entry
+            for entry in env["PATH"].split(os.pathsep)
+            if entry and entry != venv and not entry.startswith(prefix)
+        )
+    return env
+
+
+def _error_detail(stdout: str, stderr: str) -> str:
+    """Best available error text for a non-zero exit (plan U4).
+
+    A usage-limit failure exits non-zero with empty ``stderr`` — the useful text
+    sits in ``stdout``'s JSON envelope instead. Try that first; fall back to
+    ``stderr`` unchanged if ``stdout`` doesn't parse or has no usable ``result``.
+    """
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        envelope = None
+    if isinstance(envelope, dict) and envelope.get("result"):
+        return str(envelope["result"])[:500]
+    return stderr.strip()[:500]
 
 
 def _argv_context(extra: list[str]) -> str:

@@ -20,12 +20,16 @@ ______________________________________________________________________
 Ground yourself in the project before the first question. Prioritize codegraph
 (`context` → `explore` → `impact`; see `skills/codegraph/SKILL.md`) over
 `find`/`grep`. Read `CONTEXT.md` if it exists (root, or via `CONTEXT-MAP.md` in
-multi-context repos) and any obviously related docs under `docs/`.
+multi-context repos) and any obviously related docs under `docs/`. Read
+`STRATEGY.md` at the repo root if it exists — anchor grill questions to its
+target problem, approach, and tracks, and flag immediately if the topic
+conflicts with a stated track or a "Not working on" entry (`/orchestrator-strategy`
+produces this file; skip if absent).
 
 **If a question can be answered by exploring the codebase, explore the codebase
 instead of asking.** The user's time goes to decisions only they can make.
 
-## Phase 2 — Grill relentlessly, one question at a time
+## Phase 2 — Grill relentlessly
 
 Interview the user until you share an understanding of what they actually want.
 Walk down each branch of the design tree, resolving dependencies between
@@ -33,7 +37,13 @@ decisions one by one.
 
 Rules of engagement:
 
-- **One question at a time**, via `AskUserQuestion`, **always with a recommended
+- **Batch independent questions, explain the stakes.** Group questions that
+  don't depend on each other's answer into a single `AskUserQuestion` call —
+  up to 4 questions per call, the tool's own limit. Only serialize when a
+  later question's options genuinely can't be framed until an earlier one is
+  answered. Every question carries a short explanation of why it matters or
+  what it trades off, not just a bare stem — this is a conversational mode
+  and the extra sentence earns its keep. **Always give a recommended
   answer** — make the recommendation the first option, labeled
   `(Recommended)`. Multiple-choice preferred; free-form only when options would
   be fabricated.
@@ -150,6 +160,8 @@ at `/orchestrator-plan <path>`.
 
 - **No code, no plan.** The only files this skill may write are the requirements
   document and `CONTEXT.md`.
-- One question at a time, each with a recommended answer.
+- Batch independent questions per `AskUserQuestion` call (max 4 per call);
+  serialize only on genuine dependency. Each question carries a recommended
+  answer and a short explanation.
 - Explore instead of asking whenever the codebase can answer.
 - Update `CONTEXT.md` inline as terms resolve; glossary only, never a spec.

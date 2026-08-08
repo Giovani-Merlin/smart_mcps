@@ -1,0 +1,16 @@
+{
+  "budget_cap": 95895.9,
+  "group_count": 2,
+  "group_work": {
+    "0": 10000.0,
+    "1": 10000.0
+  },
+  "partition": {
+    "audit": 0,
+    "billing-api": 0,
+    "billing-worker": 0,
+    "scaffold": 1,
+    "shipping-api": 1,
+    "shipping-worker": 1
+  }
+}

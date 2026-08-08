@@ -20,6 +20,8 @@ from orchestrator.grouping.partition import (
     detect_hub_roles,
     lift_independent,
     merge_small_groups,
+    repair_cycles,
+    slice_atoms,
     split_over_budget,
 )
 
@@ -154,6 +156,45 @@ class TestMerge:
         for members in groups_of(merged):
             assert not {"b1", "b2"} <= members
 
+    def test_acyclic_merge_still_accepted(self):
+        """Plan U4: the new cycle guard must not disable ordinary merging — an
+        acyclic, in-budget, makespan-neutral chain still fully collapses."""
+        g = graph("a b c".split(), dependencies={("a", "b"): 1.0, ("b", "c"): 1.0})
+        merged = merge_small_groups(g, {"a": 0, "b": 1, "c": 2}, lambda n: 1.0, budget_cap=10.0)
+        assert groups_of(merged) == {frozenset({"a", "b", "c"})}
+
+
+class TestMergeAcyclicGuard:
+    """Plan U4 (M2): merging an upstream hub's group with a downstream
+    aggregator's group across an intermediate group inverts an edge in the
+    quotient graph — the guard must refuse that specific merge."""
+
+    def test_merge_creating_cross_group_cycle_is_rejected(self):
+        """source-hub -> feature -> sink-aggregator, plus a direct
+        source-hub -> sink-aggregator edge (the aggregator's real-world
+        pattern of also depending on the hub directly). Merging hub and agg
+        skips feature and would invert the feature->agg edge against the
+        (now single-group) hub->feature edge — every candidate merge here is
+        either over budget or would create that cycle, so all three groups
+        stay distinct."""
+        g = graph(
+            "hub feature agg".split(),
+            dependencies={
+                ("hub", "feature"): 1.0,
+                ("feature", "agg"): 1.0,
+                ("hub", "agg"): 1.0,
+            },
+        )
+        work = {"hub": 1.0, "feature": 10.0, "agg": 1.0}
+        merged = merge_small_groups(
+            g, {"hub": 0, "feature": 1, "agg": 2}, lambda n: work[n], budget_cap=5.0
+        )
+        assert groups_of(merged) == {
+            frozenset({"hub"}),
+            frozenset({"feature"}),
+            frozenset({"agg"}),
+        }
+
 
 class TestSplitOverBudget:
     def test_ae2_split_at_lowest_affinity_boundary(self):
@@ -179,6 +220,32 @@ class TestSplitOverBudget:
         split = split_over_budget(g, {n: 0 for n in "abc"}, lambda n: 1.0, budget_cap=2.0)
         assert all(len(members) <= 2 for members in groups_of(split))
 
+    def test_slice_keeps_its_members_together_when_group_splits(self):
+        """Plan U3: cut candidates are between blocks — a slice atom or a lone
+        node — never inside a slice. A two-task slice plus two loose tasks
+        must split around the slice, not through it."""
+        g = graph(
+            "s1 s2 x y".split(),
+            affinity={("s1", "s2"): 10.0, ("s2", "x"): 1.0, ("x", "y"): 10.0},
+            slices={"s1": "sl", "s2": "sl"},
+        )
+        split = split_over_budget(
+            g, {n: 0 for n in "s1 s2 x y".split()}, lambda n: 1.0, budget_cap=2.0
+        )
+        assert any({"s1", "s2"} <= members for members in groups_of(split))
+
+    def test_single_block_over_budget_stays_whole_even_when_it_is_a_slice(self):
+        """Generalizes the single-node passthrough (plan U3): a group made of
+        exactly one block — even a multi-task slice atom — stays whole when
+        over budget, since there is nothing to cut it against."""
+        g = graph(
+            "s1 s2".split(),
+            affinity={("s1", "s2"): 5.0},
+            slices={"s1": "sl", "s2": "sl"},
+        )
+        split = split_over_budget(g, {"s1": 0, "s2": 0}, lambda n: 100.0, budget_cap=1.0)
+        assert groups_of(split) == {frozenset({"s1", "s2"})}
+
 
 class TestGroupDag:
     def test_cycle_raises_naming_groups_and_edges(self):
@@ -199,15 +266,87 @@ class TestGroupDag:
         dag = build_group_dag(g, {"a": 0, "b": 1, "c": 2})
         assert dag == {0: {1}, 1: {2}}
 
-    def test_strategy_fails_loudly_on_cyclic_grouping(self):
-        """Affinity pulls a+d and b+c together while dependencies cross: a→b, c→d."""
+    def test_strategy_repairs_a_cyclic_grouping_instead_of_raising(self):
+        """Plan U5: affinity pulls a+d and b+c together while dependencies
+        cross (a→b, c→d) — unrelated across the groups, so the merge guard's
+        chain_compatible check refuses to fold them together itself, leaving
+        a 2-group cycle for repair_cycles to fix by merging the SCC. The
+        strategy no longer raises for a cycle it can repair."""
         g = graph(
             "a b c d".split(),
             affinity={("a", "d"): 100.0, ("b", "c"): 100.0},
             dependencies={("a", "b"): 1.0, ("c", "d"): 1.0},
         )
-        with pytest.raises(GroupCycleError):
-            DefaultPartitionStrategy().partition(g)
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset("abcd")}
+        assert strategy.last_stage == "repair"
+
+
+class TestSccRepair:
+    """Plan U5: repair_cycles merges every cyclic group-SCC deterministically,
+    then re-splits the merged group back inside budget where an acyclic
+    re-split exists."""
+
+    def test_repair_merges_cyclic_scc_and_stays_acyclic(self):
+        """A 3-group cycle (a->b->c->a) merges into one group; an unrelated
+        downstream group (d) is untouched, and every task from the formerly
+        cyclic groups appears exactly once in the result."""
+        g = graph(
+            "a b c d".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=None, flags=[])
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"}), frozenset({"d"})}
+        build_group_dag(g, repaired)  # must not raise
+
+    def test_repair_resplit_brings_merged_scc_within_cap(self):
+        """A 2-group cycle whose merged work (4) exceeds the cap (2) is
+        re-split into two chunks that each fit, and the quotient graph
+        stays acyclic — the wave-ordered re-split (plan U5) is what makes
+        this safe rather than reintroducing the same cycle."""
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        flags: list[str] = []
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags)
+        assert flags == []
+        groups = groups_of(repaired)
+        assert {n for members in groups for n in members} == {"a1", "a2", "b1", "b2"}
+        assert all(len(members) <= 2 for members in groups)
+        build_group_dag(g, repaired)  # must not raise
+
+    def test_repair_flags_group_that_cannot_be_resplit_under_cap(self):
+        """a1/a2 share a slice while a1 -> b -> a2: contracting the slice
+        makes the slice block and b's block mutually dependent, so no
+        acyclic re-split can separate them. The merged group is returned
+        over budget with a flags[] entry naming it and the overshoot."""
+        g = graph(
+            "a1 a2 b".split(),
+            dependencies={("a1", "b"): 1.0, ("b", "a2"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        partition = {"a1": 0, "a2": 0, "b": 1}
+        flags: list[str] = []
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags)
+        assert groups_of(repaired) == {frozenset({"a1", "a2", "b"})}
+        assert len(flags) == 1
+        assert "a1" in flags[0] and "1" in flags[0]
+
+    def test_repair_is_deterministic_across_runs(self):
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        results = {
+            tuple(sorted(repair_cycles(g, dict(partition), lambda n: 1.0, 2.0, []).items()))
+            for _ in range(5)
+        }
+        assert len(results) == 1
 
 
 class TestSliceContraction:
@@ -235,27 +374,75 @@ class TestSliceContraction:
         assert partition["a"] == partition["b"]
         assert partition["z"] != partition["a"]
 
-    def test_oversized_slice_still_splits_on_budget_at_weakest_internal_edge(self):
-        """Softness comes after expansion: the must-link yields to the token cap."""
+    def test_oversized_slice_stays_whole_instead_of_splitting(self):
+        """Plan U3: a slice is one indivisible block for the splitter — the
+        must-link no longer yields to the token cap the way it did pre-U3.
+        An oversized slice passes through whole; reacting to the overshoot
+        is U6's overflow gate, not the splitter."""
         g = graph(
             "a1 a2 a3".split(),
             affinity={("a1", "a2"): 5.0, ("a2", "a3"): 1.0},
             slices={"a1": "s", "a2": "s", "a3": "s"},
         )
         partition = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0).partition(g)
-        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"a3"})}
+        assert groups_of(partition) == {frozenset({"a1", "a2", "a3"})}
 
-    def test_hub_is_never_absorbed_into_its_slice(self):
-        """Hub isolation runs before contraction: a hub carrying a slice label
-        stays its own group; the remaining slice-mates still contract."""
+    def test_hub_role_member_joins_its_slice(self):
+        """A declared slice outranks an inferred hub role (plan U2): the planner
+        bound these tasks explicitly, so a hub-classified member now contracts
+        with its slice-mates instead of being isolated away from them. This
+        corrects the pre-U2 expectation, which had the hub excluded."""
         g = graph(
             "hub a b c".split(),
             dependencies={("hub", n): 1.0 for n in "abc"},
             slices={"hub": "s", "a": "s", "b": "s"},
         )
+        partition = DefaultPartitionStrategy().partition(g)
+        assert partition["hub"] == partition["a"] == partition["b"]
+
+    def test_hub_isolation_still_applies_to_a_slice_less_task(self):
+        """Slices override hub classification only for their own declared members
+        (plan U2 decision); a hub carrying no slice label is isolated exactly as
+        before, even with an unrelated slice present elsewhere in the graph."""
+        g = graph(
+            "hub a b c d".split(),
+            affinity={("hub", n): 1.0 for n in "abcd"} | {("a", "b"): 5.0, ("c", "d"): 5.0},
+            dependencies={("hub", n): 1.0 for n in "abcd"},
+            slices={"a": "sl", "b": "sl"},
+        )
         partition = DefaultPartitionStrategy(budget_cap=2.0).partition(g)
+        assert frozenset({"hub"}) in groups_of(partition)
         assert partition["a"] == partition["b"]
-        assert partition["hub"] != partition["a"]
+
+    def test_slice_atoms_retains_a_hub_classified_member(self):
+        """slice_atoms no longer filters by role (plan U2, mechanism M1): every
+        declared member joins its atom even when detect_hub_roles classifies it
+        as a hub."""
+        g = graph(
+            "agg s2 x y z".split(),
+            dependencies={(n, "agg"): 1.0 for n in "xyz"},
+            slices={"agg": "sl", "s2": "sl"},
+        )
+        roles = detect_hub_roles(g)
+        assert roles["agg"] == "aggregator_hub"
+        assert slice_atoms(g, roles) == {"sl": ["agg", "s2"]}
+
+    def test_slice_survives_when_every_member_is_hub_classified(self):
+        """The Observatory failure mode (plan U2): a slice whose members are all
+        hub-classified used to vanish entirely (no member was 'core', so the
+        label never reached the atoms dict at all). Now the whole slice
+        contracts and every member lands in the same partitioned group."""
+        g = graph(
+            "p1 p2 x1 x2 x3".split(),
+            dependencies={(x, "p1"): 1.0 for x in "x1 x2 x3".split()}
+            | {(x, "p2"): 1.0 for x in "x1 x2 x3".split()},
+            slices={"p1": "sl", "p2": "sl"},
+        )
+        roles = detect_hub_roles(g)
+        assert roles["p1"] == "aggregator_hub"
+        assert roles["p2"] == "aggregator_hub"
+        partition = DefaultPartitionStrategy().partition(g)
+        assert partition["p1"] == partition["p2"]
 
     def test_contraction_is_deterministic_across_runs(self):
         g = graph(
@@ -267,19 +454,21 @@ class TestSliceContraction:
         results = {tuple(sorted(DefaultPartitionStrategy().partition(g).items())) for _ in range(5)}
         assert len(results) == 1
 
-    def test_slice_induced_group_cycle_fails_loudly_naming_the_edges(self):
-        """Contraction can close a cycle absent at task level: slice s1 feeds s2
-        through one task while s2 feeds s1 through another. The chain guard
-        refuses to merge them away, and the DAG build names both task edges."""
+    def test_slice_induced_group_cycle_is_repaired_by_merging_the_scc(self):
+        """Plan U5: contraction can close a cycle absent at task level — slice
+        s1 feeds s2 through one task while s2 feeds s1 through another. The
+        chain guard refuses to merge them away (unrelated node pairs across
+        the two slices), leaving a 2-group cycle that repair_cycles now
+        merges into one group instead of raising."""
         g = graph(
             "a1 a2 b1 b2".split(),
             dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
             slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
         )
-        with pytest.raises(GroupCycleError) as exc:
-            DefaultPartitionStrategy().partition(g)
-        assert ("a1", "b1") in exc.value.offending_edges
-        assert ("b2", "a2") in exc.value.offending_edges
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset({"a1", "a2", "b1", "b2"})}
+        assert strategy.last_stage == "repair"
 
 
 class TestDefaultStrategyEndToEnd:
@@ -352,3 +541,185 @@ class TestStrategySeam:
                 assert all(alias.name in allowed for alias in node.names), ast.dump(node)
             elif isinstance(node, ast.ImportFrom):
                 assert node.module in allowed, node.module
+
+
+class TestStageAttribution:
+    """R18: DefaultPartitionStrategy.last_stage names which internal stage
+    (contraction / louvain / lift / split / merge) last changed group membership."""
+
+    def test_last_stage_is_split_when_budget_forces_a_cut(self):
+        """A slice plus a loose task survive contraction/lift clustered
+        together, then split_over_budget cuts the loose task away — the
+        slice's two members stay together (plan U3), and last_stage must
+        name the split, not the earlier stages."""
+        g = graph(
+            "a1 a2 x".split(),
+            affinity={("a1", "a2"): 5.0, ("a2", "x"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        strategy = DefaultPartitionStrategy(work_fn=lambda n: 3.0, budget_cap=7.0)
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset({"a1", "a2"}), frozenset({"x"})}
+        assert strategy.last_stage == "split"
+
+    def test_last_stage_is_merge_when_a_dependent_chain_collapses(self):
+        """No budget cap (split never runs); merge_small_groups is the only stage
+        that changes anything, so it must be named last."""
+        g = graph("a b c".split(), dependencies={("a", "b"): 1.0, ("b", "c"): 1.0})
+        strategy = DefaultPartitionStrategy()
+        partition = strategy.partition(g)
+        assert groups_of(partition) == {frozenset({"a", "b", "c"})}
+        assert strategy.last_stage == "merge"
+
+    def test_last_stage_is_none_for_empty_graph(self):
+        strategy = DefaultPartitionStrategy()
+        strategy.partition(graph([]))
+        assert strategy.last_stage is None
+
+
+def _granularity_ladder_graph():
+    """Three branches of uneven length converging on one leaf — the same shape
+    as tests/fixtures/grouping/granularity-ladder.md, at the partition level
+    directly (no estimator/mapper involved). Every cross-branch pair fails
+    chain_compatible (the branches are genuinely parallel), so `independent`
+    keeps all three apart; `balanced` relaxes chain_compatible and accepts one
+    cross-branch merge that does not regress the simulated makespan, rejecting
+    a second on makespan alone; `monolithic` also drops the makespan check."""
+    return graph(
+        "root alpha1 alpha2 beta1 beta2 beta3 gamma1 leaf".split(),
+        dependencies={
+            ("root", "alpha1"): 1.0,
+            ("alpha1", "alpha2"): 1.0,
+            ("root", "beta1"): 1.0,
+            ("beta1", "beta2"): 1.0,
+            ("beta2", "beta3"): 1.0,
+            ("root", "gamma1"): 1.0,
+            ("alpha2", "leaf"): 1.0,
+            ("beta3", "leaf"): 1.0,
+            ("gamma1", "leaf"): 1.0,
+        },
+    )
+
+
+class TestGranularityDial:
+    """Plan U4: --granularity relaxes merge_small_groups' two guards in order —
+    `balanced` drops chain_compatible (keeping the makespan check as the sole
+    acceptance test), `monolithic` also drops the makespan check."""
+
+    def test_independent_is_the_default_and_equals_todays_behaviour(self):
+        g = _granularity_ladder_graph()
+        default = DefaultPartitionStrategy().partition(g)
+        explicit = DefaultPartitionStrategy(granularity="independent").partition(g)
+        assert groups_of(default) == groups_of(explicit)
+        assert len(groups_of(default)) == 3
+
+    def test_balanced_strictly_reduces_group_count(self):
+        g = _granularity_ladder_graph()
+        independent = DefaultPartitionStrategy(granularity="independent").partition(g)
+        balanced = DefaultPartitionStrategy(granularity="balanced").partition(g)
+        assert len(groups_of(balanced)) < len(groups_of(independent))
+        assert len(groups_of(balanced)) == 2
+
+    def test_monolithic_is_no_more_groups_than_balanced(self):
+        g = _granularity_ladder_graph()
+        balanced = DefaultPartitionStrategy(granularity="balanced").partition(g)
+        monolithic = DefaultPartitionStrategy(granularity="monolithic").partition(g)
+        assert len(groups_of(monolithic)) <= len(groups_of(balanced))
+        assert groups_of(monolithic) == {frozenset(g.nodes)}
+
+    def test_balanced_relaxes_chain_compatible_via_merge_reject_reasons(self):
+        """Direct evidence at the merge_small_groups level: independent rejects
+        the cross-branch candidate as not_chain_compatible; balanced accepts one
+        such merge and then rejects a further one specifically on
+        makespan_regression — proving the makespan guard, not chain_compatible,
+        is what still gates monolithic-only merges at the balanced level."""
+        g = _granularity_ladder_graph()
+        # Pre-cluster into the three branch groups DefaultPartitionStrategy would
+        # form before its own merge stage, so merge_small_groups sees the same
+        # input either way.
+        partition = {
+            "root": 1,
+            "beta1": 1,
+            "beta2": 1,
+            "beta3": 0,
+            "alpha1": 0,
+            "alpha2": 0,
+            "leaf": 0,
+            "gamma1": 2,
+        }
+        work = lambda n: 1.0  # noqa: E731
+        independent_recorder = _RecordingRecorder()
+        merge_small_groups(
+            g, dict(partition), work, None, recorder=independent_recorder, granularity="independent"
+        )
+        assert any(
+            not m["accepted"] and m["reason"] == "not_chain_compatible"
+            for m in independent_recorder.merges
+        )
+        balanced_recorder = _RecordingRecorder()
+        merge_small_groups(
+            g, dict(partition), work, None, recorder=balanced_recorder, granularity="balanced"
+        )
+        assert not any(m["reason"] == "not_chain_compatible" for m in balanced_recorder.merges)
+        assert any(
+            not m["accepted"] and m["reason"] == "makespan_regression"
+            for m in balanced_recorder.merges
+        )
+
+    def test_granularity_is_deterministic_across_runs(self):
+        g = _granularity_ladder_graph()
+        for gran in ("independent", "balanced", "monolithic"):
+            results = {
+                tuple(sorted(DefaultPartitionStrategy(granularity=gran).partition(g).items()))
+                for _ in range(5)
+            }
+            assert len(results) == 1
+
+    def test_budget_cap_and_slices_stay_hard_at_every_level(self):
+        """Slice must-link, the budget cap, and acyclicity are never relaxed by
+        the dial — only chain_compatible and the makespan check are."""
+        g = graph(
+            "a1 a2 x".split(),
+            affinity={("a1", "a2"): 10.0},
+            dependencies={("a2", "x"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        for gran in ("independent", "balanced", "monolithic"):
+            strategy = DefaultPartitionStrategy(
+                work_fn=lambda n: 3.0, budget_cap=7.0, granularity=gran
+            )
+            partition = strategy.partition(g)
+            slice_members = {"a1", "a2"}
+            by_gid = {}
+            for node, gid in partition.items():
+                by_gid.setdefault(gid, set()).add(node)
+            assert any(slice_members <= members for members in by_gid.values())
+            for members in by_gid.values():
+                assert sum(3.0 for _ in members) <= 7.0 or slice_members <= members
+
+
+class _RecordingRecorder:
+    """Minimal PartitionRecorder capturing only merge candidates, as plain dicts."""
+
+    def __init__(self):
+        self.merges = []
+
+    def record_stage(self, stage, partition):
+        pass
+
+    def record_hub_role(self, *a, **k):
+        pass
+
+    def record_louvain(self, *a, **k):
+        pass
+
+    def record_split(self, *a, **k):
+        pass
+
+    def record_merge_candidate(
+        self, round_, source, target, accepted, reason, merged_work, edge_weight
+    ):
+        self.merges.append({"accepted": accepted, "reason": reason})
+
+    def record_repair(self, *a, **k):
+        pass

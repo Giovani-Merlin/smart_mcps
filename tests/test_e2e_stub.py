@@ -80,7 +80,6 @@ def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
         "[session]\n"
         f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
         f'transcript_root = "{fake_home}/projects"\n'
-        "timeout_s = 30.0\n"
         f"{extra}"
     )
 
@@ -169,7 +168,9 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+    )
     gids = [group["id"] for group in grouping["groups"]]
     assert gids  # the toy plan produced at least one group
 
@@ -277,7 +278,9 @@ def test_group_cli_premapped_greenfield_plan_skips_mapper_and_orders_groups(repo
         client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     assert exit_code == 0
-    grouping = json.loads((repo / ".orchestrator" / "groups.json").read_text())
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "greenfield-plan" / "groups.json").read_text()
+    )
 
     # the flags record the deterministic fast path and the prospective files
     assert any("mapper LLM skipped" in flag for flag in grouping["flags"])
@@ -379,8 +382,14 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     write_run_artifacts(
         repo,
         [
-            make_group("g1", files=["conflict.txt"]),
-            make_group("g2", files=["conflict.txt"]),
+            # Deliberately *disjoint* declarations, even though both coders go on
+            # to write conflict.txt: plan U9's exclusion keys off declared files,
+            # so two groups declaring conflict.txt could no longer run at once
+            # and the race below would be impossible to stage. An undeclared
+            # collision like this one is exactly what U9 cannot prevent — and
+            # what the conflict→rewrite path still has to catch.
+            make_group("g1", files=["g1.out"]),
+            make_group("g2", files=["g2.out"]),
         ],
     )
     write_config(repo, fake_home)
@@ -419,7 +428,25 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     )
 
     stub = StubLlm()
-    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=stub)
+    # Concurrency>1 is required for the race: under the serial default the groups
+    # stack (g2 branches from the tip that already has g1's conflict.txt) and no
+    # conflict ever arises — which is the whole point of serial. Force parallel to
+    # exercise the conflict→rewrite path. Escalation defaults on (plan U2); this
+    # scenario tests the conflict→rewrite path itself, not HITL, so it stays headless.
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--concurrency",
+            "2",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=stub,
+    )
     assert exit_code == 0
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
@@ -448,8 +475,20 @@ def test_reject_forever_fails_group_and_strands_dependent(repo, fake_home, capsy
         verdict_entry("changes_required", ["never good enough"]),
     )
 
+    # Escalation defaults on (plan U2); this scenario tests the reject-forever /
+    # generation-cap path itself, not HITL, so it stays headless.
     exit_code = main(
-        ["run", "--repo", str(repo), "--run-id", run_id, "--sequential"], llm_runner=StubLlm()
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--sequential",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=StubLlm(),
     )
     assert exit_code == 1
     err = capsys.readouterr().err
@@ -474,20 +513,19 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
         name_of(run_id, "g1", "coder"),
         coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
     )
-    # g2's coder dies at fork — the executor records the failure and exits nonzero
+    # g2's coder dies at fork — an envelope failure: the group lands interrupted
+    # (non-terminal) and the run exits 2, stopped-but-resumable (R1–R3)
     script_session(
         fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
     )
     exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
-    assert exit_code == 1
+    assert exit_code == 2
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
-    assert state["groups"]["g2"]["state"] == "failed"
+    assert state["groups"]["g2"]["state"] == "interrupted"
 
-    # operator intervention: mark g2 ready again and give its coder a fresh script
-    state["groups"]["g2"] = {"state": "ready", "generation": 1, "failure": None}
-    state_path = repo / ".orchestrator" / "runs" / run_id / "state.json"
-    state_path.write_text(json.dumps(state))
+    # no state surgery needed: plain `resume` relaunches interrupted groups —
+    # just give g2's coder a fresh script
     script_session(
         fake_home,
         name_of(run_id, "g2", "coder"),
@@ -499,6 +537,10 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     state = state_of(repo, run_id)
     assert state["groups"]["g1"]["state"] == "completed"
     assert state["groups"]["g2"]["state"] == "completed"
+    # plan U8: g2's earlier interrupted-attempt failure text must not survive
+    # into its later successful completion — `status` would otherwise print a
+    # stale failure line for a group recorded as completed.
+    assert state["groups"]["g2"].get("failure") is None
 
     # the resumed run reused the original base session instead of starting one
     base_calls = named_calls(fake_home, f"{run_id}-base")
@@ -507,6 +549,88 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     assert manifest["base_session_id"]
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
+
+
+# ------------------------------------------------------------- named groupings
+
+
+def test_run_snapshots_the_named_grouping_and_records_it_in_the_manifest(repo, fake_home):
+    """Plan U10: `run --grouping alpha` copies alpha's files into the run
+    directory and records which grouping it used in manifest.json."""
+    run_id = "r-snap"
+    write_run_artifacts(
+        repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)], name="alpha"
+    )
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "x\n"}, commit="g1: work"),
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--grouping", "alpha"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    assert (run_dir / "groups.json").is_file()
+    assert (run_dir / "base-context.md").is_file()
+    assert manifest_of(repo, run_id)["grouping"] == "alpha"
+
+
+def test_resume_after_regroup_uses_the_run_snapshot_not_the_live_grouping(repo, fake_home):
+    """Plan U10 (ADR 0002): re-running `group --name alpha` against a different
+    plan must not be able to rewrite a run that already started from it —
+    `resume` schedules the groups the run began with, from its own snapshot."""
+    from test_grouper_pipeline import MIXED_PLAN
+
+    run_id = "r7"
+    groups = [
+        make_group("g1", intensity=ReviewIntensity.SELF_VERIFY),
+        make_group("g2", intensity=ReviewIntensity.SELF_VERIFY),
+    ]
+    write_run_artifacts(repo, groups, name="alpha")
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--grouping", "alpha"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 2
+    assert set(state_of(repo, run_id)["groups"]) == {"g1", "g2"}
+
+    # `group --name alpha` re-run against an unrelated plan overwrites the live
+    # grouping directory
+    other_plan = repo / "other-plan.md"
+    other_plan.write_text(MIXED_PLAN)
+    regroup_exit = main(
+        ["group", str(other_plan), "--repo", str(repo), "--name", "alpha"],
+        llm_runner=StubLlm(),
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert regroup_exit == 0
+    live_grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "alpha" / "groups.json").read_text()
+    )
+    live_tasks = {task for group in live_grouping["groups"] for task in group["tasks"]}
+    assert live_tasks == {"t1-api", "t2-ui"}  # the live directory really did change
+
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.out": "two\n"}, commit="g2: work"),
+    )
+    exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert set(state["groups"]) == {"g1", "g2"}  # the resumed run kept its own snapshot
 
 
 # ------------------------------------------------------------------ HITL (Phase D)
@@ -579,6 +703,10 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
         {
             "coder_question": ("answer", "use the JSON serializer"),
             "reviewer_too_hard": ("skip", ""),
+            # plan U2: skipping g2 raises a follow-up group_resolve escalation
+            # for its committed-but-unreviewed work; the operator declines that
+            # too, so g2 stays failed rather than getting silently resolved.
+            "group_resolve": ("skip", ""),
         },
     )
     thread.join(timeout=25)
@@ -590,7 +718,7 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
     assert state["groups"]["g1"]["state"] == "completed"
     assert state["groups"]["g2"]["state"] == "failed"
     assert "operator skipped" in state["groups"]["g2"]["failure"]
-    assert set(handled) == {"coder_question", "reviewer_too_hard"}
+    assert set(handled) == {"coder_question", "reviewer_too_hard", "group_resolve"}
 
     # the coder was resumed warm with the operator's answer (resume rounds carry no
     # --name, so search every call's prompt), and no extra session was forked
@@ -606,8 +734,9 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
 
 
 def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
-    """`--intensity autonomous` runs exactly like a no-flag run: no escalation
-    channel, no event log — the injected seam is fully absent."""
+    """`--intensity autonomous` runs exactly like a no-flag run: no *escalation*
+    artifacts — the injected seam is fully absent. The lifecycle log is always
+    on (R10), so run.log exists even here, but it carries no escalation lines."""
     run_id = "ra"
     write_run_artifacts(repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)])
     write_config(repo, fake_home)
@@ -624,4 +753,71 @@ def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
     assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
     run_dir = repo / ".orchestrator" / "runs" / run_id
     assert not (run_dir / "escalations").exists()
-    assert not (run_dir / "logs" / "run.log").exists()
+    run_log = (run_dir / "logs" / "run.log").read_text()
+    assert "ESCALATION" not in run_log  # escalation behaviour itself is unchanged
+    assert f"run {run_id} started (autonomous)" in run_log
+    assert "group g1: completed" in run_log  # lifecycle events in autonomous mode (R10)
+
+
+def test_overlapping_groups_are_serialized_end_to_end_and_both_land(repo, fake_home):
+    """Plan U9, through the whole stack: two groups declaring shared.py at
+    --concurrency 4 are held apart while a third, sharing nothing, is not — and
+    every group's work still reaches the integration branch.
+
+    The assertion is on the run log rather than on wall-clock spans: the session
+    runner serializes *forks* regardless (fake_claude's fork.lock proves it), so
+    coder call spans never overlap here whether U9 is in force or not.
+    """
+    run_id = "r9"
+    write_run_artifacts(
+        repo,
+        [
+            make_group("g1", files=["shared.py", "one.py"]),
+            make_group("g2", files=["shared.py", "two.py"]),
+            make_group("g3", files=["three.py"]),
+        ],
+    )
+    write_config(repo, fake_home)
+    for gid in ("g1", "g2", "g3"):
+        script_session(
+            fake_home,
+            name_of(run_id, gid, "coder"),
+            coder_entry(delay_s=0.3, files={f"{gid}.out": f"{gid}\n"}, commit=f"{gid}: work"),
+        )
+        script_session(fake_home, name_of(run_id, gid, "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--concurrency",
+            "4",
+            "--intensity",
+            "autonomous",
+        ],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert {gid: state["groups"][gid]["state"] for gid in ("g1", "g2", "g3")} == {
+        "g1": "completed",
+        "g2": "completed",
+        "g3": "completed",
+    }
+
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    # Whichever of the pair was admitted first holds the other — no ordering
+    # between them is required, so either line satisfies the invariant.
+    assert (
+        "group g2: held (file_overlap) by g1 on shared.py" in run_log
+        or "group g1: held (file_overlap) by g2 on shared.py" in run_log
+    )
+    # g3 shares nothing: the exclusion must not have held it back too.
+    assert "group g3: held" not in run_log
+
+    # Whichever order was chosen, every group's work reached integration.
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    assert all(f"merge({run_id}): {gid}" in log for gid in ("g1", "g2", "g3"))

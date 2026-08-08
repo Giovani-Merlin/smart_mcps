@@ -95,6 +95,38 @@ class TestManifest:
         assert sessions[0].retirement_reason == "round threshold exceeded"
         assert sessions[1].retirement_reason is None
 
+    def test_session_entry_last_context_tokens_round_trips(self):
+        """R5: the persisted context size survives the manifest round trip — the
+        re-entry pre-check reads it after the in-memory usage died with the process."""
+        entry = SessionEntry(
+            session_id="s-warm", role=SessionRole.CODER, last_context_tokens=87_654
+        )
+        assert SessionEntry.model_validate_json(entry.model_dump_json()) == entry
+        # a fresh entry starts at zero
+        assert SessionEntry(session_id="s-new", role=SessionRole.CODER).last_context_tokens == 0
+
+    def test_cumulative_usage_fields_round_trip_and_default_for_old_runs(self):
+        """The estimate-vs-actual view reads these; runs recorded before they
+        existed must still load, reading as 'actuals not recorded'."""
+        entry = SessionEntry(
+            session_id="s-1",
+            role=SessionRole.CODER,
+            rounds_completed=3,
+            total_input_tokens=1_000,
+            total_output_tokens=2_000,
+            total_cache_read_tokens=3_000,
+            total_cache_creation_tokens=4_000,
+            model="claude-x",
+        )
+        assert SessionEntry.model_validate_json(entry.model_dump_json()) == entry
+
+        legacy = SessionEntry.model_validate_json(
+            '{"session_id": "s-old", "role": "coder", "last_context_tokens": 42}'
+        )
+        assert legacy.rounds_completed == 0
+        assert legacy.total_cache_read_tokens == 0
+        assert legacy.model is None
+
 
 class TestReportSchemas:
     def test_coder_report_requires_status(self):
@@ -107,6 +139,28 @@ class TestReportSchemas:
             CoderReport.model_validate(
                 {"status": "completed", "surprises": [{"kind": "not_a_kind"}]}
             )
+
+    def test_permission_denied_requires_nonblank_denied_command(self):
+        """Plan U3: a blank or whitespace-only denied_command is invalid on a
+        permission_denied report, mirroring needs_input's question validator."""
+        with pytest.raises(ValidationError, match="denied_command"):
+            CoderReport.model_validate({"status": "permission_denied", "denied_command": ""})
+        with pytest.raises(ValidationError, match="denied_command"):
+            CoderReport.model_validate({"status": "permission_denied", "denied_command": "   "})
+
+    def test_permission_denied_with_command_validates(self):
+        report = CoderReport.model_validate(
+            {"status": "permission_denied", "denied_command": "rm -rf /etc"}
+        )
+        assert report.status == "permission_denied"
+        assert report.denied_command == "rm -rf /etc"
+
+    def test_blocked_report_with_blank_denied_command_still_validates(self):
+        """A blocked report is never discriminated by denied_command emptiness
+        (plan decision) — the validator only fires for permission_denied."""
+        report = CoderReport.model_validate({"status": "blocked", "summary": "stuck"})
+        assert report.status == "blocked"
+        assert report.denied_command == ""
 
     def test_verdict_requires_status(self):
         with pytest.raises(ValidationError, match="status"):
@@ -143,7 +197,13 @@ class TestConfig:
         config = load_config(None)
         assert config.estimator.token_budget == 100_000
         assert config.breaker.max_generations == 3
-        assert config.execution.concurrency == 3
+        assert config.execution.concurrency == 1
+
+    def test_breaker_default_context_limit_matches_measured_reality(self):
+        """Plan U7: with no config file present, the breaker's context token
+        limit is 200000 (the 120k default retired healthy coders once the
+        usage signal was fixed to read actual context occupancy)."""
+        assert load_config(None).breaker.context_token_limit == 200_000
 
     def test_missing_file_falls_back_to_defaults(self, tmp_path):
         assert load_config(tmp_path / "absent.toml") == OrchestratorConfig()
@@ -157,4 +217,4 @@ class TestConfig:
         assert config.estimator.token_budget == 50_000
         assert config.difficulty.d_review == 0.2
         # untouched sections keep defaults
-        assert config.breaker.context_token_limit == 120_000
+        assert config.breaker.context_token_limit == 200_000

@@ -182,6 +182,11 @@ def main() -> int:
                     "ts_start": started,
                     "ts_end": time.time(),
                     "exit_code": code,
+                    # The env slice the U6 scrub tests assert on: workers must
+                    # never inherit the orchestrator's VIRTUAL_ENV / its PATH.
+                    "env": {
+                        key: os.environ[key] for key in ("VIRTUAL_ENV", "PATH") if key in os.environ
+                    },
                 },
             )
             return code
@@ -222,6 +227,12 @@ def main() -> int:
 
         exit_code = int(scripted.get("exit_code", 0))
         if exit_code:
+            # A usage-limit failure exits non-zero with an *empty* stderr but a
+            # populated JSON envelope on stdout (plan U4) — "stdout" lets a
+            # scripted entry reproduce that shape exactly, distinct from the
+            # stderr-only failure every other scripted failure uses.
+            if "stdout" in scripted:
+                print(scripted["stdout"])
             print(scripted.get("stderr", "scripted failure"), file=sys.stderr)
             return finish(exit_code)
 

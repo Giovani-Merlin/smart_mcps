@@ -7,9 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.execution.merge import IntegrationMerger
+from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.review import MergeConflict
-from orchestrator.execution.worktrees import create_worktree, group_branch
+from orchestrator.execution.worktrees import (
+    WorktreeError,
+    create_worktree,
+    group_branch,
+    remove_worktree,
+)
 from orchestrator.model import Group, ReviewIntensity
 
 
@@ -165,3 +170,153 @@ def test_ensure_is_idempotent_and_creates_branch_from_launch_ref(repo):
     second = merger.ensure()
     assert first == second
     assert git(repo, "merge-base", merger.branch, "main").strip() == launch
+
+
+# --------------------------------------------------------------- U1: merge gate
+
+
+def test_merge_refuses_a_branch_with_zero_commits_ahead(repo):
+    merger = IntegrationMerger(repo, "r1")
+    tip_before = merger.tip()
+    g1 = make_group("g1")
+    wt1 = group_worktree(repo, merger, g1)  # cut from the tip, no coder commit made
+    with pytest.raises(MergeError, match=r"g1.*orchestrator/r1-g1"):
+        merger.merge_group(g1, wt1)
+    assert merger.tip() == tip_before  # nothing touched
+    assert wt1.exists()  # the refused worktree is left in place, not cleaned up
+
+
+def test_commit_count_must_be_taken_before_the_merge_not_after(repo):
+    """Documents why merge_group snapshots the count before merging: after a
+    clean merge the branch's commits are reachable from the integration branch
+    too, so the same count reads zero and a post-merge check could never
+    distinguish a real merge from a no-op (plan U1)."""
+    merger = IntegrationMerger(repo, "r1")
+    g1 = make_group("g1")
+    wt1 = group_worktree(repo, merger, g1)
+    coder_commit(wt1, "one.txt", "g1 work\n", "feat: g1")
+    integration_wt = merger.ensure()
+    branch = group_branch("r1", "g1")
+    assert commits_ahead(integration_wt, merger.branch, branch) == 1
+
+    merger.merge_group(g1, wt1)
+    assert commits_ahead(integration_wt, merger.branch, branch) == 0
+
+
+# ---------------------------------------------------------- U1: branch refresh
+
+
+def test_refresh_fast_forwards_a_strictly_behind_branch(repo):
+    merger = IntegrationMerger(repo, "r1")
+    g1 = make_group("g1")
+    wt1 = group_worktree(repo, merger, g1)  # cut, no commits of its own
+
+    g2 = make_group("g2", files=["two.txt"])
+    wt2 = group_worktree(repo, merger, g2)
+    coder_commit(wt2, "two.txt", "g2 work\n", "feat: g2")
+    merger.merge_group(g2, wt2)
+    new_tip = merger.tip()
+
+    resumed = create_worktree(
+        repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+    )
+    assert resumed == wt1
+    assert git(resumed, "rev-parse", "HEAD").strip() == new_tip
+    # a fast-forward never creates a "refresh(...)" merge commit
+    assert "refresh(g1)" not in git(resumed, "log", "--format=%s")
+
+
+def test_refresh_merges_a_diverged_branch_reaching_both_tips(repo):
+    merger = IntegrationMerger(repo, "r1")
+    g1 = make_group("g1", files=["own.txt"])
+    wt1 = group_worktree(repo, merger, g1)
+    coder_commit(wt1, "own.txt", "g1's own work\n", "feat: g1 own commit")
+    own_commit = git(wt1, "rev-parse", "HEAD").strip()
+
+    g2 = make_group("g2", files=["two.txt"])
+    wt2 = group_worktree(repo, merger, g2)
+    coder_commit(wt2, "two.txt", "g2 work\n", "feat: g2")
+    merger.merge_group(g2, wt2)
+    new_tip = merger.tip()
+
+    refreshed = create_worktree(
+        repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+    )
+    assert git(refreshed, "merge-base", "--is-ancestor", own_commit, "HEAD").strip() == ""
+    assert git(refreshed, "merge-base", "--is-ancestor", new_tip, "HEAD").strip() == ""
+
+
+def test_refresh_conflict_raises_naming_group_and_paths_and_leaves_head_untouched(repo):
+    merger = IntegrationMerger(repo, "r1")
+    g1 = make_group("g1", files=["shared.txt"])
+    wt1 = group_worktree(repo, merger, g1)
+    coder_commit(wt1, "shared.txt", "g1 version\n", "feat: g1 edits shared")
+    head_before = git(wt1, "rev-parse", "HEAD").strip()
+
+    g2 = make_group("g2", files=["shared.txt"])
+    wt2 = group_worktree(repo, merger, g2)
+    coder_commit(wt2, "shared.txt", "g2 version\n", "feat: g2 edits shared")
+    merger.merge_group(g2, wt2)
+    new_tip = merger.tip()
+
+    with pytest.raises(WorktreeError, match=r"g1.*shared\.txt"):
+        create_worktree(
+            repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        )
+    assert git(wt1, "rev-parse", "HEAD").strip() == head_before
+    assert not (wt1 / ".git" / "MERGE_HEAD").exists()
+    assert git(wt1, "status", "--porcelain").strip() == ""
+
+
+def test_refresh_preserves_uncommitted_changes_it_cannot_safely_apply_over(repo):
+    merger = IntegrationMerger(repo, "r1")
+    g1 = make_group("g1", files=["shared.txt"])
+    wt1 = group_worktree(repo, merger, g1)
+    (wt1 / "shared.txt").write_text("uncommitted local edit\n")  # never committed
+
+    g2 = make_group("g2", files=["shared.txt"])
+    wt2 = group_worktree(repo, merger, g2)
+    coder_commit(wt2, "shared.txt", "g2 version\n", "feat: g2 edits shared")
+    merger.merge_group(g2, wt2)
+    new_tip = merger.tip()
+
+    with pytest.raises(WorktreeError, match="g1"):
+        create_worktree(
+            repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        )
+    assert (wt1 / "shared.txt").read_text() == "uncommitted local edit\n"
+
+
+def test_refresh_reaches_the_tip_whether_worktree_survived_or_only_branch_did(repo):
+    merger = IntegrationMerger(repo, "r1")
+
+    # path A: the worktree still exists (the common interrupt case, since
+    # worktrees are never removed on interrupt)
+    ga = make_group("ga")
+    wta = group_worktree(repo, merger, ga)  # cut, interrupted before any commit
+    gx = make_group("gx", files=["x.txt"])
+    wtx = group_worktree(repo, merger, gx)
+    coder_commit(wtx, "x.txt", "landed while ga was down\n", "feat: gx")
+    merger.merge_group(gx, wtx)
+    tip_a = merger.tip()
+
+    resumed = create_worktree(
+        repo, group_id="ga", name=ga.name, branch=group_branch("r1", "ga"), start_point=tip_a
+    )
+    assert resumed == wta
+    assert (resumed / "x.txt").read_text() == "landed while ga was down\n"
+
+    # path B: only the branch remains (worktree removed by an operator)
+    gb = make_group("gb")
+    wtb = group_worktree(repo, merger, gb)
+    remove_worktree(repo, wtb, force=True)
+    gy = make_group("gy", files=["y.txt"])
+    wty = group_worktree(repo, merger, gy)
+    coder_commit(wty, "y.txt", "landed while gb was down\n", "feat: gy")
+    merger.merge_group(gy, wty)
+    tip_b = merger.tip()
+
+    reentered = create_worktree(
+        repo, group_id="gb", name=gb.name, branch=group_branch("r1", "gb"), start_point=tip_b
+    )
+    assert (reentered / "y.txt").read_text() == "landed while gb was down\n"

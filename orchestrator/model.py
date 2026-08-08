@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from orchestrator.config import EscalationConfig
+
 # Downstream session titles derived from summaries cap at 120 chars
 # (docs/research/infinity-skills-analysis.md); validated here, never truncated later.
 SUMMARY_MAX_CHARS = 120
@@ -74,6 +76,24 @@ class SessionEntry(BaseModel):
     name: str = ""  # display-name convention: <run_id>-<group_id>-<role>-g<generation>
     retirement_reason: str | None = None
     transcript_path: str | None = None
+    # Latest-round context size, persisted every round (R5): in-memory usage dies
+    # with the process, and re-entry needs a pre-check against the breaker limit
+    # before warm-resuming an interrupted coder.
+    last_context_tokens: int = 0
+    # Cumulative spend, persisted alongside the context size on the same saves.
+    # Distinct from last_context_tokens, which is occupancy of the latest round:
+    # these sum every round of the session, so a group's actual cost can be
+    # compared against the grouper's per-group `estimated_tokens` prediction and
+    # split per role. All default to 0 — runs recorded before this field existed
+    # load unchanged and read as "actuals not recorded".
+    rounds_completed: int = 0
+    total_input_tokens: int = 0  # uncached input only
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    model: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class GroupManifestEntry(BaseModel):
@@ -90,6 +110,11 @@ class RunManifest(BaseModel):
     plan_path: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     base_session_id: str | None = None
+    grouping: str | None = None  # named grouping this run snapshotted (plan U10)
+    # Persisted at run time so `resume` restores the original run's HITL tier
+    # instead of silently reverting to EscalationConfig()'s on_stuck default
+    # (plan U2). None on manifests written before this field existed.
+    escalation: EscalationConfig | None = None
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 
 
@@ -115,11 +140,20 @@ class CoderReport(BaseModel):
     non-empty ``question``; the orchestrator escalates and resumes it with the
     answer. Headless ``claude -p`` workers cannot pause mid-turn to ask, so the
     only supported channel is report-then-resume (docs/research/design-deviations.md).
+
+    ``permission_denied`` is the typed denial channel (plan U3): a coder that hit
+    a permission denial after exhausting its identical-retry budget ends its turn
+    with this status and the verbatim ``denied_command``. This is deliberately not
+    a ``blocked`` report discriminated by field emptiness — that would make an
+    unrelated blocked report's envelope classification depend on whether a coder
+    happened to leave a field blank — and deliberately not a ``Surprise``, since a
+    denial names no other group.
     """
 
-    status: Literal["completed", "blocked", "failed", "needs_input"]
+    status: Literal["completed", "blocked", "failed", "needs_input", "permission_denied"]
     summary: str = ""
     question: str = ""  # required when status == "needs_input"
+    denied_command: str = ""  # required when status == "permission_denied"
     verification_results: list[VerificationResult] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
 
@@ -127,6 +161,12 @@ class CoderReport(BaseModel):
     def _needs_input_requires_question(self) -> CoderReport:
         if self.status == "needs_input" and not self.question.strip():
             raise ValueError("status 'needs_input' requires a non-empty 'question'")
+        return self
+
+    @model_validator(mode="after")
+    def _permission_denied_requires_command(self) -> CoderReport:
+        if self.status == "permission_denied" and not self.denied_command.strip():
+            raise ValueError("status 'permission_denied' requires a non-empty 'denied_command'")
         return self
 
 
@@ -156,6 +196,7 @@ class EscalationKind(StrEnum):
     REVIEWER_STRUCTURAL = "reviewer_structural"
     MERGE_CONFLICT = "merge_conflict"
     CAPS_EXHAUSTED = "caps_exhausted"  # generation/rewrite cap about to FAIL the group
+    GROUP_RESOLVE = "group_resolve"  # FAILED group's stranded work needs resolving (plan U2)
     GROUP_START = "group_start"  # interactive: approve before launch
     RESPAWN = "respawn"  # interactive: approve a breaker respawn
     MERGE_APPROVE = "merge_approve"  # interactive: approve before merge
@@ -201,3 +242,14 @@ class EscalationResponse(BaseModel):
     action: HumanAction
     answer: str = ""
     answered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PermissionDenied(Exception):
+    """A coder reported ``permission_denied`` (plan U3): the harness is healthy,
+    but a sandboxed command was refused after the coder's identical-retry budget.
+    Routes the group to INTERRUPTED, never FAILED — the work is unfinished, not
+    wrong, and a plain ``resume`` re-enters the same worktree. Raised directly by
+    the review loop (never through its rewrite path), so this costs no rewrite.
+    Lives here, not in ``execution/review.py``, so ``execution/scheduler.py`` can
+    catch it without importing from ``review.py`` (which imports from
+    ``scheduler.py``, and a cycle isn't worth it for one exception type)."""

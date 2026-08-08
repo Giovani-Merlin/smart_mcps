@@ -30,7 +30,7 @@ from orchestrator.execution.prompting import (
 from orchestrator.execution.sessions import (
     PreflightError,
     ReportError,
-    RoundTimeout,
+    RoundUsage,
     SessionError,
     SessionRunner,
     nudge_until_report,
@@ -42,6 +42,7 @@ from orchestrator.execution.worktrees import (
     create_worktree,
     group_branch,
     integration_branch,
+    provision_env,
     remove_worktree,
     worktree_path,
 )
@@ -72,7 +73,6 @@ def fake_home(tmp_path: Path) -> Path:
 
 def make_runner(fake_home: Path, **kwargs) -> SessionRunner:
     env = {"FAKE_CLAUDE_HOME": str(fake_home), **kwargs.pop("env", {})}
-    kwargs.setdefault("timeout_s", 20.0)
     kwargs.setdefault("transcript_root", fake_home / "projects")
     return SessionRunner(claude_bin=[sys.executable, str(FAKE_CLAUDE)], env=env, **kwargs)
 
@@ -144,6 +144,26 @@ def test_start_base_pre_assigns_uuid_and_sets_display_name(fake_home, tmp_path):
     assert "shared context" in call["prompt"]
 
 
+def test_thinking_budget_is_pinned_on_every_worker_call(fake_home, tmp_path):
+    """Left unpinned the CLI picks its own thinking level, which is invisible in every
+    run artifact and lands on output tokens — the measured cost driver (run
+    r20260729-correctness: 588k output tokens in one round)."""
+    runner = make_runner(fake_home, max_thinking_tokens=4000, thinking="adaptive")
+    runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    argv = call["argv"]
+    assert argv[argv.index("--max-thinking-tokens") + 1] == "4000"
+    assert argv[argv.index("--thinking") + 1] == "adaptive"
+
+
+def test_thinking_flags_are_omitted_when_unset(fake_home, tmp_path):
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert "--max-thinking-tokens" not in call["argv"]
+    assert "--thinking" not in call["argv"]
+
+
 def test_fork_records_parent_base_and_every_id_is_unique(fake_home, tmp_path):
     runner = make_runner(fake_home)
     base = runner.start_base(run_id="run1", base_context="ctx", cwd=tmp_path)
@@ -193,12 +213,108 @@ def test_usage_accumulates_across_rounds_and_is_queryable_per_session(fake_home,
     assert runner.usage_of(base.session_id).rounds == 1
 
 
-def test_round_timeout_kills_the_subprocess_and_raises(fake_home, tmp_path):
-    runner = make_runner(fake_home, timeout_s=0.5)
+def test_cumulative_usage_keeps_the_token_classes_apart(fake_home, tmp_path):
+    """A run whose spend is mostly cache reads is cheap; one that is mostly
+    uncached input is not. Folding them into a single input total (as this did
+    originally) makes the two indistinguishable in an estimate-vs-actual view."""
+    runner = make_runner(fake_home)
     base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
-    script(fake_home, {"delay_s": 5})
-    with pytest.raises(RoundTimeout):
-        runner.resume(session_id=base.session_id, prompt="slow", cwd=tmp_path)
+    script(
+        fake_home,
+        {"usage": {"input_tokens": 5, "output_tokens": 10, "cache_read_input_tokens": 1000}},
+        {"usage": {"input_tokens": 7, "output_tokens": 20, "cache_read_input_tokens": 2000}},
+    )
+    fork = runner.start_fork(base_id=base.session_id, prompt="a", name="n", cwd=tmp_path)
+    runner.resume(session_id=fork.session_id, prompt="b", cwd=tmp_path)
+
+    usage = runner.usage_of(fork.session_id)
+    assert usage.total_input_tokens == 12  # uncached input only, not 12 + cache_creation
+    assert usage.total_cache_read_tokens == 3000
+    assert usage.total_cache_creation_tokens == 400
+
+
+def test_multi_turn_envelope_reports_last_turn_context_not_the_round_sum():
+    """A real multi-turn envelope sums every turn into the top-level ``usage``, so
+    reading it as context occupancy inflates without bound: the live run saw a
+    190-turn coder round report 18,606,845 against a real occupancy of ~262k, which
+    tripped the 120k breaker on every group that needed a second round. Shape taken
+    from CLI 2.1.211's `--output-format json`.
+    """
+    envelope = {
+        "usage": {
+            # top level = the sum across both turns, which is NOT the context size
+            "input_tokens": 4,
+            "output_tokens": 300,
+            "cache_read_input_tokens": 261_000,
+            "cache_creation_input_tokens": 500,
+            "iterations": [
+                {
+                    "input_tokens": 2,
+                    "output_tokens": 35,
+                    "cache_read_input_tokens": 100_000,
+                    "cache_creation_input_tokens": 282,
+                },
+                {
+                    "input_tokens": 2,
+                    "output_tokens": 265,
+                    "cache_read_input_tokens": 161_000,
+                    "cache_creation_input_tokens": 218,
+                },
+            ],
+        }
+    }
+    usage = RoundUsage.from_envelope(envelope)
+    assert usage.context_tokens == 2 + 265 + 161_000 + 218
+    assert usage.context_tokens < 261_804  # the sum, had we read the top level
+
+
+def test_envelope_without_iterations_falls_back_to_top_level_usage():
+    """Older CLIs and the test stub emit no ``iterations``; for a single turn the
+    top-level totals *are* the last turn, so the fallback stays exact."""
+    envelope = {
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 7_370,
+            "cache_creation_input_tokens": 17_158,
+        }
+    }
+    assert RoundUsage.from_envelope(envelope).context_tokens == 2 + 4 + 7_370 + 17_158
+
+
+def test_long_round_completes_with_no_per_round_timeout(fake_home, tmp_path):
+    """R7: rounds run as long as the CLI does. The scripted delay outlasts the
+    0.5s timeout the deleted RoundTimeout test used to kill this exact round at
+    (tests never scripted a longer one); the round now completes normally."""
+    runner = make_runner(fake_home)
+    base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    script(fake_home, {"delay_s": 1.5, "result": "slow but fine"})
+    result = runner.resume(session_id=base.session_id, prompt="slow", cwd=tmp_path)
+    assert result.text == "slow but fine"
+
+
+def test_worker_env_scrubs_the_orchestrators_virtualenv(fake_home, tmp_path, monkeypatch):
+    """U6/R16: workers must resolve the worktree's venv, not inherit the
+    orchestrator's — VIRTUAL_ENV and every PATH entry under it are dropped."""
+    venv = str(tmp_path / "orch-venv")
+    monkeypatch.setenv("VIRTUAL_ENV", venv)
+    monkeypatch.setenv("PATH", f"{venv}/bin:/usr/bin:/bin")
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert "VIRTUAL_ENV" not in call["env"]
+    entries = call["env"]["PATH"].split(":")
+    assert all(not entry.startswith(venv) for entry in entries)
+    assert "/usr/bin" in entries and "/bin" in entries  # the rest of PATH survives
+
+
+def test_worker_env_without_virtualenv_passes_through(fake_home, tmp_path, monkeypatch):
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    runner = make_runner(fake_home)
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    (call,) = calls(fake_home)
+    assert call["env"]["PATH"] == "/usr/bin:/bin"
 
 
 def test_scripted_cli_failure_surfaces_stderr(fake_home, tmp_path):
@@ -206,6 +322,31 @@ def test_scripted_cli_failure_surfaces_stderr(fake_home, tmp_path):
     script(fake_home, {"exit_code": 2, "stderr": "boom"})
     with pytest.raises(SessionError, match="boom"):
         runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+
+
+def test_usage_limit_style_failure_surfaces_stdout_result_over_empty_stderr(fake_home, tmp_path):
+    """Plan U4: a usage-limit exit has empty stderr but a populated JSON
+    envelope on stdout — the error message must carry that text, not be empty."""
+    runner = make_runner(fake_home)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps({"result": "Claude AI usage limit reached|1700000000"}),
+        },
+    )
+    with pytest.raises(SessionError, match="Claude AI usage limit reached"):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+
+
+def test_failure_with_unparseable_stdout_falls_back_to_stderr_unchanged(fake_home, tmp_path):
+    runner = make_runner(fake_home)
+    script(fake_home, {"exit_code": 1, "stderr": "", "stdout": "not json at all"})
+    with pytest.raises(SessionError) as excinfo:
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert "not json at all" not in str(excinfo.value)
+    assert str(excinfo.value).endswith(": ")
 
 
 def test_transcript_path_is_discoverable_by_session_uuid(fake_home, tmp_path):
@@ -353,6 +494,9 @@ def test_first_prompt_opens_with_a_parseable_identity_block():
     assert "<run-report" in prompt  # report contract included
     assert "- [v1] unit tests pass" in prompt
     assert "- [v2] no new lint errors (optional)" in prompt
+    # U6/R17: the dependency workflow is stated where the worker reads it
+    assert "`uv sync`" in prompt and "inside the worktree" in prompt
+    assert "imports a new" in prompt and "must pass here" in prompt
 
 
 def test_identity_block_escapes_attribute_breaking_characters():
@@ -384,6 +528,9 @@ def test_handoff_prompt_carries_generation_and_outstanding_items():
     assert "context tokens exceeded 120000" in prompt
     assert "- fix the retry loop" in prompt
     assert prompt.startswith("<run-manifest")  # respawned sessions carry identity too
+    # U6/R17: the dependency workflow rides the handoff too
+    assert "`uv sync`" in prompt and "inside the worktree" in prompt
+    assert "imports a new dependency" in prompt and "must pass here" in prompt
 
 
 # ---------------------------------------------------------------- worktrees
@@ -454,6 +601,51 @@ def test_remove_worktree_refuses_dirty_without_force_and_is_idempotent(git_repo)
     remove_worktree(git_repo, path, force=True)
     assert not path.exists()
     remove_worktree(git_repo, path)  # already gone: no-op
+
+
+def test_provision_env_runs_uv_sync_only_in_uv_worktrees(tmp_path):
+    recorded: list[tuple[list[str], Path]] = []
+
+    def fake_run(argv, **kwargs):
+        recorded.append((argv, kwargs.get("cwd")))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert provision_env(bare, runner=fake_run) is False
+    assert recorded == []  # no pyproject.toml / uv.lock: skipped silently
+
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    assert provision_env(marked, runner=fake_run) is True
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "uv.lock").write_text("")
+    assert provision_env(locked, runner=fake_run) is True
+    assert recorded == [(["uv", "sync"], marked), (["uv", "sync"], locked)]
+
+
+def test_provision_env_failure_logs_an_event_and_does_not_raise(tmp_path, capsys):
+    """A fixable env hiccup must never kill the group: warn + log, no raise."""
+    events: list[str] = []
+
+    def failing_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="resolution failed")
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "uv.lock").write_text("")
+    assert provision_env(worktree, runner=failing_run, log=events.append) is False
+    assert len(events) == 1
+    assert "uv sync failed" in events[0] and "resolution failed" in events[0]
+    assert "uv sync failed" in capsys.readouterr().err
+
+    def missing_uv(argv, **kwargs):
+        raise OSError("No such file or directory: 'uv'")
+
+    assert provision_env(worktree, runner=missing_uv, log=events.append) is False
+    assert len(events) == 2  # OSError (uv absent) rides the same non-fatal path
 
 
 def test_conflicting_directory_at_worktree_path_is_rejected(git_repo):

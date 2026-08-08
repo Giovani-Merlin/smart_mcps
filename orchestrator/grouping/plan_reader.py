@@ -22,28 +22,43 @@ VERSION_MARKER = "# orchestrator-task-map v1"
 # A slice contracts to a single Louvain node: past this size the partition would
 # degenerate to pure budget-splitting (docs/orchestrator-task-map.md).
 SLICE_TASK_CAP = 5
+# size_hints classes, priced by EstimatorConfig.size_hint_{small,medium,large}
+# (plan U7); medium is today's flat per_file_tool_allowance rate.
+SIZE_HINT_CLASSES = frozenset({"small", "medium", "large"})
 
 _BLOCK = re.compile(
     r"```ya?ml[ \t]*\n(?P<body>[ \t]*" + re.escape(VERSION_MARKER) + r"[ \t]*\n.*?)```",
     re.DOTALL,
 )
 _ANY_VERSION = re.compile(r"```ya?ml[ \t]*\n[ \t]*#[ \t]*orchestrator-task-map v(\d+)")
+# A "## Task Map" heading directly preceding the block (only blank lines in
+# between) is part of the strip span too — matched against the text *before*
+# the block, anchored to end exactly where the block begins.
+_PRECEDING_HEADING = re.compile(r"(?:(?<=\n)|\A)[ \t]*## Task Map[ \t]*\n(?:[ \t]*\n)*\Z")
 
 _LIST_FIELDS = ("files", "symbols", "depends_on", "implements", "consumes")
-_KNOWN_KEYS = {"task_id", "description", "slice", *_LIST_FIELDS}
+_KNOWN_KEYS = {"task_id", "description", "slice", "size_hints", *_LIST_FIELDS}
 
 
 class TaskMapError(Exception):
     """The plan's task-map block is present but malformed (hard error, no fallback)."""
 
 
-def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | None:
+def parse_task_map(
+    plan_text: str,
+    client: CodegraphClient,
+    allow_unknown_symbols: bool = False,
+) -> MapperOutput | None:
     """Parse the plan's task-map block into verified mappings, or ``None`` if absent.
 
-    Validation mirrors the mapper's codegraph verification: unknown symbols are
-    dropped with a flag; files that don't exist yet are retained as prospective
-    files with an info flag. Structural problems (bad YAML, duplicate ids, bad
-    ``depends_on``, oversized slices, unknown keys) raise ``TaskMapError``.
+    Files that don't exist yet are retained as prospective files with an info
+    flag. Unknown symbols are a hard error by default (R14): the map's ``symbols:``
+    field has no prospective notation, so every listed symbol is a claim that it
+    exists — unlike the mapper LLM's guesses, a false claim should stop the run,
+    not get silently dropped. ``allow_unknown_symbols=True`` restores the old
+    mirror-the-mapper behaviour (drop with a flag). Structural problems (bad
+    YAML, duplicate ids, bad ``depends_on``, oversized slices, unknown keys)
+    always raise ``TaskMapError``.
     """
     blocks = _BLOCK.findall(plan_text)
     if not blocks:
@@ -68,10 +83,16 @@ def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | No
     for entry in tasks:
         task_id = entry["task_id"]
         descriptions[task_id] = entry["description"]
+        raw_size_hints: dict[str, str] = entry.get("size_hints") or {}
         files: list[str] = []
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (client.repo_root / file).is_file():
+                if file in raw_size_hints:
+                    raise TaskMapError(
+                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
+                        "hints price unwritten (prospective) work only"
+                    )
                 files.append(file)
             else:
                 prospective.append(file)
@@ -79,18 +100,27 @@ def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | No
                     f"task map: task {task_id} file {file} does not exist yet — "
                     "retained as prospective"
                 )
+        size_hints = tuple(
+            sorted((f, raw_size_hints[f]) for f in prospective if f in raw_size_hints)
+        )
         symbols: list[str] = []
         for symbol in _dedupe(entry.get("symbols") or []):
             if client.symbol_exists(symbol):
                 symbols.append(symbol)
-            else:
+            elif allow_unknown_symbols:
                 flags.append(f"task map: task {task_id} mapped unknown symbol {symbol} — dropped")
+            else:
+                raise TaskMapError(
+                    f"task {task_id} mapped unknown symbol {symbol!r} — not found in the "
+                    "codegraph index (pass --allow-unknown-symbols to drop it instead)"
+                )
         mappings.append(
             TaskMapping(
                 task_id,
                 files=tuple(files),
                 symbols=tuple(symbols),
                 prospective_files=tuple(prospective),
+                size_hints=size_hints,
                 depends_on=tuple(_dedupe(entry.get("depends_on") or [])),
                 slice=entry.get("slice"),
                 implements=tuple(_dedupe(entry.get("implements") or [])),
@@ -98,6 +128,26 @@ def parse_task_map(plan_text: str, client: CodegraphClient) -> MapperOutput | No
             )
         )
     return MapperOutput(mappings=mappings, descriptions=descriptions, flags=flags)
+
+
+def strip_task_map(plan_text: str) -> str:
+    """Strip the marked task-map block (plus a directly preceding ``## Task Map``
+    heading) out of plan text bound for an LLM context (R27).
+
+    The map is this parser's input, not worker/speccer/rewrite context — every
+    LLM-facing consumer of the plan text calls this first. Text without a marked
+    block passes through unchanged; only the first marker-located block (there is
+    at most one in a valid plan — ``parse_task_map`` rejects more) is removed,
+    using the same detection this module's parser uses.
+    """
+    match = _BLOCK.search(plan_text)
+    if not match:
+        return plan_text
+    start = match.start()
+    heading_match = _PRECEDING_HEADING.search(plan_text[:start])
+    if heading_match:
+        start = heading_match.start()
+    return plan_text[:start] + plan_text[match.end() :]
 
 
 def _validate_shape(payload: object) -> list[dict]:
@@ -130,6 +180,28 @@ def _validate_shape(payload: object) -> list[dict]:
                 raise TaskMapError(
                     f"task {entry['task_id']!r} {key!r} must be a list of non-empty strings"
                 )
+        size_hints = entry.get("size_hints")
+        if size_hints is not None:
+            if not isinstance(size_hints, dict) or not all(
+                isinstance(path, str) and path and isinstance(cls, str) and cls
+                for path, cls in size_hints.items()
+            ):
+                raise TaskMapError(
+                    f"task {entry['task_id']!r} 'size_hints' must be a mapping of "
+                    "path to size class"
+                )
+            declared_files = set(entry.get("files") or [])
+            for path, cls in size_hints.items():
+                if path not in declared_files:
+                    raise TaskMapError(
+                        f"task {entry['task_id']!r} size_hints names {path!r}, which is "
+                        "not in this task's files"
+                    )
+                if cls not in SIZE_HINT_CLASSES:
+                    raise TaskMapError(
+                        f"task {entry['task_id']!r} size_hints class {cls!r} for {path!r} "
+                        f"must be one of {sorted(SIZE_HINT_CLASSES)}"
+                    )
 
     ids = [entry["task_id"] for entry in tasks]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})

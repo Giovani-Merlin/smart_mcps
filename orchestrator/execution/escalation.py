@@ -34,7 +34,9 @@ from orchestrator.model import (
 )
 
 # The tier matrix, smallest to largest. Each tier is the set of kinds it escalates.
-_ON_FAILURE: frozenset[EscalationKind] = frozenset({EscalationKind.CAPS_EXHAUSTED})
+_ON_FAILURE: frozenset[EscalationKind] = frozenset(
+    {EscalationKind.CAPS_EXHAUSTED, EscalationKind.GROUP_RESOLVE}
+)
 _ON_STUCK: frozenset[EscalationKind] = _ON_FAILURE | {
     EscalationKind.CODER_QUESTION,
     EscalationKind.CODER_BLOCKED,

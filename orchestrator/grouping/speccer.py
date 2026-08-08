@@ -13,7 +13,7 @@ from string import Template
 
 from pydantic import BaseModel, Field, ValidationError
 
-from orchestrator.grouping.llm import JsonRunner, call_llm_json
+from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, call_llm_json  # noqa: F401
 from orchestrator.prompts import load_template
 from orchestrator.model import SUMMARY_MAX_CHARS, VerificationItem
 
@@ -65,6 +65,7 @@ def write_specs(
     runner: JsonRunner,
     max_retries: int = 2,
     failure_dir: Path | None = None,
+    recorder: LlmCallRecorder | None = None,
 ) -> dict[str, GroupSpec]:
     """Ask the LLM for names/summaries/specs/verification for every skeleton group.
 
@@ -97,4 +98,5 @@ def write_specs(
         validate=validate,
         max_retries=max_retries,
         failure_dir=failure_dir,
+        recorder=recorder,
     )

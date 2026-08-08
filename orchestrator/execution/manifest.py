@@ -10,13 +10,16 @@ as the artifacts round triggers point to (pointers, not payloads).
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from orchestrator.model import GroupManifestEntry, RunManifest, SessionEntry
+from orchestrator.model import GroupingResult, GroupManifestEntry, RunManifest, SessionEntry
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -30,6 +33,80 @@ def atomic_write_text(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+class GroupingNameError(Exception):
+    """A ``--name``/``--grouping`` tag is unsafe to use as a directory component."""
+
+
+class GroupingSelectionError(Exception):
+    """``run``/``resume`` could not unambiguously select a grouping directory."""
+
+
+def validate_grouping_name(name: str) -> None:
+    """Reject a path separator or ``..`` before anything is written to disk (plan U10)."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise GroupingNameError(
+            f"invalid grouping name {name!r}: must not contain a path separator or '..'"
+        )
+
+
+def groupings_root(repo_root: Path) -> Path:
+    return repo_root / ".orchestrator" / "groupings"
+
+
+def grouping_dir(repo_root: Path, name: str) -> Path:
+    """The one place a named grouping's directory path is spelled out (plan U10)."""
+    validate_grouping_name(name)
+    return groupings_root(repo_root) / name
+
+
+def list_grouping_names(repo_root: Path) -> list[str]:
+    root = groupings_root(repo_root)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
+@dataclass(frozen=True)
+class GroupingInfo:
+    name: str
+    plan_path: str
+    group_count: int
+
+
+def describe_groupings(repo_root: Path) -> list[GroupingInfo]:
+    """Every named grouping present, with its plan path and group count (plan U10)."""
+    infos = []
+    for name in list_grouping_names(repo_root):
+        groups_path = grouping_dir(repo_root, name) / "groups.json"
+        if not groups_path.is_file():
+            continue
+        result = GroupingResult.model_validate_json(groups_path.read_text())
+        infos.append(
+            GroupingInfo(name=name, plan_path=result.plan_path, group_count=len(result.groups))
+        )
+    return infos
+
+
+def snapshot_grouping(source_dir: Path, dest_dir: Path) -> None:
+    """Copy a grouping directory's files into a run directory (plan U10).
+
+    Generic copy rather than an enumerated list, so a later artifact is
+    snapshotted automatically. The run keeps its own frozen copy so a later
+    ``group --name <same>`` against a different plan cannot rewrite a finished
+    run's history.
+
+    Subdirectories are copied too: the grouper's LLM call records live in a
+    nested ``llm/``, and a files-only copy dropped them from every snapshot
+    while appearing to succeed.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for path in source_dir.iterdir():
+        if path.is_file():
+            shutil.copy2(path, dest_dir / path.name)
+        elif path.is_dir():
+            shutil.copytree(path, dest_dir / path.name, dirs_exist_ok=True)
 
 
 class RunPaths:
@@ -70,6 +147,13 @@ class RunPaths:
     def escalations_dir(self) -> Path:
         """Correlation-ID request/response files for the human channel (plan Phase D)."""
         return self.run_dir / "escalations"
+
+    @property
+    def surprises_path(self) -> Path:
+        """Persisted SurpriseBoard state (plan U7): an in-memory-only board dies
+        with the process, silently dropping a surprise marked for a group that
+        has not yet run when the run restarts."""
+        return self.run_dir / "surprises.json"
 
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
@@ -123,3 +207,23 @@ def record_session(
 def artifact_name(kind: str, generation: int, round_no: int) -> str:
     """Canonical artifact filename: e.g. ``report-g1-r2.json``, ``verdict-g2-r1.json``."""
     return f"{kind}-g{generation}-r{round_no}.json"
+
+
+_REPORT_ROUND_RE = re.compile(r"^report-g(\d+)-r(\d+)\.json$")
+
+
+def completed_round_count(paths: RunPaths, group_id: str, generation: int) -> int:
+    """How many rounds of ``generation`` already have a saved report on disk.
+
+    Re-entry (warm-resumed or fallback-forked) continues the same generation
+    number rather than starting a fresh one, so round numbering must resume
+    from here instead of colliding with — and overwriting — pre-crash
+    artifacts still on disk.
+    """
+    group_dir = paths.group_dir(group_id)
+    rounds = [
+        int(match.group(2))
+        for path in group_dir.glob(f"report-g{generation}-r*.json")
+        if (match := _REPORT_ROUND_RE.match(path.name))
+    ]
+    return max(rounds, default=0)

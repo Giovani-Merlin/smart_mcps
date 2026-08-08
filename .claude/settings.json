@@ -1,27 +1,22 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(smart-mcps-perplexity *)",
-      "Bash(codegraph *)",
-      "mcp__codegraph__*",
-      "mcp__plugin_smart-mcps_codegraph__*",
-      "Bash(nlm *)",
-      "Bash(find /home/gbm1996/.pyenv -path \"*/site-packages/nlm*\" -name \"*.py\" 2>/dev/null | head -20)",
-      "Read(//home/gbm1996/.pyenv/**)",
-      "Bash(pip show *)",
-      "Bash(pip3 show *)",
-      "Bash(python3 -c ' *)",
-      "WebFetch(domain:docs.perplexity.ai)",
-      "Bash(find /home/gbm1996/wksp/smart_mcps/docs -type f 2>/dev/null | head -20; echo \"---sidecar check---\"; ls /tmp/.pplx_sidecar_* 2>/dev/null || echo \"no sidecars\")",
-      "Read(//tmp/**)",
-      "Bash(python3 -c \"import nlm; print\\(nlm.__file__\\)\")",
-      "Bash(python3 -c \"import nlm_tools; print\\(nlm_tools.__file__\\)\")",
-      "Bash(python3 -c \"import notebooklm; print\\(notebooklm.__file__\\)\")",
-      "Bash(ln -s ../agents /home/gbm1996/wksp/smart_mcps/.claude/agents)",
-      "Bash(git add *)",
-      "Bash(git commit -m ' *)",
-      "Bash(git push *)"
-    ]
+  "allow": [
+    "Bash(git *)", "Bash(uv *)", "Bash(python3 *)", "Bash(python *)",
+    "Bash(pytest*)", "Bash(ruff*)", "Bash(mypy*)", "Bash(pip *)", "Bash(pip3 *)",
+    "Bash(ls *)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+    "Bash(grep *)", "Bash(rg *)", "Bash(find *)", "Bash(sed *)", "Bash(awk *)",
+    "Bash(sort *)", "Bash(uniq *)", "Bash(cut *)", "Bash(tr *)", "Bash(jq *)",
+    "Bash(diff *)", "Bash(echo *)", "Bash(date*)", "Bash(pwd)", "Bash(cd *)",
+    "Bash(mkdir *)", "Bash(touch *)", "Bash(cp *)", "Bash(mv *)", "Bash(which *)",
+    "Bash(test *)", "Bash(true)", "Bash(timeout *)", "Bash(nohup *)",
+    "Bash(xargs *)", "Bash(tee *)", "Bash(codegraph *)",
+    "Bash(smart-mcps-orchestrate *)", "Bash(smart-mcps-perplexity *)", "Bash(nlm *)",
+    "mcp__codegraph__*","mcp__plugin_smart-mcps_codegraph__*"
+  ],
+  "ask": [
+    "Bash(git clean*)", "Bash(git reset --hard*)",
+    "Bash(git push --force*)", "Bash(git worktree remove*)"
+  ]
   },
   "hooks": {
     "SessionStart": [

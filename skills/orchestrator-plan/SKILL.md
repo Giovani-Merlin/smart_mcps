@@ -15,7 +15,6 @@ writing the map.
 
 Input: `$ARGUMENTS`
 
-
 ______________________________________________________________________
 
 ## Phase 1 — Origin
@@ -39,7 +38,11 @@ For **every area the plan will touch**, establish ground truth before grilling:
   must exist in the index (unknown ones get dropped with a flag), and its
   `files` are checked against the working tree.
 - Files the plan will create are **prospective**: they go in the map like any
-  other file and get marked `(new)` in the unit prose.
+  other file and get marked `*(new)*` in the unit prose — or
+  `*(new, small|medium|large)*` when you have a confident size estimate, which
+  renders 1:1 into the task map's `size_hints: {path: class}` key (priced
+  500/2000/5000; see `docs/orchestrator-task-map.md`). Leave the class off when
+  unsure — an unhinted prospective file still prices at today's flat rate.
 - **Explore instead of asking** whenever the codebase can answer.
 
 ## Phase 3 — Grill
@@ -108,7 +111,7 @@ belongs here.>
 ### U1. <name> — <goal in one line>
 
 - **Goal**: <what done looks like>
-- **Files**: `existing/path.py`, `new/path.py` *(new)*
+- **Files**: `existing/path.py`, `new/path.py` *(new, medium)*
 - **Symbols**: `existing_fn`, `ExistingClass`
 - **Depends-on**: — <or U-IDs>
 - **Slice**: — <or slice label>
@@ -131,10 +134,29 @@ Any divergence is a bug the verifier will catch.>
 - **Shared-infra / cross-cutting units carry no slice** — they are hub material
   and must stay free to be isolated and scheduled first.
 - **Slices respect the size cap** (≤ 5 tasks, and a slice's summed content must
-  plausibly fit one worker's token budget — an oversized slice degenerates to
-  budget-splitting).
-- **Inter-slice `depends_on` must be acyclic** — a cycle between slices becomes
-  a group-DAG cycle and fails the whole grouping run loudly.
+  plausibly fit one worker's token budget). Slice must-link is a **hard output
+  invariant** — a slice never splits across groups. An oversized slice is not
+  quietly absorbed: `group` fails loudly naming the slice, its members, their
+  work, the cap, and the overshoot, unless the plan is run with
+  `--allow-oversized-slice` (which keeps it whole as one flagged group instead).
+  Size it to fit; don't rely on the splitter to bail you out.
+- **Inter-slice `depends_on` should still be acyclic** — a cycle between slices
+  becomes a group-DAG cycle. This is no longer a hard failure: `build_group_dag`
+  repairs it automatically (merging the cyclic SCC, then re-splitting it back
+  under the cap), but the repaired group can land larger and less clean than a
+  merge that was never needed, and an unrepairable cycle is an orchestrator bug,
+  not a routine planning error. Prevention is still cheaper than repair — plan
+  dependencies acyclically rather than relying on the repair path.
+
+### Verification-item guidance
+
+- **Phrase verification items behaviourally — observable outcomes, never
+  framework-internal introspection.** An item like *"the router is registered
+  on the app object"* invites tests that walk private framework structure and
+  break across versions (a FastAPI point release renamed an internal wrapper
+  attribute and failed an otherwise-correct group). The same requirement
+  phrased as *"`GET /openapi.json` lists these paths"* is both stronger and
+  version-proof.
 
 ### No-placeholder rules
 
@@ -163,7 +185,19 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   lives only in `STATUS.md`. A resuming session orients from `STATUS.md` first
   and confirms the next action before continuing.
 
-- **Done?** Present the plan summary + unit list to the user, then point at:
+- **Done?** Before presenting anything, validate the plan yourself with the
+  deterministic, zero-LLM fast path:
+
+  ```sh
+  smart-mcps-orchestrate group docs/plans/<the-plan>.md --no-spec
+  ```
+
+  This is sub-second and catches a malformed task map, a `depends_on` cycle, a
+  dissolved or over-budget slice, and hub/Louvain shape — all before paying for
+  the speccer. Fix any error it reports (never by hand-editing `groups.json` or
+  a `grouping-trace.json` — fix the plan's map) and re-run until it's clean.
+
+  Then present the plan summary + unit list to the user, and point at:
 
   ```sh
   smart-mcps-orchestrate group docs/plans/<the-plan>.md --dry-run

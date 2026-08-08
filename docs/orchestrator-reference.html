@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orchestrator Reference</title>
+<style>
+/* ---------- tokens ---------- */
+:root{
+  --bg:#f3f4ee; --bg-alt:#eaece2; --surface:#ffffff; --surface-2:#f7f7f1;
+  --ink:#1c2129; --ink-soft:#565f6e; --ink-faint:#868f97;
+  --line:#dcded1; --line-strong:#c3c6b6;
+  --accent:#a85a1c; --accent-ink:#7a3f10; --accent-soft:#f1e2cd;
+  --teal:#1f7a6c; --teal-soft:#dcefe8;
+  --danger:#a83b2b; --danger-soft:#f6e0da;
+  --warn:#b8791b; --warn-soft:#f3e3c4;
+  --success:#2f7d4f; --success-soft:#deefe2;
+  --info:#3a6ea5; --info-soft:#dce8f3;
+  --code-bg:#1c2129; --code-ink:#e9ebe1; --code-accent:#e0a262;
+  --shadow:rgba(28,33,41,.10);
+  --serif:Iowan Old Style,Palatino Linotype,Palatino,Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171b; --bg-alt:#191d22; --surface:#1c2027; --surface-2:#20242b;
+    --ink:#e8eae1; --ink-soft:#aab0b8; --ink-faint:#767e88;
+    --line:#2b303a; --line-strong:#3a404b;
+    --accent:#e0954a; --accent-ink:#f4bd82; --accent-soft:#3a2a17;
+    --teal:#54bfa6; --teal-soft:#173029;
+    --danger:#e2705c; --danger-soft:#3a1e19;
+    --warn:#e0ab52; --warn-soft:#392c14;
+    --success:#63c085; --success-soft:#173523;
+    --info:#72a6db; --info-soft:#182838;
+    --code-bg:#0f1216; --code-ink:#dfe3d9; --code-accent:#f0b072;
+    --shadow:rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14171b; --bg-alt:#191d22; --surface:#1c2027; --surface-2:#20242b;
+  --ink:#e8eae1; --ink-soft:#aab0b8; --ink-faint:#767e88;
+  --line:#2b303a; --line-strong:#3a404b;
+  --accent:#e0954a; --accent-ink:#f4bd82; --accent-soft:#3a2a17;
+  --teal:#54bfa6; --teal-soft:#173029;
+  --danger:#e2705c; --danger-soft:#3a1e19;
+  --warn:#e0ab52; --warn-soft:#392c14;
+  --success:#63c085; --success-soft:#173523;
+  --info:#72a6db; --info-soft:#182838;
+  --code-bg:#0f1216; --code-ink:#dfe3d9; --code-accent:#f0b072;
+  --shadow:rgba(0,0,0,.45);
+}
+
+*{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+  font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{font-family:var(--serif); font-weight:600; text-wrap:balance; color:var(--ink);}
+a{color:var(--accent-ink); text-decoration-thickness:1px;}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+code,pre,kbd{font-family:var(--mono);}
+:root { font-variant-numeric: tabular-nums; }
+
+/* ---------- shell layout ---------- */
+.shell{display:grid; grid-template-columns:280px minmax(0,1fr); min-height:100vh;}
+@media (max-width: 920px){ .shell{grid-template-columns:1fr;} .sidebar{position:static; height:auto; border-right:none; border-bottom:1px solid var(--line);} }
+
+.sidebar{
+  position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+  border-right:1px solid var(--line); background:var(--bg-alt);
+  padding:1.5rem 1.1rem 3rem;
+}
+.brand{display:flex; align-items:baseline; gap:.5rem; margin-bottom:.15rem;}
+.brand-mark{font-size:1.3rem;}
+.brand-name{font-family:var(--serif); font-weight:700; font-size:1.05rem; letter-spacing:.01em;}
+.brand-sub{color:var(--ink-faint); font-size:.78rem; margin:0 0 1.4rem; letter-spacing:.02em;}
+
+nav.toc{display:flex; flex-direction:column; gap:.05rem;}
+nav.toc a{
+  display:flex; gap:.6rem; align-items:baseline; padding:.38rem .5rem; border-radius:6px;
+  color:var(--ink-soft); text-decoration:none; font-size:.86rem;
+}
+nav.toc a:hover{background:var(--surface); color:var(--ink);}
+nav.toc a .n{font-family:var(--mono); font-size:.72rem; color:var(--ink-faint); min-width:1.4em;}
+nav.toc .sep{height:1px; background:var(--line); margin:.7rem .3rem;}
+nav.toc .grp-label{font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-faint); margin:.9rem .5rem .25rem;}
+
+main{padding:2.6rem clamp(1.2rem,4vw,4rem) 6rem; max-width:1040px;}
+.lede{max-width:760px;}
+.lede h1{font-size:2.1rem; margin:0 0 .5rem;}
+.lede p.dek{font-size:1.08rem; color:var(--ink-soft); margin:0 0 1.6rem;}
+.badge-row{display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:2rem;}
+.badge{
+  font-family:var(--mono); font-size:.72rem; padding:.25rem .55rem; border-radius:5px;
+  border:1px solid var(--line-strong); color:var(--ink-soft); background:var(--surface);
+}
+
+section{margin:3.6rem 0; scroll-margin-top:1.5rem;}
+section h2{font-size:1.5rem; display:flex; align-items:baseline; gap:.6rem; margin:0 0 .3rem; border-bottom:1px solid var(--line); padding-bottom:.5rem;}
+section h2 .num{font-family:var(--mono); font-size:.85rem; color:var(--accent-ink); font-weight:500;}
+section h3{font-size:1.14rem; margin:1.8rem 0 .6rem;}
+section > .section-dek{color:var(--ink-soft); max-width:720px; margin:.6rem 0 1.3rem;}
+p{max-width:720px;}
+.wide p{max-width:none;}
+
+/* ---------- at-a-glance ---------- */
+.glance{
+  border:1px solid var(--line-strong); border-radius:12px; background:var(--surface);
+  padding:1.4rem 1.5rem; box-shadow:0 1px 2px var(--shadow); margin-bottom:2.2rem;
+}
+.glance-title{font-family:var(--mono); font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-faint); margin:0 0 .8rem;}
+.glance-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1.1rem 1.6rem;}
+.glance-item dt{font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-faint); margin-bottom:.25rem;}
+.glance-item dd{margin:0; font-size:.92rem;}
+.glance-item dd code{background:var(--surface-2); padding:.05rem .3rem; border-radius:4px; font-size:.85em;}
+
+/* ---------- callouts ---------- */
+.callout{border-radius:10px; padding:.9rem 1.1rem; margin:1.1rem 0; border:1px solid; max-width:720px;}
+.callout.warn{background:var(--warn-soft); border-color:var(--warn); }
+.callout.info{background:var(--info-soft); border-color:var(--info);}
+.callout.proposed{background:var(--danger-soft); border-color:var(--danger);}
+.callout p{margin:.2rem 0; max-width:none;}
+.callout .label{font-family:var(--mono); font-size:.7rem; text-transform:uppercase; letter-spacing:.07em; font-weight:700; display:block; margin-bottom:.3rem;}
+.callout.warn .label{color:var(--warn);}
+.callout.info .label{color:var(--info);}
+.callout.proposed .label{color:var(--danger);}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto; margin:1rem 0 1.6rem; border:1px solid var(--line); border-radius:10px;}
+table{border-collapse:collapse; width:100%; font-size:.87rem; background:var(--surface);}
+th,td{text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--line); vertical-align:top;}
+thead th{background:var(--surface-2); font-family:var(--mono); font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); white-space:nowrap;}
+tbody tr:last-child td{border-bottom:none;}
+td code, th code{font-size:.85em; background:var(--surface-2); padding:.04rem .32rem; border-radius:4px;}
+td.num, th.num{text-align:right; font-family:var(--mono);}
+
+/* ---------- code ---------- */
+pre{
+  background:var(--code-bg); color:var(--code-ink); padding:1rem 1.1rem; border-radius:10px;
+  overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1rem 0;
+}
+pre code{background:none; padding:0; color:inherit;}
+:not(pre) > code{background:var(--surface-2); border:1px solid var(--line); padding:.08rem .35rem; border-radius:4px; font-size:.86em;}
+.src{font-family:var(--mono); font-size:.75rem; color:var(--ink-faint); margin:-.6rem 0 1rem;}
+.src a{color:inherit;}
+
+details.excerpt{border:1px solid var(--line); border-radius:10px; margin:1rem 0; background:var(--surface);}
+details.excerpt > summary{
+  cursor:pointer; padding:.65rem 1rem; font-size:.85rem; font-weight:600; list-style:none;
+  display:flex; align-items:center; gap:.5rem; color:var(--ink);
+}
+details.excerpt > summary::-webkit-details-marker{display:none;}
+details.excerpt > summary:before{content:"▸"; color:var(--accent-ink); transition:transform .15s;}
+details.excerpt[open] > summary:before{transform:rotate(90deg);}
+details.excerpt > summary .tag{font-family:var(--mono); font-size:.7rem; color:var(--ink-faint); font-weight:400;}
+details.excerpt > .body{padding:0 1rem 1rem;}
+details.excerpt pre{margin-top:0;}
+
+/* ---------- diagrams ---------- */
+figure.diagram{margin:1.4rem 0 2rem; padding:1rem; background:var(--surface); border:1px solid var(--line); border-radius:12px;}
+figure.diagram pre.mermaid{margin:0; background:transparent; padding:0;}
+figcaption{font-size:.82rem; color:var(--ink-soft); margin-top:.7rem; padding-top:.7rem; border-top:1px dashed var(--line);}
+
+/* ---------- state chips ---------- */
+.chip{display:inline-block; font-family:var(--mono); font-size:.74rem; padding:.12rem .5rem; border-radius:99px; border:1px solid; font-weight:600;}
+.chip.terminal{background:var(--success-soft); border-color:var(--success); color:var(--success);}
+.chip.active{background:var(--info-soft); border-color:var(--info); color:var(--info);}
+.chip.hold{background:var(--warn-soft); border-color:var(--warn); color:var(--warn);}
+.chip.fail{background:var(--danger-soft); border-color:var(--danger); color:var(--danger);}
+.chip.neutral{background:var(--surface-2); border-color:var(--line-strong); color:var(--ink-soft);}
+
+/* ---------- misc ---------- */
+ul,ol{max-width:700px; padding-left:1.3rem;}
+li{margin:.3rem 0;}
+hr.rule{border:none; border-top:1px solid var(--line); margin:2.4rem 0;}
+.grid-2{display:grid; grid-template-columns:1fr 1fr; gap:1.4rem;}
+@media (max-width:720px){.grid-2{grid-template-columns:1fr;}}
+.kv{display:flex; gap:.5rem; font-size:.85rem; margin:.3rem 0;}
+.kv b{min-width:140px; color:var(--ink-soft); font-weight:600;}
+footer.page{margin-top:5rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-faint); font-size:.8rem;}
+::selection{background:var(--accent-soft);}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">🛰️</span><span class="brand-name">smart-mcps-orchestrate</span></div>
+    <p class="brand-sub">Multi-agent plan orchestrator — reference</p>
+    <nav class="toc">
+      <a href="#glance"><span class="n">·</span>At a glance</a>
+      <div class="sep"></div>
+      <span class="grp-label">Pipeline</span>
+      <a href="#overview"><span class="n">01</span>Overview</a>
+      <a href="#grouping"><span class="n">02</span>Grouping &amp; partitioning</a>
+      <a href="#base-context"><span class="n">03</span>Shared base context</a>
+      <a href="#lifecycle"><span class="n">04</span>Group lifecycle</a>
+      <a href="#review-loop"><span class="n">05</span>Coder / reviewer loop</a>
+      <a href="#prompts"><span class="n">06</span>Prompts</a>
+      <div class="sep"></div>
+      <span class="grp-label">Operating the run</span>
+      <a href="#hitl"><span class="n">07</span>Escalation / HITL</a>
+      <a href="#permissions"><span class="n">08</span>Tool &amp; permission gating</a>
+      <a href="#merge"><span class="n">09</span>Merge strategy</a>
+      <div class="sep"></div>
+      <span class="grp-label">Reference</span>
+      <a href="#cli"><span class="n">10</span>CLI reference</a>
+      <a href="#config"><span class="n">11</span>Config reference</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="lede">
+      <h1>The orchestrator, in one page</h1>
+      <p class="dek">A working reference for <code>smart-mcps-orchestrate</code>: how a plan becomes execution groups, how each group runs its coder/reviewer loop in an isolated worktree, and how the whole thing merges, escalates, and resumes. Synthesized from the source of truth — <code>orchestrator/*.py</code> and <code>orchestrator/prompts/*.md</code> — not paraphrased from older docs.</p>
+    </div>
+
+    <section id="glance">
+      <div class="glance">
+        <p class="glance-title">At a glance</p>
+        <p style="max-width:none">The orchestrator takes an implementation plan, partitions its tasks into independent <b>groups</b> using codegraph-backed affinity signals, then runs each group as a headless <code>claude -p</code> coder session (plus a reviewer, for anything non-trivial) inside its own git worktree. Approved groups merge <code>--no-ff</code> into a per-run integration branch; the final merge to your main branch stays manual. Everything — including <b>token spend</b> — runs on your <code>claude</code> CLI subscription; the orchestrator process itself calls no LLM API directly.</p>
+        <div class="glance-grid" style="margin-top:1.1rem">
+          <div class="glance-item"><dt>Console script</dt><dd><code>smart-mcps-orchestrate</code></dd></div>
+          <div class="glance-item"><dt>Default concurrency</dt><dd><code>1</code> group at a time (serial by design)</dd></div>
+          <div class="glance-item"><dt>Default permission mode</dt><dd><code>acceptEdits</code> (edits only — not Bash)</dd></div>
+          <div class="glance-item"><dt>HITL default</dt><dd><b>on</b>, tier <code>on_stuck</code> — pass <code>--intensity autonomous</code> to opt out</dd></div>
+          <div class="glance-item"><dt>Review tiers</dt><dd><code>self_verify</code> / <code>paired</code> / <code>paired_plus</code>, picked by a difficulty score</dd></div>
+          <div class="glance-item"><dt>Breaker</dt><dd><code>context_token_limit=200000</code>, 3 rounds/generation, 3 generations</dd></div>
+          <div class="glance-item"><dt>State lives in</dt><dd><code>&lt;repo&gt;/.orchestrator/</code> and <code>&lt;repo&gt;/.worktrees/</code> — never <code>~/.claude</code></dd></div>
+          <div class="glance-item"><dt>Testing</dt><dd>full suite runs offline against <code>tests/fake_claude.py</code>, no network</dd></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="overview">
+      <h2><span class="num">01</span>Overview</h2>
+      <p class="section-dek">One document, one command, five stages. The plan never touches your working checkout — every group works in its own worktree, and the only two places state can land are a named grouping directory and a run directory, both under <code>.orchestrator/</code>.</p>
+
+      <figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    plan["plan.md"] --> group["<b>group</b><br/>partition + LLM task-mapping<br/>orchestrator/grouping/"]
+    group --> groupings[".orchestrator/groupings/&lt;name&gt;/<br/>groups.json + base-context.md"]
+    groupings --> run["<b>run</b><br/>snapshots the grouping"]
+    run --> base["base session<br/>loads base-context.md once"]
+    base --> wt["per-group worktree<br/>.worktrees/&lt;gid&gt;-&lt;name&gt;/"]
+    wt --> loop["coder ⇄ reviewer loop<br/>self_verify / paired / paired_plus"]
+    loop --> merge["IntegrationMerger<br/>--no-ff, one commit per group"]
+    merge --> integ["orchestrator/run-&lt;run_id&gt;<br/>integration branch"]
+    integ -. "manual merge, deliberately" .-> mainb[("your main branch")]
+</pre>
+        <figcaption>Five stages: <b>group</b> partitions the plan once; <b>run</b> executes every group's coder/reviewer loop in its own worktree and merges approved work onto a per-run integration branch. Nothing crosses back onto your checked-out branch without a human running the final merge.</figcaption>
+      </figure>
+
+      <p>Source: <code>orchestrator/README.md</code>, <code>orchestrator/cli.py</code>.</p>
+    </section>
+
+    <section id="grouping">
+      <h2><span class="num">02</span>Grouping &amp; partitioning</h2>
+      <p class="section-dek"><code>group &lt;plan.md&gt;</code> turns a plan into a DAG of independent execution groups: map each task to code regions, build an affinity graph over those regions, cluster it, then price and split against a token budget.</p>
+
+      <h3>Task mapping: fixture register vs. mapper LLM</h3>
+      <p>A plan can carry an embedded <b>task map</b> (files, symbols, <code>depends_on</code>, slices, route tags) that <code>parse_task_map()</code> reads deterministically — <b>zero LLM calls</b>, fully reproducible. Without one, <code>group</code> falls back to the <b>mapper LLM</b> (<code>orchestrator/prompts/mapper.md</code>), which reads the plan plus a codegraph file index and returns task→region mappings as JSON; every path and symbol it names is then verified against the real codebase, and misses are dropped with a flag rather than trusted.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Path</th><th>LLM calls</th><th>When it's used</th></tr></thead>
+        <tbody>
+          <tr><td>Task map present</td><td><code>0</code></td><td>Plan has an embedded, parseable task map — the deterministic fast path; malformed input is a hard error, never a silent fallback.</td></tr>
+          <tr><td>No task map</td><td><code>1</code> (mapper)</td><td><code>orchestrator/prompts/mapper.md</code> proposes task→region mappings; the orchestrator verifies every file/symbol against the codegraph index.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Affinity: what clusters together</h3>
+      <p>Five signal types feed <code>build_task_graph</code> as weighted edges — how strongly two tasks pull toward the same group, not what runs before what:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Signal</th><th class="num">Weight (default)</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td><code>shared_file</code></td><td class="num">1.0</td><td>Two tasks touch the same file (real or prospective).</td></tr>
+          <tr><td><code>call</code></td><td class="num">2.0</td><td>A caller/callee relation between the tasks' symbols.</td></tr>
+          <tr><td><code>impact</code></td><td class="num">1.5</td><td>One <code>codegraph impact -d 2</code> overlap between tasks.</td></tr>
+          <tr><td><code>prose_neighbor</code></td><td class="num">0.5</td><td>Not a codegraph signal — the only edge a region-less task gets, toward its plan-order neighbor.</td></tr>
+          <tr><td><code>semantic</code></td><td class="num">1.5</td><td>A matched <code>implements</code>/<code>consumes</code> route tag; the whole semantic layer is rescaled by <code>clamp(Σw_structural / Σw_semantic, floor, ceil)</code> so it dominates only when the structural graph is near-empty (greenfield).</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn"><span class="label">Known limitation</span><p><code>call</code> and <code>impact</code> feed both affinity <i>and</i> precedence. On a mature, densely-connected codebase the precedence half can saturate into one cycle — every node becomes a "hub." Zeroing these weights removes the affinity signal too; it is <b>not</b> a workaround for the cycle problem.</p></div>
+
+      <h3>Clustering shape</h3>
+      <p>Louvain community detection (seed <code>42</code>, stable run to run) does the clustering; <code>hub_threshold</code> (a <b>fraction</b> of all tasks, not a count) reclassifies high-degree nodes into hub roles with real scheduling consequences — a <code>utility_hub</code> is isolated into its own group and scheduled first, every <code>aggregator_hub</code> is pooled into one trailing group.</p>
+      <p>The <b>granularity dial</b> (<code>--granularity</code> / <code>[partition] granularity</code>) controls how eagerly small groups get folded together — three levels, each relaxing one more guard than the last; the budget cap, slice must-link, and cycle checks are hard at every level:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Level</th><th>Relaxes</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>independent</code> <i>(default)</i></td><td>nothing</td><td>Enforces both <code>chain_compatible</code> and the makespan no-regression check — today's behaviour, byte-for-byte.</td></tr>
+          <tr><td><code>balanced</code></td><td><code>chain_compatible</code></td><td>Still rejects a merge that would regress the simulated zero-communication makespan.</td></tr>
+          <tr><td><code>monolithic</code></td><td>+ makespan check</td><td>Collapses as much as the hard guards allow.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Pricing and the budget cap</h3>
+      <p>Each group's estimated token cost is summed from source bytes, an existing-file tool allowance, and prospective-file <code>size_hints</code>; the partitioner enforces a cap derived from the compiled base context size plus headroom:</p>
+      <pre><code>work = source_bytes / bytes_per_token * slack_multiplier
+     + len(existing_files) * per_file_tool_allowance
+     + Σ prospective files: size_hints[f] ? size_hint_&lt;class&gt; : per_file_tool_allowance
+
+head = (base_tokens + spec_tokens_allowance) * slack_multiplier
+cap  = max(token_budget - head, 0)</code></pre>
+      <p class="src">docs/orchestrator-grouping-config.md · orchestrator/grouping/estimator.py</p>
+      <p>A declared <b>slice</b> (a must-stay-together set of tasks) whose own summed work exceeds the cap is a hard <code>GrouperError</code> by default, naming the slice, every member, and the overshoot — override with <code>--allow-oversized-slice</code> to keep it whole as one flagged group.</p>
+
+      <h3>Which groups get a reviewer</h3>
+      <p>A <b>difficulty score</b> in <code>[0, 1)</code> — a weighted sum of five saturating-normalized signals (files touched, max fan, hub touches, cross-group edges, verification items) — picks each group's review intensity at grouping time:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Threshold</th><th class="num">Default</th><th>Below it</th></tr></thead>
+        <tbody>
+          <tr><td><code>d_review</code></td><td class="num">0.35</td><td><code>self_verify</code> — no reviewer session at all</td></tr>
+          <tr><td><code>d_hard</code></td><td class="num">0.65</td><td>below: <code>paired</code> (one reviewer); at/above: <code>paired_plus</code> (mandatory extra verification pass)</td></tr>
+        </tbody>
+      </table></div>
+      <p><code>run --review-intensity &lt;tier&gt;</code> overrides the computed tier for <b>every</b> group in the run — a blunt instrument for "review everything" or "trust everything."</p>
+    </section>
+
+    <section id="base-context">
+      <h2><span class="num">03</span>The shared base context</h2>
+      <p class="section-dek">Every worker session in a run — the base session itself, and every coder/reviewer forked from it — shares one compiled document so the same repo conventions and architecture summary don't have to be re-derived per group.</p>
+      <p><code>compile_base_context()</code> concatenates three sections into <code>base-context.md</code>, written once at <code>group</code> time and snapshotted again into the run directory at <code>run</code> time:</p>
+      <ol>
+        <li><b>Repo conventions</b> — the full text of <code>CLAUDE.md</code> and <code>AGENTS.md</code>, if present.</li>
+        <li><b>Codebase architecture</b> — a codegraph summary of the repo.</li>
+        <li><b>The plan document</b> — the plan's own text, with its embedded task-map block stripped (that block is grouper input, not worker context).</li>
+      </ol>
+      <p>Compilation is <b>byte-stable</b>: identical repo state + plan + codegraph summary always produce identical bytes, because the document feeds a prompt-cache-sensitive session head — the <code>run</code> command forks every coder and reviewer session from one shared base session rather than re-sending this context per group.</p>
+
+      <details class="excerpt">
+        <summary>compile_base_context() <span class="tag">orchestrator/grouping/base_context.py</span></summary>
+        <div class="body"><pre><code>def compile_base_context(repo_root: Path, plan_path: Path, codegraph_summary: str) -> str:
+    """Repo conventions + codegraph architecture summary + the plan document.
+
+    The task-map block is grouper parser input, not worker context (R27): it is
+    stripped from the plan text before embedding, never from the plan file itself.
+    """
+    sections = ["# Base context\n"]
+
+    for name in CONVENTION_FILES:  # ("CLAUDE.md", "AGENTS.md")
+        path = repo_root / name
+        if path.is_file():
+            sections.append(f"## Repo conventions ({name})\n\n{path.read_text().strip()}\n")
+
+    if codegraph_summary.strip():
+        sections.append(f"## Codebase architecture (codegraph)\n\n{codegraph_summary.strip()}\n")
+
+    plan_text = strip_task_map(plan_path.read_text())
+    sections.append(f"## Plan document ({plan_path.name})\n\n{plan_text.strip()}\n")
+    return "\n".join(sections)</code></pre></div>
+      </details>
+
+      <p>At run start, the base session loads it once via <code>SessionRunner.start_base()</code>:</p>
+      <pre><code>prompt = (
+    "Internalize the following shared context for an orchestrated run. "
+    "It applies to every task you will be given in this session and its forks. "
+    f"Reply with just: OK\n\n{base_context}"
+)</code></pre>
+      <p class="src">orchestrator/execution/sessions.py:185-195</p>
+      <p>Every coder and reviewer session is then <code>--resume &lt;base_id&gt; --fork-session</code> — a fork of that primed session, never a cold start.</p>
+    </section>
+
+    <section id="lifecycle">
+      <h2><span class="num">04</span>Group lifecycle</h2>
+      <p class="section-dek">Ten states, scheduler-owned (<code>orchestrator/execution/scheduler.py:79-97</code>). Three are terminal in the ordinary sense; a fourth — <code>INTERRUPTED</code> — is deliberately not, because it means the harness died, not the work.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>State</th><th>Meaning</th><th>Class</th></tr></thead>
+        <tbody>
+          <tr><td><code>PENDING</code></td><td>Not yet admissible — waiting on the scheduler's first pass.</td><td><span class="chip neutral">queued</span></td></tr>
+          <tr><td><code>READY</code></td><td>Admissible now: DAG deps met, no hold against it.</td><td><span class="chip neutral">queued</span></td></tr>
+          <tr><td><code>RUNNING</code></td><td>Coder session active in its worktree.</td><td><span class="chip active">active</span></td></tr>
+          <tr><td><code>REVIEWING</code></td><td>Reviewer session judging the latest round (skipped entirely for <code>self_verify</code>).</td><td><span class="chip active">active</span></td></tr>
+          <tr><td><code>REWRITING</code></td><td>Spec being rewritten from surprises/operator guidance before the next generation.</td><td><span class="chip active">active</span></td></tr>
+          <tr><td><code>MERGING</code></td><td><code>IntegrationMerger</code> attempting the <code>--no-ff</code> merge.</td><td><span class="chip active">active</span></td></tr>
+          <tr><td><code>COMPLETED</code></td><td>Merged cleanly; dependents release.</td><td><span class="chip terminal">terminal</span></td></tr>
+          <tr><td><code>FAILED</code></td><td>Rewrite cap or generation cap exhausted with no operator grant. Terminal — edit <code>state.json</code> back to <code>ready</code> to retry after fixing the cause.</td><td><span class="chip fail">terminal</span></td></tr>
+          <tr><td><code>RESOLVED</code></td><td>A <code>FAILED</code> group's stranded work landed on the integration branch via the resolve routine — distinct from <code>COMPLETED</code> because it never claimed a review verdict, distinct from plain <code>FAILED</code> because the work wasn't lost. Releases dependents the same as <code>COMPLETED</code>.</td><td><span class="chip terminal">terminal</span></td></tr>
+          <tr><td><code>INTERRUPTED</code></td><td>Envelope failure — the <code>claude</code> process or API died under the group, not the work. <b>Non-terminal</b>: a plain <code>resume</code> re-enters it.</td><td><span class="chip hold">non-terminal</span></td></tr>
+        </tbody>
+      </table></div>
+
+      <figure class="diagram">
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> READY: DAG deps met, no hold
+    INTERRUPTED --> READY: resume
+    READY --> RUNNING: scheduler admits
+    RUNNING --> REVIEWING: coder report completed (paired / paired_plus)
+    RUNNING --> MERGING: coder report completed (self_verify)
+    REVIEWING --> RUNNING: changes_required, breaker not tripped
+    REVIEWING --> MERGING: verdict approved
+    REVIEWING --> REWRITING: verdict too_hard / structural
+    RUNNING --> REWRITING: breaker retires coder, or coder blocked/failed
+    REWRITING --> RUNNING: spec rewritten, next generation
+    MERGING --> COMPLETED: clean --no-ff merge
+    MERGING --> REWRITING: conflict, resolve-in-place exhausted
+    RUNNING --> INTERRUPTED: envelope failure
+    REVIEWING --> INTERRUPTED: envelope failure
+    MERGING --> INTERRUPTED: envelope failure
+    REWRITING --> FAILED: rewrite cap exhausted, no operator grant
+    RUNNING --> FAILED: generation cap exhausted, no operator grant
+    FAILED --> RESOLVED: stranded commits found, merged clean
+    FAILED --> FAILED: resolve found nothing lost
+    COMPLETED --> [*]
+    FAILED --> [*]
+    RESOLVED --> [*]
+</pre>
+        <figcaption>Every transition the scheduler and review loop actually implement, including the two states earlier internal diagrams in this repo omitted — <code>RESOLVED</code> and <code>INTERRUPTED</code>.</figcaption>
+      </figure>
+
+      <h3>Why file overlap holds a group back</h3>
+      <p>Above <code>concurrency = 1</code>, two groups declaring a file in common are never both running — a scheduler invariant, not a config option. <code>status</code> names the hold explicitly: <code>held (file_overlap) by g1 on cli.py</code>. Serial (<code>concurrency = 1</code>) is the default precisely because each group's worktree is cut from the integration tip at its ready→running transition, so one-at-a-time stacks work with zero cross-group conflicts.</p>
+      <p>A separate <b>failure gate</b> (<code>HoldReason.FAILURE_GATE</code>) holds any group sharing a declared file with a <code>FAILED</code>-but-unresolved or <code>INTERRUPTED</code> group — an overlapping successor must never build on a hole a failed group might have left.</p>
+    </section>
+
+    <section id="review-loop">
+      <h2><span class="num">05</span>Coder / reviewer review loop</h2>
+      <p class="section-dek">The orchestrator ferries control, not content: round triggers carry statuses and artifact pointers; the reviewer computes its own diff from the shared git worktree rather than being handed one.</p>
+
+      <figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant Sched as Scheduler
+    participant Coder
+    participant Reviewer
+    participant Op as Operator (HITL)
+
+    Sched->>Coder: fork base session · coder.md (spec, verification items)
+    Coder-->>Coder: implement, commit, verify
+    Coder->>Sched: CoderReport {status, verification_results, surprises}
+    alt needs_input
+        Sched->>Op: escalate CODER_QUESTION
+        Op-->>Sched: answer / skip / abort
+        Sched->>Coder: resume, answer.md (uncounted round)
+    end
+    Sched->>Reviewer: fork base session · reviewer.md (report_path, base_ref)
+    Reviewer-->>Reviewer: git log/diff, run verification items itself
+    Reviewer->>Sched: ReviewerVerdict {status, required_changes, surprises}
+    alt changes_required
+        Sched->>Coder: resume, revision.md (verdict path + changes)
+    else too_hard / structural
+        Sched->>Op: escalate REVIEWER_TOO_HARD / REVIEWER_STRUCTURAL
+        Op-->>Sched: answer / skip / abort
+        Sched->>Sched: rewrite_spec(), next generation
+    else approved
+        Sched->>Sched: merge into integration branch
+    end
+</pre>
+        <figcaption>One coder round, one reviewer round, in the shape the review loop actually runs it (<code>orchestrator/execution/review.py</code>). <code>paired_plus</code> adds one mandatory extra verification pass after an approved verdict, before merge.</figcaption>
+      </figure>
+
+      <h3>The circuit breaker</h3>
+      <p>A coder session is retired and respawned as a fresh generation when either bound trips — reset against the <b>latest round's</b> context usage, never the sum of all turns (summing once inflated the signal ~50× and retired healthy coders):</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>Trips when…</th></tr></thead>
+        <tbody>
+          <tr><td><code>context_token_limit</code></td><td class="num">200,000</td><td>the coder's last-round context occupancy exceeds it</td></tr>
+          <tr><td><code>max_rounds_per_generation</code></td><td class="num">3</td><td>the current generation runs this many review rounds</td></tr>
+          <tr><td><code>max_generations</code></td><td class="num">3</td><td>respawns exhausted — the group fails to the operator (escalated as <code>CAPS_EXHAUSTED</code> first)</td></tr>
+        </tbody>
+      </table></div>
+      <p>On retirement, a condensed <b>handoff prompt</b> (<code>handoff.md</code>) carries the retirement reason, outstanding required changes, and a diff summary into the next generation's fresh fork.</p>
+
+      <h3>Merge-conflict resolve-in-place, before rewrite</h3>
+      <p>Since plan U1, a merge conflict no longer jumps straight to a full spec rewrite. The group's own coder session — still holding full context of the work it just built — gets up to <code>max_conflict_resolve_attempts</code> (default <code>1</code>) warm-resume attempts to fetch, merge/rebase the integration branch, hand-resolve, and commit, using <code>conflict_resolve.md</code>. Only if that attempt doesn't report <code>completed</code>, or attempts are exhausted, does the loop escalate <code>MERGE_CONFLICT</code> and fall back to <code>_rewrite()</code>.</p>
+
+      <h3>Rewrite cap</h3>
+      <p><code>max_rewrites</code> (default <code>2</code>) bounds how many times one group's spec can be rewritten in response to a surprise, a stuck coder, a hard reviewer verdict, or a merge conflict, before the group fails outright — escalated as <code>CAPS_EXHAUSTED</code> first; an operator answer grants one more guided rewrite instead of failing.</p>
+
+      <h3>Re-entry after a crash</h3>
+      <p>On <code>resume</code>, the executor looks for a live coder session entry (no <code>retirement_reason</code>) at the group's persisted generation in the manifest and warm-resumes it with <code>reentry.md</code> — re-orienting from <code>git status</code>/<code>git log</code> rather than restarting. If the persisted context already exceeds the breaker limit, or the warm resume itself fails, it falls back to a fresh fork from base instead.</p>
+    </section>
+
+    <section id="prompts">
+      <h2><span class="num">06</span>Prompts</h2>
+      <p class="section-dek">Every prompt is a small, composable template — an identity block, a role brief, and a shared report contract. What's fixed boilerplate and what varies per group is visible in the <code>$placeholder</code> substitutions.</p>
+
+      <h3>Identity block <span class="src" style="display:inline">orchestrator/prompts/identity.md</span></h3>
+      <p>Prepended to every role prompt: the run/group manifest and the group's own spec.</p>
+      <pre><code>&lt;run-manifest run_id="$run_id" group_id="$group_id" group_name="$group_name"&gt;
+&lt;summary&gt;$summary&lt;/summary&gt;
+&lt;/run-manifest&gt;
+&lt;spec&gt;
+$spec
+&lt;/spec&gt;</code></pre>
+
+      <h3>Coder prompt <span class="src" style="display:inline">orchestrator/prompts/coder.md</span></h3>
+      <details class="excerpt" open>
+        <summary>Full coder prompt template <span class="tag">what varies: $group_name, $verification — everything else is fixed</span></summary>
+        <div class="body"><pre><code>$identity_block
+
+You are the coder for group "$group_name". The &lt;spec&gt; block above is your complete
+assignment; the &lt;summary&gt; is its one-line form.
+
+Ground rules:
+
+- Work only inside this worktree (your current working directory); never touch
+  paths outside it.
+- This worktree owns its own environment: dependency changes require `uv sync`
+  run inside the worktree, and any verification item that imports a new
+  dependency must pass here, in this worktree — never against the parent
+  checkout's environment.
+- Implement the spec fully — code and tests — following the conventions the shared
+  context established.
+- Commit early and often: after each self-contained step that leaves the worktree
+  in a consistent state (a finished file, a passing unit of work), make a git
+  commit with a clear conventional message. [...]
+- If a command is denied for permissions, retry the *identical* command up to
+  three times total, then stop and report status `permission_denied` with the
+  denied command verbatim in `denied_command`. Re-sending the identical command
+  is not a workaround; alternate quoting, alternate spellings, shelling through
+  another interpreter, and `subprocess.run` substitution for the same command
+  are all banned — they route around the sandbox instead of reporting the block.
+- Verify your work before reporting. These are your verification items:
+
+$verification
+
+$report_contract</code></pre></div>
+      </details>
+
+      <h3>Report contract <span class="src" style="display:inline">orchestrator/prompts/report_contract.md</span></h3>
+      <p>Appended to the coder prompt — the exact envelope every coder round must end with:</p>
+      <pre><code>&lt;run-report status="completed"&gt;
+{
+  "status": "completed",
+  "summary": "one short paragraph of what you did and how it went",
+  "verification_results": [
+    {"item_id": "&lt;verification item id&gt;", "status": "pass", "notes": ""}
+  ],
+  "surprises": []
+}
+&lt;/run-report&gt;</code></pre>
+      <p><code>status</code> is one of <code>completed | blocked | failed | needs_input | permission_denied</code>. <code>needs_input</code> requires a top-level <code>question</code>; <code>permission_denied</code> requires a verbatim <code>denied_command</code> — both enforced by pydantic validators on <code>CoderReport</code>, not just prompt instruction.</p>
+
+      <h3>Reviewer prompt <span class="src" style="display:inline">orchestrator/prompts/reviewer.md</span></h3>
+      <details class="excerpt">
+        <summary>Full reviewer prompt template <span class="tag">the reviewer computes its own diff — it is never handed one</span></summary>
+        <div class="body"><pre><code>$identity_block
+
+You are the reviewer for group "$group_name". A coder session has just finished a
+round in this same worktree. Judge whether the work satisfies the &lt;spec&gt; above.
+
+How to review:
+
+- Compute the diff yourself from git: `git log $base_ref..HEAD`,
+  `git diff $base_ref`, and `git status` for anything uncommitted.
+- Read the coder's report at: $report_path
+- Check every verification item below against the actual code — run the tests the
+  spec calls for. Verify claims; do not trust the report.
+
+$verification
+
+End your final message with EXACTLY ONE verdict block, after any prose:
+
+&lt;run-report status="approved"&gt;
+{"status": "approved", "required_changes": [], "surprises": [], "notes": "..."}
+&lt;/run-report&gt;
+
+Rules for the block:
+
+- The `status` attribute is one of approved | changes_required | too_hard |
+  structural and must match the JSON body's "status" field.
+  - approved: the work satisfies the spec and its verification items.
+  - changes_required: fixable within this group — list concrete, actionable items
+    in "required_changes".
+  - too_hard: the spec cannot be satisfied by iterating here; escalate for a
+    spec rewrite.
+  - structural: the group boundaries themselves are wrong (work belongs to or
+    conflicts with another group).
+- A surprise is a finding that likely invalidates another group's assignment: [...]
+- The body must be valid JSON.</code></pre></div>
+      </details>
+
+      <h3>The rest of the family</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>File</th><th>Used when</th></tr></thead>
+        <tbody>
+          <tr><td><code>mapper.md</code></td><td>No task map in the plan — asks an LLM to map tasks to code regions from a codegraph file index.</td></tr>
+          <tr><td><code>revision.md</code></td><td>Reviewer returned <code>changes_required</code> — points the coder at the verdict path and the change list.</td></tr>
+          <tr><td><code>re_review.md</code></td><td>Reviewer's second-and-later look at the same generation.</td></tr>
+          <tr><td><code>extra_pass.md</code></td><td><code>paired_plus</code> mandatory re-verification after an approved verdict: "assume nothing from your previous pass."</td></tr>
+          <tr><td><code>handoff.md</code></td><td>Breaker retirement — condensed context (reason, outstanding changes, diff summary) into the next generation's fresh fork.</td></tr>
+          <tr><td><code>reentry.md</code></td><td>Resume after an envelope failure — re-orient from <code>git status</code>/<code>git log</code>, don't restart finished work.</td></tr>
+          <tr><td><code>conflict_resolve.md</code></td><td>Merge conflict — resolve in place in the group's own worktree before falling back to a spec rewrite.</td></tr>
+          <tr><td><code>answer.md</code></td><td>Operator answered a <code>needs_input</code> question — resume the coder with the human's guidance.</td></tr>
+          <tr><td><code>speccer.md</code></td><td>Rewrites a group's spec from accumulated surprises/operator guidance before the next generation.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="hitl">
+      <h2><span class="num">07</span>Escalation / human-in-the-loop</h2>
+      <p class="section-dek">Headless <code>claude -p</code> workers cannot pause mid-turn to ask a question. The only channel is <b>report-then-resume</b>: a coder ends its turn with a status the orchestrator recognizes as stuck, the review loop escalates and blocks that group's coroutine — sibling groups keep running — and resumes it once you answer.</p>
+
+      <div class="callout info"><span class="label">On by default</span><p>HITL is <b>enabled</b> at intensity <code>on_stuck</code> out of the box. An unattended run needs <code>--intensity autonomous</code> (or <code>[escalation] intensity = "autonomous"</code>) explicitly — otherwise a run can block indefinitely on an unanswered escalation, since <code>timeout_s</code> defaults to blocking forever.</p></div>
+
+      <h3>The ten escalation kinds</h3>
+      <p><code>EscalationKind</code> (<code>orchestrator/model.py:171-188</code>): six are decision points that would otherwise auto-resolve; three (<code>GROUP_START</code>, <code>RESPAWN</code>, <code>MERGE_APPROVE</code>) are approval gates only the <code>interactive</code> tier raises.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Kind</th><th>Raised when</th><th>Lowest tier that escalates it</th></tr></thead>
+        <tbody>
+          <tr><td><code>caps_exhausted</code></td><td>Generation or rewrite cap about to fail the group.</td><td><code>on_failure</code></td></tr>
+          <tr><td><code>group_resolve</code></td><td>A <code>FAILED</code> group's stranded work needs resolving before dependents can release.</td><td><code>on_failure</code></td></tr>
+          <tr><td><code>coder_question</code></td><td>Coder emitted <code>needs_input</code> + a question.</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>coder_blocked</code></td><td>Coder reported <code>blocked</code>/<code>failed</code>.</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>reviewer_too_hard</code></td><td>Reviewer verdict <code>too_hard</code>.</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>reviewer_structural</code></td><td>Reviewer verdict <code>structural</code> — the group boundaries themselves are wrong.</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>merge_conflict</code></td><td>Integration merge conflicted (after resolve-in-place attempts, if any).</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>group_start</code></td><td>Approve before a group's worktree/session launches.</td><td><code>interactive</code></td></tr>
+          <tr><td><code>respawn</code></td><td>Approve a breaker respawn to the next generation.</td><td><code>interactive</code></td></tr>
+          <tr><td><code>merge_approve</code></td><td>Approve before an approved group actually merges.</td><td><code>interactive</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Intensity tiers</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Tier</th><th>Escalates</th></tr></thead>
+        <tbody>
+          <tr><td><code>autonomous</code></td><td>nothing — run unattended (must be passed explicitly)</td></tr>
+          <tr><td><code>on_failure</code></td><td>only a generation/rewrite cap about to fail a group</td></tr>
+          <tr><td><code>on_stuck</code> <i>(default)</i></td><td>+ coder blocked/needs_input, reviewer too_hard/structural, merge conflict</td></tr>
+          <tr><td><code>interactive</code></td><td>+ approve before group launch, before each respawn, and before each merge</td></tr>
+        </tbody>
+      </table></div>
+      <p>Routine <code>changes_required</code> review rounds and routine breaker respawns stay autonomous under <code>on_stuck</code> — only genuinely stuck moments pause.</p>
+
+      <h3>Escalation source</h3>
+      <p><code>--escalation-source workers_via_orchestrator</code> (default) surfaces a coder's <code>needs_input</code> question to you as-is. <code>orchestrator_only</code> downgrades it: <code>EscalationPolicy.should_escalate()</code> refuses <code>coder_question</code> outright when the source is <code>orchestrator_only</code>, and the review loop routes the same moment through <code>coder_blocked</code> instead — no direct worker→human channel, just the existing blocked/rewrite path.</p>
+
+      <h3>The request/response file protocol</h3>
+      <p>Deliberately boring: <code>EscalationBroker.raise_escalation()</code> writes <code>escalations/request-&lt;id&gt;.json</code>, logs a loud line to <code>run.log</code>, then polls (<code>poll_interval_s</code>, default <code>1.0</code>s) for a matching <code>response-&lt;id&gt;.json</code> — from a worker thread via <code>asyncio.to_thread</code>, so the event loop and sibling groups are never blocked. <code>smart-mcps-orchestrate answer &lt;run_id&gt; &lt;esc_id&gt; --action answer|skip|abort</code> writes that response file; the blocked group's coroutine picks it up by correlation id.</p>
+      <div class="grid-2">
+        <div><h4 style="margin:0 0 .3rem">Unanswered, no timeout set</h4><p style="max-width:none">Blocks indefinitely — a live operator is expected. This is the default (<code>timeout_s = null</code>).</p></div>
+        <div><h4 style="margin:0 0 .3rem">Unanswered, timeout set</h4><p style="max-width:none">Falls back per <code>on_timeout</code>: <code>autonomous</code> (default), <code>skip</code>, or <code>abort</code>.</p></div>
+      </div>
+
+      <div class="callout proposed">
+        <span class="label">Proposed, not implemented — ADR-0005</span>
+        <p><code>docs/adr/0005-hitl-permission-routing-transport.md</code> is a <b>design proposal only</b>; it changes no code today. It answers one question — how would a live <code>PreToolUse</code> permission gate (blocking a dangerous tool call <i>before</i> it runs, mid-turn) talk to the same escalation channel described above? — for a future implementation plan. The recommended transport reuses <code>escalations_dir</code> itself: the hook writes its own request file and polls for a response, and the broker gains a lightweight watcher for new request files. <b>None of this exists in the codebase yet</b> — there is no <code>PERMISSION_REQUEST</code> escalation kind, no hook script, and no broker-side watcher.</p>
+      </div>
+    </section>
+
+    <section id="permissions">
+      <h2><span class="num">08</span>Tool &amp; permission gating</h2>
+      <p class="section-dek">What actually constrains a worker session today — reported plainly, not aspirationally.</p>
+      <p>Every worker session is shelled by <code>SessionRunner._call()</code> (<code>orchestrator/execution/sessions.py</code>), which passes exactly two gating flags straight through to the <code>claude</code> CLI:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Config field</th><th class="num">Default</th><th>CLI flag it becomes</th></tr></thead>
+        <tbody>
+          <tr><td><code>[execution] permission_mode</code></td><td class="num"><code>acceptEdits</code></td><td><code>--permission-mode acceptEdits</code></td></tr>
+          <tr><td><code>[session] allowed_tools</code></td><td class="num"><code>[]</code></td><td><code>--allowedTools a,b,c</code> (only sent if non-empty)</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn"><span class="label">acceptEdits covers edits, not Bash</span><p>Orchestrated coders cannot run <code>pytest</code> or <code>git commit</code> unless an approver is wired up separately — a large hidden cost driver, since a coder that cannot verify its own work burns rounds guessing instead.</p></div>
+      <p>There is <b>no fine-grained per-tool allowlist/denylist system</b> built into the orchestrator beyond these two flags. The only in-band defense against a dangerous or repeatedly-denied command is prompt-level, in <code>coder.md</code>: retry the identical denied command up to three times, then stop and report <code>permission_denied</code> with the exact command in <code>denied_command</code>. That report routes the group to <code>INTERRUPTED</code> (not <code>FAILED</code>) — the harness reported a real-world block, the coder's work isn't wrong, and a plain <code>resume</code> re-enters the same worktree once the denial is cleared:</p>
+      <pre><code>class PermissionDenied(Exception):
+    """A coder reported ``permission_denied`` (plan U3): the harness is healthy,
+    but a sandboxed command was refused after the coder's identical-retry budget.
+    Routes the group to INTERRUPTED, never FAILED — the work is unfinished, not
+    wrong, and a plain ``resume`` re-enters the same worktree. [...]"""</code></pre>
+      <p class="src">orchestrator/model.py:233-242</p>
+      <p>The live, mid-turn <code>PreToolUse</code> gate described in ADR-0005 (§7 above) — which could actually block a specific dangerous tool call before it executes, rather than relying on the coder to self-report after the fact — is <b>proposed, not built</b>.</p>
+    </section>
+
+    <section id="merge">
+      <h2><span class="num">09</span>Merge strategy</h2>
+      <p class="section-dek"><code>IntegrationMerger</code> (<code>orchestrator/execution/merge.py</code>) owns one branch per run: <code>orchestrator/run-&lt;run_id&gt;</code>, created from the launch ref and checked out in its own worktree so the operator's own checkout is never disturbed.</p>
+      <div class="glance" style="margin-bottom:1.4rem">
+        <dl class="glance-grid" style="margin:0">
+          <div class="glance-item"><dt>Integration branch</dt><dd><code>orchestrator/run-&lt;run_id&gt;</code></dd></div>
+          <div class="glance-item"><dt>Group branch</dt><dd><code>orchestrator/&lt;run_id&gt;-&lt;gid&gt;</code></dd></div>
+          <div class="glance-item"><dt>Merge mode</dt><dd><code>--no-ff</code> — one merge commit per group, an audit trail</dd></div>
+          <div class="glance-item"><dt>Final merge to main</dt><dd>manual, always — this module never touches it</dd></div>
+        </dl>
+      </div>
+
+      <h3>Empty-merge refusal</h3>
+      <p>Before merging, <code>commits_ahead()</code> counts commits on the group's branch not yet reachable from the integration branch — read <i>before</i> the merge, since a clean merge makes that same count read zero afterward, which would make a real merge indistinguishable from a no-op. A count of <code>0</code> refuses outright:</p>
+      <pre><code>if ahead == 0:
+    raise MergeError(
+        f"group {group.id} branch {branch} has no commits ahead of "
+        f"{self.branch} — refusing to merge nothing"
+    )</code></pre>
+      <p class="src">orchestrator/execution/merge.py:80-85</p>
+
+      <h3>Conflict handling</h3>
+      <p>A conflicted <code>git merge --no-ff</code> is aborted cleanly (<code>git merge --abort</code>) — the integration branch is left exactly where it was — and raises <code>MergeConflict</code>, naming the conflicted files, the incoming group, and every already-merged group whose declared files collide. The review loop turns that into a <code>Surprise</code> (<code>kind: "merge_conflict"</code>) fanned out to every named group, then tries the resolve-in-place step (§05) before falling back to a full spec rewrite.</p>
+
+      <h3>Worktree cleanup</h3>
+      <p>A clean merge removes the group's worktree. A merge that fails leaves the worktree in place, uncommitted leftovers and all, for inspection — cleanup is never forced on a dirty tree.</p>
+    </section>
+
+    <section id="cli">
+      <h2><span class="num">10</span>CLI reference</h2>
+      <p class="section-dek">Six subcommands, captured from <code>smart-mcps-orchestrate &lt;cmd&gt; --help</code> on this branch.</p>
+
+      <h3><code>group &lt;plan.md&gt;</code> — compute groups from a plan</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--name NAME</code></td><td>Grouping name (default: the plan's filename stem); writes to <code>.orchestrator/groupings/&lt;name&gt;/</code>.</td></tr>
+          <tr><td><code>--dry-run</code></td><td>Print groups/DAG/estimates without writing artifacts.</td></tr>
+          <tr><td><code>--token-budget N</code></td><td>Override the estimator's per-group token budget.</td></tr>
+          <tr><td><code>--no-spec</code></td><td>Partition-only report — zero LLM calls, never writes <code>groups.json</code>. The cheap iteration loop.</td></tr>
+          <tr><td><code>--allow-unknown-symbols</code></td><td>Drop task-map symbols missing from the codegraph index with a flag, instead of a hard error.</td></tr>
+          <tr><td><code>--allow-oversized-slice</code></td><td>Keep an over-cap slice as one flagged group instead of failing.</td></tr>
+          <tr><td><code>--allow-degenerate-partition</code></td><td>Accept a partition whose cycle repair left a group over the budget cap, instead of failing.</td></tr>
+          <tr><td><code>--granularity {independent,balanced,monolithic}</code></td><td>How eagerly small groups are folded together (§02). Wins over the config-file value when both are set.</td></tr>
+          <tr><td><code>--repo DIR</code> / <code>--config PATH</code></td><td>Target repo root / config TOML path.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>run</code> / <code>resume &lt;run_id&gt;</code> — execute (or re-enter) a run</h3>
+      <p><code>resume</code> takes every execution flag <code>run</code> does, plus the positional <code>run_id</code>.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--run-id ID</code></td><td><code>run</code> only — run identifier (default: <code>r&lt;timestamp&gt;</code>).</td></tr>
+          <tr><td><code>--grouping NAME</code></td><td><code>run</code> only — which named grouping to execute; auto-selects if exactly one exists.</td></tr>
+          <tr><td><code>--sequential</code></td><td>One group at a time — deterministic debug mode.</td></tr>
+          <tr><td><code>--concurrency N</code></td><td>Max parallel groups (default <code>1</code>).</td></tr>
+          <tr><td><code>--permission-mode MODE</code></td><td><code>claude</code> CLI permission mode for workers (default <code>acceptEdits</code>).</td></tr>
+          <tr><td><code>--review-intensity {self_verify,paired,paired_plus}</code></td><td>Overrides the computed tier for every group.</td></tr>
+          <tr><td><code>--hitl</code></td><td>Enable HITL escalation at <code>on_stuck</code>. Redundant against the default; documents intent.</td></tr>
+          <tr><td><code>--intensity {autonomous,on_failure,on_stuck,interactive}</code></td><td>Escalation tier; any non-<code>autonomous</code> value implies <code>--hitl</code>.</td></tr>
+          <tr><td><code>--escalation-source {orchestrator_only,workers_via_orchestrator}</code></td><td>Who may request escalation (default <code>workers_via_orchestrator</code>).</td></tr>
+          <tr><td><code>--escalation-timeout S</code></td><td>Seconds to wait for an answer before <code>on_timeout</code> fires (default: block).</td></tr>
+          <tr><td><code>--repo DIR</code> / <code>--config PATH</code></td><td>Target repo root / config TOML path.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>The rest</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>groupings [--repo DIR]</code></td><td>Lists every named grouping with its plan path and group count.</td></tr>
+          <tr><td><code>status [RUN_ID] [--repo DIR]</code></td><td>No <code>run_id</code>: lists runs. With one: per-group state, generations, failures, sessions, and pending escalations.</td></tr>
+          <tr><td><code>answer RUN_ID ESC_ID [--action answer|skip|abort] [--text ...] [--repo DIR]</code></td><td>Resolves a pending escalation by writing its response file.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="config">
+      <h2><span class="num">11</span>Config reference</h2>
+      <p class="section-dek"><code>.orchestrator/config.toml</code> in the target repo, or <code>--config PATH</code>. Resolution is <b>CLI flags &gt; config file &gt; built-in defaults</b>; every field has a working default, so the file is always optional. This table is generated directly from <code>orchestrator/config.py</code> — the source of truth — not from the narrative docs, which (see the report accompanying this page) have drifted from it in a few places.</p>
+
+      <h3><code>[edge_weights]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>shared_file</code></td><td class="num">1.0</td><td>—</td></tr>
+          <tr><td><code>call</code></td><td class="num">2.0</td><td>—</td></tr>
+          <tr><td><code>impact</code></td><td class="num">1.5</td><td>—</td></tr>
+          <tr><td><code>prose_neighbor</code></td><td class="num">0.5</td><td>—</td></tr>
+          <tr><td><code>semantic</code></td><td class="num">1.5</td><td>—</td></tr>
+          <tr><td><code>semantic_floor</code></td><td class="num">0.5</td><td>—</td></tr>
+          <tr><td><code>semantic_ceil</code></td><td class="num">3.0</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[partition]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>hub_threshold</code></td><td class="num">0.4</td><td>—</td></tr>
+          <tr><td><code>louvain_resolution</code></td><td class="num">1.0</td><td>—</td></tr>
+          <tr><td><code>allow_oversized_slice</code></td><td class="num">false</td><td><code>--allow-oversized-slice</code></td></tr>
+          <tr><td><code>allow_degenerate_partition</code></td><td class="num">false</td><td><code>--allow-degenerate-partition</code></td></tr>
+          <tr><td><code>granularity</code></td><td class="num">"independent"</td><td><code>--granularity</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[estimator]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>token_budget</code></td><td class="num">100,000</td><td><code>--token-budget</code></td></tr>
+          <tr><td><code>bytes_per_token</code></td><td class="num">4.0</td><td>—</td></tr>
+          <tr><td><code>slack_multiplier</code></td><td class="num">1.3</td><td>—</td></tr>
+          <tr><td><code>per_file_tool_allowance</code></td><td class="num">2,000</td><td>—</td></tr>
+          <tr><td><code>spec_tokens_allowance</code></td><td class="num">3,000</td><td>—</td></tr>
+          <tr><td><code>size_hint_small</code></td><td class="num">500</td><td>—</td></tr>
+          <tr><td><code>size_hint_medium</code></td><td class="num">2,000</td><td>—</td></tr>
+          <tr><td><code>size_hint_large</code></td><td class="num">5,000</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[difficulty]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>weight_files_touched</code></td><td class="num">1.0</td><td>—</td></tr>
+          <tr><td><code>weight_max_fan</code></td><td class="num">1.5</td><td>—</td></tr>
+          <tr><td><code>weight_hub_touches</code></td><td class="num">2.0</td><td>—</td></tr>
+          <tr><td><code>weight_cross_group_edges</code></td><td class="num">1.5</td><td>—</td></tr>
+          <tr><td><code>weight_verification_items</code></td><td class="num">1.0</td><td>—</td></tr>
+          <tr><td><code>scale_files_touched</code></td><td class="num">6.0</td><td>—</td></tr>
+          <tr><td><code>scale_max_fan</code></td><td class="num">10.0</td><td>—</td></tr>
+          <tr><td><code>scale_hub_touches</code></td><td class="num">1.0</td><td>—</td></tr>
+          <tr><td><code>scale_cross_group_edges</code></td><td class="num">3.0</td><td>—</td></tr>
+          <tr><td><code>scale_verification_items</code></td><td class="num">5.0</td><td>—</td></tr>
+          <tr><td><code>d_review</code></td><td class="num">0.35</td><td>—</td></tr>
+          <tr><td><code>d_hard</code></td><td class="num">0.65</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[breaker]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>context_token_limit</code></td><td class="num">200,000</td><td>—</td></tr>
+          <tr><td><code>max_rounds_per_generation</code></td><td class="num">3</td><td>—</td></tr>
+          <tr><td><code>max_generations</code></td><td class="num">3</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[execution]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>concurrency</code></td><td class="num">1</td><td><code>--concurrency</code></td></tr>
+          <tr><td><code>sequential</code></td><td class="num">false</td><td><code>--sequential</code></td></tr>
+          <tr><td><code>permission_mode</code></td><td class="num">"acceptEdits"</td><td><code>--permission-mode</code></td></tr>
+          <tr><td><code>max_rewrites</code></td><td class="num">2</td><td>—</td></tr>
+          <tr><td><code>max_conflict_resolve_attempts</code></td><td class="num">1</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>[session]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>claude_bin</code></td><td class="num">"claude"</td><td>—</td></tr>
+          <tr><td><code>model</code></td><td class="num">null</td><td>—</td></tr>
+          <tr><td><code>allowed_tools</code></td><td class="num">[]</td><td>—</td></tr>
+          <tr><td><code>transcript_root</code></td><td class="num">null</td><td>—</td></tr>
+          <tr><td><code>max_thinking_tokens</code></td><td class="num">4,000</td><td>—</td></tr>
+          <tr><td><code>thinking</code></td><td class="num">"adaptive"</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+      <p>The thinking pair is a real cost lever, not a cosmetic one: thinking tokens count as <i>output</i> tokens. <code>adaptive</code> (model decides whether to think) measured cheapest and correct against <code>enabled</code>/<code>disabled</code> on one probe; paired with the <code>medium</code> (4,000) budget it reads as "think only when it helps, never more than medium." <code>--max-thinking-tokens</code> is hidden from <code>claude --help</code>, so it's deliberately excluded from preflight's required-flags check.</p>
+
+      <h3><code>[escalation]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td class="num">true</td><td><code>--intensity autonomous</code> to disable</td></tr>
+          <tr><td><code>intensity</code></td><td class="num">"on_stuck"</td><td><code>--intensity</code></td></tr>
+          <tr><td><code>source</code></td><td class="num">"workers_via_orchestrator"</td><td><code>--escalation-source</code></td></tr>
+          <tr><td><code>timeout_s</code></td><td class="num">null (block forever)</td><td><code>--escalation-timeout</code></td></tr>
+          <tr><td><code>on_timeout</code></td><td class="num">"autonomous"</td><td>—</td></tr>
+          <tr><td><code>poll_interval_s</code></td><td class="num">1.0</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <hr class="rule">
+      <h3>Run artifacts layout</h3>
+      <pre><code>&lt;repo&gt;/
+  .orchestrator/
+    config.toml                 # optional; yours
+    groupings/&lt;name&gt;/
+      groups.json                # grouping output (the run's input)
+      base-context.md            # compiled shared context for the base session
+    failures/                   # raw LLM output that failed validation
+    runs/&lt;run_id&gt;/
+      groups.json                # snapshot of the grouping the run started with
+      base-context.md            # snapshot of the base context at run start
+      manifest.json              # run → groups → sessions join (the analyzer contract)
+      state.json                 # crash-resumable scheduler state + live worker PIDs
+      groups/&lt;gid&gt;/               # report-g&lt;G&gt;-r&lt;R&gt;.json / verdict-g&lt;G&gt;-r&lt;R&gt;.json
+      logs/run.log                # HITL event log — the live log the main session tails
+      escalations/                # HITL request-&lt;id&gt;.json / response-&lt;id&gt;.json
+  .worktrees/
+    run-&lt;run_id&gt;-integration/    # the integration branch's worktree
+    &lt;gid&gt;-&lt;name&gt;/                # per-group worktrees (removed after a clean merge)</code></pre>
+      <p class="src">orchestrator/README.md</p>
+    </section>
+
+    <footer class="page">
+      Synthesized from <code>orchestrator/README.md</code>, <code>docs/orchestrator-grouping-config.md</code>, <code>orchestrator/config.py</code>, <code>orchestrator/cli.py</code>, <code>orchestrator/execution/{scheduler,review,merge,escalation,sessions}.py</code>, <code>orchestrator/model.py</code>, <code>orchestrator/grouping/base_context.py</code>, <code>orchestrator/prompts/*.md</code>, and <code>docs/adr/0005-hitl-permission-routing-transport.md</code>, on branch <code>feat/multiagent-orchestrator</code>.
+    </footer>
+  </main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default", securityLevel: "loose" });
+</script>
+</body>
+</html>

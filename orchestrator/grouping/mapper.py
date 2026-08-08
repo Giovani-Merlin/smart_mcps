@@ -13,7 +13,7 @@ from pathlib import Path
 from string import Template
 
 from orchestrator.grouping.graphing import CodegraphClient, TaskMapping
-from orchestrator.grouping.llm import JsonRunner, call_llm_json
+from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, call_llm_json
 from orchestrator.prompts import load_template
 
 MAPPER_SCHEMA = {
@@ -74,6 +74,7 @@ def map_tasks(
     max_retries: int = 2,
     failure_dir: Path | None = None,
     codegraph_files: str | None = None,
+    recorder: LlmCallRecorder | None = None,
 ) -> MapperOutput:
     prompt = Template(load_template("mapper")).substitute(
         plan_text=plan_text,
@@ -86,6 +87,7 @@ def map_tasks(
         validate=_validate_payload,
         max_retries=max_retries,
         failure_dir=failure_dir,
+        recorder=recorder,
     )
 
     mappings: list[TaskMapping] = []
