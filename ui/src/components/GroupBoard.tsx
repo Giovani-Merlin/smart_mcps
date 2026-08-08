@@ -17,6 +17,8 @@ const STATE_LABELS: Record<GroupState, string> = {
   merging: "Merging",
   completed: "Completed",
   failed: "Failed",
+  resolved: "Resolved",
+  interrupted: "Interrupted",
 };
 
 export interface GroupBoardProps {

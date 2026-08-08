@@ -200,6 +200,29 @@
   color: #5c0c0c;
 }
 
+/* `resolved` is a FAILED group whose stranded work the operator dealt with, so
+ * it reads as a muted success rather than a second failure colour. */
+.group-card--resolved {
+  background-color: #e4eddb;
+  border-color: #b3c99b;
+}
+.group-card__state--resolved {
+  background-color: #b3c99b;
+  color: #33421f;
+}
+
+/* `interrupted` is resumable, not terminal — dashed like `failed` to signal
+ * "not finished", but slate rather than red because nothing went wrong. */
+.group-card--interrupted {
+  background-color: #e6e8ec;
+  border-color: #a9b0bd;
+  border-style: dashed;
+}
+.group-card__state--interrupted {
+  background-color: #a9b0bd;
+  color: #262b33;
+}
+
 @keyframes group-card-pulse {
   0%,
   100% {

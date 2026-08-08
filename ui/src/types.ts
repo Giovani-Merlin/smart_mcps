@@ -8,7 +8,10 @@
 
 // --------------------------------------------------------------- scheduler.py
 
-// GroupState — the eight scheduler-owned lifecycle states (scheduler.py:46).
+// GroupState — the ten scheduler-owned lifecycle states (scheduler.py:79).
+// `resolved` and `interrupted` arrived with the orchestrator merge; until they
+// were added here, an interrupted group rendered an empty, unstyled badge
+// because STATE_LABELS had no entry for it.
 export type GroupState =
   | "pending"
   | "ready"
@@ -17,7 +20,9 @@ export type GroupState =
   | "rewriting"
   | "merging"
   | "completed"
-  | "failed";
+  | "failed"
+  | "resolved"
+  | "interrupted";
 
 export const GROUP_STATES: readonly GroupState[] = [
   "pending",
@@ -28,6 +33,8 @@ export const GROUP_STATES: readonly GroupState[] = [
   "merging",
   "completed",
   "failed",
+  "resolved",
+  "interrupted",
 ];
 
 export interface GroupRunState {
@@ -108,7 +115,7 @@ export interface ReviewerVerdict {
   notes: string;
 }
 
-// EscalationKind — the nine-member enum (model.py:145). The prototype's
+// EscalationKind — the ten-member enum (model.py:185). The prototype's
 // four-value invention had no overlap with these and is gone.
 export type EscalationKind =
   | "coder_question"
@@ -117,6 +124,7 @@ export type EscalationKind =
   | "reviewer_structural"
   | "merge_conflict"
   | "caps_exhausted"
+  | "group_resolve"
   | "group_start"
   | "respawn"
   | "merge_approve";
