@@ -92,15 +92,21 @@ def describe_groupings(repo_root: Path) -> list[GroupingInfo]:
 def snapshot_grouping(source_dir: Path, dest_dir: Path) -> None:
     """Copy a grouping directory's files into a run directory (plan U10).
 
-    Generic file copy rather than an enumerated list, so a later artifact
-    (e.g. a trace file) is snapshotted automatically. The run keeps its own
-    frozen copy so a later ``group --name <same>`` against a different plan
-    cannot rewrite a finished run's history.
+    Generic copy rather than an enumerated list, so a later artifact is
+    snapshotted automatically. The run keeps its own frozen copy so a later
+    ``group --name <same>`` against a different plan cannot rewrite a finished
+    run's history.
+
+    Subdirectories are copied too: the grouper's LLM call records live in a
+    nested ``llm/``, and a files-only copy dropped them from every snapshot
+    while appearing to succeed.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     for path in source_dir.iterdir():
         if path.is_file():
             shutil.copy2(path, dest_dir / path.name)
+        elif path.is_dir():
+            shutil.copytree(path, dest_dir / path.name, dirs_exist_ok=True)
 
 
 class RunPaths:

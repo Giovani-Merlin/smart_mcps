@@ -80,6 +80,20 @@ class SessionEntry(BaseModel):
     # with the process, and re-entry needs a pre-check against the breaker limit
     # before warm-resuming an interrupted coder.
     last_context_tokens: int = 0
+    # Cumulative spend, persisted alongside the context size on the same saves.
+    # Distinct from last_context_tokens, which is occupancy of the latest round:
+    # these sum every round of the session, so a group's actual cost can be
+    # compared against the grouper's per-group `estimated_tokens` prediction and
+    # split per role. All default to 0 — runs recorded before this field existed
+    # load unchanged and read as "actuals not recorded".
+    rounds_completed: int = 0
+    total_input_tokens: int = 0  # uncached input only
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    model: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class GroupManifestEntry(BaseModel):

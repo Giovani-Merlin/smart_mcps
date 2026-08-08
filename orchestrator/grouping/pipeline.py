@@ -32,7 +32,7 @@ from orchestrator.grouping.graphing import (
     index_fingerprint,
     source_bytes_of,
 )
-from orchestrator.grouping.llm import JsonRunner, claude_json_runner
+from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, claude_json_runner
 from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
@@ -256,6 +256,7 @@ def compute_partition(
     client: CodegraphClient | None = None,
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
+    llm_recorder: LlmCallRecorder | None = None,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
     does before handing off to the speccer, callable on its own.
@@ -283,7 +284,12 @@ def compute_partition(
         raise GrouperError(f"task map: {exc}") from exc
     if mapper_out is None:
         mapper_out = map_tasks(
-            plan_text, llm_runner, client, failure_dir=failure_dir, codegraph_files=codegraph_files
+            plan_text,
+            llm_runner,
+            client,
+            failure_dir=failure_dir,
+            codegraph_files=codegraph_files,
+            recorder=llm_recorder,
         )
     else:
         mapper_out.flags.insert(0, "task map: parsed from plan — mapper LLM skipped")
@@ -407,6 +413,7 @@ def run_grouping(
     client: CodegraphClient | None = None,
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
+    llm_recorder: LlmCallRecorder | None = None,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
@@ -422,6 +429,7 @@ def run_grouping(
         client=client,
         allow_unknown_symbols=allow_unknown_symbols,
         recorder=recorder,
+        llm_recorder=llm_recorder,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -440,7 +448,11 @@ def run_grouping(
         for gid, members in sorted(members_by_gid.items())
     }
     specs = write_specs(
-        strip_task_map(outcome.plan_text), skeletons, llm_runner, failure_dir=failure_dir
+        strip_task_map(outcome.plan_text),
+        skeletons,
+        llm_runner,
+        failure_dir=failure_dir,
+        recorder=llm_recorder,
     )
 
     upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}

@@ -17,6 +17,7 @@ import asyncio
 import json
 import sys
 import tomllib
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,6 +76,7 @@ from orchestrator.grouping.pipeline import (
 )
 from orchestrator.grouping.plan_reader import strip_task_map
 from orchestrator.grouping.speccer import write_specs
+from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
     EscalationResponse,
@@ -362,6 +364,9 @@ def _cmd_group(
     out_dir = grouping_dir(repo_root, name)
     trace_path = out_dir / "grouping-trace.json"
     recorder = TraceRecorder()
+    # Written on every mode including --no-spec and --dry-run: --no-spec is the
+    # debugging mode, so it is exactly when the mapper's reasoning is wanted most.
+    llm_recorder = JsonlCallRecorder(out_dir, grouping_run_id=uuid.uuid4().hex)
 
     if getattr(args, "no_spec", False):
         try:
@@ -373,6 +378,7 @@ def _cmd_group(
                 client=client,
                 allow_unknown_symbols=allow_unknown_symbols,
                 recorder=recorder,
+                llm_recorder=llm_recorder,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
             _write_failure_trace(out_dir, recorder, exc, trace_path)
@@ -392,11 +398,16 @@ def _cmd_group(
             client=client,
             allow_unknown_symbols=allow_unknown_symbols,
             recorder=recorder,
+            llm_recorder=llm_recorder,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
         _write_failure_trace(out_dir, recorder, exc, trace_path)
         return 1
     _warn_self_modification(result.flags)
+    llm_recorder.link_outputs(
+        task_ids=[t for group in result.groups for t in group.tasks],
+        group_ids=[group.id for group in result.groups],
+    )
 
     if args.dry_run:
         _write_trace(out_dir, recorder)

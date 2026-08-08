@@ -107,17 +107,28 @@ class RoundUsage:
 
 @dataclass
 class SessionUsage:
-    """Cumulative usage for one session across rounds (breaker input, plan U5)."""
+    """Cumulative usage for one session across rounds (breaker input, plan U5).
+
+    The four token classes stay separate rather than being folded into one input
+    total: a run whose spend is mostly ``cache_read`` is cheap and healthy, and
+    collapsing it into ``total_input_tokens`` (as this did originally) makes an
+    efficient run and an expensive one indistinguishable. ``last_context_tokens``
+    is unchanged — the circuit breaker reads it and must not shift behaviour.
+    """
 
     rounds: int = 0
-    total_input_tokens: int = 0
+    total_input_tokens: int = 0  # uncached input only
     total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
     last_context_tokens: int = 0
 
     def add(self, usage: RoundUsage) -> None:
         self.rounds += 1
-        self.total_input_tokens += usage.input_tokens + usage.cache_creation_input_tokens
+        self.total_input_tokens += usage.input_tokens
         self.total_output_tokens += usage.output_tokens
+        self.total_cache_read_tokens += usage.cache_read_input_tokens
+        self.total_cache_creation_tokens += usage.cache_creation_input_tokens
         self.last_context_tokens = usage.context_tokens
 
 

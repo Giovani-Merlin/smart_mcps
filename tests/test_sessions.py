@@ -213,6 +213,26 @@ def test_usage_accumulates_across_rounds_and_is_queryable_per_session(fake_home,
     assert runner.usage_of(base.session_id).rounds == 1
 
 
+def test_cumulative_usage_keeps_the_token_classes_apart(fake_home, tmp_path):
+    """A run whose spend is mostly cache reads is cheap; one that is mostly
+    uncached input is not. Folding them into a single input total (as this did
+    originally) makes the two indistinguishable in an estimate-vs-actual view."""
+    runner = make_runner(fake_home)
+    base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    script(
+        fake_home,
+        {"usage": {"input_tokens": 5, "output_tokens": 10, "cache_read_input_tokens": 1000}},
+        {"usage": {"input_tokens": 7, "output_tokens": 20, "cache_read_input_tokens": 2000}},
+    )
+    fork = runner.start_fork(base_id=base.session_id, prompt="a", name="n", cwd=tmp_path)
+    runner.resume(session_id=fork.session_id, prompt="b", cwd=tmp_path)
+
+    usage = runner.usage_of(fork.session_id)
+    assert usage.total_input_tokens == 12  # uncached input only, not 12 + cache_creation
+    assert usage.total_cache_read_tokens == 3000
+    assert usage.total_cache_creation_tokens == 400
+
+
 def test_multi_turn_envelope_reports_last_turn_context_not_the_round_sum():
     """A real multi-turn envelope sums every turn into the top-level ``usage``, so
     reading it as context occupancy inflates without bound: the live run saw a

@@ -371,14 +371,29 @@ class _GroupExecution:
         entry.retirement_reason = f"re-entry fallback: {reason}"
         self._log(f"group {self.gid} re-entry: forked generation {self.generation} ({reason})")
 
+    def _copy_usage(self, entry: SessionEntry, session_id: str) -> None:
+        """Mirror the in-memory cumulative usage onto a manifest entry.
+
+        ``last_context_tokens`` is the breaker's input (occupancy of the latest
+        round); the cumulative counters are the session's total spend, kept split
+        by token class so an estimate-vs-actual view can tell a cache-heavy run
+        from an genuinely expensive one. Both are written on the same save.
+        """
+        usage = self.deps.runner.usage_of(session_id)
+        entry.last_context_tokens = usage.last_context_tokens
+        entry.rounds_completed = usage.rounds
+        entry.total_input_tokens = usage.total_input_tokens
+        entry.total_output_tokens = usage.total_output_tokens
+        entry.total_cache_read_tokens = usage.total_cache_read_tokens
+        entry.total_cache_creation_tokens = usage.total_cache_creation_tokens
+
     def _persist_coder_usage(self) -> None:
         """Record the active coder's latest context size on its manifest entry
         after every round (R5): in-memory usage dies with the process, and the
         next re-entry pre-checks this value against the breaker limit."""
         if self.coder_entry is None:
             return
-        context = self.deps.runner.usage_of(self.coder_sid).last_context_tokens
-        self.coder_entry.last_context_tokens = context
+        self._copy_usage(self.coder_entry, self.coder_sid)
         self.deps.store.save(self.deps.manifest)
 
     def _refresh_transcript(self, entry: SessionEntry) -> None:
@@ -395,10 +410,9 @@ class _GroupExecution:
         group_entry = self.deps.manifest.groups.get(self.gid)
         if group_entry is None:
             return
-        context = self.deps.runner.usage_of(session_id).last_context_tokens
         for entry in reversed(group_entry.sessions):
             if entry.role == SessionRole.REVIEWER and entry.session_id == session_id:
-                entry.last_context_tokens = context
+                self._copy_usage(entry, session_id)
                 self.deps.store.save(self.deps.manifest)
                 return
 

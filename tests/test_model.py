@@ -105,6 +105,28 @@ class TestManifest:
         # a fresh entry starts at zero
         assert SessionEntry(session_id="s-new", role=SessionRole.CODER).last_context_tokens == 0
 
+    def test_cumulative_usage_fields_round_trip_and_default_for_old_runs(self):
+        """The estimate-vs-actual view reads these; runs recorded before they
+        existed must still load, reading as 'actuals not recorded'."""
+        entry = SessionEntry(
+            session_id="s-1",
+            role=SessionRole.CODER,
+            rounds_completed=3,
+            total_input_tokens=1_000,
+            total_output_tokens=2_000,
+            total_cache_read_tokens=3_000,
+            total_cache_creation_tokens=4_000,
+            model="claude-x",
+        )
+        assert SessionEntry.model_validate_json(entry.model_dump_json()) == entry
+
+        legacy = SessionEntry.model_validate_json(
+            '{"session_id": "s-old", "role": "coder", "last_context_tokens": 42}'
+        )
+        assert legacy.rounds_completed == 0
+        assert legacy.total_cache_read_tokens == 0
+        assert legacy.model is None
+
 
 class TestReportSchemas:
     def test_coder_report_requires_status(self):
