@@ -16,7 +16,18 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from orchestrator.observatory import artifacts, escalations, events, grouping, transcripts
+from orchestrator.observatory import (
+    artifacts,
+    escalations,
+    events,
+    grouping,
+    transcripts,
+)
+
+# Aliased deliberately: the bare name ``paths`` means "a RunPaths" everywhere
+# else in this package, and ``test_observatory_drift``'s attribute audit reads
+# it that way. ``paths_api.router`` keeps both true.
+from orchestrator.observatory import paths as paths_api
 from orchestrator.observatory.registry import Project
 from orchestrator.observatory.runs import (
     ObservatoryContext,
@@ -73,6 +84,7 @@ def create_app(
     app.include_router(transcripts.router)
     app.include_router(artifacts.router)
     app.include_router(grouping.router)
+    app.include_router(paths_api.router)
 
     _mount_spa(app, dist_dir if dist_dir is not None else default_dist_dir())
     return app
