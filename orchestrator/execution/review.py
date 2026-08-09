@@ -25,6 +25,7 @@ from pathlib import Path
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
+from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
@@ -189,6 +190,10 @@ class _GroupExecution:
         # can only pre-exist the executor on a resumed run — fresh runs start with
         # an empty group entry. One-shot: consumed by the first generation.
         self._reentry_entry: SessionEntry | None = self._find_reentry_session()
+        # Evidence, not a state (plan P3): the loop only ever tells it when a
+        # round started; the writing happens on its own daemon thread and nothing
+        # here reads it back.
+        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid)
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -199,12 +204,16 @@ class _GroupExecution:
             await self._rewrite("upstream surprise named this group before launch")
         self.workspace = self.deps.workspace_for(self.group)
         self._log(f"group {self.gid}: worktree ready at {self.workspace}")
-        while True:
-            merged = await self._run_generation()
-            if merged:
-                self._log(f"group {self.gid}: completed")
-                return GroupState.COMPLETED
-            # a rewrite or a retirement happened inside; loop spawns the next session
+        self._heartbeat.start()
+        try:
+            while True:
+                merged = await self._run_generation()
+                if merged:
+                    self._log(f"group {self.gid}: completed")
+                    return GroupState.COMPLETED
+                # a rewrite or a retirement happened inside; loop spawns the next session
+        finally:
+            self._heartbeat.stop()
 
     # ------------------------------------------------------------ generation
 
@@ -248,6 +257,7 @@ class _GroupExecution:
         )
         result = first
         self._log(f"{self._round_tag(rounds + 1)}: started")
+        self._heartbeat.mark_round(self.generation, rounds + 1)
 
         while True:
             report, result = await asyncio.to_thread(
@@ -308,6 +318,7 @@ class _GroupExecution:
             assert verdict_path is not None
             self.ctx.set_state(GroupState.RUNNING)
             self._log(f"{self._round_tag(rounds + 1)}: started")
+            self._heartbeat.mark_round(self.generation, rounds + 1)
             result = await asyncio.to_thread(
                 self.deps.runner.resume,
                 session_id=self.coder_sid,

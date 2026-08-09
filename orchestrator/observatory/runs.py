@@ -21,8 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.model import GroupingResult, RunManifest
@@ -77,6 +78,26 @@ class SnapshotSession(BaseModel):
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    # When the transcript file was last appended to — the cheapest evidence that
+    # a session is still producing anything. Recorded for free by the runner and
+    # until now read by nobody. None when the path is unset or already gone.
+    transcript_mtime: datetime | None = None
+
+
+class GroupHeartbeat(BaseModel):
+    """The group's ``heartbeat.json``, passed through unchanged.
+
+    Deliberately facts only: when this round started, which round it is, and when
+    the writer last ran. There is no "stalled" field here and there must never be
+    one — persisting the inference would make it a state that future code
+    branches on. The UI computes staleness from these numbers itself.
+    """
+
+    started_at: str | None = None
+    generation: int = 0
+    round: int = 0
+    round_started_at: str | None = None
+    updated_at: str | None = None
 
 
 class SnapshotGroup(BaseModel):
@@ -100,6 +121,10 @@ class SnapshotGroup(BaseModel):
     difficulty: float | None = None
     intensity: str | None = None
     estimated_tokens: int | None = None
+    # None for every run written before the heartbeat shipped, and for any group
+    # that never started a round. Absence is normal, so it is a null field and
+    # never an error.
+    heartbeat: GroupHeartbeat | None = None
 
 
 class DagEdge(BaseModel):
@@ -245,6 +270,35 @@ def load_dag(paths: RunPaths) -> tuple[GroupingResult | None, bool]:
     return None, True
 
 
+def _transcript_mtime(transcript_path: str | None) -> datetime | None:
+    """Last write to a session's transcript, or None if there is nothing to stat."""
+    if not transcript_path:
+        return None
+    try:
+        stat = Path(transcript_path).stat()
+    except OSError:
+        return None
+    return datetime.fromtimestamp(stat.st_mtime, UTC)
+
+
+def _group_heartbeat(paths: RunPaths, group_id: str) -> GroupHeartbeat | None:
+    """Pass the group's heartbeat facts through, dropping anything malformed.
+
+    The inference an operator wants — "nothing has moved for 23 minutes" — is
+    computed by the reader from ``updated_at`` / ``round_started_at`` and the
+    session's ``transcript_mtime``. It is deliberately not computed here: a
+    persisted or served "stalled" flag becomes a state, and this run's plan says
+    no such state exists.
+    """
+    payload = read_heartbeat(paths, group_id)
+    if payload is None:
+        return None
+    try:
+        return GroupHeartbeat.model_validate(payload)
+    except ValidationError:
+        return None
+
+
 def _is_stale_failure(run_state: GroupRunState | None) -> bool:
     """A ``failure`` string left attached to a state that is not a failure.
 
@@ -305,12 +359,14 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                         model=session.model,
                         started_at=session.started_at,
                         ended_at=session.ended_at,
+                        transcript_mtime=_transcript_mtime(session.transcript_path),
                     )
                     for session in (entry.sessions if entry else [])
                 ],
                 difficulty=group.difficulty if group else None,
                 intensity=group.intensity.value if group else None,
                 estimated_tokens=group.estimated_tokens if group else None,
+                heartbeat=_group_heartbeat(paths, gid),
             )
         )
 
