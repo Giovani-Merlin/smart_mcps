@@ -63,6 +63,19 @@ export interface ManifestSession {
   name: string;
   retirement_reason?: string | null;
   transcript_path?: string | null;
+  // Cost accounting. `last_context_tokens` is the latest round's occupancy —
+  // the same quantity the grouper's `estimated_tokens` predicts, and the only
+  // honest thing to compare it against. The four cumulative counters sum every
+  // round of the session and are a different quantity entirely.
+  last_context_tokens: number;
+  rounds_completed: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  model?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
 }
 
 export interface ManifestGroupEntry {
@@ -77,7 +90,24 @@ export interface Manifest {
   plan_path: string;
   created_at: string;
   base_session_id?: string | null;
+  // The named grouping under `.orchestrator/groupings/<name>/` this run
+  // snapshotted; null for a run that predates named groupings.
+  grouping?: string | null;
+  // The run's persisted HITL configuration.
+  escalation?: EscalationConfig | null;
   groups: Record<string, ManifestGroupEntry>;
+}
+
+// EscalationConfig (config.py) — the run's HITL tier as it was persisted.
+// Without it there is no way to tell a run with escalation switched off from
+// one that simply never escalated, and those look identical on the board.
+export interface EscalationConfig {
+  enabled: boolean;
+  intensity: "autonomous" | "on_failure" | "on_stuck" | "interactive";
+  source: "orchestrator_only" | "workers_via_orchestrator";
+  timeout_s?: number | null;
+  on_timeout: "autonomous" | "skip" | "abort";
+  poll_interval_s: number;
 }
 
 export type SurpriseKind =
@@ -98,11 +128,26 @@ export interface VerificationResult {
   notes: string;
 }
 
-// CoderReport (model.py:110) — the parsed content of a `report-*.json` artifact.
+// CoderReport (model.py) — the parsed content of a `report-*.json` artifact.
+//
+// `permission_denied` is the typed denial channel: the harness was healthy, a
+// sandboxed command was refused, and the coder exhausted its identical-retry
+// budget. It routes the group to `interrupted`, never `failed` — the work is
+// unfinished, not wrong — so it must not be styled as a failure.
+export type CoderReportStatus =
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "needs_input"
+  | "permission_denied";
+
 export interface CoderReport {
-  status: "completed" | "blocked" | "failed" | "needs_input";
+  status: CoderReportStatus;
   summary: string;
   question: string;
+  // Verbatim, and required whenever status is `permission_denied` — it is what
+  // the operator has to clear before a `resume` gets any further.
+  denied_command: string;
   verification_results: VerificationResult[];
   surprises: Surprise[];
 }
@@ -174,6 +219,15 @@ export interface SnapshotSession {
   name: string;
   retirement_reason?: string | null;
   transcript_path?: string | null;
+  last_context_tokens: number;
+  rounds_completed: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  model?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
 }
 
 export interface SnapshotGroup {
@@ -183,9 +237,22 @@ export interface SnapshotGroup {
   state: GroupState;
   generation: number;
   failure?: string | null;
+  // `GroupRunState` is single-valued and last-writer-wins, so a group that
+  // failed and was then resolved keeps its old failure string attached to a
+  // successful state. When this is set, render a "stale failure text" chip —
+  // never a failure. `manifest.json`'s append-only session list is the ground
+  // truth for what attempts happened; state.json is authoritative only for now.
+  stale_failure: boolean;
   depends_on: string[];
   sessions: SnapshotSession[];
+  // From the DAG. `intensity` decides how many reviewer sessions to expect, so
+  // a self_verify group with zero of them is correct rather than missing data.
+  difficulty?: number | null;
+  intensity?: ReviewIntensity | null;
+  estimated_tokens?: number | null;
 }
+
+export type ReviewIntensity = "self_verify" | "paired" | "paired_plus";
 
 // A dependency edge, in execution order: `from` must complete before `to`.
 export interface DagEdge {
@@ -203,7 +270,11 @@ export interface RunSnapshot {
   groups: SnapshotGroup[];
   edges: DagEdge[];
   stale_dag: boolean;
+  // Display only. Never consult these to decide whether anything is alive — a
+  // run whose orchestrator crashed must render exactly like a finished one.
   live_pids: Record<number, string>;
+  grouping?: string | null;
+  escalation?: EscalationConfig | null;
 }
 
 // The POST body for answering an escalation (escalations.py AnswerBody).
@@ -220,17 +291,48 @@ export interface AnswerResult {
   response_path: string;
 }
 
+// EventUsage (transcripts.py) — one assistant turn's token usage, four classes
+// kept apart. Cache reads are the cheap class: a session whose spend is mostly
+// cache-read is healthy, not expensive, and should be de-emphasised visually.
+export interface EventUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+}
+
+export type TranscriptKind =
+  | "text"
+  | "thinking"
+  | "redacted_thinking"
+  | "tool_use"
+  | "tool_result";
+
 // TranscriptEvent (transcripts.py) — one normalized, renderable moment.
+//
+// `seq` counts emitted events from the start of the file, so it is stable
+// across a full fetch and an `?after_seq=` incremental one — which is what
+// makes a `?seq=` deep link keep pointing at the same turn.
 export interface TranscriptEvent {
   seq: number;
   role: string; // assistant | user
-  kind: string; // text | tool_use | tool_result
+  kind: TranscriptKind;
   text?: string | null;
   tool_name?: string | null;
   tool_input?: unknown;
   tool_result?: string | null;
   is_error: boolean;
   timestamp?: string | null;
+  // Present on assistant rows; null on user rows and on transcripts written
+  // before usage was recorded. Null and "all four are zero" are different
+  // claims and the UI must not conflate them.
+  usage?: EventUsage | null;
+  model?: string | null;
+  // A thinking block whose prose the transcript did not keep — which is every
+  // thinking block in every transcript observed so far. Render the card with
+  // the marker, so "the agent thought here" stays distinguishable from "the
+  // agent went straight to the next tool call".
+  thinking_withheld: boolean;
 }
 
 // Artifact (artifacts.py) — a parsed `report-*.json` / `verdict-*.json` file.
@@ -239,4 +341,171 @@ export interface Artifact {
   kind: string; // report | verdict | other
   content?: unknown;
   error?: string | null;
+}
+
+// ------------------------------------------------------------- grouping tab
+
+// Mirrors `orchestrator/observatory/grouping.py`. Everything except
+// `stage_diffs` is `grouping-trace.json` passed through unchanged, so the trace
+// on disk and what the tab shows can never disagree.
+
+export type DagSourceKind =
+  | "run_snapshot"
+  | "named_grouping"
+  | "shared_fallback"
+  | "missing";
+
+// Where the DAG was resolved from. `stale_dag` means exactly what it means on
+// the board — this run has no frozen groups.json of its own — and resolving a
+// better source than the shared file does not change that.
+export interface DagSource {
+  kind: DagSourceKind;
+  directory?: string | null;
+  groups_path?: string | null;
+  grouping_name?: string | null;
+  stale_dag: boolean;
+  reason: string;
+}
+
+// An artifact the tab wanted and did not find. `expected_path` is the point:
+// the operator's next move is to go look there.
+export interface MissingArtifact {
+  artifact: string;
+  expected_path: string;
+  explanation: string;
+}
+
+// What changed between two consecutive pipeline stages. `moved` is computed
+// from co-membership, not group ids — `renumber` relabels every group without
+// moving anything, and an id diff would light up the whole graph.
+export interface StageDiff {
+  stage: string;
+  previous_stage?: string | null;
+  moved: string[];
+  added: string[];
+  removed: string[];
+  group_count: number;
+}
+
+/** One `stages[]` entry: the whole partition as it stood after that stage. */
+export interface StageSnapshot {
+  stage: string;
+  partition: Record<string, number>;
+}
+
+export interface HubRole {
+  node: string;
+  role: string;
+  depends_on_ratio: number;
+  depended_by_ratio: number;
+  threshold: number;
+}
+
+export interface SliceAtom {
+  label: string;
+  members: string[];
+}
+
+export interface LouvainEntry {
+  resolution: number;
+  seed: number;
+  communities: string[][];
+}
+
+export interface MergeCandidate {
+  round: number;
+  source: number;
+  target: number;
+  accepted: boolean;
+  reason: string;
+  merged_work: number;
+  edge_weight: number;
+}
+
+export interface Scorecard {
+  group_count: number;
+  cross_group_edges: number;
+  work_fraction_min: number;
+  work_fraction_mean: number;
+  work_fraction_max: number;
+  critical_path_length: number;
+  modularity: number;
+  slice_integrity_ok: boolean;
+}
+
+export interface GroupingProvenance {
+  timestamp: string;
+  plan_path: string;
+  plan_content_sha256: string;
+  repo_commit_sha: string;
+  worktree_dirty: boolean;
+  index_fingerprint: string;
+}
+
+/** `[from, to, weight]`, as the trace stores it. */
+export type WeightedEdge = [string, string, number];
+
+export interface GraphSnapshot {
+  nodes: string[];
+  affinity: WeightedEdge[];
+  dependencies: WeightedEdge[];
+}
+
+export interface NodeWork {
+  node: string;
+  source_bytes: number;
+  file_count: number;
+  bytes_tokens: number;
+  file_allowance_tokens: number;
+  total: number;
+}
+
+export interface GroupDifficulty {
+  group_id: string;
+  files_touched: number;
+  max_fan_in: number;
+  max_fan_out: number;
+  hub_touches: number;
+  cross_group_edges: number;
+  verification_items: number;
+  difficulty: number;
+  intensity: ReviewIntensity;
+  d_review: number;
+  d_hard: number;
+}
+
+// GroupingView (grouping.py) — one body with everything the tab renders.
+export interface GroupingView {
+  project: string;
+  run_id: string;
+  plan_path: string;
+  dag_source: DagSource;
+  missing: MissingArtifact[];
+  trace_path?: string | null;
+  trace_schema_version?: number | null;
+  trace_schema_known: boolean;
+  input_graph?: GraphSnapshot | null;
+  node_work: NodeWork[];
+  budget?: Record<string, number> | null;
+  config: Record<string, unknown>;
+  hub_roles: HubRole[];
+  slice_atoms: SliceAtom[];
+  stages: StageSnapshot[];
+  louvain: LouvainEntry[];
+  splits: Record<string, unknown>[];
+  merges: MergeCandidate[];
+  repairs: Record<string, unknown>[];
+  group_difficulty: GroupDifficulty[];
+  scorecard?: Scorecard | null;
+  provenance?: GroupingProvenance | null;
+  last_stage?: string | null;
+  flags: string[];
+  mapper_flags: string[];
+  partition_flags: string[];
+  failure?: { kind: string; message: string } | null;
+  stage_diffs: StageDiff[];
+  // Not written by any orchestrator on disk yet; null means "look in `missing`
+  // for where it was expected", not "there is no provenance".
+  edge_provenance?: Record<string, unknown> | null;
+  paths: Record<string, string>;
 }

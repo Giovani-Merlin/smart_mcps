@@ -21,6 +21,7 @@ import type {
   AnswerResult,
   Artifact,
   EscalationRequest,
+  GroupingView,
   Project,
   RunInfo,
   RunSnapshot,
@@ -107,12 +108,29 @@ export function answerEscalation(
   });
 }
 
+/**
+ * A session's transcript. Pass `afterSeq` — the highest `seq` already held —
+ * to fetch only what is new; the poll was otherwise re-downloading a whole
+ * 342-turn transcript every three seconds. `seq` is stable across full and
+ * incremental fetches, so the two can be concatenated directly.
+ */
 export function getTranscript(
   project: string,
   run: string,
   sessionId: string,
+  afterSeq = 0,
 ): Promise<TranscriptEvent[]> {
-  return request<TranscriptEvent[]>(`${runPath(project, run)}/sessions/${enc(sessionId)}/transcript`);
+  const query = afterSeq > 0 ? `?after_seq=${afterSeq}` : "";
+  return request<TranscriptEvent[]>(
+    `${runPath(project, run)}/sessions/${enc(sessionId)}/transcript${query}`,
+  );
+}
+
+/** Everything the Grouping tab renders, in one request. Never 404s on a
+ * missing artifact — an absent trace is the normal state of an older run, and
+ * the response says which artifact was missing and where it was looked for. */
+export function getGrouping(project: string, run: string): Promise<GroupingView> {
+  return request<GroupingView>(`${runPath(project, run)}/grouping`);
 }
 
 export function getArtifacts(

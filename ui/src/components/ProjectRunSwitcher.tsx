@@ -51,8 +51,13 @@ function ProjectRunSwitcher({
         setRuns(next);
         setError(null);
         // The backend lists newest first; auto-select it so picking a project
-        // immediately shows a run instead of an empty board.
-        onRunChange(next.length > 0 ? next[0].run_id : null);
+        // immediately shows a run instead of an empty board — but only when
+        // nothing is selected yet. Auto-selecting unconditionally silently
+        // redirected every deep link to whichever run happened to be newest,
+        // which makes a shared URL point somewhere else for the next reader.
+        if (!runId) {
+          onRunChange(next.length > 0 ? next[0].run_id : null);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err));
@@ -60,7 +65,8 @@ function ProjectRunSwitcher({
     return () => {
       cancelled = true;
     };
-    // Re-fetch only on project switch; onRunChange is App's stable setter.
+    // Re-fetch only on project switch; `runId` is read for the auto-select
+    // guard but must not re-trigger the fetch, and onRunChange is App's setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 

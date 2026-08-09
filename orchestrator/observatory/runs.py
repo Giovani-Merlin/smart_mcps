@@ -24,7 +24,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from orchestrator.execution.manifest import ManifestStore, RunPaths
-from orchestrator.execution.scheduler import RunState
+from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.model import GroupingResult, RunManifest
 from orchestrator.observatory.registry import Project, find_project, load_registry
 
@@ -62,6 +62,21 @@ class SnapshotSession(BaseModel):
     name: str = ""
     retirement_reason: str | None = None
     transcript_path: str | None = None
+    # Cost accounting. ``last_context_tokens`` is occupancy of the latest round —
+    # the quantity the grouper's ``estimated_tokens`` predicts, and the only
+    # honest thing to compare it against. The four cumulative counters are a
+    # different quantity entirely (spend summed over every round), so the UI
+    # keeps them in a separate panel. All read 0 for runs recorded before the
+    # split shipped, which the client renders as "actuals not recorded".
+    last_context_tokens: int = 0
+    rounds_completed: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    model: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class SnapshotGroup(BaseModel):
@@ -73,8 +88,18 @@ class SnapshotGroup(BaseModel):
     state: str = "pending"
     generation: int = 1
     failure: str | None = None
+    # ``state.json``'s GroupRunState is last-writer-wins and single-valued, so a
+    # group that failed and was then resolved keeps its old ``failure`` string
+    # attached to a successful state. That is not a second failure and must not
+    # render as one — the UI shows a "stale failure text" chip instead.
+    stale_failure: bool = False
     depends_on: list[str] = Field(default_factory=list)
     sessions: list[SnapshotSession] = Field(default_factory=list)
+    # From the DAG, so estimate-vs-actual has its prediction side and the board
+    # can say how many reviewer sessions to expect (intensity drives that).
+    difficulty: float | None = None
+    intensity: str | None = None
+    estimated_tokens: int | None = None
 
 
 class DagEdge(BaseModel):
@@ -99,6 +124,14 @@ class RunSnapshot(BaseModel):
     edges: list[DagEdge] = Field(default_factory=list)
     stale_dag: bool = False
     live_pids: dict[int, str] = Field(default_factory=dict)
+    # The named grouping this run snapshotted (plan U10), or None for a run that
+    # predates named groupings.
+    grouping: str | None = None
+    # The run's HITL configuration as it was persisted. Rated the operator's
+    # worst blind spot: without it there is no way to tell a run with escalation
+    # switched off from one that simply never escalated, and those look
+    # identical on the board.
+    escalation: dict | None = None
 
 
 # ------------------------------------------------------------------ resolution
@@ -139,6 +172,23 @@ def runs_dir_of(repo: Path) -> Path:
     return repo / ".orchestrator" / "runs"
 
 
+def run_groups_path(paths: RunPaths) -> Path:
+    """This run's frozen DAG snapshot — the one place the Observatory names it.
+
+    ``RunPaths.groups_path`` is the orchestrator's own spelling and stays
+    authoritative while it exists. It has been proposed for removal more than
+    once, and it was referenced directly from two modules, so both would have
+    started raising ``AttributeError`` mid-request the moment it went. Routing
+    both through here means a removal degrades to the literal layout instead of
+    a 500, and ``test_observatory_drift.py``'s attribute audit fails at test
+    time so the drift is still reported rather than papered over.
+    """
+    own = getattr(paths, "groups_path", None)
+    if isinstance(own, Path):
+        return own
+    return paths.run_dir / "groups.json"
+
+
 def list_runs(repo: Path) -> list[RunInfo]:
     """Newest first. An absent ``runs/`` dir is the normal state of a repo that
     has planned but never run, so it lists as empty rather than erroring."""
@@ -173,7 +223,7 @@ def _load_state(paths: RunPaths) -> RunState | None:
     return RunState.model_validate_json(paths.state_path.read_text())
 
 
-def _load_manifest(paths: RunPaths) -> RunManifest | None:
+def load_manifest(paths: RunPaths) -> RunManifest | None:
     store = ManifestStore(paths)
     return store.load() if store.exists() else None
 
@@ -186,18 +236,34 @@ def load_dag(paths: RunPaths) -> tuple[GroupingResult | None, bool]:
     that never belonged to this run — hence the flag rather than a silent read
     (ADR 0002). Runs that predate the snapshot always take the fallback.
     """
-    if paths.groups_path.is_file():
-        return GroupingResult.model_validate_json(paths.groups_path.read_text()), False
+    snapshot = run_groups_path(paths)
+    if snapshot.is_file():
+        return GroupingResult.model_validate_json(snapshot.read_text()), False
     shared = paths.repo_root / ".orchestrator" / "groups.json"
     if shared.is_file():
         return GroupingResult.model_validate_json(shared.read_text()), True
     return None, True
 
 
+def _is_stale_failure(run_state: GroupRunState | None) -> bool:
+    """A ``failure`` string left attached to a state that is not a failure.
+
+    ``GroupRunState`` is single-valued and last-writer-wins, so it cannot say
+    "failed once, then succeeded" — it says ``completed`` with the old failure
+    text still hanging off it, and real runs on disk look exactly like that.
+    Rendering that as a failure would be the likeliest wrong thing this whole
+    surface could do, so the flag exists and ``manifest.json``'s append-only
+    session list stays the ground truth for what attempts happened.
+    """
+    if run_state is None or not run_state.failure:
+        return False
+    return run_state.state in (GroupState.COMPLETED, GroupState.RESOLVED)
+
+
 def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     """Compose state + manifest + DAG into the one body the board renders."""
     state = _load_state(paths)
-    manifest = _load_manifest(paths)
+    manifest = load_manifest(paths)
     grouping, stale_dag = load_dag(paths)
 
     planned = {group.id: group for group in grouping.groups} if grouping else {}
@@ -220,6 +286,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                 state=run_state.state.value if run_state else "pending",
                 generation=run_state.generation if run_state else 1,
                 failure=run_state.failure if run_state else None,
+                stale_failure=_is_stale_failure(run_state),
                 depends_on=list(group.dependencies) if group else [],
                 sessions=[
                     SnapshotSession(
@@ -229,9 +296,21 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                         name=session.name,
                         retirement_reason=session.retirement_reason,
                         transcript_path=session.transcript_path,
+                        last_context_tokens=session.last_context_tokens,
+                        rounds_completed=session.rounds_completed,
+                        total_input_tokens=session.total_input_tokens,
+                        total_output_tokens=session.total_output_tokens,
+                        total_cache_read_tokens=session.total_cache_read_tokens,
+                        total_cache_creation_tokens=session.total_cache_creation_tokens,
+                        model=session.model,
+                        started_at=session.started_at,
+                        ended_at=session.ended_at,
                     )
                     for session in (entry.sessions if entry else [])
                 ],
+                difficulty=group.difficulty if group else None,
+                intensity=group.intensity.value if group else None,
+                estimated_tokens=group.estimated_tokens if group else None,
             )
         )
 
@@ -253,6 +332,12 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
         groups=groups,
         edges=edges,
         stale_dag=stale_dag,
+        grouping=manifest.grouping if manifest else None,
+        escalation=(
+            manifest.escalation.model_dump(mode="json")
+            if manifest and manifest.escalation
+            else None
+        ),
         # Recorded for display only — the read path never checks whether these
         # pids are alive, which is what lets a crashed run render (R9).
         live_pids=dict(state.live_pids) if state else {},

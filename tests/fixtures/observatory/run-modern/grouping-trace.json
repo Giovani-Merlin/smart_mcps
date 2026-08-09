@@ -1,0 +1,1179 @@
+{
+  "schema_version": 1,
+  "input_graph": {
+    "nodes": [
+      "a1-live-session-id-verification",
+      "a2-edge-provenance-sidecar",
+      "merge-f4-groups-path-fix",
+      "merge-fixture-regeneration",
+      "observatory-drift-repair",
+      "observatory-grouping-router",
+      "observatory-path-file-api",
+      "round-heartbeat-evidence",
+      "spa-fallback-route",
+      "transcript-parser-thinking-usage",
+      "ui-attempt-history-grid",
+      "ui-cost-panel",
+      "ui-grouping-tab",
+      "ui-router-tokens-tab-shell"
+    ],
+    "affinity": [
+      [
+        "a1-live-session-id-verification",
+        "a2-edge-provenance-sidecar",
+        3.0
+      ],
+      [
+        "a1-live-session-id-verification",
+        "merge-f4-groups-path-fix",
+        7.5
+      ],
+      [
+        "a1-live-session-id-verification",
+        "observatory-drift-repair",
+        4.5
+      ],
+      [
+        "a1-live-session-id-verification",
+        "round-heartbeat-evidence",
+        4.5
+      ],
+      [
+        "a2-edge-provenance-sidecar",
+        "merge-fixture-regeneration",
+        9.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-drift-repair",
+        11.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-grouping-router",
+        14.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-path-file-api",
+        10.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "round-heartbeat-evidence",
+        36.5
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "spa-fallback-route",
+        5.5
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "transcript-parser-thinking-usage",
+        21.0
+      ],
+      [
+        "observatory-drift-repair",
+        "observatory-grouping-router",
+        2.0
+      ],
+      [
+        "observatory-drift-repair",
+        "observatory-path-file-api",
+        1.0
+      ],
+      [
+        "observatory-drift-repair",
+        "round-heartbeat-evidence",
+        16.0
+      ],
+      [
+        "observatory-drift-repair",
+        "spa-fallback-route",
+        1.0
+      ],
+      [
+        "observatory-drift-repair",
+        "transcript-parser-thinking-usage",
+        4.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-attempt-history-grid",
+        38.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-cost-panel",
+        32.0
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-grouping-tab",
+        25.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-router-tokens-tab-shell",
+        38.5
+      ],
+      [
+        "observatory-grouping-router",
+        "observatory-path-file-api",
+        3.0
+      ],
+      [
+        "observatory-grouping-router",
+        "round-heartbeat-evidence",
+        1.0
+      ],
+      [
+        "observatory-grouping-router",
+        "spa-fallback-route",
+        2.0
+      ],
+      [
+        "observatory-path-file-api",
+        "spa-fallback-route",
+        2.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-attempt-history-grid",
+        5.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-cost-panel",
+        5.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-grouping-tab",
+        1.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-router-tokens-tab-shell",
+        13.0
+      ],
+      [
+        "ui-attempt-history-grid",
+        "ui-cost-panel",
+        41.0
+      ],
+      [
+        "ui-attempt-history-grid",
+        "ui-grouping-tab",
+        16.0
+      ],
+      [
+        "ui-attempt-history-grid",
+        "ui-router-tokens-tab-shell",
+        47.0
+      ],
+      [
+        "ui-cost-panel",
+        "ui-grouping-tab",
+        11.0
+      ],
+      [
+        "ui-cost-panel",
+        "ui-router-tokens-tab-shell",
+        23.0
+      ],
+      [
+        "ui-grouping-tab",
+        "ui-router-tokens-tab-shell",
+        35.0
+      ]
+    ],
+    "dependencies": [
+      [
+        "a1-live-session-id-verification",
+        "a2-edge-provenance-sidecar",
+        3.0
+      ],
+      [
+        "a2-edge-provenance-sidecar",
+        "merge-fixture-regeneration",
+        9.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "a1-live-session-id-verification",
+        7.5
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-drift-repair",
+        9.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-grouping-router",
+        12.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "observatory-path-file-api",
+        9.0
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "round-heartbeat-evidence",
+        34.5
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "spa-fallback-route",
+        4.5
+      ],
+      [
+        "merge-f4-groups-path-fix",
+        "transcript-parser-thinking-usage",
+        21.0
+      ],
+      [
+        "observatory-drift-repair",
+        "a1-live-session-id-verification",
+        4.5
+      ],
+      [
+        "observatory-drift-repair",
+        "round-heartbeat-evidence",
+        15.0
+      ],
+      [
+        "observatory-drift-repair",
+        "transcript-parser-thinking-usage",
+        4.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-attempt-history-grid",
+        37.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-cost-panel",
+        31.0
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-grouping-tab",
+        24.5
+      ],
+      [
+        "observatory-drift-repair",
+        "ui-router-tokens-tab-shell",
+        37.5
+      ],
+      [
+        "round-heartbeat-evidence",
+        "a1-live-session-id-verification",
+        4.5
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-attempt-history-grid",
+        4.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-cost-panel",
+        4.0
+      ],
+      [
+        "transcript-parser-thinking-usage",
+        "ui-router-tokens-tab-shell",
+        12.0
+      ]
+    ]
+  },
+  "node_work": [
+    {
+      "node": "a1-live-session-id-verification",
+      "source_bytes": 68241,
+      "file_count": 4,
+      "bytes_tokens": 22178.325,
+      "file_allowance_tokens": 8000.0,
+      "total": 30178.325
+    },
+    {
+      "node": "a2-edge-provenance-sidecar",
+      "source_bytes": 156354,
+      "file_count": 5,
+      "bytes_tokens": 50815.05,
+      "file_allowance_tokens": 10000.0,
+      "total": 60815.05
+    },
+    {
+      "node": "merge-f4-groups-path-fix",
+      "source_bytes": 51929,
+      "file_count": 5,
+      "bytes_tokens": 16876.925,
+      "file_allowance_tokens": 10000.0,
+      "total": 26876.925
+    },
+    {
+      "node": "merge-fixture-regeneration",
+      "source_bytes": 30460,
+      "file_count": 4,
+      "bytes_tokens": 9899.5,
+      "file_allowance_tokens": 8000.0,
+      "total": 17899.5
+    },
+    {
+      "node": "observatory-drift-repair",
+      "source_bytes": 51362,
+      "file_count": 6,
+      "bytes_tokens": 16692.65,
+      "file_allowance_tokens": 12000.0,
+      "total": 28692.65
+    },
+    {
+      "node": "observatory-grouping-router",
+      "source_bytes": 33574,
+      "file_count": 4,
+      "bytes_tokens": 10911.550000000001,
+      "file_allowance_tokens": 8000.0,
+      "total": 18911.550000000003
+    },
+    {
+      "node": "observatory-path-file-api",
+      "source_bytes": 23684,
+      "file_count": 3,
+      "bytes_tokens": 7697.3,
+      "file_allowance_tokens": 6000.0,
+      "total": 13697.3
+    },
+    {
+      "node": "round-heartbeat-evidence",
+      "source_bytes": 98238,
+      "file_count": 5,
+      "bytes_tokens": 31927.350000000002,
+      "file_allowance_tokens": 10000.0,
+      "total": 41927.350000000006
+    },
+    {
+      "node": "spa-fallback-route",
+      "source_bytes": 21595,
+      "file_count": 2,
+      "bytes_tokens": 7018.375,
+      "file_allowance_tokens": 4000.0,
+      "total": 11018.375
+    },
+    {
+      "node": "transcript-parser-thinking-usage",
+      "source_bytes": 26271,
+      "file_count": 4,
+      "bytes_tokens": 8538.075,
+      "file_allowance_tokens": 8000.0,
+      "total": 16538.075
+    },
+    {
+      "node": "ui-attempt-history-grid",
+      "source_bytes": 36563,
+      "file_count": 4,
+      "bytes_tokens": 11882.975,
+      "file_allowance_tokens": 8000.0,
+      "total": 19882.975
+    },
+    {
+      "node": "ui-cost-panel",
+      "source_bytes": 29626,
+      "file_count": 3,
+      "bytes_tokens": 9628.45,
+      "file_allowance_tokens": 6000.0,
+      "total": 15628.45
+    },
+    {
+      "node": "ui-grouping-tab",
+      "source_bytes": 14129,
+      "file_count": 3,
+      "bytes_tokens": 4591.925,
+      "file_allowance_tokens": 6000.0,
+      "total": 10591.925
+    },
+    {
+      "node": "ui-router-tokens-tab-shell",
+      "source_bytes": 38311,
+      "file_count": 9,
+      "bytes_tokens": 12451.075,
+      "file_allowance_tokens": 18000.0,
+      "total": 30451.075
+    }
+  ],
+  "budget": {
+    "base_tokens": 7857,
+    "spec_tokens_allowance": 3000,
+    "slack_multiplier": 1.3,
+    "token_budget": 100000,
+    "head": 14114.1,
+    "budget_cap": 85885.9
+  },
+  "config": {
+    "edge_weights": {
+      "shared_file": 1.0,
+      "call": 2.0,
+      "impact": 1.5,
+      "prose_neighbor": 0.5,
+      "semantic": 1.5,
+      "semantic_floor": 0.5,
+      "semantic_ceil": 3.0
+    },
+    "partition": {
+      "hub_threshold": 0.4,
+      "louvain_resolution": 1.0,
+      "allow_oversized_slice": false,
+      "allow_degenerate_partition": false,
+      "granularity": "independent"
+    },
+    "estimator": {
+      "token_budget": 100000,
+      "bytes_per_token": 4.0,
+      "slack_multiplier": 1.3,
+      "per_file_tool_allowance": 2000,
+      "spec_tokens_allowance": 3000,
+      "size_hint_small": 500,
+      "size_hint_medium": 2000,
+      "size_hint_large": 5000
+    },
+    "difficulty": {
+      "weight_files_touched": 1.0,
+      "weight_max_fan": 1.5,
+      "weight_hub_touches": 2.0,
+      "weight_cross_group_edges": 1.5,
+      "weight_verification_items": 1.0,
+      "scale_files_touched": 6.0,
+      "scale_max_fan": 10.0,
+      "scale_hub_touches": 1.0,
+      "scale_cross_group_edges": 3.0,
+      "scale_verification_items": 5.0,
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    "breaker": {
+      "context_token_limit": 120000,
+      "max_rounds_per_generation": 3,
+      "max_generations": 3
+    },
+    "execution": {
+      "concurrency": 1,
+      "sequential": true,
+      "permission_mode": "acceptEdits",
+      "max_rewrites": 2,
+      "max_conflict_resolve_attempts": 1
+    },
+    "session": {
+      "claude_bin": "claude",
+      "model": null,
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "Glob",
+        "Grep",
+        "LS",
+        "TodoWrite"
+      ],
+      "transcript_root": null,
+      "max_thinking_tokens": 4000,
+      "thinking": "adaptive"
+    },
+    "escalation": {
+      "enabled": true,
+      "intensity": "on_stuck",
+      "source": "workers_via_orchestrator",
+      "timeout_s": null,
+      "on_timeout": "autonomous",
+      "poll_interval_s": 0.5
+    }
+  },
+  "hub_roles": [
+    {
+      "node": "a1-live-session-id-verification",
+      "role": "core",
+      "depends_on_ratio": 0.23076923076923078,
+      "depended_by_ratio": 0.07692307692307693,
+      "threshold": 0.4
+    },
+    {
+      "node": "a2-edge-provenance-sidecar",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.07692307692307693,
+      "threshold": 0.4
+    },
+    {
+      "node": "merge-f4-groups-path-fix",
+      "role": "utility_hub",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.5384615384615384,
+      "threshold": 0.4
+    },
+    {
+      "node": "merge-fixture-regeneration",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "observatory-drift-repair",
+      "role": "utility_hub",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.5384615384615384,
+      "threshold": 0.4
+    },
+    {
+      "node": "observatory-grouping-router",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "observatory-path-file-api",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "round-heartbeat-evidence",
+      "role": "core",
+      "depends_on_ratio": 0.15384615384615385,
+      "depended_by_ratio": 0.07692307692307693,
+      "threshold": 0.4
+    },
+    {
+      "node": "spa-fallback-route",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "transcript-parser-thinking-usage",
+      "role": "core",
+      "depends_on_ratio": 0.15384615384615385,
+      "depended_by_ratio": 0.23076923076923078,
+      "threshold": 0.4
+    },
+    {
+      "node": "ui-attempt-history-grid",
+      "role": "core",
+      "depends_on_ratio": 0.15384615384615385,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "ui-cost-panel",
+      "role": "core",
+      "depends_on_ratio": 0.15384615384615385,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "ui-grouping-tab",
+      "role": "core",
+      "depends_on_ratio": 0.07692307692307693,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "ui-router-tokens-tab-shell",
+      "role": "core",
+      "depends_on_ratio": 0.15384615384615385,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    }
+  ],
+  "slice_atoms": [],
+  "stages": [
+    {
+      "stage": "louvain",
+      "partition": {
+        "a1-live-session-id-verification": 2,
+        "a2-edge-provenance-sidecar": 2,
+        "merge-f4-groups-path-fix": 0,
+        "merge-fixture-regeneration": 2,
+        "observatory-drift-repair": 1,
+        "observatory-grouping-router": 2,
+        "observatory-path-file-api": 2,
+        "round-heartbeat-evidence": 2,
+        "spa-fallback-route": 2,
+        "transcript-parser-thinking-usage": 3,
+        "ui-attempt-history-grid": 3,
+        "ui-cost-panel": 3,
+        "ui-grouping-tab": 3,
+        "ui-router-tokens-tab-shell": 3
+      }
+    },
+    {
+      "stage": "lift",
+      "partition": {
+        "a1-live-session-id-verification": 2,
+        "a2-edge-provenance-sidecar": 2,
+        "merge-f4-groups-path-fix": 0,
+        "merge-fixture-regeneration": 2,
+        "observatory-drift-repair": 1,
+        "observatory-grouping-router": 3,
+        "observatory-path-file-api": 4,
+        "round-heartbeat-evidence": 2,
+        "spa-fallback-route": 5,
+        "transcript-parser-thinking-usage": 6,
+        "ui-attempt-history-grid": 7,
+        "ui-cost-panel": 8,
+        "ui-grouping-tab": 6,
+        "ui-router-tokens-tab-shell": 9
+      }
+    },
+    {
+      "stage": "split",
+      "partition": {
+        "a1-live-session-id-verification": 2,
+        "a2-edge-provenance-sidecar": 3,
+        "merge-f4-groups-path-fix": 0,
+        "merge-fixture-regeneration": 3,
+        "observatory-drift-repair": 1,
+        "observatory-grouping-router": 4,
+        "observatory-path-file-api": 5,
+        "round-heartbeat-evidence": 2,
+        "spa-fallback-route": 6,
+        "transcript-parser-thinking-usage": 7,
+        "ui-attempt-history-grid": 8,
+        "ui-cost-panel": 9,
+        "ui-grouping-tab": 7,
+        "ui-router-tokens-tab-shell": 10
+      }
+    },
+    {
+      "stage": "merge",
+      "partition": {
+        "a1-live-session-id-verification": 2,
+        "a2-edge-provenance-sidecar": 3,
+        "merge-f4-groups-path-fix": 0,
+        "merge-fixture-regeneration": 3,
+        "observatory-drift-repair": 0,
+        "observatory-grouping-router": 4,
+        "observatory-path-file-api": 5,
+        "round-heartbeat-evidence": 2,
+        "spa-fallback-route": 6,
+        "transcript-parser-thinking-usage": 0,
+        "ui-attempt-history-grid": 8,
+        "ui-cost-panel": 9,
+        "ui-grouping-tab": 0,
+        "ui-router-tokens-tab-shell": 10
+      }
+    },
+    {
+      "stage": "repair",
+      "partition": {
+        "a1-live-session-id-verification": 2,
+        "a2-edge-provenance-sidecar": 3,
+        "merge-f4-groups-path-fix": 0,
+        "merge-fixture-regeneration": 3,
+        "observatory-drift-repair": 0,
+        "observatory-grouping-router": 4,
+        "observatory-path-file-api": 5,
+        "round-heartbeat-evidence": 2,
+        "spa-fallback-route": 6,
+        "transcript-parser-thinking-usage": 0,
+        "ui-attempt-history-grid": 8,
+        "ui-cost-panel": 9,
+        "ui-grouping-tab": 0,
+        "ui-router-tokens-tab-shell": 10
+      }
+    },
+    {
+      "stage": "renumber",
+      "partition": {
+        "a1-live-session-id-verification": 0,
+        "a2-edge-provenance-sidecar": 1,
+        "merge-f4-groups-path-fix": 2,
+        "merge-fixture-regeneration": 1,
+        "observatory-drift-repair": 2,
+        "observatory-grouping-router": 3,
+        "observatory-path-file-api": 4,
+        "round-heartbeat-evidence": 0,
+        "spa-fallback-route": 5,
+        "transcript-parser-thinking-usage": 2,
+        "ui-attempt-history-grid": 6,
+        "ui-cost-panel": 7,
+        "ui-grouping-tab": 2,
+        "ui-router-tokens-tab-shell": 8
+      }
+    }
+  ],
+  "louvain": [
+    {
+      "resolution": 1.0,
+      "seed": 42,
+      "communities": [
+        [
+          "a1-live-session-id-verification",
+          "a2-edge-provenance-sidecar",
+          "merge-fixture-regeneration",
+          "observatory-grouping-router",
+          "observatory-path-file-api",
+          "round-heartbeat-evidence",
+          "spa-fallback-route"
+        ],
+        [
+          "transcript-parser-thinking-usage",
+          "ui-attempt-history-grid",
+          "ui-cost-panel",
+          "ui-grouping-tab",
+          "ui-router-tokens-tab-shell"
+        ]
+      ]
+    }
+  ],
+  "splits": [
+    {
+      "group_members": [
+        "a1-live-session-id-verification",
+        "a2-edge-provenance-sidecar",
+        "merge-fixture-regeneration",
+        "round-heartbeat-evidence"
+      ],
+      "total_work": 150820.225,
+      "budget_cap": 85885.9,
+      "candidates": [
+        {
+          "block_a": "a1-live-session-id-verification",
+          "block_b": "a2-edge-provenance-sidecar",
+          "weight": 3.0,
+          "cut": true
+        },
+        {
+          "block_a": "a1-live-session-id-verification",
+          "block_b": "round-heartbeat-evidence",
+          "weight": 4.5,
+          "cut": false
+        },
+        {
+          "block_a": "a2-edge-provenance-sidecar",
+          "block_b": "merge-fixture-regeneration",
+          "weight": 9.0,
+          "cut": false
+        }
+      ],
+      "resulting_components": [
+        [
+          "a1-live-session-id-verification",
+          "round-heartbeat-evidence"
+        ],
+        [
+          "a2-edge-provenance-sidecar",
+          "merge-fixture-regeneration"
+        ]
+      ]
+    }
+  ],
+  "merges": [
+    {
+      "round": 0,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 98982.6,
+      "edge_weight": 42.0
+    },
+    {
+      "round": 0,
+      "source": 2,
+      "target": 1,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 100798.32500000001,
+      "edge_weight": 19.5
+    },
+    {
+      "round": 0,
+      "source": 3,
+      "target": 2,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 150820.225,
+      "edge_weight": 3.0
+    },
+    {
+      "round": 0,
+      "source": 7,
+      "target": 0,
+      "accepted": false,
+      "reason": "would_create_cycle",
+      "merged_work": 54006.925,
+      "edge_weight": 21.0
+    },
+    {
+      "round": 0,
+      "source": 8,
+      "target": 1,
+      "accepted": false,
+      "reason": "would_create_cycle",
+      "merged_work": 48575.625,
+      "edge_weight": 37.5
+    },
+    {
+      "round": 0,
+      "source": 8,
+      "target": 7,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 47012.975,
+      "edge_weight": 4.0
+    },
+    {
+      "round": 0,
+      "source": 9,
+      "target": 1,
+      "accepted": false,
+      "reason": "would_create_cycle",
+      "merged_work": 44321.100000000006,
+      "edge_weight": 31.0
+    },
+    {
+      "round": 0,
+      "source": 9,
+      "target": 7,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 42758.45,
+      "edge_weight": 4.0
+    },
+    {
+      "round": 0,
+      "source": 10,
+      "target": 1,
+      "accepted": false,
+      "reason": "would_create_cycle",
+      "merged_work": 59143.725000000006,
+      "edge_weight": 37.5
+    },
+    {
+      "round": 0,
+      "source": 10,
+      "target": 7,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 57581.075,
+      "edge_weight": 12.0
+    },
+    {
+      "round": 0,
+      "source": 7,
+      "target": 1,
+      "accepted": true,
+      "reason": "",
+      "merged_work": 55822.65,
+      "edge_weight": 29.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 98982.6,
+      "edge_weight": 42.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 1,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 127928.32500000001,
+      "edge_weight": 19.5
+    },
+    {
+      "round": 1,
+      "source": 3,
+      "target": 2,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 150820.225,
+      "edge_weight": 3.0
+    },
+    {
+      "round": 1,
+      "source": 8,
+      "target": 1,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 75705.625,
+      "edge_weight": 41.5
+    },
+    {
+      "round": 1,
+      "source": 9,
+      "target": 1,
+      "accepted": false,
+      "reason": "not_chain_compatible",
+      "merged_work": 71451.1,
+      "edge_weight": 35.0
+    },
+    {
+      "round": 1,
+      "source": 10,
+      "target": 1,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 86273.725,
+      "edge_weight": 49.5
+    },
+    {
+      "round": 1,
+      "source": 1,
+      "target": 0,
+      "accepted": true,
+      "reason": "",
+      "merged_work": 82699.575,
+      "edge_weight": 30.0
+    },
+    {
+      "round": 2,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 154805.25,
+      "edge_weight": 61.5
+    },
+    {
+      "round": 2,
+      "source": 3,
+      "target": 2,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 150820.225,
+      "edge_weight": 3.0
+    },
+    {
+      "round": 2,
+      "source": 4,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 101611.125,
+      "edge_weight": 12.0
+    },
+    {
+      "round": 2,
+      "source": 5,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 96396.875,
+      "edge_weight": 9.0
+    },
+    {
+      "round": 2,
+      "source": 6,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 93717.95,
+      "edge_weight": 4.5
+    },
+    {
+      "round": 2,
+      "source": 8,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 102582.54999999999,
+      "edge_weight": 41.5
+    },
+    {
+      "round": 2,
+      "source": 9,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 98328.025,
+      "edge_weight": 35.0
+    },
+    {
+      "round": 2,
+      "source": 10,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 113150.65,
+      "edge_weight": 49.5
+    }
+  ],
+  "repairs": [],
+  "dag": {
+    "0": [
+      1
+    ],
+    "2": [
+      0,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "last_stage": "merge",
+  "groups": [
+    {
+      "group_id": "g1",
+      "files_touched": 9,
+      "max_fan_in": 12,
+      "max_fan_out": 5,
+      "hub_touches": 0,
+      "cross_group_edges": 5,
+      "verification_items": 7,
+      "difficulty": 0.4198593073593074,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g2",
+      "files_touched": 9,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 9,
+      "difficulty": 0.23112244897959183,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g3",
+      "files_touched": 14,
+      "max_fan_in": 4,
+      "max_fan_out": 2,
+      "hub_touches": 2,
+      "cross_group_edges": 13,
+      "verification_items": 13,
+      "difficulty": 0.6289824263038549,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g4",
+      "files_touched": 4,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 7,
+      "difficulty": 0.19404761904761905,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g5",
+      "files_touched": 3,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 7,
+      "difficulty": 0.18452380952380953,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g6",
+      "files_touched": 2,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 5,
+      "difficulty": 0.16071428571428573,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g7",
+      "files_touched": 4,
+      "max_fan_in": 1,
+      "max_fan_out": 8,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 10,
+      "difficulty": 0.33333333333333337,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g8",
+      "files_touched": 3,
+      "max_fan_in": 1,
+      "max_fan_out": 8,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 8,
+      "difficulty": 0.3164835164835165,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g9",
+      "files_touched": 9,
+      "max_fan_in": 1,
+      "max_fan_out": 4,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 10,
+      "difficulty": 0.327891156462585,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    }
+  ],
+  "mapper_flags": [
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "graph: withdrew 12 inferred precedence edge(s) between 6 mutually-referencing task pair(s) — kept as affinity (a reference is coupling, not ordering)"
+  ],
+  "partition_flags": [],
+  "flags": [
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "graph: withdrew 12 inferred precedence edge(s) between 6 mutually-referencing task pair(s) — kept as affinity (a reference is coupling, not ordering)"
+  ],
+  "failure": null,
+  "scorecard": {
+    "group_count": 9,
+    "cross_group_edges": 14,
+    "work_fraction_min": 0.12829084867248292,
+    "work_fraction_mean": 0.4438828789772892,
+    "work_fraction_max": 0.9629004877401297,
+    "critical_path_length": 3,
+    "modularity": -0.09426919835695749,
+    "slice_integrity_ok": true
+  },
+  "provenance": {
+    "timestamp": "2026-08-08T11:46:44.805442+00:00",
+    "plan_path": "docs/ideation/2026-08-08-observatory-grouping-provenance-and-attempt-history.md",
+    "plan_content_sha256": "95e718d10b1c2ab07550e83205a4b1fa0863d34a79b2e1d38ade1582320547d8",
+    "repo_commit_sha": "ebe297fd2e30b3149b47398531c15c1bf76b4ac4",
+    "worktree_dirty": true,
+    "index_fingerprint": "b98fed4ffcf75dc0f3e05beefbd634aceb712dc918c2f96fbe21ca717ba49117"
+  }
+}

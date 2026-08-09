@@ -1,0 +1,6 @@
+{
+  "status": "approved",
+  "required_changes": [],
+  "surprises": [],
+  "notes": "types.ts matches the spec's GroupState union and all four shapes exactly (Manifest models sessions as name/role objects per group as required). sample-run.ts covers all 8 GroupState values with a consistent manifest, 16 log lines, and one pending escalation. GroupBoard.tsx and EventLog.tsx render exactly as specified, with a distinct CSS color per state in styles.css. App.tsx composes header + GroupBoard + EventLog from sample-run.ts. No npm/build artifacts present; working tree clean."
+}

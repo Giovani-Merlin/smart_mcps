@@ -122,3 +122,31 @@ h3 {
   padding: 0.75rem 1rem;
   color: #55565c;
 }
+
+/* Tab strip — a placeholder for the shell group's real router-driven tabs. */
+.app__tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid var(--border, #e3e5e9);
+}
+
+.app__tab {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--fg-muted, #6b7280);
+}
+
+.app__tab--current {
+  border-color: var(--border, #e3e5e9);
+  background: #fff;
+  color: inherit;
+  font-weight: 600;
+  margin-bottom: -1px;
+}
