@@ -24,6 +24,7 @@ from orchestrator.observatory import artifacts, escalations, events, transcripts
 from orchestrator.observatory.app import create_app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "observatory" / "run-postmortem"
+MODERN_FIXTURE = Path(__file__).parent / "fixtures" / "observatory" / "run-modern"
 
 
 # ------------------------------------------------------------------ fixtures
@@ -245,6 +246,37 @@ class TestSnapshot:
         assert body["stale_dag"] is True
         # the board still renders: states and sessions do not come from the DAG
         assert {group["group_id"] for group in body["groups"]} == {"g1", "g2"}
+
+    def test_the_snapshot_serves_the_manifest_grouping_and_escalation(self, tmp_path, repo):
+        """The two fields the merge added to ``RunManifest``. Escalation config is
+        the operator's worst-rated blind spot: without it there is no way to tell
+        a run that never asks a human from one whose questions are going nowhere.
+        Asserted against the modern fixture, which is the one that has them."""
+        install_run(repo, "modern", source=MODERN_FIXTURE)
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        response = client.get("/api/projects/proj/runs/modern/snapshot")
+        assert response.status_code == 200
+        body = response.json()
+        assert (
+            body["grouping"] == "2026-07-29-001-fix-orchestrator-correctness-and-measurement-plan"
+        )
+        assert body["escalation"] == {
+            "enabled": True,
+            "intensity": "on_stuck",
+            "source": "workers_via_orchestrator",
+            "timeout_s": None,
+            "on_timeout": "autonomous",
+            "poll_interval_s": 1.0,
+        }
+
+    def test_a_run_predating_those_fields_serves_them_as_null(self, client):
+        """The post-mortem fixture has neither. Absent must read as absent, not as
+        an error and not as a fabricated default."""
+        body = client.get("/api/projects/proj/runs/smoke1/snapshot").json()
+        assert body["grouping"] is None
+        assert body["escalation"] is None
 
 
 class TestLivenessIndependence:
