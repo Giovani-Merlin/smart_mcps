@@ -116,6 +116,44 @@ def test_runner_degrades_when_the_cli_rejects_session_id(monkeypatch):
     assert "--session-id" not in calls[1]
 
 
+def test_model_comes_from_model_usage_when_the_envelope_omits_model(monkeypatch):
+    """The live envelope shape, which the mocked stubs above do not have.
+
+    The first real ``group`` run recorded ``"gen_ai.request.model": null`` on
+    every call: the installed CLI has no top-level ``model`` key at all — the
+    name is a *key of* ``modelUsage``. The stubs handed the field over directly,
+    so nothing caught it until a live run.
+    """
+    monkeypatch.setattr(
+        "orchestrator.grouping.llm.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=_envelope(
+                "{}",
+                session_id="s-1",
+                modelUsage={
+                    "claude-haiku-4-5-20251001": {"outputTokens": 4},
+                    "claude-opus-5": {"outputTokens": 1570},
+                },
+            ),
+            stderr="",
+        ),
+    )
+    meta = call_meta(claude_json_runner("prompt", SCHEMA))
+    assert meta is not None
+    # Two models in one envelope: attribute the call to the larger contributor.
+    assert meta.model == "claude-opus-5"
+
+
+def test_model_is_none_when_no_envelope_field_carries_it(monkeypatch):
+    monkeypatch.setattr(
+        "orchestrator.grouping.llm.subprocess.run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=_envelope("{}"), stderr=""),
+    )
+    meta = call_meta(claude_json_runner("prompt", SCHEMA))
+    assert meta is not None and meta.model is None
+
+
 def test_call_meta_is_none_for_a_stub_runner():
     assert call_meta("plain text") is None
 
