@@ -279,6 +279,85 @@ class TestSnapshot:
         assert body["escalation"] is None
 
 
+class TestStallEvidence:
+    """Plan P3: the snapshot serves the *facts* a stall would be inferred from —
+    heartbeat age, round start, transcript mtime — and never the inference. No
+    run on disk today has a heartbeat, so absence is the common case and must
+    read as null rather than as an error."""
+
+    def test_a_run_without_a_heartbeat_serves_null_not_an_error(self, client):
+        response = client.get("/api/projects/proj/runs/smoke1/snapshot")
+        assert response.status_code == 200
+        assert all(group["heartbeat"] is None for group in response.json()["groups"])
+
+    def test_a_heartbeat_on_disk_is_served_as_written(self, tmp_path, repo):
+        run_dir = install_run(repo, "beat")
+        heartbeat = {
+            "schema_version": 1,
+            "group_id": "g1",
+            "started_at": "2026-08-09T10:00:00.000+00:00",
+            "generation": 2,
+            "round": 3,
+            "round_started_at": "2026-08-09T10:31:00.000+00:00",
+            "updated_at": "2026-08-09T10:54:00.000+00:00",
+        }
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "heartbeat.json").write_text(json.dumps(heartbeat))
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/beat/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["heartbeat"] == {
+            "started_at": "2026-08-09T10:00:00.000+00:00",
+            "generation": 2,
+            "round": 3,
+            "round_started_at": "2026-08-09T10:31:00.000+00:00",
+            "updated_at": "2026-08-09T10:54:00.000+00:00",
+        }
+        # 23 minutes of silence is for the client to interpret; the server never
+        # says so, and there is no field here in which it could.
+        assert "stalled" not in json.dumps(groups["g1"])
+        assert groups["g2"]["heartbeat"] is None
+
+    def test_a_torn_heartbeat_reads_as_absent_rather_than_500(self, tmp_path, repo):
+        run_dir = install_run(repo, "torn")
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "heartbeat.json").write_text('{"round": ')
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        response = client.get("/api/projects/proj/runs/torn/snapshot")
+        assert response.status_code == 200
+        assert response.json()["groups"][0]["heartbeat"] is None
+
+    def test_transcript_mtime_is_served_when_the_file_still_exists(self, tmp_path, repo):
+        """The other half of the evidence, recorded by the runner all along and
+        read by nobody until now."""
+        run_dir = install_run(repo, "mtime")
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text("{}\n")
+        manifest["groups"]["g1"]["sessions"][0]["transcript_path"] = str(transcript)
+        manifest["groups"]["g1"]["sessions"][1]["transcript_path"] = str(tmp_path / "gone.jsonl")
+        (run_dir / "manifest.json").write_text(json.dumps(manifest))
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/mtime/snapshot").json()["groups"]
+        }
+        sessions = groups["g1"]["sessions"]
+        assert sessions[0]["transcript_mtime"] is not None
+        # A transcript that has been cleaned up is missing evidence, not an error.
+        assert sessions[1]["transcript_mtime"] is None
+
+
 class TestLivenessIndependence:
     """R9: a run is a directory, not a process. Nothing in the read path checks
     whether a recorded pid is alive."""

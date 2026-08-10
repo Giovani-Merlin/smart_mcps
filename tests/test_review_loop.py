@@ -1128,3 +1128,44 @@ class TestSurpriseBoardPersistence:
         board.mark(surprise)
         assert board.pending_for("g1") == [surprise]
         assert not (tmp_path / ".orchestrator").exists()
+
+
+class TestRoundHeartbeat:
+    """Plan P3: a running group leaves evidence of *when* it started this round,
+    so an operator staring at a silent board can tell a long round from a wedged
+    one. Evidence only — the loop never records a judgement about it, and the
+    writer never gets a say in whether the round succeeds."""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_records_the_round_the_group_is_on(self, tmp_path):
+        runner = StubRunner(
+            {
+                "r1-g1-coder-g1": [coder_report(), coder_report()],
+                "r1-g1-reviewer-g1": [verdict("changes_required", ["fix x"]), verdict("approved")],
+            }
+        )
+        harness = Harness(tmp_path, runner)
+        assert await harness.run(make_group()) == GroupState.COMPLETED
+
+        payload = json.loads((harness.store.paths.group_dir("g1") / "heartbeat.json").read_text())
+        assert payload["group_id"] == "g1"
+        assert payload["generation"] == 1
+        assert payload["round"] == 2  # the second, revised round
+        assert payload["round_started_at"] is not None
+        assert payload["updated_at"] >= payload["round_started_at"]
+        # An inference, never a stored fact: nothing here names a stall.
+        assert not {"stalled", "hung", "stuck"} & set(payload)
+
+    @pytest.mark.asyncio
+    async def test_a_broken_heartbeat_writer_never_fails_the_group(self, tmp_path, monkeypatch):
+        # Break the writer from the inside, below its own guard.
+        monkeypatch.setattr(
+            "orchestrator.execution.heartbeat.RoundHeartbeat.snapshot",
+            lambda self: (_ for _ in ()).throw(OSError("disk gone")),
+        )
+        runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+        harness = Harness(tmp_path, runner)
+        # The write is best-effort by contract; a group merges regardless.
+        assert await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY)) == (
+            GroupState.COMPLETED
+        )

@@ -25,6 +25,28 @@ T = TypeVar("T")
 JsonRunner = Callable[[str, dict], str]
 
 
+def _envelope_model(envelope: dict) -> str | None:
+    """Which model answered, across the two shapes the envelope uses.
+
+    The live CLI carries no top-level ``model`` key at all — the name is a key of
+    ``modelUsage``. A1's mocked-subprocess tests supplied ``model`` directly, so
+    every record written by the first real ``group`` run had a null model until
+    this fallback existed. A multi-model envelope keeps the largest contributor,
+    which is the one worth attributing a grouping decision to.
+    """
+    named = envelope.get("model")
+    if named:
+        return str(named)
+    model_usage = envelope.get("modelUsage")
+    if not isinstance(model_usage, dict) or not model_usage:
+        return None
+
+    def _output(entry: object) -> int:
+        return int(entry.get("outputTokens", 0) or 0) if isinstance(entry, dict) else 0
+
+    return max(model_usage, key=lambda name: _output(model_usage[name]))
+
+
 @dataclass(frozen=True)
 class LlmCallMeta:
     """CLI envelope metadata for one grouping call.
@@ -48,7 +70,7 @@ class LlmCallMeta:
         usage = envelope.get("usage") or {}
         return cls(
             session_id=envelope.get("session_id") or session_id,
-            model=envelope.get("model"),
+            model=_envelope_model(envelope),
             duration_ms=duration_ms,
             input_tokens=int(usage.get("input_tokens", 0) or 0),
             output_tokens=int(usage.get("output_tokens", 0) or 0),
