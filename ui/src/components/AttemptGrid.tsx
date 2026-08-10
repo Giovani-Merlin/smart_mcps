@@ -247,7 +247,7 @@ function AttemptGrid({
             </thead>
             <tbody>
               {grid.rows.map((row) => (
-                <tr key={row.group.group_id}>
+                <tr key={row.group.group_id} data-testid={`attempt-row-${row.group.group_id}`}>
                   <th scope="row" title={row.group.summary || undefined}>
                     <span className="attempt-grid__group-id">{row.group.group_id}</span>
                     <span className="attempt-grid__group-name">{row.group.name}</span>
