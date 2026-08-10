@@ -1,0 +1,5 @@
+Map the plan's tasks onto the codegraph symbols.
+
+<plan>...</plan>
+
+Your previous reply was truncated.

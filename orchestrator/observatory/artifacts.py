@@ -8,11 +8,19 @@ the drill-in, so a file that no longer matches ``CoderReport`` /
 
 Routes are registered on this module's ``router``, which ``app.py`` already
 includes — adding an endpoint here needs no edit there.
+
+``load_json``/``load_text`` are the package's one artifact reader. Every
+Observatory router reads the same kind of thing — a file some other process
+wrote, which may be absent, half-written, or from a schema this code predates —
+and each one that rolled its own ``try: json.loads`` picked a slightly different
+answer for those three cases. They live here rather than in a new module because
+this is already the module about reading artifacts off disk.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -21,6 +29,36 @@ from pydantic import BaseModel
 from orchestrator.observatory.runs import RUN_PREFIX, resolve_run
 
 router = APIRouter(tags=["artifacts"], prefix=RUN_PREFIX)
+
+
+# ------------------------------------------------------------- shared reading
+
+
+def load_json(path: Path) -> tuple[Any, str | None]:
+    """``(content, error)`` for a JSON artifact — never raises.
+
+    A file that is absent, unreadable or half-written all come back as
+    ``(None, "<why>")``. Every Observatory surface degrades on artifacts rather
+    than failing the request, so the error is data to be shown next to the path
+    it came from, not an exception to propagate.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace")), None
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+
+
+def load_text(path: Path) -> tuple[str | None, str | None]:
+    """``(content, error)`` for a text artifact, on ``load_json``'s contract.
+
+    ``errors="replace"`` matches the transcript reader: a prompt or a raw model
+    response is whatever bytes the runner wrote, and mojibake in one line is
+    worth reading around, not worth losing the file over.
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="replace"), None
+    except OSError as exc:
+        return None, str(exc)
 
 
 class Artifact(BaseModel):
@@ -44,11 +82,9 @@ def get_artifacts(request: Request, project: str, run_id: str, group_id: str) ->
     return [_read(path) for path in sorted(directory.glob("*.json"))]
 
 
-def _read(path) -> Artifact:
+def _read(path: Path) -> Artifact:
     kind = path.name.split("-", 1)[0]
     artifact = Artifact(name=path.name, kind=kind if kind in ("report", "verdict") else "other")
-    try:
-        return artifact.model_copy(update={"content": json.loads(path.read_text())})
-    except (json.JSONDecodeError, OSError) as exc:
-        # Half-written or unreadable: name it rather than failing the whole list.
-        return artifact.model_copy(update={"error": str(exc)})
+    content, error = load_json(path)
+    # Half-written or unreadable: name it rather than failing the whole list.
+    return artifact.model_copy(update={"content": content, "error": error})

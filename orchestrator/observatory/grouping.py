@@ -27,7 +27,6 @@ board already teaches operators to distrust.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,6 +34,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from orchestrator.execution.manifest import GroupingNameError, RunPaths, grouping_dir
+from orchestrator.observatory.artifacts import load_json, load_text
 from orchestrator.observatory.runs import (
     RUN_PREFIX,
     load_manifest,
@@ -52,6 +52,14 @@ KNOWN_TRACE_SCHEMA = 1
 TRACE_FILENAME = "grouping-trace.json"
 EDGE_PROVENANCE_FILENAME = "edge-provenance.json"
 BASE_CONTEXT_FILENAME = "base-context.md"
+LLM_DIRNAME = "llm"
+CALLS_INDEX_FILENAME = "calls.json"
+
+# The order the partitioner runs its stages in, and therefore the order the
+# stepper scrubs through them. The trace records stages as they execute, so a
+# trace written by this orchestrator already arrives in this order — the client
+# is promised the order regardless, so it never has to know that.
+PIPELINE_STAGE_ORDER = ("louvain", "lift", "split", "merge", "repair", "renumber")
 
 DagSourceKind = Literal["run_snapshot", "named_grouping", "shared_fallback", "missing"]
 
@@ -122,7 +130,17 @@ class GroupingView(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     hub_roles: list[dict[str, Any]] = Field(default_factory=list)
     slice_atoms: list[dict[str, Any]] = Field(default_factory=list)
+    # The group-level DAG the partition produced: group id → the groups it must
+    # follow. ``input_graph`` above is its task-level counterpart, and the tab
+    # draws both, so both are served.
+    dag: dict[str, Any] | None = None
+    # Always in ``pipeline_order``; see ``ordered_stages``.
     stages: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline_order: list[str] = Field(default_factory=lambda: list(PIPELINE_STAGE_ORDER))
+    # True only for a trace whose recorded stages were out of pipeline order —
+    # nothing this orchestrator writes. Surfaced rather than hidden: a trace that
+    # needed reordering is itself a finding.
+    stages_reordered: bool = False
     louvain: list[dict[str, Any]] = Field(default_factory=list)
     splits: list[dict[str, Any]] = Field(default_factory=list)
     merges: list[dict[str, Any]] = Field(default_factory=list)
@@ -130,6 +148,10 @@ class GroupingView(BaseModel):
     group_difficulty: list[dict[str, Any]] = Field(default_factory=list)
     scorecard: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None
+    # The correlation id joining this trace to the grouper's own LLM calls. Only
+    # present once the trace's provenance records one; a trace that predates the
+    # call recorder leaves it null and the two artifacts simply do not join.
+    grouping_run_id: str | None = None
     last_stage: str | None = None
     flags: list[str] = Field(default_factory=list)
     mapper_flags: list[str] = Field(default_factory=list)
@@ -224,10 +246,7 @@ def resolve_dag_source(paths: RunPaths, grouping_name: str | None) -> DagSource:
 def _read_json(path: Path) -> dict[str, Any] | None:
     """A malformed artifact reads as absent. The tab's degradation path already
     says where it looked, which is more use than a 500."""
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    loaded, _error = load_json(path)
     return loaded if isinstance(loaded, dict) else None
 
 
@@ -245,6 +264,40 @@ def _as_str_list(value: Any) -> list[str]:
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
+
+
+def ordered_stages(stages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Stages in pipeline order, and whether reordering them changed anything.
+
+    The client stepper scrubs this list front to back, so the order it is served
+    in *is* the story it tells; making it re-sort would mean teaching the
+    frontend the pipeline's shape as well. A trace written by this orchestrator
+    already records stages as they ran, so on real data this is a no-op — which
+    is exactly the property worth keeping, because reordering a well-formed
+    trace could only falsify it.
+
+    Two stages get their position from context rather than from their name: one
+    that ran twice (``lift`` runs on both sides of contraction, so its name says
+    nothing about which occurrence this is) and one this reader has never heard
+    of. Both sort with whatever preceded them, so an unknown stage stays put
+    instead of being flung to one end.
+    """
+    ranks = {name: index for index, name in enumerate(PIPELINE_STAGE_ORDER)}
+    names = [str(snapshot.get("stage") or "") for snapshot in stages]
+    repeated = {name for name in names if names.count(name) > 1}
+
+    keyed: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    anchor = -1
+    for index, (name, snapshot) in enumerate(zip(names, stages, strict=True)):
+        rank = ranks.get(name)
+        if rank is None or name in repeated:
+            rank = anchor
+        else:
+            anchor = rank
+        keyed.append(((rank, index), snapshot))
+
+    result = [snapshot for _key, snapshot in sorted(keyed, key=lambda pair: pair[0])]
+    return result, result != stages
 
 
 def stage_diffs(stages: list[dict[str, Any]]) -> list[StageDiff]:
@@ -322,6 +375,7 @@ def build_grouping_view(paths: RunPaths, project: str) -> GroupingView:
             "trace": str(trace_path),
             "edge_provenance": str(provenance_path),
             "base_context": str(directory / BASE_CONTEXT_FILENAME),
+            "llm_calls": str(directory / LLM_DIRNAME / CALLS_INDEX_FILENAME),
         },
     )
 
@@ -348,9 +402,10 @@ def build_grouping_view(paths: RunPaths, project: str) -> GroupingView:
                 artifact=EDGE_PROVENANCE_FILENAME,
                 expected_path=str(provenance_path),
                 explanation=(
-                    "edge provenance is not recorded yet (plan A2), so an edge's "
-                    "weight cannot be traced back to the signals that produced it. "
-                    "Edge weights below are the summed totals only."
+                    "this grouping has no edge-provenance sidecar — it was produced "
+                    "before the ledgers were recorded. An edge's weight cannot be "
+                    "traced back to the signals that produced it, so the weights "
+                    "below are the summed totals only. Regrouping this plan writes one."
                 ),
             )
         )
@@ -383,7 +438,8 @@ def _fill_from_trace(view: GroupingView, trace: dict[str, Any]) -> None:
     view.config = _as_dict(trace.get("config")) or {}
     view.hub_roles = _as_list(trace.get("hub_roles"))
     view.slice_atoms = _as_list(trace.get("slice_atoms"))
-    view.stages = _as_list(trace.get("stages"))
+    view.dag = _as_dict(trace.get("dag"))
+    view.stages, view.stages_reordered = ordered_stages(_as_list(trace.get("stages")))
     view.louvain = _as_list(trace.get("louvain"))
     view.splits = _as_list(trace.get("splits"))
     view.merges = _as_list(trace.get("merges"))
@@ -391,6 +447,8 @@ def _fill_from_trace(view: GroupingView, trace: dict[str, Any]) -> None:
     view.group_difficulty = _as_list(trace.get("groups"))
     view.scorecard = _as_dict(trace.get("scorecard"))
     view.provenance = _as_dict(trace.get("provenance"))
+    run_id = (view.provenance or {}).get("grouping_run_id")
+    view.grouping_run_id = run_id if isinstance(run_id, str) else None
     view.failure = _as_dict(trace.get("failure"))
     last_stage = trace.get("last_stage")
     view.last_stage = last_stage if isinstance(last_stage, str) else None
@@ -411,14 +469,194 @@ def get_grouping(request: Request, project: str, run_id: str) -> GroupingView:
     return build_grouping_view(resolve_run(request, project, run_id), project)
 
 
+def resolved_grouping_dir(paths: RunPaths) -> Path:
+    """This run's grouping directory, resolved entirely server-side.
+
+    Every artifact path in this router is built from here, and the only inputs
+    are the run the URL named and the grouping name the *manifest* recorded — a
+    client never supplies a path component. The named-grouping tier additionally
+    goes through ``grouping_dir``, which rejects a separator or ``..`` in the
+    name before it is joined to anything, so a manifest carrying a traversal
+    string falls through to the next tier rather than escaping the repo.
+    """
+    manifest = load_manifest(paths)
+    source = resolve_dag_source(paths, manifest.grouping if manifest else None)
+    return Path(source.directory) if source.directory else paths.run_dir
+
+
 @router.get("/grouping/base-context", response_model=str)
 def get_base_context(request: Request, project: str, run_id: str) -> str:
     """The shared context every worker in this run was given, verbatim."""
     paths = resolve_run(request, project, run_id)
-    manifest = load_manifest(paths)
-    source = resolve_dag_source(paths, manifest.grouping if manifest else None)
-    directory = Path(source.directory) if source.directory else paths.run_dir
-    path = directory / BASE_CONTEXT_FILENAME
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"no base context at {path}")
-    return path.read_text(encoding="utf-8", errors="replace")
+    path = resolved_grouping_dir(paths) / BASE_CONTEXT_FILENAME
+    text, error = load_text(path)
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"no base context at {path}: {error}")
+    return text
+
+
+# ------------------------------------------------------- the grouper's own calls
+
+
+class LlmCallsView(BaseModel):
+    """The grouper's LLM call index — what the mapper and the speccer were asked
+    and what they answered.
+
+    ``calls`` entries are passed through **unchanged**, dotted keys and all.
+    ``gen_ai.operation.name`` is how the client tells a mapper call from a
+    speccer one and it is an OpenTelemetry GenAI convention name, so renaming it
+    into something more Pythonic here would cost the label and the convention at
+    once.
+
+    Failed and repaired attempts are included, deliberately: a call that got the
+    schema wrong and succeeded on retry is the single most informative record in
+    the directory, and it is the one the old ``last_raw`` overwrite destroyed.
+    """
+
+    run_id: str
+    directory: str  # where the records were looked for
+    index_path: str
+    present: bool = False
+    schema_version: int | None = None
+    # The join to ``grouping-trace.json``'s ``provenance``.
+    grouping_run_id: str | None = None
+    # The join to ``groups.json``, which carries no run id of its own — a
+    # timestamped field there would break ``serialize_grouping``'s determinism.
+    produced_group_ids: list[str] = Field(default_factory=list)
+    produced_task_ids: list[str] = Field(default_factory=list)
+    calls: list[dict[str, Any]] = Field(default_factory=list)
+    missing: list[MissingArtifact] = Field(default_factory=list)
+
+
+class LlmCallDetail(BaseModel):
+    """One attempt, with the prompt it sent and the raw text it got back.
+
+    Both files are named by the *record*, never by the client, and are resolved
+    back under the grouping directory before being read.
+    """
+
+    seq: int
+    call: dict[str, Any]
+    request_path: str | None = None
+    request_text: str | None = None
+    raw_path: str | None = None
+    raw_text: str | None = None
+    missing: list[MissingArtifact] = Field(default_factory=list)
+
+
+def _sibling(directory: Path, name: Any) -> Path | None:
+    """``directory/name`` when ``name`` is a plain filename directly inside it.
+
+    The filenames come out of ``calls.json``, which is written by the recorder
+    and is not attacker input in any normal sense — but it is still a file, and a
+    reader that would follow whatever string a file contains is a reader that
+    escapes its directory the day that file is wrong. Rejecting separators up
+    front and confirming containment after ``resolve()`` is what actually stops
+    a symlink pointing out of the run.
+    """
+    if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name:
+        return None
+    if "/" in name or name in (".", ".."):
+        return None
+    candidate = (directory / name).resolve()
+    if not candidate.is_file() or not candidate.is_relative_to(directory.resolve()):
+        return None
+    return candidate
+
+
+def _absent_llm(view: LlmCallsView, directory: Path) -> LlmCallsView:
+    view.missing.append(
+        MissingArtifact(
+            artifact=f"{LLM_DIRNAME}/{CALLS_INDEX_FILENAME}",
+            expected_path=view.index_path,
+            explanation=(
+                "this grouping recorded no LLM calls. Every run made before the "
+                "call recorder shipped is in this state, as is any grouping "
+                "produced from a plan whose task map was read verbatim — that "
+                f"path calls no model at all. Looked in {directory}."
+            ),
+        )
+    )
+    return view
+
+
+def build_llm_calls_view(paths: RunPaths) -> LlmCallsView:
+    """The call index for this run's grouping, or an honest account of its absence."""
+    directory = resolved_grouping_dir(paths) / LLM_DIRNAME
+    index_path = directory / CALLS_INDEX_FILENAME
+    view = LlmCallsView(run_id=paths.run_id, directory=str(directory), index_path=str(index_path))
+
+    index = _read_json(index_path)
+    if index is None:
+        return _absent_llm(view, directory)
+
+    view.present = True
+    schema = index.get("schema_version")
+    view.schema_version = schema if isinstance(schema, int) else None
+    run_id = index.get("grouping_run_id")
+    view.grouping_run_id = run_id if isinstance(run_id, str) else None
+    produced = _as_dict(index.get("produced")) or {}
+    view.produced_group_ids = _as_str_list(produced.get("group_ids"))
+    view.produced_task_ids = _as_str_list(produced.get("task_ids"))
+    view.calls = _as_list(index.get("calls"))
+    return view
+
+
+def build_llm_call_detail(paths: RunPaths, seq: int) -> LlmCallDetail | None:
+    """One attempt's record plus its two text files. ``None`` when no such seq."""
+    view = build_llm_calls_view(paths)
+    directory = Path(view.directory)
+    record = next((call for call in view.calls if call.get("seq") == seq), None)
+    if record is None:
+        return None
+
+    detail = LlmCallDetail(seq=seq, call=record)
+    for kind, path_field, text_field in (
+        ("request_file", "request_path", "request_text"),
+        ("raw_file", "raw_path", "raw_text"),
+    ):
+        named = record.get(kind)
+        path = _sibling(directory, named)
+        if path is None:
+            detail.missing.append(
+                MissingArtifact(
+                    artifact=str(named or kind),
+                    expected_path=str(directory / str(named)) if named else str(directory),
+                    explanation=(
+                        f"the record names no readable {kind} inside the grouping's "
+                        "llm directory. The index survives a lost or unwritable "
+                        "side file, so the record itself is still shown."
+                    ),
+                )
+            )
+            continue
+        text, error = load_text(path)
+        setattr(detail, path_field, str(path))
+        setattr(detail, text_field, text)
+        if error is not None:
+            detail.missing.append(
+                MissingArtifact(artifact=str(named), expected_path=str(path), explanation=error)
+            )
+    return detail
+
+
+@router.get("/grouping/llm", response_model=LlmCallsView)
+def get_llm_calls(request: Request, project: str, run_id: str) -> LlmCallsView:
+    """The grouper's call index. 200 with ``present: false`` when there is none —
+    a 404 here would be indistinguishable from a mistyped run id, and "this run
+    predates call recording" is a thing the tab has to render, not an error."""
+    return build_llm_calls_view(resolve_run(request, project, run_id))
+
+
+@router.get("/grouping/llm/calls/{seq}", response_model=LlmCallDetail)
+def get_llm_call(request: Request, project: str, run_id: str, seq: int) -> LlmCallDetail:
+    """One attempt in full.
+
+    ``seq`` is an integer from the index — the client selects a record, not a
+    file. A seq that is not in the index is a genuine 404: unlike a missing
+    artifact, it names something that was never claimed to exist.
+    """
+    detail = build_llm_call_detail(resolve_run(request, project, run_id), seq)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"no grouper LLM call with seq {seq}")
+    return detail
