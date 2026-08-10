@@ -151,20 +151,28 @@ function SessionRow({ session, scale }: { session: SessionCost; scale: number })
   );
 }
 
-function RoleBlock({ role, scale }: { role: RoleCost; scale: number }) {
+function RoleBlock({
+  groupId,
+  role,
+  scale,
+}: {
+  groupId: string;
+  role: RoleCost;
+  scale: number;
+}) {
   return (
-    <div className="cost-role" data-testid={`cost-role-${role.role}`}>
+    <div className="cost-role" data-testid={`cost-role-${groupId}-${role.role}`}>
       <div className="cost-role__head">
         <span className={`cost-role__name cost-role__name--${role.role}`}>{role.role}</span>
         <span className="cost-role__count">
           {role.sessions.length} {role.sessions.length === 1 ? "session" : "sessions"}
         </span>
-        <span className="cost-role__total" data-testid={`cost-role-total-${role.role}`}>
+        <span className="cost-role__total" data-testid={`cost-role-total-${groupId}-${role.role}`}>
           {formatTokens(role.total)} total · {formatTokens(billableish(role.classes))} excluding
           cache reads
         </span>
       </div>
-      <ClassBar classes={role.classes} scale={scale} testId={`cost-role-bar-${role.role}`} />
+      <ClassBar classes={role.classes} scale={scale} testId={`cost-role-bar-${groupId}-${role.role}`} />
       {role.sessions.length > 0 && (
         <ul className="cost-role__sessions">
           {role.sessions.map((session) => (
@@ -295,7 +303,7 @@ function GroupSpend({ group }: { group: GroupCost }) {
       {group.actualsRecorded ? (
         <div className="cost-group__roles">
           {group.roles.map((role) => (
-            <RoleBlock key={role.role} role={role} scale={scale} />
+            <RoleBlock key={role.role} groupId={group.groupId} role={role} scale={scale} />
           ))}
         </div>
       ) : (
