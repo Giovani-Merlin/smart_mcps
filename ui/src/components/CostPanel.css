@@ -1,0 +1,274 @@
+/* The cost tab. Every colour arrives as `--seg-colour`, chosen in `cost.ts`
+   from `TOKEN_CLASSES`; nothing in this file decides what a token class looks
+   like.
+
+   The one rule this stylesheet encodes on its own is *subordination*: the muted
+   class (cache read, and only cache read) is drawn at reduced opacity, with no
+   border and a lower-contrast swatch, so it reads as background rather than as
+   the biggest cost. Cache reads dominate the raw numbers on every healthy
+   session — giving them the loudest segment would tell the operator the exact
+   opposite of the truth. */
+
+.cost {
+  margin-bottom: 2rem;
+}
+
+.cost-panel {
+  border: 1px solid var(--border, #e3e5e9);
+  border-radius: 10px;
+  background: var(--bg-panel, #fff);
+  padding: 1rem 1.1rem 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+.cost-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.cost-panel__head h3 {
+  margin: 0;
+}
+
+.cost-panel__note {
+  color: var(--fg-muted, #55565c);
+  font-size: 0.85rem;
+  max-width: 78ch;
+}
+
+.cost-panel__empty {
+  color: var(--fg-muted, #55565c);
+}
+
+.cost-panel__absent,
+.cost-group__absent {
+  border: 1px dashed var(--border-strong, #c9cdd4);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  color: var(--fg-muted, #55565c);
+  font-size: 0.85rem;
+  background: var(--bg-subtle, #fafafb);
+  max-width: 82ch;
+}
+
+/* ------------------------------------------------------------------ legend */
+
+.cost-legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.8rem;
+}
+
+.cost-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Subordinate in the legend too — the cheap class is listed last and dimmed. */
+.cost-legend__item--muted {
+  color: var(--fg-muted, #7d818a);
+}
+
+.cost-legend__aside {
+  font-style: italic;
+}
+
+.cost-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 3px;
+  background: var(--seg-colour);
+  border: 1px solid rgb(0 0 0 / 12%);
+}
+
+.cost-swatch--muted {
+  opacity: 0.55;
+  border-color: transparent;
+}
+
+/* -------------------------------------------------------------------- bars */
+
+.cost-bar {
+  display: flex;
+  height: 0.9rem;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-track, #f0f1f3);
+}
+
+.cost-bar__seg {
+  display: block;
+  height: 100%;
+  background: var(--seg-colour);
+}
+
+.cost-bar__seg--primary {
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
+/* Cache read. Muted on purpose: the cheap class must not look like the cost. */
+.cost-bar__seg--muted {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.cost-spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 1rem;
+  width: 3.5rem;
+}
+
+.cost-spark__bar {
+  flex: 1;
+  background: var(--fg-muted, #8a8f98);
+  border-radius: 1px;
+}
+
+/* ------------------------------------------------------------------ groups */
+
+.cost-group {
+  border-top: 1px solid var(--border, #e3e5e9);
+  padding-top: 0.9rem;
+  margin-top: 0.9rem;
+}
+
+.cost-group__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.cost-group__head h4 {
+  margin: 0;
+}
+
+.cost-group__intensity {
+  font-size: 0.75rem;
+  border: 1px solid var(--border-strong, #c9cdd4);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  color: var(--fg-muted, #55565c);
+}
+
+.cost-group__intensity--unknown {
+  border-style: dashed;
+  font-style: italic;
+}
+
+.cost-group__expectation {
+  margin: 0.35rem 0 0.6rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted, #55565c);
+}
+
+.cost-group__expectation--ok::before {
+  content: "✓ ";
+  color: var(--status-done, #2e7d54);
+}
+
+.cost-role {
+  margin-bottom: 0.7rem;
+}
+
+.cost-role__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
+}
+
+.cost-role__name {
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.cost-role__count,
+.cost-role__total {
+  color: var(--fg-muted, #55565c);
+}
+
+.cost-role__sessions {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0 0 0 1rem;
+}
+
+.cost-session {
+  display: grid;
+  grid-template-columns: 14rem 1fr 5rem 3.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  margin-bottom: 0.25rem;
+}
+
+.cost-session__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cost-session__total {
+  text-align: right;
+  color: var(--fg-muted, #55565c);
+}
+
+/* ------------------------------------------------------------------ tables */
+
+.cost-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.cost-table th,
+.cost-table td {
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border, #e3e5e9);
+  font-weight: 400;
+}
+
+.cost-table thead th {
+  font-weight: 600;
+  color: var(--fg-muted, #55565c);
+  text-transform: lowercase;
+}
+
+.cost-table__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-right: 0.3rem;
+}
+
+.cost-table__absent {
+  color: var(--fg-muted, #7d818a);
+  font-style: italic;
+}
+
+.cost-calibration {
+  margin: 0.5rem 0 1rem;
+}
+
+.cost-calibration h4 {
+  margin: 0 0 0.25rem;
+}
+
+.cost-calibration__summary {
+  margin: 0;
+  font-size: 0.85rem;
+  max-width: 78ch;
+}

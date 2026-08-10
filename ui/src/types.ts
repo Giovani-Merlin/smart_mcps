@@ -55,6 +55,21 @@ export interface RunState {
 
 export type SessionRole = "base" | "coder" | "reviewer";
 
+// RoundUsage (execution/sessions.py:68) — one round's four token classes, as
+// parsed from that round's CLI envelope.
+//
+// The cumulative counters on a session are the sum of these, round by round.
+// They are emphatically *not* the envelope's own top-level `usage`, which sums
+// every turn of the session and once produced a 50x-inflated context reading
+// that retired healthy coders. Anything cumulative in the cost panels is built
+// by adding these up; nothing re-reads a session-level total.
+export interface RoundUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+}
+
 // SessionEntry (model.py:68) — flattened into the manifest join.
 export interface ManifestSession {
   session_id: string;
@@ -76,6 +91,12 @@ export interface ManifestSession {
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+  // Per-round history, when the manifest carries it. No orchestrator on disk
+  // writes this yet — A3 shipped the four cumulative counters without the
+  // `rounds` list the plan suggested — so absence is the normal case and the
+  // sparkline simply does not render. Present or absent, the cumulative
+  // figures stay a sum of per-round values.
+  rounds?: RoundUsage[] | null;
 }
 
 export interface ManifestGroupEntry {
@@ -234,6 +255,8 @@ export interface SnapshotSession {
   // group's heartbeat are the two inputs to the stall *inference*; there is no
   // stalled field on the wire and there must not be one.
   transcript_mtime?: string | null;
+  // Per-round history when the manifest carries it; see `ManifestSession`.
+  rounds?: RoundUsage[] | null;
 }
 
 // GroupHeartbeat (runs.py) — `heartbeat.json` passed through unchanged.

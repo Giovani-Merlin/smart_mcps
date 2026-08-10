@@ -10,6 +10,7 @@
 // shell replaces this strip with real routes and every child keeps compiling.
 
 import AttemptGrid from "./components/AttemptGrid";
+import CostPanel from "./components/CostPanel";
 import EscalationPanel from "./components/EscalationPanel";
 import EventLog from "./components/EventLog";
 import GroupBoard from "./components/GroupBoard";
@@ -19,7 +20,7 @@ import GroupingTab from "./components/grouping/GroupingTab";
 import { useQueryParams } from "./useQueryParams";
 import { useRunStream } from "./useRunStream";
 
-const TABS = ["board", "history", "grouping"] as const;
+const TABS = ["board", "history", "grouping", "cost"] as const;
 type Tab = (typeof TABS)[number];
 
 function App() {
@@ -98,6 +99,8 @@ function App() {
               revision={revision}
               onOpenSession={openSession}
             />
+          ) : tab === "cost" ? (
+            <CostPanel project={project} runId={runId} snapshot={snapshot} />
           ) : tab === "grouping" ? (
             <GroupingTab
               project={project}
