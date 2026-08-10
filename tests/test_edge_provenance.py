@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.cli import main
+from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.graphing import (
     MAX_CONTRIBUTIONS_PER_EDGE,
     CodegraphClient,
@@ -25,14 +26,16 @@ from orchestrator.grouping.graphing import (
     TaskMapping,
     build_task_graph,
 )
+from orchestrator.grouping.mapper import MapperOutput
 from orchestrator.grouping.pipeline import (
     EdgeProvenanceRecorder,
+    _with_prose_fallback,
     compute_partition,
     edge_provenance_document,
 )
 
 from tests.test_cli import _stub_codegraph_runner
-from tests.test_grouping_fixtures import client_for, make_repo
+from tests.test_grouping_fixtures import ALL_FIXTURES, client_for, make_repo
 
 
 def _runner(responses):
@@ -189,6 +192,59 @@ class TestSumExactness:
             client=client_for(repo, "hub-file-symbols"),
         )
         assert_sums_are_exact(outcome.graph)
+
+
+class TestTheWholeFixtureRegister:
+    """The register is the honest place to assert this: one synthetic graph could
+    always be the one shape whose arithmetic happens to line up."""
+
+    @pytest.mark.parametrize("fixture_name,real_files,config_overrides", ALL_FIXTURES)
+    def test_every_register_fixture_sums_exactly(
+        self, tmp_path, fixture_name, real_files, config_overrides
+    ):
+        config = OrchestratorConfig()
+        for key, value in config_overrides.items():
+            setattr(config.estimator, key, value)
+        if fixture_name == "slice-over-budget":
+            config.partition.allow_oversized_slice = True
+        repo, plan = make_repo(tmp_path, fixture_name, real_files=real_files)
+        recorder = EdgeProvenanceRecorder()
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=lambda prompt, schema: pytest.fail("no LLM in a fixture test"),
+            client=client_for(repo, fixture_name),
+            provenance_recorder=recorder,
+        )
+        assert_sums_are_exact(outcome.graph)
+        assert recorder.document is not None
+        assert len(recorder.document["affinity"]) == len(outcome.graph.affinity)
+        json.loads(json.dumps(recorder.document))
+        if fixture_name == "hub-file-symbols":
+            # The register's only symbol-bearing fixture is also its only cycle-drop
+            # case: real withdrawals, not just the synthetic pair above.
+            assert outcome.graph.provenance.withdrawn
+
+
+class TestProseFallbackContributions:
+    """The one affinity signal added outside ``_EdgeAccumulator``, in the pipeline."""
+
+    def test_region_less_task_edge_is_attributed_to_the_prose_fallback(self):
+        client = CodegraphClient(repo_root=Path("."), runner=_runner({}))
+        mappings = [
+            TaskMapping("a", files=("app/a.py",)),
+            TaskMapping("prose_only"),
+        ]
+        graph = build_task_graph(mappings, client, EdgeWeights())
+        mapper_out = MapperOutput(mappings=mappings, descriptions={})
+
+        with_fallback = _with_prose_fallback(graph, mapper_out, weight=0.25)
+
+        ledger = with_fallback.provenance.affinity[("a", "prose_only")]
+        assert [c.kind for c in ledger.contributions] == ["prose_neighbor"]
+        assert ledger.total_weight == with_fallback.affinity[("a", "prose_only")] == 0.25
+        assert_sums_are_exact(with_fallback)
 
 
 class TestContributionCap:
