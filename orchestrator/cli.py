@@ -74,6 +74,8 @@ from orchestrator.grouping.pipeline import (
     compute_partition,
     group_label,
     run_grouping,
+    EdgeProvenanceRecorder,
+    serialize_edge_provenance,
     serialize_grouping,
 )
 from orchestrator.grouping.plan_reader import strip_task_map
@@ -392,6 +394,9 @@ def _cmd_group(
     # Written on every mode including --no-spec and --dry-run: --no-spec is the
     # debugging mode, so it is exactly when the mapper's reasoning is wanted most.
     llm_recorder = JsonlCallRecorder(out_dir, grouping_run_id=uuid.uuid4().hex)
+    # Same rationale as the trace and the LLM records: written on every mode,
+    # --no-spec included, because --no-spec is the debugging mode.
+    provenance_recorder = EdgeProvenanceRecorder()
 
     if getattr(args, "no_spec", False):
         try:
@@ -404,11 +409,14 @@ def _cmd_group(
                 allow_unknown_symbols=allow_unknown_symbols,
                 recorder=recorder,
                 llm_recorder=llm_recorder,
+                provenance_recorder=provenance_recorder,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
             _write_failure_trace(out_dir, recorder, exc, trace_path)
+            _write_edge_provenance(out_dir, provenance_recorder)
             return 1
         _write_trace(out_dir, recorder)
+        _write_edge_provenance(out_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(recorder.trace)
@@ -424,9 +432,11 @@ def _cmd_group(
             allow_unknown_symbols=allow_unknown_symbols,
             recorder=recorder,
             llm_recorder=llm_recorder,
+            provenance_recorder=provenance_recorder,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
         _write_failure_trace(out_dir, recorder, exc, trace_path)
+        _write_edge_provenance(out_dir, provenance_recorder)
         return 1
     _warn_self_modification(result.flags)
     llm_recorder.link_outputs(
@@ -436,6 +446,7 @@ def _cmd_group(
 
     if args.dry_run:
         _write_trace(out_dir, recorder)
+        _write_edge_provenance(out_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _print_report(result)
         return 0
@@ -444,10 +455,21 @@ def _cmd_group(
     (out_dir / "groups.json").write_text(serialize_grouping(result))
     (out_dir / "base-context.md").write_text(base_context)
     _write_trace(out_dir, recorder)
+    _write_edge_provenance(out_dir, provenance_recorder)
     _append_metrics_log(repo_root, recorder.trace)
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
     return 0
+
+
+def _write_edge_provenance(out_dir: Path, recorder: EdgeProvenanceRecorder) -> None:
+    """The edge-provenance sidecar (plan P2), written whenever the partition got far
+    enough to produce one — a grouping that raised before the graph was built simply
+    has nothing to say, so nothing is written."""
+    if recorder.document is None:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "edge-provenance.json").write_text(serialize_edge_provenance(recorder.document))
 
 
 def _write_trace(out_dir: Path, recorder: TraceRecorder) -> None:

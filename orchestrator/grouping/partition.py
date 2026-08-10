@@ -59,6 +59,11 @@ class TaskGraph:
     affinity: Mapping[Pair, float] = field(default_factory=dict)
     dependencies: Mapping[Pair, float] = field(default_factory=dict)
     metadata: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    # Observational edge provenance (graphing.EdgeProvenance) — deliberately typed as
+    # ``object`` so this module gains no import and stays stdlib-pure. Nothing in the
+    # partitioner reads it; it exists to be serialized into the edge-provenance.json
+    # sidecar after the partition is computed.
+    provenance: object | None = None
 
     def __post_init__(self) -> None:
         for u, v in self.affinity:

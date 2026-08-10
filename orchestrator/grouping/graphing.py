@@ -235,6 +235,159 @@ class CodegraphClient:
         return output
 
 
+# Cap on how many contributions one edge keeps in the provenance sidecar (plan P2).
+# A saturated graph can put hundreds of contributions on a single pair; the cap keeps
+# edge-provenance.json bounded, and the ledger's counters report the true total rather
+# than dropping silently.
+MAX_CONTRIBUTIONS_PER_EDGE = 20
+
+# Signal kinds a contribution can carry. Kept as plain strings (the sidecar is data,
+# not an API), enumerated here so readers of the artifact have one list to consult.
+SIGNAL_SHARED_FILE = "shared_file"
+SIGNAL_CALL = "call"
+SIGNAL_IMPACT = "impact"
+SIGNAL_DECLARED_DEPENDS_ON = "declared_depends_on"
+SIGNAL_SEMANTIC = "semantic"
+SIGNAL_PROSE_NEIGHBOR = "prose_neighbor"
+
+
+@dataclass(frozen=True)
+class EdgeContribution:
+    """One signal's justification for one edge, with the weight it actually added.
+
+    ``scaled_weight`` is the number that reached the weight map — for the semantic
+    layer that is the post-scale value, not the base weight — so a ledger's
+    contributions sum back to the edge's weight exactly.
+    """
+
+    kind: str
+    declared: bool
+    scaled_weight: float
+    files: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
+    detail: dict[str, object] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        record: dict[str, object] = {
+            "kind": self.kind,
+            "declared": self.declared,
+            "scaled_weight": self.scaled_weight,
+        }
+        if self.files:
+            record["files"] = list(self.files)
+        if self.symbols:
+            record["symbols"] = list(self.symbols)
+        if self.detail:
+            record["detail"] = dict(self.detail)
+        return record
+
+
+@dataclass
+class EdgeLedger:
+    """Per-edge provenance mirroring one entry of a weight map.
+
+    ``total_weight`` is accumulated by the same additions in the same order as the
+    weight map itself, so it is bit-for-bit the weight the partitioner sees.
+    ``truncated_weight`` carries whatever the cap kept out, which is what makes the
+    sum identity hold even for a capped edge.
+    """
+
+    contributions: list[EdgeContribution] = field(default_factory=list)
+    total_contributions: int = 0
+    total_weight: float = 0.0
+    truncated_weight: float = 0.0
+
+    def add(self, contribution: EdgeContribution, cap: int) -> None:
+        self.total_contributions += 1
+        self.total_weight += contribution.scaled_weight
+        if len(self.contributions) < cap:
+            self.contributions.append(contribution)
+        else:
+            self.truncated_weight += contribution.scaled_weight
+
+    @property
+    def recorded_contributions(self) -> int:
+        return len(self.contributions)
+
+    @property
+    def truncated_contributions(self) -> int:
+        return self.total_contributions - len(self.contributions)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "total_weight": self.total_weight,
+            "total_contributions": self.total_contributions,
+            "recorded_contributions": self.recorded_contributions,
+            "truncated_contributions": self.truncated_contributions,
+            "truncated_weight": self.truncated_weight,
+            "contributions": [c.as_dict() for c in self.contributions],
+        }
+
+
+@dataclass(frozen=True)
+class WithdrawnEdge:
+    """An inferred precedence edge ``_drop_inferred_cycles`` took back.
+
+    Structured rather than prose-in-a-flag-string: the flags stay as they were (they
+    are human-facing and byte-stable in the trace), while this record carries the
+    endpoints, why, what weight the affinity half kept, and the contributions that
+    proposed the edge in the first place.
+    """
+
+    upstream: str
+    downstream: str
+    reason: str
+    weight: float
+    cycle_members: tuple[str, ...] = ()
+    contributions: tuple[EdgeContribution, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": "inferred_precedence",
+            "upstream": self.upstream,
+            "downstream": self.downstream,
+            "reason": self.reason,
+            "weight": self.weight,
+            "cycle_members": list(self.cycle_members),
+            "contributions": [c.as_dict() for c in self.contributions],
+        }
+
+
+@dataclass
+class EdgeProvenance:
+    """Two ledgers mirroring ``_EdgeAccumulator``'s two weight maps, plus withdrawals.
+
+    Purely observational (plan P2): nothing here is ever read back into a grouping
+    decision, and the weight arithmetic is untouched by its presence.
+    """
+
+    max_contributions_per_edge: int = MAX_CONTRIBUTIONS_PER_EDGE
+    affinity: dict[Pair, EdgeLedger] = field(default_factory=dict)
+    dependencies: dict[Pair, EdgeLedger] = field(default_factory=dict)
+    withdrawn: list[WithdrawnEdge] = field(default_factory=list)
+
+    def record_affinity(self, pair: Pair, contribution: EdgeContribution) -> None:
+        ledger = self.affinity.setdefault(pair, EdgeLedger())
+        ledger.add(contribution, self.max_contributions_per_edge)
+
+    def record_dependency(self, key: Pair, contribution: EdgeContribution) -> None:
+        ledger = self.dependencies.setdefault(key, EdgeLedger())
+        ledger.add(contribution, self.max_contributions_per_edge)
+
+    def withdraw(self, key: Pair, reason: str, cycle_members: Sequence[str] = ()) -> None:
+        ledger = self.dependencies.pop(key, EdgeLedger())
+        self.withdrawn.append(
+            WithdrawnEdge(
+                upstream=key[0],
+                downstream=key[1],
+                reason=reason,
+                weight=ledger.total_weight,
+                cycle_members=tuple(cycle_members),
+                contributions=tuple(ledger.contributions),
+            )
+        )
+
+
 @dataclass
 class _EdgeAccumulator:
     affinity: dict[Pair, float] = field(default_factory=dict)
@@ -243,8 +396,19 @@ class _EdgeAccumulator:
     # codegraph relation. Only these are precedence by *statement*; everything else
     # is precedence by *inference* and is subject to the acyclicity filter below.
     declared: set[Pair] = field(default_factory=set)
+    # Observational ledgers: written alongside every weight update, never read back.
+    provenance: EdgeProvenance = field(default_factory=EdgeProvenance)
 
-    def add(self, upstream: str, downstream: str, weight: float) -> None:
+    def add(
+        self,
+        upstream: str,
+        downstream: str,
+        weight: float,
+        kind: str = SIGNAL_CALL,
+        files: Sequence[str] = (),
+        symbols: Sequence[str] = (),
+        detail: dict[str, object] | None = None,
+    ) -> None:
         """Derived structural relation: cohesion *and* provisional precedence.
 
         The affinity half is unconditional — a call or impact relation is real
@@ -256,10 +420,40 @@ class _EdgeAccumulator:
         self.affinity[pair] = self.affinity.get(pair, 0.0) + weight
         key = (upstream, downstream)
         self.dependencies[key] = self.dependencies.get(key, 0.0) + weight
+        contribution = EdgeContribution(
+            kind=kind,
+            declared=False,
+            scaled_weight=weight,
+            files=tuple(files),
+            symbols=tuple(symbols),
+            detail=dict(detail or {}),
+        )
+        self.provenance.record_affinity(pair, contribution)
+        self.provenance.record_dependency(key, contribution)
 
-    def add_symmetric(self, a: str, b: str, weight: float) -> None:
+    def add_symmetric(
+        self,
+        a: str,
+        b: str,
+        weight: float,
+        kind: str = SIGNAL_SHARED_FILE,
+        files: Sequence[str] = (),
+        symbols: Sequence[str] = (),
+        detail: dict[str, object] | None = None,
+    ) -> None:
         pair = canonical_pair(a, b)
         self.affinity[pair] = self.affinity.get(pair, 0.0) + weight
+        self.provenance.record_affinity(
+            pair,
+            EdgeContribution(
+                kind=kind,
+                declared=False,
+                scaled_weight=weight,
+                files=tuple(files),
+                symbols=tuple(symbols),
+                detail=dict(detail or {}),
+            ),
+        )
 
     def add_dependency(self, upstream: str, downstream: str, weight: float) -> None:
         """Directed ordering edge with no affinity contribution (task-map depends_on:
@@ -267,6 +461,15 @@ class _EdgeAccumulator:
         key = (upstream, downstream)
         self.dependencies[key] = self.dependencies.get(key, 0.0) + weight
         self.declared.add(key)
+        self.provenance.record_dependency(
+            key,
+            EdgeContribution(
+                kind=SIGNAL_DECLARED_DEPENDS_ON,
+                declared=True,
+                scaled_weight=weight,
+                detail={"source": "task_map"},
+            ),
+        )
 
 
 def _drop_inferred_cycles(edges: _EdgeAccumulator) -> list[str]:
@@ -302,6 +505,10 @@ def _drop_inferred_cycles(edges: _EdgeAccumulator) -> list[str]:
         key for key in inferred if (key[1], key[0]) in edges.dependencies and key[1] != key[0]
     )
     withdrawn = {key for key in mutual if key in inferred}
+    # Why each edge went, for the provenance sidecar; the flag strings below are
+    # left exactly as they were (they are human-facing and byte-stable in the trace).
+    withdrawal_reason: dict[Pair, str] = dict.fromkeys(withdrawn, "mutual_reference")
+    withdrawal_cycle: dict[Pair, tuple[str, ...]] = {}
     if withdrawn:
         flags.append(
             f"graph: withdrew {len(withdrawn)} inferred precedence edge(s) between "
@@ -329,13 +536,21 @@ def _drop_inferred_cycles(edges: _EdgeAccumulator) -> list[str]:
                 f"{sorted(members)} — the task map's own ordering is not a DAG"
             )
         withdrawn |= internal
+        for key in internal:
+            withdrawal_reason[key] = "reference_cycle"
+            withdrawal_cycle[key] = tuple(sorted(members))
         flags.append(
             f"graph: withdrew {len(internal)} inferred precedence edge(s) inside a "
             f"{len(members)}-task reference cycle {sorted(members)} — kept as affinity"
         )
 
-    for key in withdrawn:
+    for key in sorted(withdrawn):
         edges.dependencies.pop(key, None)
+        edges.provenance.withdraw(
+            key,
+            reason=withdrawal_reason.get(key, "inferred_cycle"),
+            cycle_members=withdrawal_cycle.get(key, ()),
+        )
     return flags
 
 
@@ -376,11 +591,17 @@ def build_task_graph(
     edges = _EdgeAccumulator()
 
     # Shared-file affinity: weight scales with the number of files two tasks share.
-    for _file, owners in sorted(file_owner.items()):
+    for file, owners in sorted(file_owner.items()):
         owner_list = sorted(owners)
         for i, a in enumerate(owner_list):
             for b in owner_list[i + 1 :]:
-                edges.add_symmetric(a, b, weights.shared_file)
+                edges.add_symmetric(
+                    a,
+                    b,
+                    weights.shared_file,
+                    kind=SIGNAL_SHARED_FILE,
+                    files=(file,),
+                )
 
     # Declared plan ordering (task-map depends_on): the named task is upstream.
     for mapping in sorted(mappings, key=lambda m: m.task_id):
@@ -408,13 +629,29 @@ def build_task_graph(
                     key = (task, other, symbol, caller.get("name", ""))
                     if key not in seen_calls:
                         seen_calls.add(key)
-                        edges.add(upstream=task, downstream=other, weight=weights.call)
+                        edges.add(
+                            upstream=task,
+                            downstream=other,
+                            weight=weights.call,
+                            kind=SIGNAL_CALL,
+                            files=tuple(f for f in (caller.get("filePath", ""),) if f),
+                            symbols=(symbol, caller.get("name", "")),
+                            detail={"relation": "caller", "of": symbol},
+                        )
             for callee in callees:
                 for other in owners_of(callee) - {task}:
                     key = (other, task, callee.get("name", ""), symbol)
                     if key not in seen_calls:
                         seen_calls.add(key)
-                        edges.add(upstream=other, downstream=task, weight=weights.call)
+                        edges.add(
+                            upstream=other,
+                            downstream=task,
+                            weight=weights.call,
+                            kind=SIGNAL_CALL,
+                            files=tuple(f for f in (callee.get("filePath", ""),) if f),
+                            symbols=(symbol, callee.get("name", "")),
+                            detail={"relation": "callee", "of": symbol},
+                        )
 
             # Impact overlap: whoever reads what this task's write surface affects
             # depends on this task.
@@ -423,7 +660,15 @@ def build_task_graph(
                     key = (task, other, symbol, affected.get("name", ""))
                     if key not in seen_impacts:
                         seen_impacts.add(key)
-                        edges.add(upstream=task, downstream=other, weight=weights.impact)
+                        edges.add(
+                            upstream=task,
+                            downstream=other,
+                            weight=weights.impact,
+                            kind=SIGNAL_IMPACT,
+                            files=tuple(f for f in (affected.get("filePath", ""),) if f),
+                            symbols=(symbol, affected.get("name", "")),
+                            detail={"relation": "impact", "of": symbol},
+                        )
 
         metadata[task] = {
             "files": sorted(mapping.files),
@@ -454,6 +699,7 @@ def build_task_graph(
         affinity=edges.affinity,
         dependencies=edges.dependencies,
         metadata=metadata,
+        provenance=edges.provenance,
     )
     graph.assert_acyclic_dependencies()  # builder-output contract; see limitation 4
     return graph
@@ -481,6 +727,7 @@ def _add_semantic_layer(
             consumers.setdefault(tag, set()).add(mapping.task_id)
 
     semantic: dict[Pair, float] = {}
+    tags_by_pair: dict[Pair, list[str]] = {}
     for tag in sorted(set(implementers) & set(consumers)):
         for a in sorted(implementers[tag]):
             for b in sorted(consumers[tag]):
@@ -488,6 +735,7 @@ def _add_semantic_layer(
                     continue
                 pair = canonical_pair(a, b)
                 semantic[pair] = semantic.get(pair, 0.0) + weights.semantic
+                tags_by_pair.setdefault(pair, []).append(tag)
     if not semantic:
         return
 
@@ -499,6 +747,21 @@ def _add_semantic_layer(
     )
     for pair, weight in sorted(semantic.items()):
         edges.affinity[pair] = edges.affinity.get(pair, 0.0) + weight * scale
+        # One contribution per pair rather than per tag: the layer scales the pair's
+        # summed weight, and splitting it per tag would not re-sum to the same float.
+        edges.provenance.record_affinity(
+            pair,
+            EdgeContribution(
+                kind=SIGNAL_SEMANTIC,
+                declared=True,
+                scaled_weight=weight * scale,
+                detail={
+                    "tags": sorted(tags_by_pair.get(pair, ())),
+                    "base_weight": weight,
+                    "layer_scale": scale,
+                },
+            ),
+        )
 
 
 def source_bytes_of(repo_root: Path, files: Sequence[str]) -> int:
