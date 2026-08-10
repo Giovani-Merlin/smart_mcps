@@ -260,3 +260,15 @@
   letter-spacing: 0.03em;
   color: #6b7280;
 }
+
+/* The signal that earlier attempts exist. Counted from `manifest.json`'s
+   append-only session list, which is the only thing that knows: `state.json`
+   is last-writer-wins and reports the current generation alone. */
+.group-card__attempts {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--border, #d3d5da);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}

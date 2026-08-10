@@ -9,6 +9,7 @@
 // `?tab=`, read through `useQueryParams`, which has `useSearchParams`' shape: the
 // shell replaces this strip with real routes and every child keeps compiling.
 
+import AttemptGrid from "./components/AttemptGrid";
 import EscalationPanel from "./components/EscalationPanel";
 import EventLog from "./components/EventLog";
 import GroupBoard from "./components/GroupBoard";
@@ -18,7 +19,7 @@ import GroupingTab from "./components/grouping/GroupingTab";
 import { useQueryParams } from "./useQueryParams";
 import { useRunStream } from "./useRunStream";
 
-const TABS = ["board", "grouping"] as const;
+const TABS = ["board", "history", "grouping"] as const;
 type Tab = (typeof TABS)[number];
 
 function App() {
@@ -32,6 +33,17 @@ function App() {
     const next = new URLSearchParams(params);
     if (value === null) next.delete(key);
     else next.set(key, value);
+    setParams(next);
+  }
+
+  // A grid cell opens the session viewer, which lives on the Board tab and is
+  // addressed by `?group=` + `?session=` — the same query-param shape the
+  // router-owned shell will keep when it lands.
+  function openSession(groupId: string, sessionId: string): void {
+    const next = new URLSearchParams(params);
+    next.set("tab", "board");
+    next.set("group", groupId);
+    next.set("session", sessionId);
     setParams(next);
   }
 
@@ -78,7 +90,15 @@ function App() {
             ))}
           </nav>
 
-          {tab === "grouping" ? (
+          {tab === "history" ? (
+            <AttemptGrid
+              project={project}
+              runId={runId}
+              snapshot={snapshot}
+              revision={revision}
+              onOpenSession={openSession}
+            />
+          ) : tab === "grouping" ? (
             <GroupingTab
               project={project}
               runId={runId}
@@ -101,6 +121,8 @@ function App() {
                 runId={runId}
                 snapshot={snapshot}
                 revision={revision}
+                selectedGroupId={params.get("group")}
+                selectedSessionId={params.get("session")}
               />
             </>
           )}

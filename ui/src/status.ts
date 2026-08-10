@@ -79,6 +79,32 @@ export function statusOf(state: GroupState | string): StatusStyle {
   return STATUS[state as GroupState] ?? UNKNOWN_STATUS;
 }
 
+/**
+ * A generation the group has already moved past.
+ *
+ * Not a `GroupState` — `state.json` only ever describes the latest attempt, so
+ * an earlier generation has no state of its own and inventing one would be a
+ * claim the data does not support. It lives here rather than in the attempt
+ * grid so that the grid keeps having no colour logic of its own: this file
+ * stays the single place anything becomes a colour.
+ */
+export const SUPERSEDED_STATUS: StatusStyle = {
+  colour: "var(--status-superseded, #8a8f98)",
+  label: "superseded",
+  glyph: "↺",
+  dashed: true,
+};
+
+/**
+ * Amber, and only for "needs the operator's attention".
+ *
+ * Solid for an escalation — the operator is being asked something — and hatched
+ * (via CSS) for an inferred stall. Deliberately not a member of `STATUS`:
+ * escalation-blocked is orthogonal to state, a group can be blocked in any of
+ * the busy states, and folding it into the state colour would lose which.
+ */
+export const ATTENTION_COLOUR = "var(--status-attention, #c98a1b)";
+
 /** Call sites that switch on a state use this to stay exhaustive. */
 export function assertNever(value: never): never {
   throw new Error(`unhandled GroupState: ${String(value)}`);
