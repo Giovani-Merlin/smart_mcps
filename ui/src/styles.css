@@ -1,3 +1,8 @@
+/* App shell. Every colour here comes from `tokens.css` — see that file for why
+ * amber and the busy blue are the two rules worth encoding centrally. */
+
+@import "./tokens.css";
+
 :root {
   color-scheme: light dark;
   font-family:
@@ -21,8 +26,8 @@ body,
 
 body {
   margin: 0;
-  background-color: #f7f7f8;
-  color: #1a1a1a;
+  background-color: var(--bg);
+  color: var(--fg);
 }
 
 h1,
@@ -51,22 +56,27 @@ h3 {
   margin: 0;
 }
 
+.app__title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
 .app__run-id {
   margin: 0.25rem 0 0;
-  color: #55565c;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg-muted);
+  font-family: var(--mono);
 }
 
 .app__error {
-  border: 1px solid #f19a9a;
-  background-color: #fff5f5;
-  color: #7a1414;
-  border-radius: 8px;
+  border: 1px solid var(--danger-border);
+  background-color: var(--danger-bg);
+  color: var(--danger-fg);
+  border-radius: var(--radius);
   padding: 0.75rem 1rem;
 }
 
 .app__empty {
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 /* ------------------------------------------------------------- switcher */
@@ -88,25 +98,198 @@ h3 {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 .switcher select {
   font: inherit;
   padding: 0.35rem 0.5rem;
   border-radius: 6px;
-  border: 1px solid #d3d5da;
-  background-color: #ffffff;
+  border: 1px solid var(--border-strong);
+  background-color: var(--surface);
+  color: var(--fg);
   min-width: 10rem;
 }
 
 .switcher__error {
-  color: #7a1414;
+  color: var(--danger-fg);
   font-size: 0.85rem;
 }
 
 .switcher__hint {
-  color: #55565c;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+/* ----------------------------------------------------------------- tabs */
+
+/* Five tabs inside a run — Board, History, Grouping, Escalations, Log — plus
+ * Cost. Each is a real route, so a tab is a link and middle-click opens it in a
+ * new window like any other link. The session viewer is deliberately absent:
+ * it is route-addressable but is not a tab. */
+.app__tabs {
+  display: flex;
+  gap: 0.35rem;
+  align-items: flex-end;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.app__tab {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+
+.app__tab:hover {
+  color: var(--fg);
+  background: var(--surface-sunken);
+}
+
+.app__tab--current {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+
+.app__tab:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* The Log tab promoted to full height: the log is the whole route, not a
+ * panel stacked under a board. */
+.app__tab-pane--log {
+  display: flex;
+  flex-direction: column;
+  min-height: 65vh;
+}
+
+.app__tab-pane--log .event-log,
+.app__tab-pane--log .event-log__pane {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
+/* ---------------------------------------------------------- run index */
+
+.run-index__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.run-index__row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.run-index__link {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.run-index__link:hover {
+  text-decoration: underline;
+}
+
+.run-index__meta {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+.run-index__note {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+/* --------------------------------------------------------- paths drawer */
+
+.paths-drawer {
+  margin: 0 0 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.paths-drawer__summary {
+  cursor: pointer;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  list-style: revert;
+}
+
+.paths-drawer__body {
+  padding: 0 0.9rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.paths-drawer__actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.paths-drawer__copy-all {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.paths-drawer__copy-all:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.paths-drawer__status {
+  font-size: 0.78rem;
+  color: var(--status-done);
+}
+
+.paths-drawer__entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.paths-drawer__missing {
+  font-size: 0.72rem;
+  color: var(--fg-faint);
+  margin-left: 0.4rem;
+}
+
+.paths-drawer__error {
+  color: var(--danger-fg);
   font-size: 0.85rem;
 }
 
@@ -117,36 +300,8 @@ h3 {
 }
 
 .panel-stub__note {
-  border: 1px dashed #d3d5da;
-  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
   padding: 0.75rem 1rem;
-  color: #55565c;
-}
-
-/* Tab strip — a placeholder for the shell group's real router-driven tabs. */
-.app__tabs {
-  display: flex;
-  gap: 0.35rem;
-  padding: 0 1.25rem;
-  border-bottom: 1px solid var(--border, #e3e5e9);
-}
-
-.app__tab {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 5px 5px 0 0;
-  background: none;
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
-  color: var(--fg-muted, #6b7280);
-}
-
-.app__tab--current {
-  border-color: var(--border, #e3e5e9);
-  background: #fff;
-  color: inherit;
-  font-weight: 600;
-  margin-bottom: -1px;
+  color: var(--fg-muted);
 }

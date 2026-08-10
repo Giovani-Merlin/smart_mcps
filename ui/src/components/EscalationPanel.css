@@ -14,32 +14,32 @@
 }
 
 .escalation-panel__count {
-  border: 1px solid #ffd75e;
-  background-color: #fff4d6;
-  color: #6b4d00;
+  border: 1px solid var(--status-attention);
+  background-color: var(--surface-sunken);
+  color: var(--fg);
   border-radius: 999px;
   padding: 0.1rem 0.6rem;
   font-size: 0.85rem;
 }
 
 .escalation-panel__notice {
-  border: 1px solid #ffd75e;
-  background-color: #fff4d6;
-  color: #6b4d00;
+  border: 1px solid var(--status-attention);
+  background-color: var(--surface-sunken);
+  color: var(--fg);
   border-radius: 8px;
   padding: 0.75rem 1rem;
 }
 
 .escalation-panel__error {
-  border: 1px solid #f19a9a;
-  background-color: #fff5f5;
-  color: #7a1414;
+  border: 1px solid var(--danger-border);
+  background-color: var(--danger-bg);
+  color: var(--danger-fg);
   border-radius: 8px;
   padding: 0.75rem 1rem;
 }
 
 .escalation-panel__empty {
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 .escalation-panel__list {
@@ -55,20 +55,20 @@
 
 /* Amber accent: a pending escalation is the run waiting on a human. */
 .escalation-card {
-  border: 1px solid #ffd75e;
-  border-left: 4px solid #ffc233;
-  background-color: #fffdf5;
+  border: 1px solid var(--status-attention);
+  border-left: 4px solid var(--status-attention);
+  background-color: var(--surface-sunken);
   border-radius: 8px;
   padding: 1rem;
-  color: #1a1a1a;
+  color: var(--fg);
 }
 
 /* Answered (or answered elsewhere) but still on disk's pending list at last
  * fetch — muted until the next revision drops it. */
 .escalation-card--resolved {
-  border-color: #d3d5da;
-  border-left-color: #d3d5da;
-  background-color: #f2f3f5;
+  border-color: var(--border-strong);
+  border-left-color: var(--border-strong);
+  background-color: var(--surface-sunken);
 }
 
 .escalation-card__meta {
@@ -85,24 +85,24 @@
   letter-spacing: 0.03em;
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
-  background-color: #ffd75e;
-  color: #5c4300;
+  background-color: var(--status-attention);
+  color: var(--attention-fg);
   white-space: nowrap;
 }
 
 .escalation-card--resolved .escalation-card__kind {
-  background-color: #d3d5da;
-  color: #3c3d42;
+  background-color: var(--border-strong);
+  color: var(--fg);
 }
 
 .escalation-card__group {
   font-weight: 600;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
 }
 
 .escalation-card__generation,
 .escalation-card__created {
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 /* The full prompt, untruncated — no max-height, no ellipsis. */
@@ -116,13 +116,13 @@
 
 .escalation-card__context {
   margin: 0.75rem 0 0;
-  border-top: 1px solid #f0e2b6;
+  border-top: 1px solid var(--status-attention);
   padding-top: 0.75rem;
   font-size: 0.85rem;
 }
 
 .escalation-card--resolved .escalation-card__context {
-  border-top-color: #d3d5da;
+  border-top-color: var(--border-strong);
 }
 
 .escalation-card__context-row {
@@ -141,7 +141,7 @@
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 .escalation-card__context dd {
@@ -150,7 +150,7 @@
 }
 
 .escalation-card__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   word-break: break-all;
 }
 
@@ -170,12 +170,12 @@
 }
 
 .escalation-card__surprise-kind {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #55565c;
+  font-family: var(--mono);
+  color: var(--fg-muted);
 }
 
 .escalation-card__surprise-groups {
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 /* ---------------------------------------------------------------- form */
@@ -215,8 +215,8 @@
   width: 100%;
   padding: 0.5rem 0.65rem;
   border-radius: 6px;
-  border: 1px solid #d3d5da;
-  background-color: #ffffff;
+  border: 1px solid var(--border-strong);
+  background-color: var(--surface);
   resize: vertical;
 }
 
@@ -226,14 +226,14 @@
   font-weight: 600;
   padding: 0.4rem 1rem;
   border-radius: 6px;
-  border: 1px solid #d3a300;
-  background-color: #ffc233;
-  color: #3d2e00;
+  border: 1px solid var(--status-attention);
+  background-color: var(--status-attention);
+  color: var(--attention-fg);
   cursor: pointer;
 }
 
 .escalation-card__submit:hover:enabled {
-  background-color: #ffcf5c;
+  background-color: color-mix(in srgb, var(--status-attention) 85%, black);
 }
 
 .escalation-card__submit:disabled {
@@ -245,15 +245,15 @@
 .escalation-card__status {
   margin: 0.75rem 0 0;
   font-size: 0.85rem;
-  color: #114a20;
+  color: var(--status-done);
 }
 
 .escalation-card__status--conflict {
-  color: #6b4d00;
+  color: var(--fg);
 }
 
 .escalation-card__error {
   margin: 0.75rem 0 0;
   font-size: 0.85rem;
-  color: #7a1414;
+  color: var(--danger-fg);
 }

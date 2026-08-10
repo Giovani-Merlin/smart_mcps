@@ -4,6 +4,7 @@
 // no fetching of its own, no fixed-interval polling.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { summariseAttempts } from "../attempts";
 import { failureIsCurrent, statusOf } from "../status";
@@ -157,19 +158,34 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
           <div className="group-board__lanes">
             {lanes.map((lane, index) => (
               <div key={index} className="group-board__lane">
-                {lane.map((group) => (
+                {lane.map((group) => {
+                  // Colour, glyph and dashedness all come from `status.ts`.
+                  // The card used to carry a `group-card--<state>` class per
+                  // state and the stylesheet a hue to match — a second status
+                  // map, with four different blues for the busy states and
+                  // amber for `running`, which is the one colour reserved for
+                  // "needs the operator's attention".
+                  const status = statusOf(group.state);
+                  return (
                   <div
                     key={group.group_id}
                     ref={(el) => {
                       if (el) cardRefs.current.set(group.group_id, el);
                       else cardRefs.current.delete(group.group_id);
                     }}
-                    className={`group-card group-card--${group.state}`}
+                    className={`group-card${status.dashed ? " group-card--unfinished" : ""}${
+                      group.state === "running" ? " group-card--pulsing" : ""
+                    }`}
+                    style={{ "--card-hue": status.colour } as CSSProperties}
                     title={group.summary || undefined}
+                    data-state={group.state}
                   >
                     <div className="group-card__head">
                       <span className="group-card__id">{group.group_id}</span>
-                      <span className={`group-card__state group-card__state--${group.state}`}>
+                      <span className="group-card__state">
+                        <span className="group-card__glyph" aria-hidden="true">
+                          {status.glyph}
+                        </span>
                         {stateLabel(group.state)}
                       </span>
                     </div>
@@ -213,7 +229,8 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                         </div>
                       ))}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
