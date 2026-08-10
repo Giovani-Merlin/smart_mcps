@@ -1,0 +1,1 @@
+{"specs": [{"group_id": "g1", "spec": "Add the observatory grouping router."}]}

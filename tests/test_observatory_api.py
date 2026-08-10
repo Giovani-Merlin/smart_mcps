@@ -20,8 +20,9 @@ from fastapi.testclient import TestClient
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.model import GroupingResult
-from orchestrator.observatory import artifacts, escalations, events, transcripts
+from orchestrator.observatory import artifacts, escalations, events, grouping, transcripts
 from orchestrator.observatory.app import create_app
+from orchestrator.observatory.runs import RUN_PREFIX
 
 FIXTURE = Path(__file__).parent / "fixtures" / "observatory" / "run-postmortem"
 MODERN_FIXTURE = Path(__file__).parent / "fixtures" / "observatory" / "run-modern"
@@ -488,6 +489,60 @@ class TestAppAssembly:
             assert hasattr(module, "router")
             module_paths = route_paths(module.router.routes)
             assert module_paths <= app_paths, module.__name__
+
+
+class TestGroupingRouter:
+    """The Grouping tab's endpoints, from the app's side.
+
+    ``test_observatory_grouping.py`` covers the read model in depth; what is
+    asserted here is that the router is genuinely wired into the app — present
+    in the OpenAPI schema, reachable over HTTP — and that the three sections the
+    tab is built around arrive from a real ``grouping-trace.json``.
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, repo):
+        install_run(repo, "modern1", source=MODERN_FIXTURE)
+        return TestClient(
+            create_app(
+                registry_path=tmp_path / "nope.yaml",
+                fallback_repo=repo,
+                dist_dir=tmp_path / "no-dist",
+            )
+        )
+
+    def test_the_grouping_routes_are_registered_and_documented(self, tmp_path):
+        app = create_app(registry_path=tmp_path / "nope.yaml", dist_dir=tmp_path / "no-dist")
+        assert route_paths(grouping.router.routes) <= route_paths(app.routes)
+        # The schema is what the client generates against: a route the app
+        # serves but does not document is a route the frontend cannot see.
+        documented = set(app.openapi()["paths"])
+        for suffix in ("grouping", "grouping/llm", "grouping/llm/calls/{seq}"):
+            assert f"{RUN_PREFIX}/{suffix}" in documented, suffix
+
+    def test_the_stages_are_served_in_pipeline_order(self, client):
+        """The stepper scrubs this list front to back, so its order is the story
+        it tells. Serving it sorted is the server's job, not the client's."""
+        body = client.get("/api/projects/proj/runs/modern1/grouping").json()
+        served = [stage["stage"] for stage in body["stages"]]
+        assert served == ["louvain", "lift", "split", "merge", "repair", "renumber"]
+        assert body["pipeline_order"][0] == "louvain"
+        # A real trace records stages as they ran, so ordering changed nothing.
+        assert body["stages_reordered"] is False
+
+    def test_the_scorecard_is_served_from_the_trace(self, client):
+        scorecard = client.get("/api/projects/proj/runs/modern1/grouping").json()["scorecard"]
+        assert scorecard["group_count"] > 0
+        assert "modularity" in scorecard
+        assert "cross_group_edges" in scorecard
+
+    def test_both_levels_of_the_graph_are_served(self, client):
+        """The task-level graph the partition consumed, and the group-level DAG
+        it produced. The tab draws both, so one without the other is a gap."""
+        body = client.get("/api/projects/proj/runs/modern1/grouping").json()
+        assert body["input_graph"]["nodes"]
+        assert body["input_graph"]["affinity"] is not None
+        assert body["dag"], "the group-level DAG never reached the client"
 
 
 class TestFixture:
