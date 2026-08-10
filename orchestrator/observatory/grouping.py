@@ -375,6 +375,7 @@ def build_grouping_view(paths: RunPaths, project: str) -> GroupingView:
             "trace": str(trace_path),
             "edge_provenance": str(provenance_path),
             "base_context": str(directory / BASE_CONTEXT_FILENAME),
+            "llm_calls": str(directory / LLM_DIRNAME / CALLS_INDEX_FILENAME),
         },
     )
 
@@ -488,9 +489,10 @@ def get_base_context(request: Request, project: str, run_id: str) -> str:
     """The shared context every worker in this run was given, verbatim."""
     paths = resolve_run(request, project, run_id)
     path = resolved_grouping_dir(paths) / BASE_CONTEXT_FILENAME
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"no base context at {path}")
-    return path.read_text(encoding="utf-8", errors="replace")
+    text, error = load_text(path)
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"no base context at {path}: {error}")
+    return text
 
 
 # ------------------------------------------------------- the grouper's own calls
