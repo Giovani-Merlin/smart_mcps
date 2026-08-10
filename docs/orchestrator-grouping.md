@@ -404,6 +404,20 @@ A grouping is a **named, self-contained directory**, not an overwritable slot
   the file, without a debugging session. Written on **every** invocation — including
   `--dry-run`, `--no-spec`, and failures (a partial trace records the failure).
   Carries no timestamp, so re-running the same plan is byte-identical.
+- **`edge-provenance.json`** — *why an edge has the weight it has*. Two ledgers
+  mirroring the graph's two weight maps: every contribution carries its signal kind
+  (`shared_file`, `call`, `impact`, `declared_depends_on`, `semantic`,
+  `prose_neighbor`), a declared-vs-inferred flag, the files/symbols that justified
+  it, and the `scaled_weight` it actually added — so a pair's contributions sum back
+  to exactly the weight the partitioner saw. Plus `withdrawn`: the inferred
+  precedence edges `_drop_inferred_cycles` took back, as records with endpoints, a
+  reason (`mutual_reference` / `reference_cycle`) and the cycle's members, rather
+  than the prose flag string that was the only trace of them before. At most
+  `max_contributions_per_edge` (20) contributions are kept per edge; the remainder
+  is *counted* (`total_contributions`, `truncated_contributions`,
+  `truncated_weight`), never silently dropped. Written on every mode including
+  `--no-spec`. Purely observational — nothing in it is ever read back into a
+  grouping decision.
 
 `run` copies the directory into `.orchestrator/runs/<run_id>/` at launch, so a later
 `group --name <same>` cannot rewrite an in-flight run's DAG (ADR 0002/0003);
