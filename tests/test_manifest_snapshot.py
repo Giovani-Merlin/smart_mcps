@@ -27,6 +27,21 @@ def test_snapshot_copies_nested_artifact_directories(tmp_path):
     assert (dest / "llm" / "01-mapper-a0.request.txt").read_text() == "the prompt"
 
 
+def test_snapshot_includes_the_edge_provenance_sidecar(tmp_path):
+    """Plan P2's sidecar is a top-level file, so the generic copy already covers it —
+    asserted rather than assumed, because the run's frozen copy is the only place an
+    operator can read a finished run's provenance from."""
+    source = tmp_path / "grouping"
+    source.mkdir(parents=True)
+    (source / "groups.json").write_text("{}")
+    (source / "edge-provenance.json").write_text('{"version": 1, "affinity": []}')
+
+    dest = tmp_path / "run" / "grouping"
+    snapshot_grouping(source, dest)
+
+    assert (dest / "edge-provenance.json").read_text() == '{"version": 1, "affinity": []}'
+
+
 def test_snapshot_is_repeatable(tmp_path):
     source = tmp_path / "grouping"
     (source / "llm").mkdir(parents=True)
