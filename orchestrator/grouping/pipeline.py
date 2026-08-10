@@ -8,6 +8,7 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +26,10 @@ from orchestrator.grouping.estimator import (
     partition_budget_cap,
 )
 from orchestrator.grouping.graphing import (
+    SIGNAL_PROSE_NEIGHBOR,
     CodegraphClient,
+    EdgeContribution,
+    EdgeProvenance,
     EdgeWeights,
     TaskGraph,
     build_task_graph,
@@ -215,6 +219,106 @@ def _flag_self_modification(mapper_out: MapperOutput) -> None:
         mapper_out.flags.append(SELF_MODIFICATION_FLAG)
 
 
+EDGE_PROVENANCE_VERSION = 1
+
+
+def edge_provenance_document(graph: TaskGraph, partition: Partition) -> dict:
+    """The ``edge-provenance.json`` payload: per-edge ledgers plus a group rollup.
+
+    A sidecar rather than an extension of ``grouping-trace.json`` (plan P2): the
+    trace is byte-stable by contract and is what operators diff, and its
+    ``input_graph`` is post-cycle-drop, so it structurally cannot hold withdrawn
+    edges. The rollup is computed here, at write time, so ``partition.py`` needs
+    nothing beyond the ``provenance`` field it carries through.
+    """
+    provenance = graph.provenance
+    if not isinstance(provenance, EdgeProvenance):
+        return {
+            "version": EDGE_PROVENANCE_VERSION,
+            "max_contributions_per_edge": 0,
+            "affinity": [],
+            "dependencies": [],
+            "withdrawn": [],
+            "groups": [],
+            "note": "graph carried no provenance ledgers",
+        }
+
+    affinity_edges = [
+        {"a": pair[0], "b": pair[1], **provenance.affinity[pair].as_dict()}
+        for pair in sorted(provenance.affinity)
+    ]
+    dependency_edges = [
+        {"upstream": key[0], "downstream": key[1], **provenance.dependencies[key].as_dict()}
+        for key in sorted(provenance.dependencies)
+    ]
+    withdrawn = [
+        edge.as_dict()
+        for edge in sorted(provenance.withdrawn, key=lambda e: (e.upstream, e.downstream))
+    ]
+
+    members_by_gid: dict[int, list[str]] = {}
+    for node, gid in sorted(partition.items()):
+        members_by_gid.setdefault(gid, []).append(node)
+
+    groups = []
+    for gid, members in sorted(members_by_gid.items()):
+        member_set = set(members)
+        internal = 0.0
+        external = 0.0
+        by_kind: dict[str, float] = {}
+        for pair, ledger in provenance.affinity.items():
+            inside = len(member_set & set(pair))
+            if inside == 2:
+                internal += ledger.total_weight
+                for contribution in ledger.contributions:
+                    by_kind[contribution.kind] = (
+                        by_kind.get(contribution.kind, 0.0) + contribution.scaled_weight
+                    )
+            elif inside == 1:
+                external += ledger.total_weight
+        groups.append(
+            {
+                "group_id": group_label(gid),
+                "tasks": list(members),
+                "internal_affinity_weight": internal,
+                "external_affinity_weight": external,
+                # Recorded contributions only: a truncated edge's dropped weight is
+                # counted in ``internal_affinity_weight`` but has no kind to bill it to.
+                "internal_affinity_by_kind": dict(sorted(by_kind.items())),
+                "upstream_dependency_edges": sorted(
+                    [key[0], key[1]]
+                    for key in provenance.dependencies
+                    if key[1] in member_set and key[0] not in member_set
+                ),
+            }
+        )
+
+    return {
+        "version": EDGE_PROVENANCE_VERSION,
+        "max_contributions_per_edge": provenance.max_contributions_per_edge,
+        "affinity": affinity_edges,
+        "dependencies": dependency_edges,
+        "withdrawn": withdrawn,
+        "groups": groups,
+    }
+
+
+def serialize_edge_provenance(document: dict) -> str:
+    """Canonical ``edge-provenance.json`` bytes."""
+    return json.dumps(document, indent=2) + "\n"
+
+
+@dataclass
+class EdgeProvenanceRecorder:
+    """Inert observation seam, matching ``TraceRecorder``'s contract: attaching one
+    fills ``document`` alongside the computation without changing it."""
+
+    document: dict | None = None
+
+    def capture(self, graph: TaskGraph, partition: Partition) -> None:
+        self.document = edge_provenance_document(graph, partition)
+
+
 def group_label(gid: int) -> str:
     """Group id → display id, e.g. ``g1``. Shared by the partition-only report
     (cli.py --no-spec) and the full assembly below — group numbering must match."""
@@ -257,6 +361,7 @@ def compute_partition(
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
+    provenance_recorder: EdgeProvenanceRecorder | None = None,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
     does before handing off to the speccer, callable on its own.
@@ -388,6 +493,12 @@ def compute_partition(
             index_fingerprint=index_fingerprint(client.status()),
         )
 
+    # Same inert-observation contract as the trace recorder, and the same single
+    # call site for both `group` and `group --no-spec`: the sidecar is a function of
+    # the graph plus the final partition, both of which are settled here.
+    if provenance_recorder is not None:
+        provenance_recorder.capture(graph, partition)
+
     return PartitionOutcome(
         plan_text=plan_text,
         mapper_out=mapper_out,
@@ -414,6 +525,7 @@ def run_grouping(
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
+    provenance_recorder: EdgeProvenanceRecorder | None = None,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
@@ -430,6 +542,7 @@ def run_grouping(
         allow_unknown_symbols=allow_unknown_symbols,
         recorder=recorder,
         llm_recorder=llm_recorder,
+        provenance_recorder=provenance_recorder,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -574,11 +687,22 @@ def _with_prose_fallback(graph: TaskGraph, mapper_out: MapperOutput, weight: flo
     affinity = dict(graph.affinity)
     for pair in sorted(fallback_pairs):
         affinity[pair] = affinity.get(pair, 0.0) + weight
+        if isinstance(graph.provenance, EdgeProvenance):
+            graph.provenance.record_affinity(
+                pair,
+                EdgeContribution(
+                    kind=SIGNAL_PROSE_NEIGHBOR,
+                    declared=False,
+                    scaled_weight=weight,
+                    detail={"reason": "region-less task attached to its plan-order neighbor"},
+                ),
+            )
     return TaskGraph(
         nodes=graph.nodes,
         affinity=affinity,
         dependencies=graph.dependencies,
         metadata=graph.metadata,
+        provenance=graph.provenance,
     )
 
 
