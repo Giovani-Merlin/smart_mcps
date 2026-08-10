@@ -16,7 +16,8 @@
 // mostly cache-read describes a healthy session, so cache-read segments get the
 // muted colour from `TOKEN_CLASSES`, no border, and last place in the legend —
 // the loud segments are the ones that actually cost something. The emphasis is
-// chosen in `cost.ts`, never here; this file only renders it.
+// chosen in `cost.ts`, never here; this file only renders it. What that looks
+// like on both a new-format and a legacy run: `docs/observatory/cost-panel.png`.
 //
 // **Absence is a rendering, not an error.** Every run written before the
 // token-class split has all four counters at zero, which is a different claim
