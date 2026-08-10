@@ -13,6 +13,7 @@
 //   POST /api/projects/{project}/runs/{run}/escalations/{esc}/answer
 //   GET  /api/projects/{project}/runs/{run}/sessions/{session}/transcript
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
+//   GET  /api/projects/{project}/runs/{run}/paths
 //   SSE  /events/log?project=&run=
 //   SSE  /events/run?project=&run=
 
@@ -24,6 +25,7 @@ import type {
   GroupingView,
   Project,
   RunInfo,
+  RunPathsView,
   RunSnapshot,
   TranscriptEvent,
 } from "./types";
@@ -131,6 +133,13 @@ export function getTranscript(
  * the response says which artifact was missing and where it was looked for. */
 export function getGrouping(project: string, run: string): Promise<GroupingView> {
   return request<GroupingView>(`${runPath(project, run)}/grouping`);
+}
+
+/** The run's on-disk paths, display-only. Every file-backed panel header takes
+ * its `PathChip` from here rather than rebuilding a path client-side, so a
+ * layout change on the server moves the chips with it. */
+export function getRunPaths(project: string, run: string): Promise<RunPathsView> {
+  return request<RunPathsView>(`${runPath(project, run)}/paths`);
 }
 
 export function getArtifacts(

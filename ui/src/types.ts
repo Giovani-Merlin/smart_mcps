@@ -228,6 +228,26 @@ export interface SnapshotSession {
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+  // When the transcript file was last appended to — the cheapest evidence that
+  // a session is still producing anything, recorded for free by the runner.
+  // Null when the path is unset or the file is already gone. This and the
+  // group's heartbeat are the two inputs to the stall *inference*; there is no
+  // stalled field on the wire and there must not be one.
+  transcript_mtime?: string | null;
+}
+
+// GroupHeartbeat (runs.py) — `heartbeat.json` passed through unchanged.
+//
+// Facts only: when this round started, which round it is, when the writer last
+// ran. No "stalled" field, deliberately — persisting the inference would make
+// it a de facto state that later code branches on. The UI computes staleness
+// from these numbers and says that it is doing so.
+export interface GroupHeartbeat {
+  started_at?: string | null;
+  generation: number;
+  round: number;
+  round_started_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface SnapshotGroup {
@@ -250,6 +270,9 @@ export interface SnapshotGroup {
   difficulty?: number | null;
   intensity?: ReviewIntensity | null;
   estimated_tokens?: number | null;
+  // Null for every run written before the heartbeat shipped, and for any group
+  // that never started a round. Absence is normal, never an error.
+  heartbeat?: GroupHeartbeat | null;
 }
 
 export type ReviewIntensity = "self_verify" | "paired" | "paired_plus";
@@ -275,6 +298,31 @@ export interface RunSnapshot {
   live_pids: Record<number, string>;
   grouping?: string | null;
   escalation?: EscalationConfig | null;
+}
+
+// PathEntry (paths.py) — one `PathChip`'s worth of on-disk location. `root` and
+// `rel` are null for a path that is deliberately not fetchable; the chip still
+// shows it, because the operator's next move is to open it in an editor.
+export interface PathEntry {
+  key: string;
+  label: string;
+  panel: string;
+  path: string;
+  kind: "file" | "directory" | string;
+  exists: boolean;
+  root?: string | null;
+  rel?: string | null;
+  description?: string;
+}
+
+// RunPathsView (paths.py) — every file-backed panel source in the run, listed
+// whether or not it exists: a missing artifact is the entry whose path the
+// operator most wants.
+export interface RunPathsView {
+  project: string;
+  run_id: string;
+  roots: Record<string, string>;
+  entries: PathEntry[];
 }
 
 // The POST body for answering an escalation (escalations.py AnswerBody).

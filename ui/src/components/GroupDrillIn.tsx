@@ -243,11 +243,24 @@ export interface GroupDrillInProps {
   snapshot: RunSnapshot | null;
   /** Advances on every run-directory change. */
   revision: number;
+  /** Route-addressable selection (`?group=`, `?session=`), set by the attempt
+   * grid when a cell's session is opened. The pane still owns its own clicks;
+   * these only seed it, so a deep link lands on the right session and clicking
+   * elsewhere afterwards behaves exactly as before. */
+  selectedGroupId?: string | null;
+  selectedSessionId?: string | null;
 }
 
-function GroupDrillIn({ project, runId, snapshot, revision }: GroupDrillInProps) {
-  const [groupId, setGroupId] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+function GroupDrillIn({
+  project,
+  runId,
+  snapshot,
+  revision,
+  selectedGroupId = null,
+  selectedSessionId = null,
+}: GroupDrillInProps) {
+  const [groupId, setGroupId] = useState<string | null>(selectedGroupId);
+  const [sessionId, setSessionId] = useState<string | null>(selectedSessionId);
   const [transcript, setTranscript] = useState<TranscriptEvent[] | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);
@@ -259,6 +272,16 @@ function GroupDrillIn({ project, runId, snapshot, revision }: GroupDrillInProps)
     setGroupId(null);
     setSessionId(null);
   }, [project, runId]);
+
+  // A deep link (or a grid cell) names a group and a session; adopt it when it
+  // changes. Null means "no link given" and leaves the pane's own state alone.
+  useEffect(() => {
+    if (selectedGroupId) setGroupId(selectedGroupId);
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    if (selectedSessionId) setSessionId(selectedSessionId);
+  }, [selectedSessionId]);
 
   // Group switch (or close): drop the previous group's artifacts immediately
   // rather than showing them under the new group's header.

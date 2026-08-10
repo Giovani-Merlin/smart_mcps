@@ -1,0 +1,233 @@
+/* The attempt grid. Every colour here arrives as `--cell-colour`, set from the
+   `StatusStyle` that `status.ts` chose; nothing in this file maps a state to a
+   hue. The two amber marks are the exception the plan calls for: solid for an
+   escalation, hatched for the inferred stall — both meaning "needs the
+   operator's attention", and neither replacing the cell's state colour. */
+
+.attempt-grid {
+  margin-bottom: 2rem;
+}
+
+.attempt-grid__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.attempt-grid__header h2 {
+  margin: 0;
+}
+
+.attempt-grid__note {
+  color: var(--fg-muted, #55565c);
+  font-size: 0.85rem;
+  max-width: 70ch;
+}
+
+.attempt-grid__path-error {
+  color: #7a1414;
+}
+
+.attempt-grid__empty {
+  color: var(--fg-muted, #55565c);
+}
+
+.attempt-grid__table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.attempt-grid__table th,
+.attempt-grid__table td {
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border, #e3e5e9);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.attempt-grid__table thead th {
+  font-weight: 600;
+  color: var(--fg-muted, #55565c);
+  text-transform: lowercase;
+}
+
+.attempt-grid__group-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-right: 0.4rem;
+}
+
+.attempt-grid__group-name {
+  color: var(--fg-muted, #55565c);
+}
+
+.attempt-grid__absent {
+  color: var(--fg-muted, #a0a3ab);
+}
+
+.attempt-grid__count {
+  color: var(--fg-muted, #55565c);
+  white-space: nowrap;
+}
+
+.attempt-grid__retired-count {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d3d5da);
+}
+
+/* ------------------------------------------------------------------ cell */
+
+.attempt-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 3.2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--cell-colour);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--cell-colour) 16%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.attempt-cell--dashed {
+  border-style: dashed;
+}
+
+.attempt-cell--selected {
+  outline: 2px solid var(--cell-colour);
+  outline-offset: 1px;
+}
+
+.attempt-cell__glyph {
+  color: var(--cell-colour);
+}
+
+.attempt-cell__sessions {
+  font-variant-numeric: tabular-nums;
+}
+
+.attempt-cell__blocked,
+.attempt-cell__stalled {
+  position: absolute;
+  top: -0.45rem;
+  width: 1rem;
+  height: 1rem;
+  line-height: 1rem;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  color: #ffffff;
+}
+
+/* Solid amber: the operator is being asked something. */
+.attempt-cell__blocked {
+  right: -0.45rem;
+  background: var(--status-attention, #c98a1b);
+}
+
+/* Hatched amber: an inference, not a fact about the group's state. */
+.attempt-cell__stalled {
+  left: -0.45rem;
+  color: #3a2c05;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--status-attention, #c98a1b),
+    var(--status-attention, #c98a1b) 2px,
+    #fff3d6 2px,
+    #fff3d6 4px
+  );
+}
+
+/* ---------------------------------------------------------------- detail */
+
+.attempt-grid__detail {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border, #e3e5e9);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.attempt-grid__detail h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.attempt-grid__detail-status {
+  color: var(--fg-muted, #55565c);
+  font-weight: 400;
+}
+
+.attempt-grid__notes,
+.attempt-grid__sessions {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.attempt-note {
+  padding: 0.3rem 0.5rem;
+  border-left: 3px solid var(--note-colour, var(--border, #d3d5da));
+  background: #f7f7f8;
+  border-radius: 0 5px 5px 0;
+  font-size: 0.82rem;
+}
+
+.attempt-note__command {
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0.2rem 0.35rem;
+  background: #eceef1;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  user-select: all;
+}
+
+.attempt-session {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+}
+
+.attempt-session__open {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.attempt-session__open:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
+.attempt-session__role {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg-muted, #55565c);
+}
+
+.attempt-session__retired {
+  color: #7a4a14;
+}
+
+.attempt-session__rounds {
+  color: var(--fg-muted, #55565c);
+}

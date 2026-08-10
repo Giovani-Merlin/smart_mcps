@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { summariseAttempts } from "../attempts";
 import { failureIsCurrent, statusOf } from "../status";
 import type { GroupState, RunSnapshot, SnapshotGroup } from "../types";
 import "./GroupBoard.css";
@@ -173,7 +174,26 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                       </span>
                     </div>
                     {group.name && <div className="group-card__name">{group.name}</div>}
-                    <div className="group-card__generation">gen {group.generation}</div>
+                    <div className="group-card__generation">
+                      gen {group.generation}
+                      {/* The board used to show this number and nothing else,
+                          so three retired sessions sitting in the manifest were
+                          invisible until you drilled into the group. The count
+                          comes from the append-only session list — state.json
+                          knows only the current generation. */}
+                      {(() => {
+                        const attempts = summariseAttempts(group);
+                        if (!attempts.hasHistory) return null;
+                        return (
+                          <span
+                            className="group-card__attempts"
+                            title={`${attempts.sessions} sessions recorded in manifest.json — open the History tab`}
+                          >
+                            {attempts.label}
+                          </span>
+                        );
+                      })()}
+                    </div>
                     {group.depends_on.length > 0 && (
                       <div className="group-card__deps">after {group.depends_on.join(", ")}</div>
                     )}
