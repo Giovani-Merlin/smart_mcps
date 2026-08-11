@@ -61,6 +61,15 @@
     transparent 6px
   );
 
+  /* ---------------------------------------------------------- token classes */
+  /* The cost panel's four token classes. `cache-read` is deliberately the
+   * quietest of the four: it is the cheap class, and a bar that is mostly cache
+   * read describes a *healthy* session, so it must not read as the loud one. */
+  --cost-uncached-input: #2f6fb0;
+  --cost-cache-creation: #7a5ea8;
+  --cost-output: #2e7d54;
+  --cost-cache-read: #c9cdd4;
+
   /* ---------------------------------------------------------------- error */
   --danger-fg: #7a1414;
   --danger-bg: #fff5f5;
@@ -116,6 +125,11 @@
     --status-unknown: #a58cd1;
     --status-superseded: #7b7f88;
     --status-attention: #e0ab45;
+
+    --cost-uncached-input: #6aa6e0;
+    --cost-cache-creation: #a58cd1;
+    --cost-output: #59b184;
+    --cost-cache-read: #4a4e56;
 
     --danger-fg: #f0b4b0;
     --danger-bg: #2e1d1d;

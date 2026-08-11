@@ -2,13 +2,16 @@
 // orchestrator and forgotten here renders as a blank badge, which looks like it
 // worked. `tsc` catches the union case; these cover what it cannot.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { GROUP_STATES } from "./types";
 import type { SnapshotGroup } from "./types";
 import {
   ACTIVE_STATES,
+  ATTENTION_COLOUR,
   STATUS,
+  SUPERSEDED_STATUS,
   UNKNOWN_STATUS,
   failureIsCurrent,
   formatDuration,
@@ -102,5 +105,63 @@ describe("stall inference", () => {
 
   it("formats hours as well as minutes", () => {
     expect(formatDuration(90 * 60_000)).toBe("1h 30m");
+  });
+});
+
+// ------------------------------------------------------------------ tokens
+
+// The colours are `var(--token)` references with no fallback, so a token that
+// `tokens.css` does not define resolves to nothing and the badge renders
+// invisible — which is the exact failure `status.ts` exists to prevent, just
+// moved one layer down. This closes that gap.
+describe("the token layer behind the status map", () => {
+  const tokens = readFileSync("src/tokens.css", "utf8");
+
+  function tokensUsedBy(value: string): string[] {
+    return [...value.matchAll(/var\((--[\w-]+)\)/g)].map((match) => match[1]);
+  }
+
+  it("defines every token the status map names", () => {
+    const referenced = new Set(
+      [
+        ...Object.values(STATUS),
+        UNKNOWN_STATUS,
+        SUPERSEDED_STATUS,
+        { colour: ATTENTION_COLOUR } as { colour: string },
+      ].flatMap((style) => tokensUsedBy(style.colour)),
+    );
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const token of referenced) {
+      expect(tokens, `${token} is referenced but never defined`).toContain(`${token}:`);
+    }
+  });
+
+  it("keeps amber to the one meaning it is allowed to have", () => {
+    // Amber means "needs the operator's attention". A state is not attention:
+    // a group can be running and blocked at the same time, and folding the two
+    // into one colour would lose which.
+    for (const [state, style] of Object.entries(STATUS)) {
+      expect(style.colour, `${state} must not be amber`).not.toBe(ATTENTION_COLOUR);
+    }
+    expect(ATTENTION_COLOUR).toBe("var(--status-attention)");
+  });
+});
+
+// The same guard, widened to the whole bundle: any `var(--token)` a module
+// names must exist in `tokens.css`. Fallbacks were stripped deliberately — with
+// the token layer always loaded, a fallback is a second place the colour is
+// written down — which means an undefined token now resolves to nothing at all.
+describe("the token layer as a whole", () => {
+  it("defines every token any module references", () => {
+    const tokens = readFileSync("src/tokens.css", "utf8");
+    const sources = ["src/status.ts", "src/cost.ts"];
+    for (const file of sources) {
+      const source = readFileSync(file, "utf8");
+      for (const [, token] of source.matchAll(/var\((--[\w-]+)\)/g)) {
+        expect(tokens, `${file} names ${token}, which tokens.css does not define`).toContain(
+          `${token}:`,
+        );
+      }
+    }
   });
 });
