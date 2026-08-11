@@ -24,12 +24,14 @@ import re
 import subprocess
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
+from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 
 REQUIRED_CLI_FLAGS = (
     "--print",
@@ -216,11 +218,18 @@ class SessionRunner:
         cwd: Path,
         session_id: str | None = None,
         json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """Fork the base session and run the first round in one blocking call.
 
         Serialized: the session store has no documented locking (plan Key Technical
         Decisions); forking is fast, so this never serializes the groups themselves.
+
+        ``on_turn``, when given, is called once per assistant turn *while the
+        round is still running* (plan U1) with that turn's usage and a ``send``
+        callable bound to the live child process — the seam a context-ladder or
+        other per-turn observer hangs off of. ``None`` (the default) preserves
+        today's fully blocking round.
 
         ``session_id``, when given, lets the caller record the id in the manifest
         *before* this blocking call runs (plan U7): a crash mid-call would
@@ -243,13 +252,27 @@ class SessionRunner:
                     name,
                 ],
                 json_schema=json_schema,
+                on_turn=on_turn,
             )
 
     def resume(
-        self, *, session_id: str, prompt: str, cwd: Path, json_schema: dict | None = None
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        cwd: Path,
+        json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        """One warm round against an existing session."""
-        return self._call(prompt, cwd=cwd, extra=["--resume", session_id], json_schema=json_schema)
+        """One warm round against an existing session. ``on_turn`` — see
+        ``start_fork`` — lets a caller observe and speak into this round too."""
+        return self._call(
+            prompt,
+            cwd=cwd,
+            extra=["--resume", session_id],
+            json_schema=json_schema,
+            on_turn=on_turn,
+        )
 
     def usage_of(self, session_id: str) -> SessionUsage:
         return self._usage.get(session_id, SessionUsage())
@@ -269,9 +292,25 @@ class SessionRunner:
         return result.stdout + result.stderr
 
     def _call(
-        self, prompt: str, *, cwd: Path, extra: list[str], json_schema: dict | None = None
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        extra: list[str],
+        json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        argv = [*self._bin, "-p", prompt, "--output-format", "json", *extra]
+        argv = [
+            *self._bin,
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--input-format",
+            "stream-json",
+            *extra,
+        ]
         if self.permission_mode:
             argv += ["--permission-mode", self.permission_mode]
         if self.allowed_tools:
@@ -285,7 +324,7 @@ class SessionRunner:
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
-        returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context)
+        returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context, on_turn=on_turn)
         if returncode != 0:
             raise SessionError(
                 f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
@@ -305,27 +344,41 @@ class SessionRunner:
             session_id=session_id, text=str(envelope["result"]), usage=usage, envelope=envelope
         )
 
-    def _spawn(self, argv: list[str], *, cwd: Path, context: str) -> tuple[int, str, str]:
-        """One tracked subprocess: the tracker sees the PID for the round's lifetime,
-        so a crashed orchestrator's resume can reap surviving workers (plan U6)."""
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self._env,
+    def _spawn(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        context: str,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> tuple[int, str, str]:
+        """One tracked subprocess, read incrementally rather than a single
+        blocking ``communicate()`` (plan U1): the tracker still sees the PID for
+        exactly the round's lifetime (spawned once, exited once — plan U6's
+        crash-resume reaping depends on that), but the stream is now consumed
+        turn by turn so ``on_turn`` fires while the round is still running, and
+        that callback can ``send()`` a follow-up onto the same live process.
+
+        Returns the same ``(returncode, stdout, stderr)`` shape ``_call`` always
+        parsed: ``stdout`` is the terminal ``result`` stream event re-serialized
+        as one JSON line, so every downstream envelope-parsing rule — including
+        ``RoundUsage.from_envelope``'s ``iterations[-1]`` fallback — is unchanged.
+        """
+        stream = StreamingProcess(
+            argv, cwd=cwd, env=self._env, tracker=self.tracker, context=context
         )
-        if self.tracker is not None:
-            self.tracker.spawned(proc.pid, context)
+        if on_turn is not None:
+            stream.on_turn = lambda usage: on_turn(usage, stream.send)
+        stream.start()
         try:
-            # No per-round timeout (R7): a round runs as long as the CLI does —
-            # wall-clock is a terrible proxy for stuck, and long rounds are normal.
-            stdout, stderr = proc.communicate()
-        finally:
-            if self.tracker is not None:
-                self.tracker.exited(proc.pid)
-        return proc.returncode, stdout, stderr
+            outcome = stream.wait()
+        except StreamError as exc:
+            raise SessionError(f"claude stream failed ({context}): {exc}") from exc
+        if outcome.envelope is None:
+            if outcome.returncode == 0:
+                raise SessionError(f"claude stream ended without a terminal result ({context})")
+            return outcome.returncode, "", outcome.stderr
+        return outcome.returncode, json.dumps(outcome.envelope), outcome.stderr
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:

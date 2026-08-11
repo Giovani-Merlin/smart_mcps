@@ -56,9 +56,13 @@ VALUE_FLAGS = {
     "--model",
     "--permission-mode",
     "--allowedTools",
+    "--disallowedTools",
     "--add-dir",
     "--append-system-prompt",
     "--settings",
+    "--input-format",
+    "--max-thinking-tokens",
+    "--thinking",
 }
 
 HELP_TEXT = """Usage: claude [options] [command] [prompt]
@@ -146,6 +150,50 @@ def _write_transcript(home: Path, cwd: str, session_id: str, text: str) -> None:
         fh.write(json.dumps({"type": "assistant", "text": text}) + "\n")
 
 
+def _emit_assistant_turn(usage: dict, session_id: str, text: str = "") -> None:
+    print(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": text}] if text else [],
+                    "usage": {**DEFAULT_USAGE, **usage},
+                },
+                "session_id": session_id,
+            }
+        ),
+        flush=True,
+    )
+
+
+def _emit_streamed_turns(scripted: dict, session_id: str) -> None:
+    """Emit one ``assistant`` stream event per scripted turn (default: a single
+    turn using the top-level ``usage``), each carrying its own usage — the
+    per-turn signal ``StreamingProcess.on_turn`` fires on."""
+    turns = scripted.get("turns") or [scripted.get("usage", {})]
+    for turn_usage in turns:
+        _emit_assistant_turn(turn_usage, session_id)
+
+
+def _emit_streamed_turns_awaiting_send(scripted: dict, session_id: str) -> str:
+    """Emit the scripted turns, then block reading one stream-json user message
+    from stdin, and echo it back in one more assistant turn — proof the channel
+    is bidirectional while the round is still running. Returns the result text
+    (embeds the echoed content)."""
+    _emit_streamed_turns(scripted, session_id)
+    line = sys.stdin.readline()
+    try:
+        sent = json.loads(line) if line.strip() else {}
+        content = (sent.get("message") or {}).get("content") or []
+        text = content[0].get("text", "") if content else ""
+    except json.JSONDecodeError:
+        text = ""
+    echo = f"echo: {text}"
+    _emit_assistant_turn(scripted.get("usage", {}), session_id, text=echo)
+    return echo
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--help" in args or "-h" in args:
@@ -225,6 +273,8 @@ def main() -> int:
         if delay:
             time.sleep(delay)
 
+        streaming = opts.get("--output-format") == "stream-json"
+
         exit_code = int(scripted.get("exit_code", 0))
         if exit_code:
             # A usage-limit failure exits non-zero with an *empty* stderr but a
@@ -232,7 +282,30 @@ def main() -> int:
             # scripted entry reproduce that shape exactly, distinct from the
             # stderr-only failure every other scripted failure uses.
             if "stdout" in scripted:
-                print(scripted["stdout"])
+                stdout_value = scripted["stdout"]
+                if streaming:
+                    # Only a well-formed {"result": ...} payload survives the
+                    # stream reader's line-by-line "type":"result" filter —
+                    # deliberately: an unparseable payload must fall through to
+                    # stderr unchanged, exactly like the non-streaming path did.
+                    try:
+                        parsed = json.loads(stdout_value)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict) and "result" in parsed:
+                        print(
+                            json.dumps(
+                                {
+                                    "type": "result",
+                                    "subtype": "error",
+                                    "is_error": True,
+                                    "result": parsed["result"],
+                                    "session_id": session_id,
+                                }
+                            )
+                        )
+                else:
+                    print(stdout_value)
             print(scripted.get("stderr", "scripted failure"), file=sys.stderr)
             return finish(exit_code)
 
@@ -252,6 +325,16 @@ def main() -> int:
                 return finish(1)
 
         result_text = scripted.get("result", "OK")
+
+        if streaming:
+            if scripted.get("await_send"):
+                result_text = _emit_streamed_turns_awaiting_send(scripted, session_id)
+            else:
+                _emit_streamed_turns(scripted, session_id)
+            if scripted.get("no_result"):
+                _write_transcript(home, os.getcwd(), session_id, result_text)
+                return finish(0)
+
         _write_transcript(home, os.getcwd(), session_id, result_text)
         envelope = {
             "type": "result",
