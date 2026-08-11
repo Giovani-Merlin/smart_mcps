@@ -238,6 +238,17 @@ class Scheduler:
             self.state.groups[group_id].generation = generation
             self._persist()
 
+    def pending_group_ids(self) -> list[str]:
+        """Groups not yet started or finished (plan U7): what a blocking
+        escalation is holding up, named on the stdout line so an operator
+        watching the run sees more than silence."""
+        with self._lock:
+            return sorted(
+                gid
+                for gid, entry in self.state.groups.items()
+                if entry.state in (GroupState.PENDING, GroupState.READY)
+            )
+
     def _record_pid(self, pid: int, context: str) -> None:
         with self._lock:
             self.state.live_pids[pid] = context

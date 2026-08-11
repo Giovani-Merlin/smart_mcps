@@ -889,8 +889,9 @@ class TestRunBanner:
         assert len(calls) == 1
         argv = calls[0]["argv"]
         assert argv[argv.index("--name") + 1] == "r9-base"
-        # ...and the banner still made it out first, naming every R8 item
-        banner = captured.out.splitlines()[0]
+        # ...and the banner still made it out before any session spawn, right
+        # after the config echo, naming every R8 item
+        banner = next(line for line in captured.out.splitlines() if line.startswith("run r9"))
         assert "run r9" in banner
         assert "2 group(s)" in banner
         assert "sequential" in banner
@@ -914,7 +915,8 @@ class TestRunBanner:
             ]
         )
         assert exit_code == 1
-        banner = capsys.readouterr().out.splitlines()[0]
+        out = capsys.readouterr().out
+        banner = next(line for line in out.splitlines() if line.startswith("run r10"))
         assert "run r10" in banner
         assert "concurrency 4" in banner
         assert "HITL off" in banner

@@ -112,6 +112,12 @@ class BreakerConfig(BaseModel):
     context_token_limit: int = 200_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
+    # Plan U3: staged in-round prompts at 70%/90%/100% of context_token_limit,
+    # riding the per-turn observer the streaming channel (plan U1) provides —
+    # bounds *cost* inside a round, not stuck-ness (that's R7's wall-clock
+    # rejection; a token ceiling is a proxy for the former, never the latter).
+    # Off by default so an existing run/test is unaffected until it opts in.
+    context_ladder_enabled: bool = False
 
 
 class ExecutionConfig(BaseModel):

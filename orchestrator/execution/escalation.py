@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from orchestrator.config import EscalationConfig
@@ -84,10 +85,22 @@ class EscalationBroker:
     for this kind or a timeout with ``on_timeout = autonomous`` fired.
     """
 
-    def __init__(self, paths: RunPaths, config: EscalationConfig):
+    def __init__(
+        self,
+        paths: RunPaths,
+        config: EscalationConfig,
+        pending_groups_provider: Callable[[], list[str]] | None = None,
+    ):
         self.paths = paths
         self.config = config
         self.abort_event = threading.Event()
+        # Plan U7: an operator watching stdout sees a live process and silence
+        # while a run sits blocked on an unanswered escalation — `log_event`
+        # already writes the full line to `run.log`, but nothing surfaces it to
+        # the terminal. Wired by the CLI to `Scheduler.pending_group_ids` after
+        # the scheduler exists (this broker is built first); a bare `None`
+        # (in-process tests, or a caller with no scheduler) just names nothing.
+        self.pending_groups_provider = pending_groups_provider
 
     def trigger_abort(self) -> None:
         """Release every waiter at once — a run-wide abort is in flight."""
@@ -100,6 +113,16 @@ class EscalationBroker:
         log_event(
             self.paths,
             f"ESCALATION {request.id} [{request.kind.value}] {request.group_id}: {request.prompt}",
+        )
+        pending = (
+            [gid for gid in self.pending_groups_provider() if gid != request.group_id]
+            if self.pending_groups_provider is not None
+            else []
+        )
+        blocks = f" — blocks pending group(s): {', '.join(pending)}" if pending else ""
+        print(
+            f"[escalation] {request.id} [{request.kind.value}] group {request.group_id}{blocks}",
+            flush=True,
         )
 
         deadline = (
@@ -163,6 +186,10 @@ def answer_escalation(
         raise EscalationError(f"escalation {esc_id} was already answered")
     response = EscalationResponse(id=esc_id, action=HumanAction(action), answer=text)
     atomic_write_text(response_path, response.model_dump_json(indent=2) + "\n")
+    # Plan U7: the mirror image of raise_escalation's stdout line — both the
+    # CLI's `answer` subcommand and the Observatory's write endpoint route
+    # through here, so this is the one place the confirmation needs to print.
+    print(f"[escalation] {esc_id} answered: {response.action.value}", flush=True)
     return response_path
 
 
