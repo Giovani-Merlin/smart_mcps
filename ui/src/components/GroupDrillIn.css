@@ -391,11 +391,15 @@
   color: #114a20;
 }
 
+/* The one amber in the app, from the token layer: all three of these are the
+ * reviewer or the coder asking the operator for something. The rest of this
+ * stylesheet still carries literals — it belongs to the drill-in, not to the
+ * shell — but amber has exactly one value everywhere. */
 .artifact-card__status--changes_required,
 .artifact-card__status--needs_input,
 .artifact-card__status--blocked {
-  background-color: #ffd75e;
-  color: #5c4300;
+  background-color: var(--status-attention);
+  color: var(--attention-fg);
 }
 
 .artifact-card__status--failed,
