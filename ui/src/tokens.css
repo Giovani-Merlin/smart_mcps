@@ -28,6 +28,16 @@
   --border: #e3e5e9;
   --border-strong: #d3d5da;
 
+  /* Aliases for the surface names panels already reached for. Defined rather
+   * than renamed at the call sites: those stylesheets belong to other panels,
+   * and an alias costs one line where a rename costs a diff in each of them.
+   * They are aliases, not new colours — a fifth grey would defeat the point. */
+  --bg-panel: var(--surface);
+  --panel-bg: var(--surface-sunken);
+  --bg-subtle: var(--surface-sunken);
+  /* The unfilled remainder of a bar. Recessed below the panel it sits on. */
+  --bg-track: #f0f1f3;
+
   /* ------------------------------------------------------------------ text */
   --fg: #1a1a1a;
   --fg-muted: #55565c;
@@ -108,6 +118,8 @@
     --surface-sunken: #24262c;
     --border: #33363d;
     --border-strong: #454951;
+
+    --bg-track: #2b2e34;
 
     --fg: #e7e8ea;
     --fg-muted: #a6a9b0;

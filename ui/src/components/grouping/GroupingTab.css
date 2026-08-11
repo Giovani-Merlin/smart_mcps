@@ -21,7 +21,7 @@
 }
 
 .grouping-muted {
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
   font-size: 0.85rem;
   margin: 0.25rem 0 0;
 }
@@ -32,23 +32,23 @@
   max-width: 30rem;
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
-  border-left: 3px solid var(--status-idle, #8a8f98);
-  background: var(--panel-bg, #f7f8fa);
+  border-left: 3px solid var(--status-idle);
+  background: var(--panel-bg);
   font-size: 0.82rem;
 }
 
 .grouping-source--ok {
-  border-left-color: var(--status-done, #2e7d54);
+  border-left-color: var(--status-done);
 }
 
 /* Amber is reserved for "needs the operator's attention"; a fallback DAG is
  * exactly that — the picture may not be this run's. */
 .grouping-source--warn {
-  border-left-color: var(--status-attention, #c98a1b);
+  border-left-color: var(--status-attention);
 }
 
 .grouping-source--bad {
-  border-left-color: var(--status-failed, #b3403a);
+  border-left-color: var(--status-failed);
 }
 
 .grouping-source__kind {
@@ -67,7 +67,7 @@
   margin-left: 0.5rem;
   padding: 0.05rem 0.35rem;
   border-radius: 3px;
-  background: var(--status-attention, #c98a1b);
+  background: var(--status-attention);
   color: #fff;
   font-size: 0.7rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -75,20 +75,20 @@
 
 .grouping-source__reason {
   margin: 0.35rem 0 0;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
 }
 
 /* -------------------------------------------------------------- degraded */
 
 .grouping-degraded {
   padding: 0.7rem 0.9rem;
-  border: 1px dashed var(--status-attention, #c98a1b);
+  border: 1px dashed var(--status-attention);
   border-radius: 6px;
   background: rgba(201, 138, 27, 0.06);
 }
 
 .grouping-degraded--failure {
-  border-color: var(--status-failed, #b3403a);
+  border-color: var(--status-failed);
   background: rgba(179, 64, 58, 0.06);
 }
 
@@ -102,7 +102,7 @@
 .grouping-paths > summary {
   cursor: pointer;
   font-size: 0.8rem;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
 }
 
 .grouping-paths__list {
@@ -117,7 +117,7 @@
 /* --------------------------------------------------------------- stepper */
 
 .grouping-stepper {
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem;
 }
@@ -137,7 +137,7 @@
   align-items: flex-start;
   gap: 0.1rem;
   padding: 0.35rem 0.7rem;
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 5px;
   background: #fff;
   cursor: pointer;
@@ -146,12 +146,12 @@
 }
 
 .grouping-stepper__stage--changed {
-  border-color: var(--status-busy, #2f6fb0);
+  border-color: var(--status-busy);
 }
 
 .grouping-stepper__stage--current {
-  background: var(--status-busy, #2f6fb0);
-  border-color: var(--status-busy, #2f6fb0);
+  background: var(--status-busy);
+  border-color: var(--status-busy);
   color: #fff;
 }
 
@@ -185,7 +185,7 @@
 
 .grouping-graph {
   height: 30rem;
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -193,7 +193,7 @@
 .grouping-graph--loading {
   display: grid;
   place-items: center;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
   font-size: 0.85rem;
 }
 
@@ -241,7 +241,7 @@
 
 /* A heavy affinity edge the partition cut — the interesting failure. */
 .grouping-edge--cut path {
-  stroke: var(--status-attention, #c98a1b);
+  stroke: var(--status-attention);
   opacity: 0.9;
 }
 
@@ -262,7 +262,7 @@
 }
 
 .grouping-panel {
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem 0.9rem;
 }
@@ -292,7 +292,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
   margin-top: 0.5rem;
 }
 
@@ -314,13 +314,13 @@
 
 .grouping-panel__node:hover,
 .grouping-panel__edge:hover {
-  background: var(--panel-bg, #f7f8fa);
+  background: var(--panel-bg);
 }
 
 .grouping-panel__node--selected,
 .grouping-panel__edge--selected {
   border-color: #111827;
-  background: var(--panel-bg, #f7f8fa);
+  background: var(--panel-bg);
 }
 
 .grouping-panel__moved-tag,
@@ -328,12 +328,12 @@
   font-size: 0.66rem;
   padding: 0 0.3rem;
   border-radius: 3px;
-  background: var(--status-busy, #2f6fb0);
+  background: var(--status-busy);
   color: #fff;
 }
 
 .grouping-panel__cut-tag {
-  background: var(--status-attention, #c98a1b);
+  background: var(--status-attention);
 }
 
 .grouping-panel__weight {
@@ -343,7 +343,7 @@
 
 .grouping-panel__evidence {
   padding: 0.4rem 0.6rem;
-  border-left: 2px solid var(--border, #e3e5e9);
+  border-left: 2px solid var(--border);
   margin: 0.2rem 0 0.4rem 0.6rem;
 }
 
@@ -365,12 +365,12 @@
 .grouping-table td {
   text-align: left;
   padding: 0.25rem 0.5rem;
-  border-bottom: 1px solid var(--border, #e3e5e9);
+  border-bottom: 1px solid var(--border);
 }
 
 .grouping-table th {
   font-weight: 600;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -384,7 +384,7 @@
   font-size: 0.72rem;
   max-height: 18rem;
   overflow: auto;
-  background: var(--panel-bg, #f7f8fa);
+  background: var(--panel-bg);
   padding: 0.5rem;
   border-radius: 4px;
 }
@@ -402,7 +402,7 @@
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--fg-muted, #6b7280);
+  color: var(--fg-muted);
 }
 
 .grouping-scorecard__stat dd {

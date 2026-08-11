@@ -14,9 +14,9 @@
 }
 
 .cost-panel {
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg-panel, #fff);
+  background: var(--bg-panel);
   padding: 1rem 1.1rem 1.2rem;
   margin-bottom: 1.5rem;
 }
@@ -33,23 +33,23 @@
 }
 
 .cost-panel__note {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   font-size: 0.85rem;
   max-width: 78ch;
 }
 
 .cost-panel__empty {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .cost-panel__absent,
 .cost-group__absent {
-  border: 1px dashed var(--border-strong, #c9cdd4);
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
   padding: 0.6rem 0.8rem;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   font-size: 0.85rem;
-  background: var(--bg-subtle, #fafafb);
+  background: var(--bg-subtle);
   max-width: 82ch;
 }
 
@@ -73,7 +73,7 @@
 
 /* Subordinate in the legend too — the cheap class is listed last and dimmed. */
 .cost-legend__item--muted {
-  color: var(--fg-muted, #7d818a);
+  color: var(--fg-muted);
 }
 
 .cost-legend__aside {
@@ -101,7 +101,7 @@
   width: 100%;
   border-radius: 4px;
   overflow: hidden;
-  background: var(--bg-track, #f0f1f3);
+  background: var(--bg-track);
 }
 
 .cost-bar__seg {
@@ -130,14 +130,14 @@
 
 .cost-spark__bar {
   flex: 1;
-  background: var(--fg-muted, #8a8f98);
+  background: var(--fg-muted);
   border-radius: 1px;
 }
 
 /* ------------------------------------------------------------------ groups */
 
 .cost-group {
-  border-top: 1px solid var(--border, #e3e5e9);
+  border-top: 1px solid var(--border);
   padding-top: 0.9rem;
   margin-top: 0.9rem;
 }
@@ -155,10 +155,10 @@
 
 .cost-group__intensity {
   font-size: 0.75rem;
-  border: 1px solid var(--border-strong, #c9cdd4);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
   padding: 0.05rem 0.5rem;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .cost-group__intensity--unknown {
@@ -169,12 +169,12 @@
 .cost-group__expectation {
   margin: 0.35rem 0 0.6rem;
   font-size: 0.8rem;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .cost-group__expectation--ok::before {
   content: "✓ ";
-  color: var(--status-done, #2e7d54);
+  color: var(--status-done);
 }
 
 .cost-role {
@@ -197,7 +197,7 @@
 
 .cost-role__count,
 .cost-role__total {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .cost-role__sessions {
@@ -224,7 +224,7 @@
 
 .cost-session__total {
   text-align: right;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 /* ------------------------------------------------------------------ tables */
@@ -239,13 +239,13 @@
 .cost-table td {
   padding: 0.3rem 0.5rem;
   text-align: left;
-  border-bottom: 1px solid var(--border, #e3e5e9);
+  border-bottom: 1px solid var(--border);
   font-weight: 400;
 }
 
 .cost-table thead th {
   font-weight: 600;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   text-transform: lowercase;
 }
 
@@ -255,7 +255,7 @@
 }
 
 .cost-table__absent {
-  color: var(--fg-muted, #7d818a);
+  color: var(--fg-muted);
   font-style: italic;
 }
 
