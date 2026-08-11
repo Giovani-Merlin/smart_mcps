@@ -163,6 +163,16 @@ class SessionConfig(BaseModel):
     # — adaptive was both cheapest and correct, so it is the default. Pairing it with
     # the medium ceiling means "think only when it helps, never more than medium".
     thinking: str | None = "adaptive"
+    # Plan U2: kernel-enforced confinement via Landlock, layered under the
+    # deny-rules below rather than instead of them (deny-rules give a clearer
+    # error for the accidental case; Landlock is the actual boundary). Off by
+    # default so every existing run/test is unaffected until a run opts in.
+    confine: bool = False
+    # --disallowedTools patterns (e.g. the denied git subcommands from
+    # worktrees.denied_git_tool_patterns()) and an optional --settings path or
+    # inline JSON string. Empty/None means the flag is omitted entirely.
+    disallowed_tools: list[str] = Field(default_factory=list)
+    settings: str | None = None
 
 
 class EscalationConfig(BaseModel):

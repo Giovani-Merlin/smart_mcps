@@ -31,6 +31,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from orchestrator.execution.confinement import build_policy, landlock_preexec, warn_once
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 
 REQUIRED_CLI_FLAGS = (
@@ -171,6 +172,9 @@ class SessionRunner:
         tracker: SubprocessTracker | None = None,
         max_thinking_tokens: int | None = None,
         thinking: str | None = None,
+        disallowed_tools: Sequence[str] | None = None,
+        settings: str | None = None,
+        confine: bool = False,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -178,11 +182,15 @@ class SessionRunner:
         self.thinking = thinking
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
+        self.disallowed_tools = list(disallowed_tools) if disallowed_tools else None
+        self.settings = settings
+        self.confine = confine
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
         self._env = _scrub_virtualenv({**os.environ, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
+        self._confinement_warned = False
 
     def preflight(self) -> None:
         """Fail fast with a versioned message if the CLI lacks a pinned flag."""
@@ -290,6 +298,12 @@ class SessionRunner:
         matches = sorted(self.transcript_root.glob(f"*/{session_id}.jsonl"))
         return matches[0] if matches else None
 
+    def _claude_home(self) -> Path:
+        """``~/.claude`` (or its test-double), derived from ``transcript_root``
+        (``<claude_home>/projects``) so confinement and transcript discovery
+        agree on the same root without a second constructor argument."""
+        return self.transcript_root.parent
+
     def _capture(self, args: list[str]) -> str:
         try:
             result = subprocess.run(
@@ -323,6 +337,10 @@ class SessionRunner:
             argv += ["--permission-mode", self.permission_mode]
         if self.allowed_tools:
             argv += ["--allowedTools", ",".join(self.allowed_tools)]
+        if self.disallowed_tools:
+            argv += ["--disallowedTools", ",".join(self.disallowed_tools)]
+        if self.settings:
+            argv += ["--settings", self.settings]
         if self.model:
             argv += ["--model", self.model]
         if self.max_thinking_tokens is not None:
@@ -372,8 +390,21 @@ class SessionRunner:
         as one JSON line, so every downstream envelope-parsing rule — including
         ``RoundUsage.from_envelope``'s ``iterations[-1]`` fallback — is unchanged.
         """
+        preexec_fn = None
+        if self.confine:
+            policy = build_policy(worktree=cwd, claude_home=self._claude_home())
+            preexec_fn, result = landlock_preexec(policy)
+            if not result.applied:
+                self._confinement_warned = warn_once(
+                    result, already_warned=self._confinement_warned
+                )
         stream = StreamingProcess(
-            argv, cwd=cwd, env=self._env, tracker=self.tracker, context=context
+            argv,
+            cwd=cwd,
+            env=self._env,
+            tracker=self.tracker,
+            context=context,
+            preexec_fn=preexec_fn,
         )
         if on_turn is not None:
             stream.on_turn = lambda usage: on_turn(usage, stream.send)

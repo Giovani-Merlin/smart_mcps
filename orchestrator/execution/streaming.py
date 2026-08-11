@@ -98,6 +98,7 @@ class StreamingProcess:
         on_turn: Callable[[TurnUsage], None] | None = None,
         tracker: SubprocessTracker | None = None,
         context: str = "",
+        preexec_fn: Callable[[], None] | None = None,
     ) -> None:
         self._argv = argv
         self._cwd = cwd
@@ -105,6 +106,7 @@ class StreamingProcess:
         self.on_turn = on_turn
         self._tracker = tracker
         self._context = context
+        self._preexec_fn = preexec_fn
         self._proc: subprocess.Popen[str] | None = None
         self._result_envelope: dict | None = None
         self._stderr_lines: list[str] = []
@@ -128,6 +130,7 @@ class StreamingProcess:
             text=True,
             bufsize=1,
             env=self._env,
+            preexec_fn=self._preexec_fn,
         )
         if self._tracker is not None:
             self._tracker.spawned(self._proc.pid, self._context)
