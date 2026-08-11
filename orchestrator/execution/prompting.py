@@ -103,6 +103,22 @@ def render_extra_pass_prompt() -> str:
     return load_template("extra_pass")
 
 
+def render_ladder_summary_prompt() -> str:
+    """70% checkpoint (plan U3): a quick summary while the round keeps going."""
+    return load_template("ladder_summary")
+
+
+def render_ladder_prioritized_prompt() -> str:
+    """90% checkpoint (plan U3): prioritized conclusions, still mid-round."""
+    return load_template("ladder_prioritized")
+
+
+def render_ladder_compact_prompt() -> str:
+    """100% checkpoint (plan U3): stop and report now. Cheap because it can
+    reference the 70%/90% checkpoints already sitting in the same round."""
+    return load_template("ladder_compact")
+
+
 def render_handoff_prompt(
     run_id: str,
     group: Group,

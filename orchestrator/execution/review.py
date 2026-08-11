@@ -21,6 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
@@ -41,6 +42,9 @@ from orchestrator.execution.prompting import (
     render_conflict_resolve_prompt,
     render_extra_pass_prompt,
     render_handoff_prompt,
+    render_ladder_compact_prompt,
+    render_ladder_prioritized_prompt,
+    render_ladder_summary_prompt,
     render_re_review_prompt,
     render_reentry_prompt,
     render_reviewer_prompt,
@@ -54,6 +58,7 @@ from orchestrator.execution.sessions import (
     nudge_until_report,
     session_display_name,
 )
+from orchestrator.execution.streaming import TurnUsage
 from orchestrator.execution.worktrees import diff_stat, integration_branch
 from orchestrator.model import (
     CoderReport,
@@ -244,6 +249,7 @@ class _GroupExecution:
                 name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                 cwd=self.workspace,
                 session_id=self.coder_sid,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
@@ -324,6 +330,7 @@ class _GroupExecution:
                 session_id=self.coder_sid,
                 prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
 
     # ------------------------------------------------------------ re-entry (R4–R6)
@@ -365,6 +372,7 @@ class _GroupExecution:
                 session_id=entry.session_id,
                 prompt=render_reentry_prompt(self.group),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(entry),
             )
         except SessionError as exc:
             self._reentry_fallback(entry, f"warm resume failed: {exc}")
@@ -406,6 +414,53 @@ class _GroupExecution:
             return
         self._copy_usage(self.coder_entry, self.coder_sid)
         self.deps.store.save(self.deps.manifest)
+
+    def _make_coder_on_turn(
+        self, entry: SessionEntry
+    ) -> Callable[[TurnUsage, Callable[[str], None]], None]:
+        """Per-turn observer for one coder round call (plan U1's seam), doing two
+        unrelated things that happen to ride the same callback:
+
+        - continuous bookkeeping (plan U4): ``last_context_tokens`` updates as
+          turns stream in, not only once the round finishes and
+          ``_persist_coder_usage`` runs — so a group's manifest entry reflects
+          reality while it is still in flight, not just after.
+        - the staged context ladder (plan U3), gated by
+          ``breaker.context_ladder_enabled`` (off by default): 70%/90%/100% of
+          ``context_token_limit`` each send at most one staged prompt onto the
+          still-running round via ``send``. This bounds *cost* inside a round —
+          a token ceiling is a proxy for cost, not for stuck, which is why R7
+          rejected a wall-clock timeout here for the opposite reason.
+
+        ``fired`` is local to this call, so a fresh round always gets its own
+        clean set of thresholds — a round sitting at 99% from a prior round
+        never suppresses this round's own 70% checkpoint.
+        """
+        fired: set[str] = set()
+
+        def on_turn(usage: TurnUsage, send: Callable[[str], None]) -> None:
+            context = (
+                usage.input_tokens
+                + usage.output_tokens
+                + usage.cache_read_input_tokens
+                + usage.cache_creation_input_tokens
+            )
+            entry.last_context_tokens = context
+            self.deps.store.save(self.deps.manifest)
+            if not self.deps.breaker.context_ladder_enabled:
+                return
+            limit = self.deps.breaker.context_token_limit
+            if context >= limit and "100" not in fired:
+                fired.update({"70", "90", "100"})
+                send(render_ladder_compact_prompt())
+            elif context >= limit * 0.9 and "90" not in fired:
+                fired.update({"70", "90"})
+                send(render_ladder_prioritized_prompt())
+            elif context >= limit * 0.7 and "70" not in fired:
+                fired.add("70")
+                send(render_ladder_summary_prompt())
+
+        return on_turn
 
     def _refresh_transcript(self, entry: SessionEntry) -> None:
         """Fill in a pre-registered entry's transcript path once its session
@@ -545,6 +600,7 @@ class _GroupExecution:
                     integration_branch=integration_branch(self.deps.run_id),
                 ),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             report, _ = await asyncio.to_thread(
                 nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
@@ -671,6 +727,7 @@ class _GroupExecution:
                 session_id=self.coder_sid,
                 prompt=render_coder_answer_prompt(response.answer),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
         extra = [_context_surprise(self.gid, f"coder needs_input: {question}")]
         if response is not None:
@@ -785,12 +842,18 @@ class _GroupExecution:
         self.ctx.set_generation(self.generation)
 
     def _record(self, role: SessionRole, session_id: str) -> SessionEntry:
+        # started_at/model land here, at creation (plan U4) — not only once the
+        # first round completes — so an in-flight group is distinguishable from
+        # one that never started, and a crash before any round finishes still
+        # leaves a manifest entry an operator can date.
         entry = SessionEntry(
             session_id=session_id,
             role=role,
             generation=self.generation,
             name=session_display_name(self.deps.run_id, self.gid, role.value, self.generation),
             transcript_path=_transcript_str(self.deps.runner, session_id),
+            started_at=datetime.now(UTC).isoformat(),
+            model=self.deps.runner.model,
         )
         record_session(
             self.deps.manifest,
