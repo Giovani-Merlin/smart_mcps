@@ -183,8 +183,12 @@ class StreamingProcess:
         """Block until the child exits; join the reader threads so every event
         already on stdout/stderr has been consumed before returning."""
         assert self._proc is not None
-        self.close_stdin()
+        # Deliberately not closed before the process exits: closing stdin here
+        # would race a still-in-flight on_turn callback's send() on the reader
+        # thread, since the CLI's own termination (a "result" event, then exit)
+        # decides when the round ends — not stdin's EOF.
         returncode = self._proc.wait()
+        self.close_stdin()
         if self._tracker is not None and not self._exit_reported:
             self._tracker.exited(self._proc.pid)
             self._exit_reported = True

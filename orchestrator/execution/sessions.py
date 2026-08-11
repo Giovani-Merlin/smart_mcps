@@ -195,7 +195,14 @@ class SessionRunner:
                 f"{', '.join(missing)} — upgrade to a version that does"
             )
 
-    def start_base(self, *, run_id: str, base_context: str, cwd: Path) -> RoundResult:
+    def start_base(
+        self,
+        *,
+        run_id: str,
+        base_context: str,
+        cwd: Path,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> RoundResult:
         """Create the run's base session loading the compiled base context."""
         prompt = (
             "Internalize the following shared context for an orchestrated run. "
@@ -207,6 +214,7 @@ class SessionRunner:
             prompt,
             cwd=cwd,
             extra=["--session-id", session_id, "--name", f"{run_id}-base"],
+            on_turn=on_turn,
         )
 
     def start_fork(
