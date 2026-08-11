@@ -14,16 +14,18 @@
 }
 
 .group-board__stale {
-  border: 1px solid #ffd75e;
-  background-color: #fff4d6;
-  color: #6b4d00;
+  /* Amber, because a DAG that may not match the run is something the operator
+   * has to decide about — the one meaning amber carries. */
+  border: 1px solid var(--status-attention);
+  background-color: var(--surface-sunken);
+  color: var(--status-attention);
   border-radius: 6px;
   padding: 0.2rem 0.6rem;
   font-size: 0.85rem;
 }
 
 .group-board__empty {
-  color: #55565c;
+  color: var(--fg-muted);
 }
 
 /* Cards sit above the SVG edge layer; edges show through the lane gaps. */
@@ -42,12 +44,12 @@
 
 .group-board__edges path {
   fill: none;
-  stroke: #9aa0a8;
+  stroke: var(--fg-faint);
   stroke-width: 1.5;
 }
 
 .group-board__edges marker path {
-  fill: #9aa0a8;
+  fill: var(--fg-faint);
   stroke: none;
 }
 
@@ -72,9 +74,11 @@
 .group-card {
   border-radius: 8px;
   padding: 0.75rem 1rem;
-  border: 1px solid transparent;
-  background-color: #eceef1;
-  color: #1a1a1a;
+  /* `--card-hue` is set inline from `status.ts`; `color-mix` turns that one
+   * hue into the card's surface so a state contributes exactly one colour. */
+  border: 1px solid var(--card-hue, var(--border-strong));
+  background-color: color-mix(in srgb, var(--card-hue, var(--border-strong)) 12%, var(--surface));
+  color: var(--fg);
 }
 
 .group-card__head {
@@ -86,7 +90,7 @@
 
 .group-card__id {
   font-weight: 600;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
 }
 
 .group-card__state {
@@ -96,6 +100,17 @@
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  background-color: color-mix(in srgb, var(--card-hue, var(--border-strong)) 22%, var(--surface));
+  color: var(--card-hue, var(--fg));
+}
+
+/* What tells the four busy states apart, now that they share one hue. */
+.group-card__glyph {
+  font-size: 0.85rem;
+  line-height: 1;
 }
 
 .group-card__name {
@@ -105,131 +120,50 @@
 
 .group-card__generation {
   font-size: 0.8rem;
-  color: #55565c;
+  color: var(--fg-muted);
   margin-top: 0.25rem;
 }
 
 .group-card__deps {
   font-size: 0.75rem;
-  color: #55565c;
+  color: var(--fg-muted);
   margin-top: 0.25rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
 }
 
 .group-card__failure {
   margin-top: 0.5rem;
   font-size: 0.8rem;
-  color: #7a1414;
+  color: var(--danger-fg);
   white-space: pre-wrap;
 }
 
-/* One distinct treatment per GroupState (all eight) — card surface plus a
- * matching state badge. `running` additionally pulses. */
+/* One card treatment, hued by `--card-hue`, which `GroupBoard.tsx` sets from
+ * `status.ts`. There is deliberately no per-state rule here: a stylesheet that
+ * names states is a second status map, and the one in `status.ts` is the only
+ * one allowed to say what a state looks like.
+ *
+ * `running` used to be amber here. Amber now means "needs the operator's
+ * attention" and nothing else, so a busy group is blue like the other three
+ * busy states and is told apart by its glyph and label. */
 
-.group-card--pending {
-  background-color: #eceef1;
-  border-color: #d3d5da;
-}
-.group-card__state--pending {
-  background-color: #d3d5da;
-  color: #3c3d42;
-}
-
-.group-card--ready {
-  background-color: #e3edff;
-  border-color: #a9c6ff;
-}
-.group-card__state--ready {
-  background-color: #a9c6ff;
-  color: #12316b;
+.group-card--unfinished {
+  border-style: dashed;
 }
 
-.group-card--running {
-  background-color: #fff4d6;
-  border-color: #ffd75e;
+/* Only `running` pulses — the group is doing something right now. The pulse
+ * borrows the card's own hue rather than introducing a colour of its own. */
+.group-card--pulsing {
   animation: group-card-pulse 2s ease-in-out infinite;
-}
-.group-card__state--running {
-  background-color: #ffd75e;
-  color: #5c4300;
-}
-
-.group-card--reviewing {
-  background-color: #f2e3ff;
-  border-color: #cfa2ff;
-}
-.group-card__state--reviewing {
-  background-color: #cfa2ff;
-  color: #3d1266;
-}
-
-.group-card--rewriting {
-  background-color: #ffe6cf;
-  border-color: #ffb066;
-}
-.group-card__state--rewriting {
-  background-color: #ffb066;
-  color: #6b3600;
-}
-
-.group-card--merging {
-  background-color: #d9f2ff;
-  border-color: #7dd3ff;
-}
-.group-card__state--merging {
-  background-color: #7dd3ff;
-  color: #073a52;
-}
-
-.group-card--completed {
-  background-color: #dcf5df;
-  border-color: #8fe0a0;
-}
-.group-card__state--completed {
-  background-color: #8fe0a0;
-  color: #114a20;
-}
-
-.group-card--failed {
-  background-color: #fbdada;
-  border-color: #f19a9a;
-  border-style: dashed;
-}
-.group-card__state--failed {
-  background-color: #f19a9a;
-  color: #5c0c0c;
-}
-
-/* `resolved` is a FAILED group whose stranded work the operator dealt with, so
- * it reads as a muted success rather than a second failure colour. */
-.group-card--resolved {
-  background-color: #e4eddb;
-  border-color: #b3c99b;
-}
-.group-card__state--resolved {
-  background-color: #b3c99b;
-  color: #33421f;
-}
-
-/* `interrupted` is resumable, not terminal — dashed like `failed` to signal
- * "not finished", but slate rather than red because nothing went wrong. */
-.group-card--interrupted {
-  background-color: #e6e8ec;
-  border-color: #a9b0bd;
-  border-style: dashed;
-}
-.group-card__state--interrupted {
-  background-color: #a9b0bd;
-  color: #262b33;
 }
 
 @keyframes group-card-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 194, 51, 0.55);
+    box-shadow: 0 0 0 0 var(--card-hue);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(255, 194, 51, 0);
+    box-shadow: 0 0 0 6px transparent;
   }
 }
 
@@ -242,7 +176,7 @@
 .group-card__stale-failure {
   margin-top: 0.3rem;
   font-size: 0.7rem;
-  color: #7b8087;
+  color: var(--fg-faint);
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -252,13 +186,13 @@
   display: inline-block;
   margin-right: 0.35rem;
   padding: 0 0.3rem;
-  border: 1px solid #c3c7cd;
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   font-style: normal;
   font-size: 0.62rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #6b7280;
+  color: var(--chip-label);
 }
 
 /* The signal that earlier attempts exist. Counted from `manifest.json`'s
@@ -267,7 +201,7 @@
 .group-card__attempts {
   margin-left: 0.4rem;
   padding: 0 0.35rem;
-  border: 1px solid var(--border, #d3d5da);
+  border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.72rem;
   white-space: nowrap;

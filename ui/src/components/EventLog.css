@@ -14,25 +14,26 @@
 }
 
 .event-log__stalled {
-  color: #6b4d00;
+  /* The stream is interrupted and the operator may want to know why. */
+  color: var(--status-attention);
   font-size: 0.85rem;
 }
 
 .event-log__pane {
-  background-color: #1a1a1a;
-  color: #e6e6e6;
+  background-color: var(--terminal-bg);
+  color: var(--terminal-fg);
   border-radius: 8px;
   padding: 1rem;
   max-height: 320px;
   overflow-y: auto;
   overflow-x: auto;
   font-size: 0.85rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
 }
 
 .event-log__empty {
   margin: 0;
-  color: #9aa0a8;
+  color: var(--fg-faint);
 }
 
 .event-log__lines {

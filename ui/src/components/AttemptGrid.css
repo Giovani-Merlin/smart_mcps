@@ -20,7 +20,7 @@
 }
 
 .attempt-grid__note {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   font-size: 0.85rem;
   max-width: 70ch;
 }
@@ -30,7 +30,7 @@
 }
 
 .attempt-grid__empty {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .attempt-grid__table {
@@ -42,14 +42,14 @@
 .attempt-grid__table td {
   padding: 0.3rem 0.5rem;
   text-align: left;
-  border-bottom: 1px solid var(--border, #e3e5e9);
+  border-bottom: 1px solid var(--border);
   font-size: 0.85rem;
   font-weight: 400;
 }
 
 .attempt-grid__table thead th {
   font-weight: 600;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   text-transform: lowercase;
 }
 
@@ -59,15 +59,15 @@
 }
 
 .attempt-grid__group-name {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .attempt-grid__absent {
-  color: var(--fg-muted, #a0a3ab);
+  color: var(--fg-muted);
 }
 
 .attempt-grid__count {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   white-space: nowrap;
 }
 
@@ -75,7 +75,7 @@
   margin-left: 0.4rem;
   padding: 0 0.35rem;
   border-radius: 999px;
-  border: 1px solid var(--border, #d3d5da);
+  border: 1px solid var(--border);
 }
 
 /* ------------------------------------------------------------------ cell */
@@ -129,7 +129,7 @@
 /* Solid amber: the operator is being asked something. */
 .attempt-cell__blocked {
   right: -0.45rem;
-  background: var(--status-attention, #c98a1b);
+  background: var(--status-attention);
 }
 
 /* Hatched amber: an inference, not a fact about the group's state. */
@@ -138,8 +138,8 @@
   color: #3a2c05;
   background: repeating-linear-gradient(
     45deg,
-    var(--status-attention, #c98a1b),
-    var(--status-attention, #c98a1b) 2px,
+    var(--status-attention),
+    var(--status-attention) 2px,
     #fff3d6 2px,
     #fff3d6 4px
   );
@@ -150,7 +150,7 @@
 .attempt-grid__detail {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--border, #e3e5e9);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
 }
@@ -161,7 +161,7 @@
 }
 
 .attempt-grid__detail-status {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
   font-weight: 400;
 }
 
@@ -177,7 +177,7 @@
 
 .attempt-note {
   padding: 0.3rem 0.5rem;
-  border-left: 3px solid var(--note-colour, var(--border, #d3d5da));
+  border-left: 3px solid var(--note-colour, var(--border));
   background: #f7f7f8;
   border-radius: 0 5px 5px 0;
   font-size: 0.82rem;
@@ -221,7 +221,7 @@
 
 .attempt-session__role {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }
 
 .attempt-session__retired {
@@ -229,5 +229,5 @@
 }
 
 .attempt-session__rounds {
-  color: var(--fg-muted, #55565c);
+  color: var(--fg-muted);
 }

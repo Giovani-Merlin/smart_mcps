@@ -100,6 +100,35 @@ wired into the Python entry point, so a fresh checkout legitimately has no
 bundle. In that case the server still starts and `GET /` returns a JSON message
 naming this dev recipe rather than a 404.
 
+### URL scheme
+
+Every view is a URL, so a view can be linked, bookmarked and refreshed. Path
+segments identify **objects**; query params identify **view state**.
+
+| URL                                          | View                                     |
+| -------------------------------------------- | ---------------------------------------- |
+| `/`                                          | Project picker                           |
+| `/p/:project`                                | Run index — every run, newest first      |
+| `/p/:project/r/:run/board`                   | Board                                    |
+| `/p/:project/r/:run/history`                 | Attempt history grid                     |
+| `/p/:project/r/:run/grouping`                | How this plan became groups              |
+| `/p/:project/r/:run/escalations`             | Pending escalations (the one write path) |
+| `/p/:project/r/:run/log`                     | `run.log`, full height                   |
+| `/p/:project/r/:run/cost`                    | Estimate vs actual                       |
+| `/p/:project/r/:run/session/:group/:session` | Session viewer — addressable, not a tab  |
+
+View state rides in `?group=`, `?stage=`, `?edge=`, `?seq=` and survives
+navigation between tabs.
+
+The run index exists to fix a specific dead end: selecting a project used to
+jump straight to whichever run was newest, which left older runs unreachable
+and silently redirected shared deep links. It does not redirect.
+
+Deep links depend on the backend's SPA catch-all (`_mount_spa` in
+`observatory/app.py`), which serves `index.html` for any path outside a route
+prefix the server owns. Without it a refresh on `/p/proj/r/run/grouping` would
+404.
+
 ## HTTP API
 
 Every run-scoped endpoint is prefixed `/api/projects/{project}/runs/{run_id}`.
@@ -307,3 +336,19 @@ reads from `tmp_path` or from the committed post-mortem fixture under
 `tests/fixtures/observatory/run-postmortem/` (a copy of a finished run, needed
 because `.orchestrator/` is gitignored and cannot itself be a committed fixture).
 No test touches `$HOME` and none needs a running orchestrator.
+
+The frontend suite is vitest + testing-library, configured in
+`ui/vite.config.ts` and run with:
+
+```sh
+cd ui
+npm install
+npm test          # vitest run — no watcher, exits non-zero on failure
+npm run build     # tsc --noEmit equivalent, then the production bundle
+```
+
+It covers the surfaces that rot first: the route shape (every tab reachable by
+URL, query params round-tripping), the `GroupState` → colour map's
+exhaustiveness, and `PathChip`'s copy behaviour. The map's compile-time guard is
+a `Record<GroupState, StatusStyle>`, so adding a state to the union without
+giving it a colour fails `npm run build` rather than rendering a blank badge.

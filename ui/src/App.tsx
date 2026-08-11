@@ -1,140 +1,25 @@
-// The one file that composes the Observatory: the switcher picks the active
-// (project, run), `useRunStream` keeps that run's snapshot live, and the slice
-// components each receive the active selection.
+// The app is its route table.
 //
-// The tab strip below is deliberately the smallest thing that works. The agreed
-// shell is a `react-router-dom` v6 tab shell owned by the shell group — Board,
-// History, Grouping, Escalations, Log — and building a second router here would
-// be the parallel copy that has to be unpicked later. So the active tab lives in
-// `?tab=`, read through `useQueryParams`, which has `useSearchParams`' shape: the
-// shell replaces this strip with real routes and every child keeps compiling.
+// What used to be here — a `?tab=` strip, one `useRunStream`, and every panel
+// composed in a single conditional — was a deliberate placeholder for this.
+// The tab strip is gone; `RunLayout` owns the shell, `routes.tsx` owns the
+// table, and no component's props changed to get here, because the query-param
+// hook the placeholder used was written with `useSearchParams`' shape.
+//
+// `createBrowserRouter` rather than `HashRouter`: the backend's SPA catch-all
+// is landed (`observatory/app.py:_mount_spa`), so a refresh on
+// `/p/proj/r/run/grouping?group=g2` reaches `index.html` and renders. Hash
+// routing was only ever the documented fallback if a server catch-all were
+// refused.
 
-import AttemptGrid from "./components/AttemptGrid";
-import CostPanel from "./components/CostPanel";
-import EscalationPanel from "./components/EscalationPanel";
-import EventLog from "./components/EventLog";
-import GroupBoard from "./components/GroupBoard";
-import GroupDrillIn from "./components/GroupDrillIn";
-import ProjectRunSwitcher from "./components/ProjectRunSwitcher";
-import GroupingTab from "./components/grouping/GroupingTab";
-import { useQueryParams } from "./useQueryParams";
-import { useRunStream } from "./useRunStream";
+import { RouterProvider, createBrowserRouter } from "react-router-dom";
 
-const TABS = ["board", "history", "grouping", "cost"] as const;
-type Tab = (typeof TABS)[number];
+import { routes } from "./routes";
+
+const router = createBrowserRouter(routes);
 
 function App() {
-  const [params, setParams] = useQueryParams();
-  const project = params.get("project");
-  const runId = params.get("run");
-  const tab: Tab = TABS.includes(params.get("tab") as Tab) ? (params.get("tab") as Tab) : "board";
-  const { snapshot, revision, error, loading } = useRunStream(project, runId);
-
-  function setParam(key: string, value: string | null): void {
-    const next = new URLSearchParams(params);
-    if (value === null) next.delete(key);
-    else next.set(key, value);
-    setParams(next);
-  }
-
-  // A grid cell opens the session viewer, which lives on the Board tab and is
-  // addressed by `?group=` + `?session=` — the same query-param shape the
-  // router-owned shell will keep when it lands.
-  function openSession(groupId: string, sessionId: string): void {
-    const next = new URLSearchParams(params);
-    next.set("tab", "board");
-    next.set("group", groupId);
-    next.set("session", sessionId);
-    setParams(next);
-  }
-
-  function selectProject(next: string | null): void {
-    const params = new URLSearchParams();
-    if (next) params.set("project", next);
-    setParams(params);
-  }
-
-  return (
-    <div className="app">
-      <header className="app__header">
-        <div>
-          <h1>Orchestrator Observatory</h1>
-          {project && runId && (
-            <p className="app__run-id">
-              {project} / {runId}
-            </p>
-          )}
-        </div>
-        <ProjectRunSwitcher
-          project={project}
-          runId={runId}
-          onProjectChange={selectProject}
-          onRunChange={(next) => setParam("run", next)}
-        />
-      </header>
-
-      {error && <p className="app__error">{error}</p>}
-
-      {project && runId ? (
-        <>
-          <nav className="app__tabs">
-            {TABS.map((candidate) => (
-              <button
-                key={candidate}
-                type="button"
-                className={`app__tab${candidate === tab ? " app__tab--current" : ""}`}
-                onClick={() => setParam("tab", candidate)}
-                aria-current={candidate === tab}
-              >
-                {candidate}
-              </button>
-            ))}
-          </nav>
-
-          {tab === "history" ? (
-            <AttemptGrid
-              project={project}
-              runId={runId}
-              snapshot={snapshot}
-              revision={revision}
-              onOpenSession={openSession}
-            />
-          ) : tab === "cost" ? (
-            <CostPanel project={project} runId={runId} snapshot={snapshot} />
-          ) : tab === "grouping" ? (
-            <GroupingTab
-              project={project}
-              runId={runId}
-              params={params}
-              onParamsChange={setParams}
-            />
-          ) : (
-            <>
-              <GroupBoard
-                project={project}
-                runId={runId}
-                snapshot={snapshot}
-                revision={revision}
-                loading={loading}
-              />
-              <EventLog project={project} runId={runId} />
-              <EscalationPanel project={project} runId={runId} revision={revision} />
-              <GroupDrillIn
-                project={project}
-                runId={runId}
-                snapshot={snapshot}
-                revision={revision}
-                selectedGroupId={params.get("group")}
-                selectedSessionId={params.get("session")}
-              />
-            </>
-          )}
-        </>
-      ) : (
-        <p className="app__empty">Select a project and run to observe.</p>
-      )}
-    </div>
-  );
+  return <RouterProvider router={router} />;
 }
 
 export default App;

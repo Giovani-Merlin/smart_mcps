@@ -1,0 +1,158 @@
+/* Design tokens — the one place a colour is chosen in this app.
+ *
+ * Before this file the bundle contained zero `var(--)` references and a few
+ * hundred hex literals, which is why `resolved` and `interrupted` could ship
+ * invisible: there was no list of the colours the app uses, so nothing showed
+ * that two of them were missing.
+ *
+ * Two rules from the plan are encoded here rather than left to each stylesheet:
+ *
+ * **Amber means "needs the operator's attention", and nothing else.** There is
+ * exactly one amber token. Solid is an escalation — the operator is being asked
+ * something. Hatched (`--attention-hatch`) is an inferred stall, which is an
+ * observation and must never look like a state.
+ *
+ * **The four busy states share one hue.** `running` / `reviewing` / `rewriting`
+ * / `merging` are all `--status-busy`; `status.ts` tells them apart by glyph and
+ * label. Four near-identical blues are four colours nobody can name.
+ *
+ * `status.ts` reads the `--status-*` tokens by name and is the only module that
+ * maps a state to one of them. No component defines its own status colours.
+ */
+
+:root {
+  /* --------------------------------------------------------------- surface */
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --surface-sunken: #f2f3f5;
+  --border: #e3e5e9;
+  --border-strong: #d3d5da;
+
+  /* Aliases for the surface names panels already reached for. Defined rather
+   * than renamed at the call sites: those stylesheets belong to other panels,
+   * and an alias costs one line where a rename costs a diff in each of them.
+   * They are aliases, not new colours — a fifth grey would defeat the point. */
+  --bg-panel: var(--surface);
+  --panel-bg: var(--surface-sunken);
+  --bg-subtle: var(--surface-sunken);
+  /* The unfilled remainder of a bar. Recessed below the panel it sits on. */
+  --bg-track: #f0f1f3;
+
+  /* ------------------------------------------------------------------ text */
+  --fg: #1a1a1a;
+  --fg-muted: #55565c;
+  --fg-faint: #8a8f98;
+
+  /* ----------------------------------------------------------- interaction */
+  --accent: #2f6fb0;
+  --accent-fg: #ffffff;
+  --focus: #2f6fb0;
+
+  /* ---------------------------------------------------------- status hues */
+  /* One hue per *meaning*. Consumed only through `status.ts`. */
+  --status-idle: #8a8f98;
+  --status-busy: #2f6fb0;
+  --status-done: #2e7d54;
+  --status-resolved: #5d8f74;
+  --status-failed: #b3403a;
+  --status-interrupted: #5b6472;
+  --status-unknown: #7a5ea8;
+  --status-superseded: #8a8f98;
+
+  /* The only amber in the app. Solid = escalation, hatched = inferred stall. */
+  --status-attention: #c98a1b;
+  /* Text on a solid-amber fill. */
+  --attention-fg: #241900;
+  --attention-hatch: repeating-linear-gradient(
+    45deg,
+    var(--status-attention) 0,
+    var(--status-attention) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+
+  /* ---------------------------------------------------------- token classes */
+  /* The cost panel's four token classes. `cache-read` is deliberately the
+   * quietest of the four: it is the cheap class, and a bar that is mostly cache
+   * read describes a *healthy* session, so it must not read as the loud one. */
+  --cost-uncached-input: #2f6fb0;
+  --cost-cache-creation: #7a5ea8;
+  --cost-output: #2e7d54;
+  --cost-cache-read: #c9cdd4;
+
+  /* ---------------------------------------------------------------- error */
+  --danger-fg: #7a1414;
+  --danger-bg: #fff5f5;
+  --danger-border: #f19a9a;
+
+  /* ----------------------------------------------------------------- chip */
+  --chip-bg: #f7f8fa;
+  --chip-bg-hover: #eef0f4;
+  --chip-border: #d7d9de;
+  --chip-border-hover: #b8bcc4;
+  --chip-fg: #4a4f57;
+  --chip-label: #6b7280;
+  --chip-hint: #9aa0a8;
+
+  /* The log pane reads as a terminal in both schemes — dark on light, and
+   * still dark on dark, because a full-height wall of inverted text is the
+   * one place the app deliberately does not follow the surface tokens. */
+  --terminal-bg: #1a1a1a;
+  --terminal-fg: #e6e6e6;
+
+  /* ------------------------------------------------------------- typography */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ---------------------------------------------------------------- shape */
+  --radius: 8px;
+  --radius-sm: 5px;
+}
+
+/* The Observatory is read for long stretches on whatever the operator's OS is
+ * set to. Only the tokens change — no stylesheet below this file knows which
+ * scheme is active, which is the point of having them. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181b;
+    --surface: #1f2126;
+    --surface-sunken: #24262c;
+    --border: #33363d;
+    --border-strong: #454951;
+
+    --bg-track: #2b2e34;
+
+    --fg: #e7e8ea;
+    --fg-muted: #a6a9b0;
+    --fg-faint: #7b7f88;
+
+    --accent: #6aa6e0;
+    --focus: #6aa6e0;
+
+    --status-idle: #7b7f88;
+    --status-busy: #6aa6e0;
+    --status-done: #59b184;
+    --status-resolved: #7fae95;
+    --status-failed: #e0736c;
+    --status-interrupted: #8b93a1;
+    --status-unknown: #a58cd1;
+    --status-superseded: #7b7f88;
+    --status-attention: #e0ab45;
+
+    --cost-uncached-input: #6aa6e0;
+    --cost-cache-creation: #a58cd1;
+    --cost-output: #59b184;
+    --cost-cache-read: #4a4e56;
+
+    --danger-fg: #f0b4b0;
+    --danger-bg: #2e1d1d;
+    --danger-border: #6d3a37;
+
+    --chip-bg: #24262c;
+    --chip-bg-hover: #2d3038;
+    --chip-border: #3a3d45;
+    --chip-border-hover: #4d515a;
+    --chip-fg: #c8cad0;
+    --chip-label: #9aa0a8;
+    --chip-hint: #7b7f88;
+  }
+}

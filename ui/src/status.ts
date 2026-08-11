@@ -35,12 +35,12 @@ export interface StatusStyle {
   dashed?: boolean;
 }
 
-const BLUE = "var(--status-busy, #2f6fb0)";
-const GREY = "var(--status-idle, #8a8f98)";
-const GREEN = "var(--status-done, #2e7d54)";
-const RED = "var(--status-failed, #b3403a)";
-const SLATE = "var(--status-interrupted, #5b6472)";
-const MUTED_GREEN = "var(--status-resolved, #5d8f74)";
+const BLUE = "var(--status-busy)";
+const GREY = "var(--status-idle)";
+const GREEN = "var(--status-done)";
+const RED = "var(--status-failed)";
+const SLATE = "var(--status-interrupted)";
+const MUTED_GREEN = "var(--status-resolved)";
 
 export const STATUS: Record<GroupState, StatusStyle> = {
   pending: { colour: GREY, label: "pending", glyph: "·" },
@@ -69,7 +69,7 @@ export const STATUS: Record<GroupState, StatusStyle> = {
 // this bundle has never heard of. That renders as a visibly unknown badge —
 // never as a blank one, and never as a crash.
 export const UNKNOWN_STATUS: StatusStyle = {
-  colour: "var(--status-unknown, #7a5ea8)",
+  colour: "var(--status-unknown)",
   label: "unknown state",
   glyph: "?",
   dashed: true,
@@ -89,7 +89,7 @@ export function statusOf(state: GroupState | string): StatusStyle {
  * stays the single place anything becomes a colour.
  */
 export const SUPERSEDED_STATUS: StatusStyle = {
-  colour: "var(--status-superseded, #8a8f98)",
+  colour: "var(--status-superseded)",
   label: "superseded",
   glyph: "↺",
   dashed: true,
@@ -103,7 +103,7 @@ export const SUPERSEDED_STATUS: StatusStyle = {
  * escalation-blocked is orthogonal to state, a group can be blocked in any of
  * the busy states, and folding it into the state colour would lose which.
  */
-export const ATTENTION_COLOUR = "var(--status-attention, #c98a1b)";
+export const ATTENTION_COLOUR = "var(--status-attention)";
 
 /** Call sites that switch on a state use this to stay exhaustive. */
 export function assertNever(value: never): never {

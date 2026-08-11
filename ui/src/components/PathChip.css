@@ -7,10 +7,10 @@
   gap: 0.45rem;
   max-width: 100%;
   padding: 0.15rem 0.5rem;
-  border: 1px solid var(--chip-border, #d7d9de);
+  border: 1px solid var(--chip-border);
   border-radius: 4px;
-  background: var(--chip-bg, #f7f8fa);
-  color: var(--chip-fg, #4a4f57);
+  background: var(--chip-bg);
+  color: var(--chip-fg);
   font: inherit;
   font-size: 0.78rem;
   cursor: pointer;
@@ -18,29 +18,29 @@
 }
 
 .path-chip:hover {
-  border-color: var(--chip-border-hover, #b8bcc4);
-  background: var(--chip-bg-hover, #eef0f4);
+  border-color: var(--chip-border-hover);
+  background: var(--chip-bg-hover);
 }
 
 .path-chip:focus-visible {
-  outline: 2px solid var(--focus, #2f6fb0);
+  outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
 
 .path-chip--copied {
-  border-color: var(--status-done, #2e7d54);
+  border-color: var(--status-done);
 }
 
 .path-chip__label {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: lowercase;
-  color: var(--chip-label, #6b7280);
+  color: var(--chip-label);
   flex: 0 0 auto;
 }
 
 .path-chip__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -49,9 +49,9 @@
 .path-chip__hint {
   flex: 0 0 auto;
   font-size: 0.7rem;
-  color: var(--chip-hint, #9aa0a8);
+  color: var(--chip-hint);
 }
 
 .path-chip--copied .path-chip__hint {
-  color: var(--status-done, #2e7d54);
+  color: var(--status-done);
 }
