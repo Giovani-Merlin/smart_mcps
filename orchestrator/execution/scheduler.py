@@ -28,6 +28,7 @@ from orchestrator.config import ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError, SessionError
+from orchestrator.execution.worktrees import WorktreeRefreshConflict
 from orchestrator.grouping.llm import LlmProcessError
 from orchestrator.model import (
     EscalationKind,
@@ -442,7 +443,7 @@ class Scheduler:
             # report was judged only after the session's warm corrective nudges —
             # the harness was healthy, the agent failed.
             final = self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
-        except (SessionError, LlmProcessError, PermissionDenied) as exc:
+        except (SessionError, LlmProcessError, PermissionDenied, WorktreeRefreshConflict) as exc:
             # Envelope failure (R1/R2): the claude process/API died under the
             # group, not the work — non-terminal so `resume` re-enters it.
             # LlmProcessError is the same outage arriving on the one-shot
