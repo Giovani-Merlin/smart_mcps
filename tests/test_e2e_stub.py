@@ -198,6 +198,13 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "all groups completed" in out
+    # plan U7: the config actually loaded is echoed with its absolute path and
+    # key values, before any session spawns.
+    config_line = next(line for line in out.splitlines() if line.startswith("config: "))
+    assert str((repo / ".orchestrator" / "config.toml").resolve()) in config_line
+    assert "token_budget=" in config_line
+    assert "context_token_limit=" in config_line
+    assert "permission_mode=" in config_line
 
     # every group completed at generation 1; the warm reject never respawned
     state = state_of(repo, run_id)

@@ -106,6 +106,32 @@ async def test_independent_groups_run_concurrently_up_to_the_cap(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pending_group_ids_names_groups_not_yet_started(tmp_path):
+    """Plan U7: what an escalation's stdout line names as blocked — a group's
+    dependents held by the DAG, or a not-yet-launched sibling under
+    concurrency=1, are still PENDING while the running group is in flight."""
+    gate = asyncio.Event()
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            await gate.wait()
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1"), make_group("g2", deps=["g1"]), make_group("g3")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=1),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: scheduler.state.groups["g1"].state == GroupState.RUNNING)
+    assert scheduler.pending_group_ids() == ["g2", "g3"]
+    gate.set()
+    await run
+    assert scheduler.pending_group_ids() == []
+
+
+@pytest.mark.asyncio
 async def test_dependent_group_launches_only_after_upstream_completes(tmp_path):
     events: list[tuple[str, str]] = []
 

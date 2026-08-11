@@ -751,6 +751,19 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
 
+    # Plan U7: the config file actually loaded, echoed with its own path before
+    # anything spawns — two `.orchestrator/config.toml` files were once found
+    # to disagree on `context_token_limit` (200000 vs 120000), and `.orchestrator/`
+    # is gitignored so that drift never shows up in a diff. An operator who only
+    # sees the resolved values (as the R8 line below already prints) has no way
+    # to tell which file produced them.
+    config_path = (args.config or repo_root / ".orchestrator" / "config.toml").resolve()
+    print(
+        f"config: {config_path} (token_budget={config.estimator.token_budget}, "
+        f"context_token_limit={config.breaker.context_token_limit}, "
+        f"permission_mode={config.execution.permission_mode})"
+    )
+
     # R8: the effective execution config prints before any session spawns —
     # obs1's operator trap was a config file silently beating flag expectations,
     # discovered only after the base session was already paid for.
@@ -848,6 +861,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker
+    # Wired after construction (plan U7): the broker is built before the
+    # scheduler exists (the scheduler's resolve routine needs it), so its
+    # stdout line naming blocked groups can only be plugged in here.
+    if broker is not None:
+        broker.pending_groups_provider = scheduler.pending_group_ids
 
     if resume:
         if persisted_manifest is None:
