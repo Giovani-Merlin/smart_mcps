@@ -32,6 +32,7 @@ from orchestrator.execution.scheduler import (
     SchedulerError,
 )
 from orchestrator.execution.sessions import ReportError, SessionError
+from orchestrator.execution.worktrees import WorktreeError, WorktreeRefreshConflict
 from orchestrator.grouping.llm import LlmError, LlmProcessError
 from orchestrator.model import (
     EscalationRequest,
@@ -325,6 +326,51 @@ async def test_permission_denied_marks_the_group_interrupted_with_command_verbat
         persisted.groups["g1"].failure
         == "PermissionDenied: group g1 denied command: rm -rf /some/protected/path"
     )
+
+
+@pytest.mark.asyncio
+async def test_refresh_conflict_marks_the_group_interrupted_naming_paths_and_is_resumable(
+    tmp_path,
+):
+    """Plan U6: a real content conflict on a resumed group's refresh is not lost
+    work — it must stay reachable by `resume`, unlike a terminal WorktreeError."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise WorktreeRefreshConflict(
+            "refreshing group g1's worktree onto main conflicted on: README.md"
+        )
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.INTERRUPTED
+    assert "README.md" in persisted.groups["g1"].failure
+    assert GroupState.INTERRUPTED not in TERMINAL_STATES
+
+    async def resumed_executor(ctx):
+        return GroupState.COMPLETED
+
+    resumed = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=resumed_executor, resume=True
+    )
+    final_states = await resumed.run()
+    assert final_states["g1"] == GroupState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_other_worktree_error_still_marks_the_group_failed(tmp_path):
+    """A plain WorktreeError (e.g. path exists but is not a worktree) is not the
+    resumable refresh-conflict case — it stays terminal FAILED."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise WorktreeError("/some/path exists but is not a worktree on branch-x")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
 
 
 @pytest.mark.asyncio

@@ -11,12 +11,50 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 
 class WorktreeError(Exception):
     """A git worktree operation failed or was refused."""
+
+
+class WorktreeRefreshConflict(WorktreeError):
+    """A resumed group's refresh onto the integration tip hit a real content
+    conflict (plan U6). Distinct from ``WorktreeError`` so the scheduler can
+    classify it ``INTERRUPTED`` (resumable) instead of terminal ``FAILED`` — the
+    group's committed work is valid, only the merge needs a human or a later
+    resume to resolve."""
+
+
+# Repo-global git mutators a worker must never run (plan U5). ``refs/stash`` is
+# shared across every worktree of a repo (git-worktree(1) REFS) — a worker's
+# ``git stash`` collided with an unrelated operator stash on 2026-06-11 and
+# resurrected a long-deleted file, killing group g1 on run r20260808. The others
+# either rewrite shared refs/reflogs or delete worktree metadata other groups
+# still hold.
+DENIED_GIT_SUBCOMMANDS: tuple[tuple[str, ...], ...] = (
+    ("stash",),
+    ("reset", "--hard"),
+    ("clean",),
+    ("gc",),
+    ("worktree", "prune"),
+)
+
+
+def is_denied_git_invocation(args: Sequence[str]) -> bool:
+    """True if ``args`` (a git argv without the leading ``git``) invokes one of
+    the repo-global mutators workers must not run."""
+    for denied in DENIED_GIT_SUBCOMMANDS:
+        if tuple(args[: len(denied)]) == denied:
+            return True
+    return False
+
+
+def denied_git_tool_patterns() -> list[str]:
+    """``--disallowedTools`` patterns blocking each denied git subcommand via the
+    Bash tool (plan U5/U2): the boundary a PreToolUse-style allowlist can see."""
+    return [f"Bash(git {' '.join(denied)}:*)" for denied in DENIED_GIT_SUBCOMMANDS]
 
 
 def slugify(name: str, max_len: int = 40) -> str:
@@ -85,6 +123,7 @@ def create_worktree(
     if path.exists():
         existing = _registered_branch(repo_root, path)
         if existing == branch:
+            _ensure_worktree_config_extension(path)
             _refresh_onto_tip(path, group_id=group_id, tip=start_point)
             return path
         raise WorktreeError(
@@ -94,10 +133,20 @@ def create_worktree(
     path.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(repo_root, branch):
         _git_ok(repo_root, "worktree", "add", str(path), branch)
+        _ensure_worktree_config_extension(path)
         _refresh_onto_tip(path, group_id=group_id, tip=start_point)
     else:
         _git_ok(repo_root, "worktree", "add", "-b", branch, str(path), start_point)
+        _ensure_worktree_config_extension(path)
     return path
+
+
+def _ensure_worktree_config_extension(path: Path) -> None:
+    """Enable per-worktree config (plan U5) so ``git config --worktree`` inside
+    ``path`` writes to that worktree's own ``config.worktree`` file rather than
+    the repo-common config every worktree shares — a worker's ``git config
+    user.email`` must not be able to mutate the operator's repo."""
+    _git_ok(path, "config", "extensions.worktreeConfig", "true")
 
 
 def _refresh_onto_tip(worktree: Path, *, group_id: str, tip: str) -> None:
@@ -118,7 +167,7 @@ def _refresh_onto_tip(worktree: Path, *, group_id: str, tip: str) -> None:
     conflicted = _git_ok(worktree, "diff", "--name-only", "--diff-filter=U").splitlines()
     if conflicted:
         _git(worktree, "merge", "--abort")
-        raise WorktreeError(
+        raise WorktreeRefreshConflict(
             f"refreshing group {group_id}'s worktree onto {tip} conflicted on: "
             f"{', '.join(conflicted)}"
         )

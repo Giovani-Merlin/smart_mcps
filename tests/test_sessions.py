@@ -38,10 +38,14 @@ from orchestrator.execution.sessions import (
     session_display_name,
 )
 from orchestrator.execution.worktrees import (
+    DENIED_GIT_SUBCOMMANDS,
     WorktreeError,
+    WorktreeRefreshConflict,
     create_worktree,
+    denied_git_tool_patterns,
     group_branch,
     integration_branch,
+    is_denied_git_invocation,
     provision_env,
     remove_worktree,
     worktree_path,
@@ -659,3 +663,97 @@ def test_conflicting_directory_at_worktree_path_is_rejected(git_repo):
             branch=group_branch("r", "g1"),
             start_point="main",
         )
+
+
+def _git_config(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "config", *args], cwd=cwd, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_worktree_reports_worktree_config_extension_and_isolates_user_email(git_repo):
+    branch = group_branch("run1", "g1")
+    path = create_worktree(
+        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert _git_config(path, "extensions.worktreeConfig") == "true"
+    subprocess.run(
+        ["git", "config", "--worktree", "user.email", "worker@example.com"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    assert _git_config(path, "user.email") == "worker@example.com"
+    assert _git_config(git_repo, "user.email") == "test@test"
+
+
+def test_create_worktree_idempotent_and_rejects_other_branch(git_repo):
+    branch = group_branch("run1", "g1")
+    path = create_worktree(
+        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    again = create_worktree(
+        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert path == again
+
+    subprocess.run(
+        ["git", "checkout", "-b", "other"], cwd=git_repo, check=True, capture_output=True
+    )
+    other_path = worktree_path(git_repo, "g2", "fix auth 2")
+    subprocess.run(
+        ["git", "worktree", "add", str(other_path), "-b", "some-other-branch"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(WorktreeError, match="some-other-branch"):
+        create_worktree(
+            git_repo,
+            group_id="g2",
+            name="fix auth 2",
+            branch=group_branch("run1", "g2"),
+            start_point="main",
+        )
+
+
+def test_denied_git_subcommands_are_rejected_others_accepted():
+    for denied in DENIED_GIT_SUBCOMMANDS:
+        assert is_denied_git_invocation(list(denied))
+    assert is_denied_git_invocation(["worktree", "prune"])
+    for allowed in (["status"], ["add", "-A"], ["commit", "-m", "x"], ["diff"]):
+        assert not is_denied_git_invocation(allowed)
+    patterns = denied_git_tool_patterns()
+    assert "Bash(git stash:*)" in patterns
+    assert "Bash(git reset --hard:*)" in patterns
+    assert "Bash(git worktree prune:*)" in patterns
+
+
+def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_aborts(git_repo):
+    branch = group_branch("run1", "g1")
+    path = create_worktree(
+        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    (path / "README.md").write_text("worker change\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "worker edit"], cwd=path, check=True, capture_output=True
+    )
+
+    (git_repo / "README.md").write_text("operator change\n")
+    subprocess.run(["git", "add", "."], cwd=git_repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "operator edit"], cwd=git_repo, check=True, capture_output=True
+    )
+
+    with pytest.raises(WorktreeRefreshConflict, match="README.md"):
+        create_worktree(git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main")
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
+    ).stdout
+    assert "UU" not in status
+    assert not (path / ".git").is_dir()  # linked worktree: .git is a file, not a dir
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"], cwd=path, capture_output=True
+    )
+    assert result.returncode != 0  # merge was aborted, no dangling MERGE_HEAD
