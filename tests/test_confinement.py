@@ -41,6 +41,25 @@ def confined(tmp_path: Path):
     (claude_home / "projects" / "other-slug" / "memory").mkdir(parents=True)
     (claude_home / "shell-snapshots").mkdir(parents=True)
     (claude_home / "shell-snapshots" / "snap.sh").write_text("echo hi\n")
+    # system_paths=[] because pytest's tmp_path lives under /tmp, which the real
+    # policy allows: with the defaults, the "denied" paths below would be
+    # writable via the /tmp rule and these assertions would prove nothing.
+    policy = build_policy(
+        worktree=worktree, claude_home=claude_home, project_slug="my-slug", system_paths=[]
+    )
+    preexec_fn, result = landlock_preexec(policy)
+    assert result.applied
+    return worktree, claude_home, preexec_fn
+
+
+@pytest.fixture
+def confined_with_system(tmp_path: Path):
+    """The production policy, system paths included — for asserting a confined
+    worker can still run its tools."""
+    worktree = tmp_path / "worktree-sys"
+    worktree.mkdir()
+    claude_home = tmp_path / "claude-sys"
+    (claude_home / "shell-snapshots").mkdir(parents=True)
     policy = build_policy(worktree=worktree, claude_home=claude_home, project_slug="my-slug")
     preexec_fn, result = landlock_preexec(policy)
     assert result.applied
@@ -81,6 +100,42 @@ def test_confinement_boundary_survives_an_intermediate_shell(confined):
     denied = _run(preexec_fn, f"bash -c 'echo x > {other_memory}/nested.md'")
     assert denied.returncode != 0
     assert not (other_memory / "nested.md").exists()
+
+
+@landlock_unavailable
+def test_confined_subprocess_can_still_run_git(confined_with_system):
+    """The policy has to leave a worker able to do its job.
+
+    `/dev/null` was unwritable as shipped, and git opens it unconditionally —
+    `git --version` exited 128, so a confined worker could not have committed
+    anything. Caught only by running a real confined process; the rule looked
+    present because `landlock_add_rule` fails with EINVAL on a non-directory
+    when the mask carries directory rights, and that error is ignored.
+    """
+    _, _, preexec_fn = confined_with_system
+    assert _run(preexec_fn, "git --version").returncode == 0
+    assert _run(preexec_fn, "echo x > /dev/null").returncode == 0
+
+
+@landlock_unavailable
+def test_confined_subprocess_can_write_claude_runtime_scratch(confined):
+    """`claude` writes `shell-snapshots/`, `sessions/`, `file-history/` and more
+    as it runs. Those were read-only as shipped, which hardens nothing — the
+    asset under guard is `projects/<other-slug>/memory` — and breaks the worker."""
+    _, claude_home, preexec_fn = confined
+    snapshot = claude_home / "shell-snapshots" / "written-at-runtime.sh"
+    assert _run(preexec_fn, f"echo ok > {snapshot}").returncode == 0
+    assert snapshot.read_text() == "ok\n"
+
+
+@landlock_unavailable
+def test_confined_subprocess_cannot_write_outside_its_worktree(confined, tmp_path):
+    """The operator's own checkout is outside the boundary too, not just memory."""
+    outside = tmp_path / "operator-checkout"
+    outside.mkdir()
+    assert _run(preexec_fn := confined[2], f"echo x > {outside}/stolen.txt").returncode != 0
+    assert not (outside / "stolen.txt").exists()
+    assert preexec_fn is not None
 
 
 def test_landlock_degrades_with_one_warning_and_the_round_still_runs(tmp_path, capsys, monkeypatch):
@@ -137,6 +192,7 @@ def test_disallowed_tools_and_settings_appear_in_argv_when_configured(tmp_path):
         transcript_root=tmp_path / "fake-home" / "projects",
         disallowed_tools=["Bash(git stash:*)"],
         settings='{"foo": "bar"}',
+        safety_deny=False,
     )
     runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
     calls_path = tmp_path / "fake-home" / "calls.jsonl"
@@ -154,5 +210,62 @@ def test_disallowed_tools_and_settings_appear_in_argv_when_configured(tmp_path):
     )
     plain_runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
     plain_call = json.loads((tmp_path / "fake-home-2" / "calls.jsonl").read_text().splitlines()[0])
-    assert "--disallowedTools" not in plain_call["argv"]
     assert "--settings" not in plain_call["argv"]
+    # An unconfigured runner is *not* rule-free: the safety deny rules are always
+    # present, and only `safety_deny=False` removes the flag entirely.
+    plain_rules = plain_call["argv"][plain_call["argv"].index("--disallowedTools") + 1]
+    assert "memory" in plain_rules
+    assert "Bash(git stash:*)" in plain_rules
+
+
+def test_safety_deny_rules_are_added_without_being_asked_for(tmp_path):
+    """A runner nobody configured still denies the two things that have actually
+    caused damage: repo-global git mutators, and writes to operator memory."""
+    runner = SessionRunner(transcript_root=tmp_path / "home" / "projects")
+    rules = runner.effective_disallowed_tools()
+
+    memory_rules = [r for r in rules if "memory" in r]
+    assert memory_rules, "operator memory must be denied by default"
+    for tool in ("Edit", "Write", "MultiEdit"):
+        assert any(r.startswith(f"{tool}(") for r in memory_rules)
+    # Every project's memory, not just the worker's own slug: the observed
+    # incident had a worker in one project write into another project's memory.
+    assert all("/**/memory/**" in r for r in memory_rules)
+    assert any("git stash" in r for r in rules)
+
+    assert (
+        SessionRunner(
+            transcript_root=tmp_path / "home" / "projects", safety_deny=False
+        ).effective_disallowed_tools()
+        == []
+    )
+
+
+def test_configured_rules_survive_and_are_not_duplicated(tmp_path):
+    runner = SessionRunner(
+        transcript_root=tmp_path / "home" / "projects",
+        disallowed_tools=["Bash(git stash:*)", "Bash(rm:*)"],
+    )
+    rules = runner.effective_disallowed_tools()
+    assert rules[:2] == ["Bash(git stash:*)", "Bash(rm:*)"]  # operator rules keep precedence
+    assert len(rules) == len(set(rules))
+    assert rules.count("Bash(git stash:*)") == 1  # also produced by the git deny list
+
+
+def test_cli_built_runner_is_confined_and_carries_safety_rules(tmp_path, monkeypatch):
+    """The regression that let the whole boundary sit dead for a release.
+
+    Landlock, the git deny list and `--settings` were all built and unit-tested,
+    but `cli.py` constructed `SessionRunner` without passing any of them, so no
+    real run was ever confined. Every mechanism test passed throughout. This
+    asserts the *wiring*: what the CLI actually builds from a default config.
+    """
+    from orchestrator.cli import build_session_runner
+    from orchestrator.config import OrchestratorConfig
+
+    config = OrchestratorConfig()
+    assert config.session.confine is True, "confinement must be on by default"
+
+    runner = build_session_runner(config)
+    assert runner.confine is True
+    assert any("memory" in r for r in runner.effective_disallowed_tools())

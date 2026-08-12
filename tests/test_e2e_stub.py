@@ -76,10 +76,19 @@ def repo(tmp_path: Path) -> Path:
 
 def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
     (repo / ".orchestrator").mkdir(exist_ok=True)
+    # Confinement off for the stub harness only. `fake_claude.py` records every
+    # call to `<fake_home>/calls.jsonl` and reads its scripts from
+    # `<fake_home>/scripts/` — writes at the *root* of the fake claude home,
+    # which the real CLI never does and which the policy therefore does not
+    # allow. That is harness plumbing, not product behaviour; the boundary
+    # itself is covered by tests/test_confinement.py against a real Landlock
+    # ruleset, and the default stays on (see
+    # test_cli_built_runner_is_confined_and_carries_safety_rules).
     (repo / ".orchestrator" / "config.toml").write_text(
         "[session]\n"
         f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
         f'transcript_root = "{fake_home}/projects"\n'
+        "confine = false\n"
         f"{extra}"
     )
 

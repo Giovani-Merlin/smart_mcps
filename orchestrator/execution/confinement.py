@@ -135,11 +135,80 @@ def probe_claude_runtime_dirs(claude_home: Path) -> list[str]:
     return sorted(p.name for p in claude_home.iterdir() if p.is_dir() and p.name != "projects")
 
 
+#: Paths every ordinary Unix process expects to be able to write, and which
+#: protect nothing by being denied.
+#:
+#: Found by running a real confined subprocess rather than by reasoning: without
+#: ``/dev/null`` even ``git --version`` exits 128 ("could not open '/dev/null'"),
+#: which would have broken every confined worker on its first commit, and without
+#: a temp dir git, editors and ``tempfile`` all fail. Denying these buys no
+#: isolation — the asset under guard is the operator's memory, not the null
+#: device — while breaking essentially every tool a worker runs.
+_SYSTEM_WRITE_PATHS = (
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/shm",
+    "/tmp",
+    "/var/tmp",
+)
+
+
+def system_write_paths() -> list[Path]:
+    """The always-writable system paths, including ``$TMPDIR`` when it points
+    somewhere other than the standard temp dirs."""
+    paths = [Path(p) for p in _SYSTEM_WRITE_PATHS]
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        candidate = Path(tmpdir)
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+#: File-editing tools that could rewrite an operator memory file. ``Read`` is
+#: deliberately absent: a worker reading the operator's notes is not the damage
+#: mode (both observed incidents were *edits*), and denying reads would also
+#: block legitimate context the permission layer cannot tell apart.
+_EDITING_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def operator_memory_deny_patterns(claude_home: Path) -> list[str]:
+    """``--disallowedTools`` rules blocking writes to *every* project's auto-memory
+    directory under ``claude_home``.
+
+    This is defence in depth, not the boundary. Landlock is the boundary — it
+    excludes operator memory by construction (see ``probe_claude_runtime_dirs``).
+    But confinement degrades to a warning on a kernel without Landlock, and that
+    degrade path is exactly where the two observed incidents would recur, so the
+    deny rules have to stand on their own there.
+
+    The pattern is deliberately ``**/memory/**`` across all of ``projects/``
+    rather than the operator's slug alone: a worker in project A has written into
+    project B's memory before, so naming one slug would leave the observed hole
+    open.
+    """
+    root = claude_home / "projects"
+    # Claude Code permission rules take gitignore-style paths, where a leading
+    # `//` anchors at the filesystem root. `~` is not expanded here: the rule is
+    # handed to a subprocess whose HOME we do not control.
+    pattern = f"//{root.as_posix().lstrip('/')}/**/memory/**"
+    return [f"{tool}({pattern})" for tool in _EDITING_TOOLS]
+
+
 @dataclass
 class ConfinementPolicy:
-    """What one worker subprocess may touch: full read-write on its own
-    worktree and project dir, read-only on the rest of the enumerated
-    ``~/.claude`` allowlist."""
+    """What one worker subprocess may write: its own worktree, its own project
+    dir, and the CLI's own runtime scratch dirs under ``~/.claude``.
+
+    Only write rights are handled (see ``_apply_landlock``), so reads are
+    unrestricted throughout — a confined worker still loads its interpreter,
+    system libraries and certificates normally. ``read_only`` therefore carries
+    no rule; it records what was probed and deliberately left unwritable.
+    """
 
     read_write: list[Path] = field(default_factory=list)
     read_only: list[Path] = field(default_factory=list)
@@ -153,16 +222,38 @@ class ConfinementResult:
 
 
 def build_policy(
-    *, worktree: Path, claude_home: Path, project_slug: str | None = None
+    *,
+    worktree: Path,
+    claude_home: Path,
+    project_slug: str | None = None,
+    system_paths: Sequence[Path] | None = None,
 ) -> ConfinementPolicy:
     """The policy for a worker running in ``worktree`` with ``~/.claude`` at
     ``claude_home``. ``project_slug`` defaults to the real CLI's own encoding
-    of ``worktree`` (its transcript directory name)."""
+    of ``worktree`` (its transcript directory name).
+
+    ``system_paths`` defaults to ``system_write_paths()`` and exists so a test
+    can pass ``[]``: those defaults include ``/tmp``, which is where pytest puts
+    its ``tmp_path`` fixtures, so a boundary assertion written against a fake
+    ``claude_home`` under ``/tmp`` would otherwise be allowed by the ``/tmp``
+    rule rather than by the rule under test. Production never passes it.
+    """
     slug = project_slug or encode_cwd(worktree)
     project_dir = claude_home / "projects" / slug
     project_dir.mkdir(parents=True, exist_ok=True)
-    read_only = [claude_home / name for name in probe_claude_runtime_dirs(claude_home)]
-    return ConfinementPolicy(read_write=[worktree, project_dir], read_only=read_only)
+    # The probed runtime dirs are writable, not read-only. `claude` writes to its
+    # own scratch continuously — `shell-snapshots/`, `sessions/`, `session-env/`,
+    # `file-history/`, `tasks/` were all touched within minutes on a live box —
+    # so denying writes there does not harden anything, it just breaks the worker.
+    # The isolation that matters is `projects/`, which is excluded wholesale by
+    # `probe_claude_runtime_dirs` and re-added one slug at a time; every operator
+    # memory dir lives under some *other* slug and stays unwritable.
+    runtime_dirs = [claude_home / name for name in probe_claude_runtime_dirs(claude_home)]
+    system = system_write_paths() if system_paths is None else list(system_paths)
+    return ConfinementPolicy(
+        read_write=[worktree, project_dir, *runtime_dirs, *system],
+        read_only=[],
+    )
 
 
 def landlock_preexec(
@@ -232,6 +323,15 @@ def _apply_landlock(*, read_write: Sequence[Path], read_only: Sequence[Path]) ->
 def _add_rule(ruleset_fd: int, path: Path, access: int) -> None:
     if not path.exists():
         return
+    # A path_beneath rule on a non-directory is rejected with EINVAL if the mask
+    # carries directory-only rights (MAKE_DIR, REMOVE_FILE, …), and the syscall
+    # error here is deliberately ignored — so the rule would vanish silently.
+    # That is what made `/dev/null` unwritable: `git --version` exited 128 while
+    # the rule looked present. Device and file targets get file rights only.
+    if not path.is_dir():
+        access &= _ACCESS_FS_WRITE_FILE
+        if not access:
+            return
     fd = os.open(str(path), os.O_PATH | os.O_CLOEXEC)
     try:
         attr = _PathBeneathAttr(allowed_access=access, parent_fd=fd)

@@ -31,7 +31,13 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from orchestrator.execution.confinement import build_policy, landlock_preexec, warn_once
+from orchestrator.execution.confinement import (
+    build_policy,
+    landlock_preexec,
+    operator_memory_deny_patterns,
+    warn_once,
+)
+from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 
 REQUIRED_CLI_FLAGS = (
@@ -174,7 +180,8 @@ class SessionRunner:
         thinking: str | None = None,
         disallowed_tools: Sequence[str] | None = None,
         settings: str | None = None,
-        confine: bool = False,
+        confine: bool = True,
+        safety_deny: bool = True,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -185,6 +192,7 @@ class SessionRunner:
         self.disallowed_tools = list(disallowed_tools) if disallowed_tools else None
         self.settings = settings
         self.confine = confine
+        self.safety_deny = safety_deny
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
         self._env = _scrub_virtualenv({**os.environ, **(env or {})})
         self.tracker = tracker
@@ -298,6 +306,28 @@ class SessionRunner:
         matches = sorted(self.transcript_root.glob(f"*/{session_id}.jsonl"))
         return matches[0] if matches else None
 
+    def effective_disallowed_tools(self) -> list[str]:
+        """Configured deny rules plus the built-in safety rules.
+
+        Composed here rather than at the call site on purpose. The previous
+        arrangement left it to whoever built the runner, and the one production
+        construction site (``cli.py``) passed nothing — so Landlock, the git deny
+        list and ``--settings`` were all unreachable in a real run while their
+        unit tests passed against directly-built runners. A boundary assembled by
+        its consumers is a boundary that goes missing; this one assembles itself,
+        and ``safety_deny=False`` is the single explicit opt-out.
+
+        Order is configured-first so an operator rule keeps precedence, and the
+        result is de-duplicated because the git patterns overlap what a config
+        may already list.
+        """
+        rules = list(self.disallowed_tools or [])
+        if self.safety_deny:
+            rules += denied_git_tool_patterns()
+            rules += operator_memory_deny_patterns(self._claude_home())
+        seen: set[str] = set()
+        return [r for r in rules if not (r in seen or seen.add(r))]
+
     def _claude_home(self) -> Path:
         """``~/.claude`` (or its test-double), derived from ``transcript_root``
         (``<claude_home>/projects``) so confinement and transcript discovery
@@ -337,8 +367,9 @@ class SessionRunner:
             argv += ["--permission-mode", self.permission_mode]
         if self.allowed_tools:
             argv += ["--allowedTools", ",".join(self.allowed_tools)]
-        if self.disallowed_tools:
-            argv += ["--disallowedTools", ",".join(self.disallowed_tools)]
+        denied = self.effective_disallowed_tools()
+        if denied:
+            argv += ["--disallowedTools", ",".join(denied)]
         if self.settings:
             argv += ["--settings", self.settings]
         if self.model:

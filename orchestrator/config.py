@@ -171,9 +171,15 @@ class SessionConfig(BaseModel):
     thinking: str | None = "adaptive"
     # Plan U2: kernel-enforced confinement via Landlock, layered under the
     # deny-rules below rather than instead of them (deny-rules give a clearer
-    # error for the accidental case; Landlock is the actual boundary). Off by
-    # default so every existing run/test is unaffected until a run opts in.
-    confine: bool = False
+    # error for the accidental case; Landlock is the actual boundary).
+    #
+    # On by default. It shipped off, on the reasoning that a run should opt in —
+    # but the CLI then never passed it at all, so the whole mechanism sat dead
+    # for a release while the P0 it closes (workers editing the operator's
+    # auto-memory) stayed open. An opt-in boundary that nothing opts into is not
+    # a boundary. Defaulting on is safe because absence degrades to a warning
+    # and deny-rules rather than failing a group.
+    confine: bool = True
     # --disallowedTools patterns (e.g. the denied git subcommands from
     # worktrees.denied_git_tool_patterns()) and an optional --settings path or
     # inline JSON string. Empty/None means the flag is omitted entirely.

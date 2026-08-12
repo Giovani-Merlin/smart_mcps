@@ -24,6 +24,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
+from orchestrator.execution.confinement import landlock_abi_version
 from orchestrator.execution.escalation import (
     EscalationBroker,
     EscalationError,
@@ -661,6 +662,32 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------- run/resume
 
 
+def build_session_runner(config: OrchestratorConfig) -> SessionRunner:
+    """The one place a production ``SessionRunner`` is built.
+
+    Extracted from ``_cmd_run`` so the wiring is assertable. It was inline, and
+    it silently omitted ``confine``/``disallowed_tools``/``settings`` — leaving
+    Landlock, the git deny list and per-worker settings unreachable in every real
+    run while their own unit tests passed against directly-constructed runners.
+    A construction site no test can see is a construction site that drifts.
+    """
+    session = config.session
+    return SessionRunner(
+        claude_bin=session.claude_bin,
+        model=session.model,
+        permission_mode=config.execution.permission_mode,
+        allowed_tools=session.allowed_tools or None,
+        transcript_root=(
+            Path(session.transcript_root).expanduser() if session.transcript_root else None
+        ),
+        max_thinking_tokens=session.max_thinking_tokens,
+        thinking=session.thinking,
+        disallowed_tools=session.disallowed_tools or None,
+        settings=session.settings,
+        confine=session.confine,
+    )
+
+
 def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
     repo_root = args.repo.resolve()
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
@@ -777,25 +804,27 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         if config.escalation.enabled
         else "HITL off"
     )
+    # Whether workers are actually confined belongs in the header next to the
+    # permission mode, not in a warning that scrolls past: `confine = true` with
+    # no Landlock is a silently weaker run, and that is the case an operator most
+    # needs to see before it starts.
+    if not config.session.confine:
+        confinement = "confinement off"
+    else:
+        abi = landlock_abi_version()
+        confinement = (
+            f"confinement on (landlock abi {abi})"
+            if abi > 0
+            else "confinement on but UNAVAILABLE (no landlock; deny-rules only)"
+        )
     print(
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
-        f"permission-mode {config.execution.permission_mode}"
+        f"permission-mode {config.execution.permission_mode}, {confinement}"
     )
     if intensity_override_line is not None:
         print(intensity_override_line)
 
-    session = config.session
-    runner = SessionRunner(
-        claude_bin=session.claude_bin,
-        model=session.model,
-        permission_mode=config.execution.permission_mode,
-        allowed_tools=session.allowed_tools or None,
-        transcript_root=(
-            Path(session.transcript_root).expanduser() if session.transcript_root else None
-        ),
-        max_thinking_tokens=session.max_thinking_tokens,
-        thinking=session.thinking,
-    )
+    runner = build_session_runner(config)
     try:
         runner.preflight()
     except SessionError as exc:
