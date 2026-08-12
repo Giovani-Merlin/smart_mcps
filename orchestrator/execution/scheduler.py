@@ -19,6 +19,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -151,6 +152,15 @@ class RunState(BaseModel):
     run_id: str
     groups: dict[str, GroupRunState] = Field(default_factory=dict)
     live_pids: dict[int, str] = Field(default_factory=dict)  # pid → session context
+    # Set when the process driving this run was interrupted, cleared when a
+    # driver picks it up again. Without it a Ctrl-C leaves `state.json` reading
+    # exactly like a healthy run — groups RUNNING, `live_pids` empty, because
+    # pids are only registered for a subprocess's lifetime — and the only way to
+    # tell a killed run from a live one is to diff file mtimes against a worker
+    # transcript. This is deliberately a timestamp on the run, not a group state:
+    # the groups really were running, and inventing an INTERRUPTED state for them
+    # would collide with the classification the scheduler already owns.
+    interrupted_at: str | None = None
 
 
 @dataclass
@@ -204,6 +214,10 @@ class Scheduler:
                 self._dependents[dep].append(group.id)
         if resume:
             self.state = RunState.model_validate_json(self.paths.state_path.read_text())
+            # A driver is attached again, so the run is no longer interrupted —
+            # whatever happens next writes its own marker.
+            self.state.interrupted_at = None
+            self._persist()
         else:
             self.state = RunState(
                 run_id=paths.run_id, groups={gid: GroupRunState() for gid in self.groups}
@@ -215,6 +229,17 @@ class Scheduler:
 
     def _persist(self) -> None:
         atomic_write_text(self.paths.state_path, self.state.model_dump_json(indent=2) + "\n")
+
+    def mark_interrupted(self) -> None:
+        """Stamp the run as no longer driven. Best-effort: this runs on the way
+        out after a Ctrl-C, and failing to record the fact must not replace the
+        operator's interrupt with a traceback."""
+        try:
+            with self._lock:
+                self.state.interrupted_at = datetime.now(UTC).isoformat(timespec="seconds")
+            self._persist()
+        except Exception:  # noqa: BLE001 - never obscure the interrupt itself
+            pass
 
     def set_state(self, group_id: str, state: GroupState, *, failure: str | None = None) -> None:
         """``failure`` always overwrites (plan U8): a transition made with no

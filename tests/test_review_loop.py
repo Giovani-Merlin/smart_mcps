@@ -1460,3 +1460,34 @@ async def test_reentry_breaker_precheck_against_last_context_tokens_is_unchanged
     reentry_lines = [line for line in lines if "re-entry" in line]
     assert len(reentry_lines) == 1
     assert "context tokens 200 exceed limit 100" in reentry_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_the_launch_line_is_written_before_the_fork_not_after(tmp_path):
+    """A group killed during launch must still say it was launching.
+
+    `start_fork` blocks for as long as the base session takes to absorb the
+    group's prompt — 21 minutes on a real run — and the "coder launched" line was
+    written only once it returned. So an interrupted launch left a run.log whose
+    last line was "worktree ready", implying the group had never started, and a
+    live run showed a long silence with nothing to explain it.
+    """
+
+    class ForkNeverReturns(StubRunner):
+        def start_fork(
+            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        ):
+            raise SessionError("killed mid-launch")
+
+    harness = Harness(tmp_path, ForkNeverReturns({}))
+    with pytest.raises(SessionError, match="killed mid-launch"):
+        await harness.run(make_group())
+
+    lines = run_log_lines(harness)
+    launching = [line for line in lines if "coder launching" in line]
+    assert launching, f"no launch line survived an interrupted fork\ngot: {lines}"
+    # The session id is on the line, so the transcript is findable for a group
+    # that died before any round existed.
+    assert re.search(r"session [0-9a-f-]{36}\)", launching[0])
+    # And the completion line is absent, because the fork never returned.
+    assert not any("coder launched" in line for line in lines)

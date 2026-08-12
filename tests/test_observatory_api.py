@@ -318,6 +318,10 @@ class TestStallEvidence:
             "round": 3,
             "round_started_at": "2026-08-09T10:31:00.000+00:00",
             "updated_at": "2026-08-09T10:54:00.000+00:00",
+            # Written before the phase shipped, so both read null rather than
+            # erroring — every run already on disk looks like this.
+            "phase": None,
+            "phase_elapsed_s": None,
         }
         # 23 minutes of silence is for the client to interpret; the server never
         # says so, and there is no field here in which it could.

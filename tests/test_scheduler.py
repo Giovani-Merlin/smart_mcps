@@ -1235,3 +1235,63 @@ async def test_exclusion_survives_a_resume(tmp_path):
     states = await second.run()
     assert states == {"g1": GroupState.COMPLETED, "g2": GroupState.COMPLETED}
     assert not any(len(snapshot) > 1 for snapshot in overlaps)
+
+
+# ------------------------------------------------------- interrupt visibility
+
+
+def test_mark_interrupted_stamps_the_run_and_survives_a_reread(tmp_path):
+    """A killed run must not read like a live one.
+
+    `live_pids` is empty in both cases (pids are registered only for a
+    subprocess's lifetime), and mid-flight groups stay RUNNING, so before this
+    marker the only way to tell a Ctrl-C from a healthy run was to diff
+    `state.json`'s mtime against a worker transcript.
+    """
+    paths = RunPaths(tmp_path, "r1")
+    scheduler = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=completing_executor()
+    )
+    assert scheduler.state.interrupted_at is None
+
+    scheduler.set_state("g1", GroupState.RUNNING)
+    scheduler.mark_interrupted()
+
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.interrupted_at is not None
+    assert persisted.groups["g1"].state is GroupState.RUNNING  # the group really was running
+    assert persisted.live_pids == {}  # and this alone never distinguished the two
+
+
+@pytest.mark.asyncio
+async def test_resuming_clears_the_interrupt_marker(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={"g1": GroupRunState(state=GroupState.RUNNING)},
+        interrupted_at="2026-08-12T06:00:00+00:00",
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    # Cleared as soon as a driver attaches, and persisted immediately — a reader
+    # during the run must not still see the previous interrupt.
+    assert scheduler.state.interrupted_at is None
+    assert RunState.model_validate_json(paths.state_path.read_text()).interrupted_at is None
+    assert await scheduler.run() == {"g1": GroupState.COMPLETED}
+
+
+def test_a_broken_state_write_never_replaces_the_interrupt_with_a_traceback(tmp_path, monkeypatch):
+    paths = RunPaths(tmp_path, "r1")
+    scheduler = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=completing_executor()
+    )
+    monkeypatch.setattr(
+        scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone"))
+    )
+    scheduler.mark_interrupted()  # must not raise

@@ -271,6 +271,12 @@ export interface GroupHeartbeat {
   round: number;
   round_started_at?: string | null;
   updated_at?: string | null;
+  // What the group is doing between round boundaries. Rounds cannot explain a
+  // silence that happens before round 1 exists, and that is the longest one:
+  // forking the base session took 21 minutes on a real run. Null for every run
+  // written before the phase shipped.
+  phase?: string | null;
+  phase_elapsed_s?: number | null;
 }
 
 export interface SnapshotGroup {

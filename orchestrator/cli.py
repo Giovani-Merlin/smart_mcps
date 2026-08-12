@@ -959,6 +959,16 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         _print_outcomes(scheduler.state)
         print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        # Ctrl-C previously left state.json indistinguishable from a live run, so
+        # the next reader had to diff mtimes against a worker transcript to find
+        # out the run was dead. Record it, say so, and point at resume.
+        scheduler.mark_interrupted()
+        log_event(paths, f"run {run_id} interrupted (SIGINT)")
+        print("\nrun interrupted", file=sys.stderr)
+        _print_outcomes(scheduler.state)
+        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+        return 130
     except SchedulerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         _print_outcomes(scheduler.state)
@@ -1117,6 +1127,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     manifest = store.load() if store.exists() else None
 
     print(f"run {state.run_id}")
+    if state.interrupted_at is not None:
+        # Said before the group list, because it changes how every line below
+        # reads: a RUNNING group under an interrupted run is not running.
+        print(f"interrupted at {state.interrupted_at} — no process is driving this run")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
         print(f"base session: {manifest.base_session_id}")

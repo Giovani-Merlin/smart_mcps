@@ -198,7 +198,7 @@ class _GroupExecution:
         # Evidence, not a state (plan P3): the loop only ever tells it when a
         # round started; the writing happens on its own daemon thread and nothing
         # here reads it back.
-        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid)
+        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -242,6 +242,17 @@ class _GroupExecution:
             self.coder_sid = str(uuid.uuid4())
             self.reviewer_sid = None
             self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
+            # Logged *before* the fork, not after. `start_fork` blocks for as long
+            # as the base session takes to absorb the group's prompt — 21 minutes
+            # on a real run — and the old "coder launched" line landed only once it
+            # returned, so a group killed mid-launch left a log that never
+            # mentioned it had started, and a live run showed a silent gap with no
+            # indication anything was happening.
+            self._log(
+                f"group {self.gid} generation {self.generation}: "
+                f"coder launching, forking base session (session {self.coder_sid})"
+            )
+            self._heartbeat.mark_phase("forking the base session")
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
                 base_id=self.deps.base_session_id,
@@ -366,6 +377,16 @@ class _GroupExecution:
                 entry, f"context tokens {entry.last_context_tokens} exceed limit {limit}"
             )
             return None
+        # Same reasoning as the fork line: the resume blocks while the worker
+        # reloads its context (14 minutes on the run that prompted this), and
+        # announcing it only on success made a resumed run look wedged.
+        #
+        # Deliberately not phrased as a "re-entry" line: R6 promises exactly one
+        # of those per re-entry and they report an *outcome* (resumed, or forked
+        # after a failure). This one announces an attempt, so it must not be
+        # mistaken for the outcome by a reader counting them.
+        self._log(f"group {self.gid}: resuming interrupted coder session {entry.session_id}")
+        self._heartbeat.mark_phase("resuming the interrupted coder")
         try:
             result = await asyncio.to_thread(
                 self.deps.runner.resume,
