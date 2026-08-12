@@ -69,6 +69,7 @@ HELP_TEXT = """Usage: claude [options] [command] [prompt]
 
 Options:
   -p, --print                           Print response and exit
+  --verbose                             Override verbose mode setting
   --output-format <format>              Output format (only works with --print)
   -r, --resume [value]                  Resume a conversation by session ID
   --fork-session                        When resuming, create a new session ID
@@ -206,6 +207,36 @@ def main() -> int:
     home = Path(os.environ["FAKE_CLAUDE_HOME"])
     (home / "sessions").mkdir(parents=True, exist_ok=True)
     opts, bools, prompt = _parse(args)
+
+    # Under `--input-format stream-json` the real CLI takes the conversation from
+    # stdin and ignores any prompt on argv. Mirror that here: read the opening
+    # user message off stdin so the stub sees the same prompt a real worker would,
+    # rather than an argv the real binary never reads.
+    if opts.get("--input-format") == "stream-json":
+        first = sys.stdin.readline()
+        if first.strip():
+            try:
+                envelope = json.loads(first)
+                blocks = (envelope.get("message") or {}).get("content") or []
+                prompt = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict)).strip()
+            except json.JSONDecodeError:
+                pass
+
+    # The real CLI *rejects* this combination, and this stub not rejecting it let
+    # a missing `--verbose` ship: every unit test passed while no real worker
+    # could spawn at all. Enforce the precondition here so the stub cannot hide
+    # an argv the real binary would refuse.
+    if (
+        opts.get("--output-format") == "stream-json"
+        and ("--print" in bools or "-p" in bools)
+        and "--verbose" not in bools
+    ):
+        print(
+            "Error: When using --print, --output-format=stream-json requires --verbose",
+            file=sys.stderr,
+        )
+        return 1
+
     started = time.time()
     forking = "--fork-session" in bools
 

@@ -114,13 +114,27 @@ class StreamingProcess:
         self._stderr_thread: threading.Thread | None = None
         self._exit_reported = False
         self._lock = threading.Lock()
+        # Follow-ups written by `send()` since the last `result` event. A round
+        # ends when the child reports `result` with nothing outstanding; until
+        # then a mid-round `send()` means one more `result` is still owed. See
+        # `_read_stdout` for why this decides when stdin closes.
+        self._pending_followups = 0
+        self._stdin_closed = False
 
     @property
     def pid(self) -> int:
         assert self._proc is not None
         return self._proc.pid
 
-    def start(self) -> None:
+    def start(self, prompt: str | None = None) -> None:
+        """Launch the child and, when *prompt* is given, write it as the round's
+        opening stream-json message.
+
+        The prompt **must** travel over stdin: under ``--input-format
+        stream-json`` the CLI ignores a prompt passed as ``-p <text>`` entirely,
+        emitting neither an assistant turn nor a ``result`` before exiting 0.
+        Passing it on argv looked right and did nothing.
+        """
         self._proc = subprocess.Popen(
             self._argv,
             cwd=self._cwd,
@@ -138,6 +152,10 @@ class StreamingProcess:
         self._stdout_thread.start()
         self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
         self._stderr_thread.start()
+        if prompt is not None:
+            # Not counted as a follow-up: this message *is* the round, and the
+            # `result` answering it is what ends it.
+            self._write_message(prompt)
 
     def _read_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -156,6 +174,21 @@ class StreamingProcess:
                     self.on_turn(TurnUsage.from_message_usage(usage))
             elif event_type == "result":
                 self._result_envelope = event
+                # The child does **not** exit on `result` while stdin is open —
+                # it waits for the next message, so `wait()` blocks forever.
+                # (Observed live on run r20260812-161423: 4h05m wall clock, 18s
+                # CPU, blocked in epoll_wait on an open stdin pipe.) EOF is what
+                # ends the process, so close stdin once nothing is outstanding.
+                # A follow-up sent mid-round still owes us its own `result`.
+                with self._lock:
+                    if self._pending_followups > 0:
+                        self._pending_followups -= 1
+                    else:
+                        self._close_stdin_locked()
+        # stdout is at EOF: the child is finishing or has died. Never leave stdin
+        # open here, or a child that failed without a `result` wedges `wait()`.
+        with self._lock:
+            self._close_stdin_locked()
 
     def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -166,30 +199,53 @@ class StreamingProcess:
         """Write a well-formed stream-json user message onto the child's
         stdin. Safe to call from inside ``on_turn`` while the round is still
         running — that is the whole point of the channel."""
+        with self._lock:
+            self._pending_followups += 1
+            self._write_message_locked(text)
+
+    def _write_message(self, text: str) -> None:
+        with self._lock:
+            self._write_message_locked(text)
+
+    def _write_message_locked(self, text: str) -> None:
         assert self._proc is not None and self._proc.stdin is not None
+        if self._stdin_closed:
+            return
         message = {
             "type": "user",
             "message": {"role": "user", "content": [{"type": "text", "text": text}]},
         }
-        with self._lock:
+        try:
             self._proc.stdin.write(json.dumps(message) + "\n")
             self._proc.stdin.flush()
+        except (OSError, ValueError):
+            # The child exited underneath us; `wait()` reports the real failure.
+            self._stdin_closed = True
 
-    def close_stdin(self) -> None:
+    def _close_stdin_locked(self) -> None:
+        if self._stdin_closed:
+            return
+        self._stdin_closed = True
         if self._proc is not None and self._proc.stdin is not None:
             try:
                 self._proc.stdin.close()
             except (OSError, ValueError):
                 pass
 
+    def close_stdin(self) -> None:
+        with self._lock:
+            self._close_stdin_locked()
+
     def wait(self) -> StreamOutcome:
         """Block until the child exits; join the reader threads so every event
         already on stdout/stderr has been consumed before returning."""
         assert self._proc is not None
-        # Deliberately not closed before the process exits: closing stdin here
-        # would race a still-in-flight on_turn callback's send() on the reader
-        # thread, since the CLI's own termination (a "result" event, then exit)
-        # decides when the round ends — not stdin's EOF.
+        # stdin is closed by the reader thread, on the `result` event that ends
+        # the round (or at stdout EOF). It deliberately is *not* closed here:
+        # this call blocks until the child exits, and the child only exits once
+        # stdin is at EOF — closing it after `wait()` returns would deadlock.
+        # An earlier version assumed the CLI terminates on its own `result`
+        # event; it does not, and that assumption hung a run for four hours.
         returncode = self._proc.wait()
         self.close_stdin()
         if self._tracker is not None and not self._exit_reported:

@@ -17,11 +17,14 @@ from pathlib import Path
 import pytest
 
 from orchestrator.execution.confinement import (
+    ConfinementPolicy,
     UNAVAILABLE_WARNING,
     build_policy,
     landlock_abi_version,
     landlock_preexec,
     probe_claude_runtime_dirs,
+    tool_cache_dirs,
+    user_cache_dir,
     warn_once,
 )
 from orchestrator.execution.sessions import SessionRunner
@@ -70,6 +73,92 @@ def _run(preexec_fn, script: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", script], preexec_fn=preexec_fn, capture_output=True, text=True
     )
+
+
+@landlock_unavailable
+def test_confined_subprocess_can_write_the_user_tool_cache(confined_with_system, monkeypatch):
+    """`uv`, `pip`, `npm` and friends all write the XDG cache, so a worker that
+    cannot is a worker that cannot run its own verification command.
+
+    Observed on run r20260812-202855: g1 and g8 both reported `permission_denied`
+    before reading a single source file, with `Failed to initialize cache at
+    ~/.cache/uv … Permission denied (os error 13)`.
+    """
+    _worktree, _claude_home, preexec_fn = confined_with_system
+    caches = tool_cache_dirs()
+    assert caches, "no tool cache dirs resolved"
+    # npm does not use XDG — its cache is ~/.npm — so asserting only the XDG root
+    # would still have let `npm install` fail, which is exactly what happened.
+    assert any(c == user_cache_dir() for c in caches)
+    for cache in caches:
+        probe = cache / "smart-mcps-confinement-probe"
+        result = _run(preexec_fn, f"echo ok > {probe}")
+        try:
+            assert result.returncode == 0, f"{cache} unwritable: {result.stderr}"
+            assert probe.read_text() == "ok\n"
+        finally:
+            probe.unlink(missing_ok=True)
+
+
+@landlock_unavailable
+def test_confined_worker_can_commit_inside_a_linked_worktree(tmp_path: Path):
+    """The end-to-end thing confinement exists to permit: a worker commits its work.
+
+    A linked worktree's `.git` is a *file* pointing at
+    `<repo>/.git/worktrees/<name>`, and objects/refs live in `<repo>/.git` — both
+    outside the worktree. Granting only the worktree left `git commit` impossible,
+    so on run r20260812-202855 g1 finished U1+U2 with 279 tests passing and could
+    not commit a line of it. A group that cannot commit merges empty while
+    reporting success, which is the failure mode E exists to catch.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a, cwd=repo: subprocess.run(  # noqa: E731
+        a, cwd=cwd, capture_output=True, text=True, check=True
+    )
+    run("git", "init", "-q", "-b", "main")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (repo / "seed.txt").write_text("seed\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "seed")
+
+    worktree = tmp_path / "wt"
+    run("git", "worktree", "add", "-q", "-b", "feature", str(worktree))
+    assert (worktree / ".git").is_file(), "expected a linked worktree, not a checkout"
+
+    # `system_paths` is pared to /dev/null (which git opens unconditionally)
+    # rather than left at its default: tmp_path lives under /tmp, and the default
+    # /tmp rule would make this whole repo writable for reasons unrelated to the
+    # git-dir grant under test — the assertion would pass even with the bug.
+    commit = (
+        f"cd {worktree} && git -c user.email=t@e.com -c user.name=t add -A "
+        f"&& git -c user.email=t@e.com -c user.name=t commit -qm 'work'"
+    )
+    (worktree / "work.txt").write_text("done\n")
+
+    # Without the git dirs — the policy as it shipped — the commit is impossible.
+    worktree_only = ConfinementPolicy(read_write=[worktree, Path("/dev/null")])
+    denied_fn, denied_result = landlock_preexec(worktree_only)
+    assert denied_result.applied
+    assert _run(denied_fn, commit).returncode != 0
+
+    policy = build_policy(
+        worktree=worktree,
+        claude_home=tmp_path / "claude",
+        system_paths=[Path("/dev/null")],
+    )
+    preexec_fn, result = landlock_preexec(policy)
+    assert result.applied
+    committed = _run(preexec_fn, commit)
+    assert committed.returncode == 0, committed.stderr
+
+    log = subprocess.run(
+        ["git", "-C", str(worktree), "log", "--oneline", "-1"],
+        capture_output=True,
+        text=True,
+    )
+    assert "work" in log.stdout
 
 
 @landlock_unavailable
@@ -216,6 +305,24 @@ def test_disallowed_tools_and_settings_appear_in_argv_when_configured(tmp_path):
     plain_rules = plain_call["argv"][plain_call["argv"].index("--disallowedTools") + 1]
     assert "memory" in plain_rules
     assert "Bash(git stash:*)" in plain_rules
+
+
+def test_streaming_argv_carries_verbose(tmp_path):
+    """`--print --output-format=stream-json` without `--verbose` is rejected by the
+    real CLI with exit 1, so no worker could ever spawn. Observed live on run
+    r20260812-161122; the stub now enforces the same pairing, and this pins the
+    flag itself so a refactor of `_call` cannot drop it silently again."""
+    env = {"FAKE_CLAUDE_HOME": str(tmp_path / "fake-home")}
+    (tmp_path / "fake-home" / "sessions").mkdir(parents=True)
+    runner = SessionRunner(
+        claude_bin=[sys.executable, str(FAKE_CLAUDE)],
+        env=env,
+        transcript_root=tmp_path / "fake-home" / "projects",
+    )
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    argv = json.loads((tmp_path / "fake-home" / "calls.jsonl").read_text().splitlines()[0])["argv"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
 
 
 def test_safety_deny_rules_are_added_without_being_asked_for(tmp_path):

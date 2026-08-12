@@ -29,6 +29,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -159,14 +160,129 @@ _SYSTEM_WRITE_PATHS = (
 
 def system_write_paths() -> list[Path]:
     """The always-writable system paths, including ``$TMPDIR`` when it points
-    somewhere other than the standard temp dirs."""
+    somewhere other than the standard temp dirs, and the user's tool cache."""
     paths = [Path(p) for p in _SYSTEM_WRITE_PATHS]
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         candidate = Path(tmpdir)
         if candidate not in paths:
             paths.append(candidate)
+    for cache in tool_cache_dirs():
+        if cache not in paths:
+            paths.append(cache)
     return paths
+
+
+def tool_cache_dirs() -> list[Path]:
+    """Every cache root a worker's toolchain writes to.
+
+    XDG covers `uv`, `pip` and most of the modern world, but **npm does not follow
+    it** — its cache is `~/.npm`. Observed on run r20260812-202855: with the XDG
+    fix in place, g8 still could not run `npm install --prefix web`, so `npm run
+    build` never ran and `web/dist` was never produced.
+
+    This is an enumeration, and enumerations of other people's conventions are
+    never finished — `~/.cargo`, `~/.gradle`, `~/.m2`, `~/go/pkg` will each want
+    adding the first time a worker is pointed at that ecosystem. See the note in
+    the validation findings: redirecting each tool's cache *into the worktree* via
+    environment variables would be the design that stops needing maintenance.
+    """
+    dirs: list[Path] = []
+    cache = user_cache_dir()
+    if cache is not None:
+        dirs.append(cache)
+    home = os.environ.get("HOME")
+    npm_cache = os.environ.get("npm_config_cache")
+    candidates = [Path(npm_cache)] if npm_cache else ([Path(home) / ".npm"] if home else [])
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
+def worktree_git_dirs(worktree: Path) -> list[Path]:
+    """The git directories a **linked worktree** must write to in order to commit.
+
+    In a `git worktree`, `<worktree>/.git` is a *file* pointing elsewhere:
+
+        $ cat .worktrees/g1-…/.git
+        gitdir: /home/gbm1996/wksp/drummAI/.git/worktrees/g1-…
+
+    That per-worktree dir holds HEAD, the index and the reflog; the common dir
+    (`…/drummAI/.git`) holds `objects/` and `refs/`. **Both live outside the
+    worktree**, so a policy granting only the worktree leaves `git commit`
+    impossible — which is exactly what happened on run r20260812-202855:
+
+        status: permission_denied
+        denied_command: git add -A && git commit -q -m "test"
+        summary: U1 and U2 are both implemented, tested and verified … the work is
+                 complete on disk but uncommitted because the sandbox blocks all
+                 git writes.
+
+    A group that cannot commit is a group that merges empty while reporting
+    success, so this has to be writable for confinement to be usable at all.
+
+    Returns an empty list when *worktree* is not a git repo, or git is unusable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--git-dir", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    dirs: list[Path] = []
+    for line in result.stdout.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # `rev-parse` may answer relatively (".git") for a normal checkout.
+        path = Path(line)
+        if not path.is_absolute():
+            path = (worktree / path).resolve()
+        if path.is_dir() and path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
+def user_cache_dir() -> Path | None:
+    """The XDG user cache root, created if missing.
+
+    Every toolchain a worker actually runs writes here — `uv` (hence
+    `uv run pytest`, the verification command of any uv project), `pip`, `npm`,
+    `cargo`, `go`. Denying it does not harden anything: a cache is regenerable
+    by construction and holds none of the operator state confinement exists to
+    protect. Denying it *does* stop the worker dead, which is what happened on
+    run r20260812-202855 — g1 and g8 both died before reading a single file with
+
+        Failed to initialize cache at ~/.cache/uv … Permission denied (os error 13)
+
+    That was not the operator's hook being unusual; it was the first command in
+    the worktree that needed a cache.
+    """
+    raw = os.environ.get("XDG_CACHE_HOME")
+    home = os.environ.get("HOME")
+    if raw:
+        cache = Path(raw)
+    elif home:
+        cache = Path(home) / ".cache"
+    else:
+        return None
+    try:
+        # Landlock rules address existing paths; a cache root that does not exist
+        # yet would silently drop out of the ruleset and fail the same way.
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return cache
 
 
 #: File-editing tools that could rewrite an operator memory file. ``Read`` is
@@ -250,8 +366,11 @@ def build_policy(
     # memory dir lives under some *other* slug and stays unwritable.
     runtime_dirs = [claude_home / name for name in probe_claude_runtime_dirs(claude_home)]
     system = system_write_paths() if system_paths is None else list(system_paths)
+    # A linked worktree keeps HEAD, its index and the object store outside the
+    # worktree; without these the worker can edit and test but never commit.
+    git_dirs = worktree_git_dirs(worktree)
     return ConfinementPolicy(
-        read_write=[worktree, project_dir, *runtime_dirs, *system],
+        read_write=[worktree, project_dir, *git_dirs, *runtime_dirs, *system],
         read_only=[],
     )
 

@@ -43,6 +43,7 @@ from orchestrator.execution.streaming import StreamError, StreamingProcess, Turn
 REQUIRED_CLI_FLAGS = (
     "--print",
     "--output-format",
+    "--verbose",
     "--resume",
     "--fork-session",
     "--session-id",
@@ -354,10 +355,18 @@ class SessionRunner:
     ) -> RoundResult:
         argv = [
             *self._bin,
-            "-p",
-            prompt,
+            # `--print` only. The prompt travels over stdin as a stream-json
+            # message (see `StreamingProcess.start`) — under `--input-format
+            # stream-json` a prompt on argv is silently ignored.
+            "--print",
             "--output-format",
             "stream-json",
+            # The CLI *rejects* `--print --output-format=stream-json` without
+            # `--verbose` ("requires --verbose", exit 1) — it is a hard
+            # precondition of the streaming channel, not a logging preference.
+            # Omitting it made every real worker launch fail at spawn while the
+            # e2e stub CLI, which does not enforce the pairing, stayed green.
+            "--verbose",
             "--include-partial-messages",
             "--input-format",
             "stream-json",
@@ -381,7 +390,9 @@ class SessionRunner:
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
-        returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context, on_turn=on_turn)
+        returncode, stdout, stderr = self._spawn(
+            argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
+        )
         if returncode != 0:
             raise SessionError(
                 f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
@@ -408,6 +419,7 @@ class SessionRunner:
         cwd: Path,
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+        prompt: str | None = None,
     ) -> tuple[int, str, str]:
         """One tracked subprocess, read incrementally rather than a single
         blocking ``communicate()`` (plan U1): the tracker still sees the PID for
@@ -439,7 +451,7 @@ class SessionRunner:
         )
         if on_turn is not None:
             stream.on_turn = lambda usage: on_turn(usage, stream.send)
-        stream.start()
+        stream.start(prompt=prompt)
         try:
             outcome = stream.wait()
         except StreamError as exc:
