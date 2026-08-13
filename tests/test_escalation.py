@@ -292,6 +292,58 @@ class TestEscalationBroker:
     def test_pending_escalations_empty_when_no_directory(self, tmp_path):
         assert pending_escalations(RunPaths(tmp_path, "nope")) == []
 
+    # ------------------------------------------------------- stdout (plan U7)
+
+    def test_raise_prints_id_kind_and_group_to_stdout(self, tmp_path, capsys):
+        broker = self._broker(tmp_path)
+        thread = _answer_when_present(
+            broker.paths, "e-out", EscalationResponse(id="e-out", action=HumanAction.ANSWER)
+        )
+        broker.raise_escalation(_request("e-out", kind=EscalationKind.CODER_BLOCKED))
+        thread.join()
+        out = capsys.readouterr().out
+        assert "[escalation]" in out
+        assert "e-out" in out and "coder_blocked" in out and "g1" in out
+
+    def test_raise_names_pending_groups_when_a_provider_is_wired(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        broker = EscalationBroker(
+            paths,
+            EscalationConfig(poll_interval_s=0.01),
+            pending_groups_provider=lambda: ["g1", "g2", "g3"],
+        )
+        thread = _answer_when_present(
+            paths, "e-blk", EscalationResponse(id="e-blk", action=HumanAction.ANSWER)
+        )
+        broker.raise_escalation(_request("e-blk"))  # request itself is for g1
+        thread.join()
+        out = capsys.readouterr().out
+        # the escalating group itself is not named as "blocked" by its own escalation
+        assert "g2" in out and "g3" in out and "blocks pending group" in out
+        line = next(line for line in out.splitlines() if "e-blk" in line)
+        assert "g1" not in line.split("blocks pending group")[-1]
+
+    def test_raise_omits_the_blocks_clause_when_nothing_is_pending(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        broker = EscalationBroker(
+            paths, EscalationConfig(poll_interval_s=0.01), pending_groups_provider=lambda: []
+        )
+        thread = _answer_when_present(
+            paths, "e-none", EscalationResponse(id="e-none", action=HumanAction.ANSWER)
+        )
+        broker.raise_escalation(_request("e-none"))
+        thread.join()
+        assert "blocks pending group" not in capsys.readouterr().out
+
+    def test_raise_with_no_provider_wired_prints_no_blocks_clause(self, tmp_path, capsys):
+        broker = self._broker(tmp_path)  # default construction: no provider
+        thread = _answer_when_present(
+            broker.paths, "e-noprov", EscalationResponse(id="e-noprov", action=HumanAction.ANSWER)
+        )
+        broker.raise_escalation(_request("e-noprov"))
+        thread.join()
+        assert "blocks pending group" not in capsys.readouterr().out
+
 
 # ------------------------------------------------------- answer_escalation (U1)
 
@@ -342,3 +394,9 @@ class TestAnswerEscalation:
         with pytest.raises(EscalationError, match="already answered"):
             answer_escalation(paths, "e-twice", HumanAction.SKIP, "second")
         assert written.read_bytes() == first
+
+    def test_answering_prints_the_action_taken_to_stdout(self, tmp_path, capsys):
+        paths = self._with_request(tmp_path, "e-stdout")
+        answer_escalation(paths, "e-stdout", HumanAction.SKIP, "not worth it")
+        out = capsys.readouterr().out
+        assert "e-stdout" in out and "skip" in out

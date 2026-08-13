@@ -76,10 +76,19 @@ def repo(tmp_path: Path) -> Path:
 
 def write_config(repo: Path, fake_home: Path, extra: str = "") -> None:
     (repo / ".orchestrator").mkdir(exist_ok=True)
+    # Confinement off for the stub harness only. `fake_claude.py` records every
+    # call to `<fake_home>/calls.jsonl` and reads its scripts from
+    # `<fake_home>/scripts/` — writes at the *root* of the fake claude home,
+    # which the real CLI never does and which the policy therefore does not
+    # allow. That is harness plumbing, not product behaviour; the boundary
+    # itself is covered by tests/test_confinement.py against a real Landlock
+    # ruleset, and the default stays on (see
+    # test_cli_built_runner_is_confined_and_carries_safety_rules).
     (repo / ".orchestrator" / "config.toml").write_text(
         "[session]\n"
         f'claude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
         f'transcript_root = "{fake_home}/projects"\n'
+        "confine = false\n"
         f"{extra}"
     )
 
@@ -198,6 +207,13 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "all groups completed" in out
+    # plan U7: the config actually loaded is echoed with its absolute path and
+    # key values, before any session spawns.
+    config_line = next(line for line in out.splitlines() if line.startswith("config: "))
+    assert str((repo / ".orchestrator" / "config.toml").resolve()) in config_line
+    assert "token_budget=" in config_line
+    assert "context_token_limit=" in config_line
+    assert "permission_mode=" in config_line
 
     # every group completed at generation 1; the warm reject never respawned
     state = state_of(repo, run_id)

@@ -237,7 +237,8 @@ def test_resume_restores_the_run_s_persisted_escalation_config_without_reflag(  
     script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
     exit_code = main(["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm())
     assert exit_code == 0
-    banner = capsys.readouterr().out.splitlines()[0]
+    out = capsys.readouterr().out
+    banner = next(line for line in out.splitlines() if line.startswith("run "))
     assert "HITL off" in banner
     manifest = manifest_of(repo, run_id)
     assert manifest["escalation"]["intensity"] == "autonomous"
@@ -270,7 +271,8 @@ def test_resume_explicit_intensity_flag_overrides_the_persisted_value(  # noqa: 
     exit_code = main(
         ["resume", run_id, "--repo", str(repo), "--intensity", "on_stuck"], llm_runner=StubLlm()
     )
-    banner = capsys.readouterr().out.splitlines()[0]
+    out = capsys.readouterr().out
+    banner = next(line for line in out.splitlines() if line.startswith("run "))
     assert "HITL on (intensity=on_stuck" in banner
     assert exit_code == 0
 

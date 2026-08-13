@@ -256,6 +256,34 @@ class TestArtifactsEndpoint:
         assert body["report-g2-r1.json"]["surprises"] == []
         assert body["verdict-g2-r1.json"]["notes"] == "looks good"
 
+    def test_a_denial_report_is_attributed_on_read(self, client, repo):
+        """Plan P2: derived, never stored.
+
+        The Artifacts tab classifies by calling the *same* `classify_denial` the
+        review loop uses, so artifacts are never rewritten, every report already on
+        disk gains attribution retroactively, and there is one classifier to keep
+        correct rather than two that can disagree.
+        """
+        directory = RunPaths(repo, "smoke1").group_dir("g1")
+        denied = CoderReport(
+            status="permission_denied",
+            denied_command="uv run pytest",
+            denial_error="Failed to initialize cache at ~/.cache/uv: Permission denied (os error 13)",
+            denial_source="command_error",
+        )
+        (directory / "report-g4-r1.json").write_text(denied.model_dump_json(indent=2))
+        # And one from before the fields existed: it must classify honestly, not 500.
+        (directory / "report-g5-r1.json").write_text(
+            json.dumps({"status": "permission_denied", "denied_command": "make build"})
+        )
+
+        body = {item["name"]: item for item in client.get(f"{RUN}/groups/g1/artifacts").json()}
+        assert body["report-g4-r1.json"]["denial_kind"] == "kernel_denied"
+        assert body["report-g5-r1.json"]["denial_kind"] == "unknown"
+        # Every other artifact stays untouched — this is not a field on reports at
+        # large, only on the one status it explains.
+        assert body["verdict-g1-r1.json"]["denial_kind"] is None
+
     def test_a_group_with_no_directory_is_an_empty_list(self, client):
         response = client.get(f"{RUN}/groups/g99/artifacts")
         assert response.status_code == 200

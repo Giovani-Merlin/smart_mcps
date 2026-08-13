@@ -155,6 +155,50 @@ class TestReportSchemas:
         assert report.status == "permission_denied"
         assert report.denied_command == "rm -rf /etc"
 
+    def test_a_denial_report_from_before_the_attribution_fields_still_parses(self):
+        """Plan P2: both new fields are optional, with no new raising validator.
+
+        Every `report-g*-r*.json` already on disk predates them, and the
+        Observatory reads those artifacts — a required field would break every
+        historical run's Artifacts tab.
+        """
+        report = CoderReport.model_validate(
+            {"status": "permission_denied", "denied_command": "rm -rf /etc"}
+        )
+        assert report.denial_error == ""
+        assert report.denial_source == ""
+
+    def test_an_overlong_denial_error_is_truncated_and_never_rejected(self):
+        """Truncate, never reject.
+
+        A model quoting a whole build log would otherwise fail validation and cost
+        a re-nudge round (`nudge_until_report`) exactly when the worker is already
+        blocked — and the classifier only ever needs the head, which is where errno
+        signatures and refusal wording appear.
+        """
+        report = CoderReport.model_validate(
+            {
+                "status": "permission_denied",
+                "denied_command": "npm ci",
+                "denial_error": "EACCES: permission denied\n" + "log noise\n" * 5000,
+            }
+        )
+        assert len(report.denial_error) < 2100
+        assert report.denial_error.endswith("[truncated]")
+        assert report.denial_error.startswith("EACCES: permission denied")  # the head survives
+
+    def test_an_unknown_denial_source_is_rejected(self):
+        """The one place a hard schema is right: three values, and a fourth would
+        silently classify as UNKNOWN forever."""
+        with pytest.raises(ValidationError, match="denial_source"):
+            CoderReport.model_validate(
+                {
+                    "status": "permission_denied",
+                    "denied_command": "npm ci",
+                    "denial_source": "sandbox_maybe",
+                }
+            )
+
     def test_blocked_report_with_blank_denied_command_still_validates(self):
         """A blocked report is never discriminated by denied_command emptiness
         (plan decision) — the validator only fires for permission_denied."""

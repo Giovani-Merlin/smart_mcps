@@ -11,12 +11,18 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from orchestrator.cli import _load_config, _print_outcomes, apply_overrides, main
-from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
+from orchestrator.config import (
+    EscalationConfig,
+    OrchestratorConfig,
+    SessionConfig,
+    load_config,
+)
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import (
     GroupHold,
@@ -889,8 +895,9 @@ class TestRunBanner:
         assert len(calls) == 1
         argv = calls[0]["argv"]
         assert argv[argv.index("--name") + 1] == "r9-base"
-        # ...and the banner still made it out first, naming every R8 item
-        banner = captured.out.splitlines()[0]
+        # ...and the banner still made it out before any session spawn, right
+        # after the config echo, naming every R8 item
+        banner = next(line for line in captured.out.splitlines() if line.startswith("run r9"))
         assert "run r9" in banner
         assert "2 group(s)" in banner
         assert "sequential" in banner
@@ -914,7 +921,8 @@ class TestRunBanner:
             ]
         )
         assert exit_code == 1
-        banner = capsys.readouterr().out.splitlines()[0]
+        out = capsys.readouterr().out
+        banner = next(line for line in out.splitlines() if line.startswith("run r10"))
         assert "run r10" in banner
         assert "concurrency 4" in banner
         assert "HITL off" in banner
@@ -1038,7 +1046,9 @@ class TestWorkspaceForFreshCut:
             )
         merger.merge_group(upstream, wt0)
 
-        workspace_for, _ = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        workspace_for, _ = _workspace_seams(
+            repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
+        )
         path = workspace_for(make_group("g1"))
         assert (path / "upstream.txt").read_text() == "from g0\n"
 
@@ -1185,7 +1195,9 @@ class TestWorkspaceProvisioning:
             "orchestrator.cli.provision_env",
             lambda path, **kwargs: recorded.append((path, path.is_dir())),
         )
-        workspace_for, base_ref_for = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        workspace_for, base_ref_for = _workspace_seams(
+            repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
+        )
         group = make_group("g1")
         path = workspace_for(group)
         assert recorded == [(path, True)]  # invoked once, after the worktree existed
@@ -1289,3 +1301,41 @@ class TestPartitionReportDependencyDirection:
         assert "depends on: g1" in sections["g3"]
         # the old (buggy) label never appears again
         assert "downstream" not in out
+
+
+class TestStdoutBuffering:
+    """P5: a backgrounded run's log must not be empty until the run ends.
+
+    Python block-buffers stdout at 8KB when it is not a tty, so `… > run.log 2>&1 &`
+    left the file empty for the life of the run: the confinement header was
+    invisible and a healthy run was indistinguishable from a hang. `-u` is not
+    available to a console-script entry point, so `main()` reconfigures the stream
+    itself.
+
+    Asserted against a real subprocess writing to a real file, because that is the
+    only place buffering is observable — an in-process assertion after the fact
+    would pass either way.
+    """
+
+    def test_output_reaches_a_redirected_file_before_the_process_exits(self, tmp_path):
+        log = tmp_path / "run.log"
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            "import sys, time\n"
+            "from orchestrator.cli import main\n"
+            # `status` on an empty repo prints one short line — far under the 8KB
+            # block-buffer threshold, which is exactly the case that used to vanish.
+            f"main(['status', '--repo', {str(tmp_path)!r}])\n"
+            "time.sleep(30)\n"
+        )
+        with log.open("w") as sink:
+            proc = subprocess.Popen([sys.executable, str(probe)], stdout=sink, stderr=sink)
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and not log.read_text().strip():
+                time.sleep(0.05)
+            assert proc.poll() is None, "the probe exited early; the test proved nothing"
+            assert "no runs" in log.read_text(), "stdout was still buffered in the process"
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)

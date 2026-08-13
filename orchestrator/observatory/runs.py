@@ -98,6 +98,13 @@ class GroupHeartbeat(BaseModel):
     round: int = 0
     round_started_at: str | None = None
     updated_at: str | None = None
+    # What the group is doing between round boundaries — "forking the base
+    # session", "resuming the interrupted coder", "running". Rounds alone cannot
+    # explain a silence that happens *before* round 1 exists, which is where the
+    # longest one lives: forking the base session took 21 minutes on a real run.
+    # Still a fact, not a verdict: it says what, not whether it is too long.
+    phase: str | None = None
+    phase_elapsed_s: float | None = None
 
 
 class SnapshotGroup(BaseModel):

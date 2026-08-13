@@ -24,7 +24,14 @@ from orchestrator.execution.review import (
     make_executor,
 )
 from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
-from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionError, SessionUsage
+from orchestrator.execution.sessions import (
+    RoundResult,
+    RoundUsage,
+    SessionError,
+    SessionUsage,
+    UsageLimit,
+)
+from orchestrator.execution.streaming import TurnUsage
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
@@ -47,6 +54,8 @@ def coder_report(
     surprises: list[dict] | None = None,
     question: str = "",
     denied_command: str = "",
+    denial_error: str = "",
+    denial_source: str = "",
 ) -> str:
     body: dict = {
         "status": status,
@@ -58,6 +67,10 @@ def coder_report(
         body["question"] = question
     if denied_command:
         body["denied_command"] = denied_command
+    if denial_error:
+        body["denial_error"] = denial_error
+    if denial_source:
+        body["denial_source"] = denial_source
     return f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>'
 
 
@@ -90,9 +103,18 @@ class StubRunner:
         self.session_ids: dict[str, str] = {}
         self.on_fork = None  # optional hook(name) — lets tests interleave events
         self._counter = 0
+        self.model = "stub-model"
+        # session_id -> queue of per-call turn-usage lists (plan U1/U3/U4): one
+        # list is consumed per start_fork/resume call that names that session,
+        # fed to on_turn synchronously before the canned final result returns.
+        self.turn_sequences: dict[str, list[list[TurnUsage]]] = {}
+        # session_id -> every string handed to on_turn's `send` across every
+        # call, in order — what a context-ladder prompt actually looked like.
+        self.sent: dict[str, list[str]] = {}
+        self.disallowed: list[str] = []
 
     def start_fork(
-        self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None
+        self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
     ) -> RoundResult:
         self._counter += 1
         session_id = session_id or f"sess-{self._counter}"
@@ -102,17 +124,39 @@ class StubRunner:
         self.prompts[session_id] = [prompt]
         if self.on_fork is not None:
             self.on_fork(name)
+        self._play_turns(session_id, on_turn)
         return self._round(session_id)
 
-    def resume(self, *, session_id, prompt, cwd, json_schema=None) -> RoundResult:
+    def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None) -> RoundResult:
         self.prompts[session_id].append(prompt)
+        self._play_turns(session_id, on_turn)
         return self._round(session_id)
+
+    def effective_disallowed_tools(self) -> list[str]:
+        # The real runner composes deny rules from config plus its built-in safety
+        # set; the classifier reads them to attribute POLICY_FORBIDDEN. Tests that
+        # care set `disallowed` on the instance.
+        return list(self.disallowed)
 
     def usage_of(self, session_id: str) -> SessionUsage:
         return SessionUsage(last_context_tokens=self.context_tokens.get(session_id, 1_000))
 
     def transcript_path(self, session_id: str) -> Path | None:
         return None
+
+    def _play_turns(self, session_id: str, on_turn) -> None:
+        if on_turn is None:
+            return
+        queue = self.turn_sequences.get(session_id)
+        if not queue:
+            return
+        turns = queue.pop(0)
+
+        def send(text: str) -> None:
+            self.sent.setdefault(session_id, []).append(text)
+
+        for turn in turns:
+            on_turn(turn, send)
 
     def _round(self, session_id: str) -> RoundResult:
         text = self.session_queues[session_id].pop(0)
@@ -562,6 +606,72 @@ async def test_permission_denied_raises_and_costs_no_rewrite(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_denial_carries_its_attributed_kind_all_the_way_out(tmp_path):
+    """P2: three causes, one status — so the *kind* has to reach the operator.
+
+    It rides in `str(exc)` deliberately, not only on the instance: the scheduler
+    already writes `f"{type(exc).__name__}: {exc}"` into `state.json`, which
+    `status` prints and the Observatory reads, so this is the whole path from a
+    worker's report to a UI with no schema change on the way.
+    """
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [
+                coder_report(
+                    "permission_denied",
+                    denied_command="uv run pytest",
+                    denial_error=(
+                        "Failed to initialize cache at /home/op/.cache/uv: "
+                        "Permission denied (os error 13)"
+                    ),
+                    denial_source="command_error",
+                )
+            ]
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+
+    assert caught.value.kind == "kernel_denied"
+    assert "kernel_denied" in str(caught.value)
+    assert caught.value.denied_command == "uv run pytest"
+
+    lines = run_log_lines(harness)
+    assert any(line.endswith("round 1: ended (permission_denied: kernel_denied)") for line in lines)
+    # And the remedy, because a kind without one tells an operator nothing.
+    assert any("the kernel refused a write" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_forbidden_command_is_attributed_from_the_runners_own_deny_rules(tmp_path):
+    """The rule that needs nothing from the report: the orchestrator knows its own
+    deny list, so this attribution holds even for a coder that quoted nothing."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="git stash pop")]}
+    )
+    runner.disallowed = ["Bash(git stash:*)"]
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+    assert caught.value.kind == "policy_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_an_unattributable_denial_is_reported_as_unknown_not_guessed(tmp_path):
+    """A confidently wrong attribution is how the original misdiagnosis happened."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="make build")]}
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+    assert caught.value.kind == "unknown"
+    lines = run_log_lines(harness)
+    assert any("not attributable" in line for line in lines)
+
+
+@pytest.mark.asyncio
 async def test_permission_denied_leaves_the_coder_session_live_for_resume(tmp_path):
     # The coder entry was recorded before the fork (plan U7); a denial must not
     # retire it, so a later plain `resume` warm-resumes the same session in the
@@ -928,11 +1038,15 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     # R5/R6: an envelope failure on the warm attempt itself falls through to a
     # fresh fork, logging the reason instead of the resumed-session line.
     class FailOnResume(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
             if session_id == "sess-warm":
                 raise SessionError("claude exited 1")
             return super().resume(
-                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+                session_id=session_id,
+                prompt=prompt,
+                cwd=cwd,
+                json_schema=json_schema,
+                on_turn=on_turn,
             )
 
     runner = FailOnResume(
@@ -952,15 +1066,59 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
+    """P6: the fallback fork is a second chance, and a usage limit is not one.
+
+    Falling back is right when the *session* has become unreachable — a fresh fork
+    can then succeed. Against a usage limit it fails identically, and the cost is
+    not the wasted call but the generation: the breaker allows a fixed number, and
+    one spent on a call that could not have succeeded is one the group no longer
+    has for real work. The group stays INTERRUPTED at this generation instead, and
+    a plain `resume` re-enters it once the limit resets.
+    """
+
+    class LimitOnResume(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+            if session_id == "sess-warm":
+                raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
+            return super().resume(
+                session_id=session_id,
+                prompt=prompt,
+                cwd=cwd,
+                json_schema=json_schema,
+                on_turn=on_turn,
+            )
+
+    runner = LimitOnResume(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+
+    with pytest.raises(UsageLimit):
+        await harness.run(make_group())
+
+    # No fork was spent, and no re-entry *outcome* was logged — nothing was
+    # decided, the account was simply unavailable.
+    assert runner.forks == []
+    assert not any("re-entry: forked" in line for line in run_log_lines(harness))
+    # Still a SessionError, so the scheduler classifies it INTERRUPTED/resumable
+    # exactly as before (asserted at the scheduler level in test_scheduler.py).
+    assert issubclass(UsageLimit, SessionError)
+
+
+@pytest.mark.asyncio
 async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
     # No in-run retry loop (origin non-goal): if the fallback fork itself fails at
     # the envelope, the SessionError propagates so the scheduler lands the group
     # `interrupted` again (classification asserted by g1's scheduler tests).
     class AlwaysDown(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
             raise SessionError("warm resume down")
 
-        def start_fork(self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None):
+        def start_fork(
+            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        ):
             raise SessionError("fork also down")
 
     runner = AlwaysDown({})
@@ -981,10 +1139,14 @@ async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypa
     # R5: the manifest reflects the latest round's usage as it happens, not only
     # once at generation end — the re-entry pre-check needs the freshest number.
     class GrowingContext(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
             self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
             return super().resume(
-                session_id=session_id, prompt=prompt, cwd=cwd, json_schema=json_schema
+                session_id=session_id,
+                prompt=prompt,
+                cwd=cwd,
+                json_schema=json_schema,
+                on_turn=on_turn,
             )
 
     runner = GrowingContext(
@@ -1054,7 +1216,9 @@ async def test_first_round_crash_records_session_before_the_fork_call_completes(
     # session instead, orphaning whatever claude already did in its own
     # session before the crash.
     class CrashMidFork(StubRunner):
-        def start_fork(self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None):
+        def start_fork(
+            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        ):
             if name == "r1-g1-coder-g1":
                 self.crashed_session_id = session_id
                 raise SessionError("orchestrator crashed mid-fork")
@@ -1157,6 +1321,57 @@ class TestRoundHeartbeat:
         assert not {"stalled", "hung", "stuck"} & set(payload)
 
     @pytest.mark.asyncio
+    async def test_a_reentry_round_is_visible_while_the_resume_is_still_in_flight(self, tmp_path):
+        """P3: the re-entry resume *is* a round, and must say so before it blocks.
+
+        Every other heartbeat assertion here is post-hoc over the finished run,
+        which is exactly why this defect survived: after the resume returns, the
+        round is announced and the file looks right. The only way to see the bug
+        is to read `heartbeat.json` from inside the blocking call — which is what
+        a real operator does with `tail -f` while a twenty-minute re-entry writes
+        files and runs tests under `round: 0, phase: resuming…`.
+        """
+        hb_path = RunPaths(tmp_path, "r1").group_dir("g1") / "heartbeat.json"
+        in_flight: list[dict] = []
+
+        class SnapshottingRunner(StubRunner):
+            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+                if session_id == "sess-warm" and not in_flight:
+                    in_flight.append(json.loads(hb_path.read_text()))
+                return super().resume(
+                    session_id=session_id,
+                    prompt=prompt,
+                    cwd=cwd,
+                    json_schema=json_schema,
+                    on_turn=on_turn,
+                )
+
+        runner = SnapshottingRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+        runner.prompts["sess-warm"] = []
+        runner.session_queues["sess-warm"] = [coder_report()]
+        harness = Harness(tmp_path, runner)
+        seed_reentry_session(harness)
+        # One round already on disk pre-crash, so the re-entry is round 2.
+        group_dir = harness.store.paths.group_dir("g1")
+        group_dir.mkdir(parents=True)
+        (group_dir / "report-g1-r1.json").write_text("{}")
+
+        assert await harness.run(make_group()) == GroupState.COMPLETED
+
+        assert in_flight, "the resume never ran"
+        payload = in_flight[0]
+        assert payload["generation"] == 1
+        assert payload["round"] == 2
+        assert payload["round_started_at"] is not None
+        # And the phase still names what the group is actually doing — mark_round
+        # sets "running" internally, so this is the ordering trap in situ.
+        assert payload["phase"] == "resuming the interrupted coder"
+
+        # The round was announced once, not twice (the fallback-fork guard).
+        starts = [line for line in run_log_lines(harness) if line.endswith("round 2: started")]
+        assert len(starts) == 1
+
+    @pytest.mark.asyncio
     async def test_a_broken_heartbeat_writer_never_fails_the_group(self, tmp_path, monkeypatch):
         # Break the writer from the inside, below its own guard.
         monkeypatch.setattr(
@@ -1169,3 +1384,288 @@ class TestRoundHeartbeat:
         assert await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY)) == (
             GroupState.COMPLETED
         )
+
+
+# ------------------------------------------------------------ U4: session bookkeeping
+
+
+@pytest.mark.asyncio
+async def test_started_at_and_model_are_recorded_before_the_first_round_completes(tmp_path):
+    # Plan U4: _record writes started_at/model at session creation — before the
+    # blocking fork call, not once its first round finishes — so an in-flight
+    # group is distinguishable from one that never started.
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+    captured: dict = {}
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            entry = harness.manifest.groups["g1"].sessions[0]
+            captured["started_at"] = entry.started_at
+            captured["model"] = entry.model
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    assert captured["started_at"] is not None
+    assert captured["model"] == "stub-model"
+
+
+@pytest.mark.asyncio
+async def test_inflight_context_tokens_update_while_rounds_completed_stays_zero(tmp_path):
+    # Plan U4: the per-turn observer (plan U1's seam) writes last_context_tokens
+    # continuously, mid-round — not only once the round finishes and
+    # _persist_coder_usage runs.
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [[TurnUsage(input_tokens=12_345)]]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner)
+    seen: list[tuple[int, int]] = []
+    original_save = harness.store.save
+
+    def spying_save(manifest) -> None:
+        original_save(manifest)
+        coder = next(
+            (s for s in manifest.groups["g1"].sessions if s.role == SessionRole.CODER), None
+        )
+        if coder is not None:
+            seen.append((coder.last_context_tokens, coder.rounds_completed))
+
+    harness.store.save = spying_save
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    # the save right after the mid-round turn fired: context already reflects
+    # the turn, but the round it belongs to has not been counted yet.
+    assert (12_345, 0) in seen
+
+
+@pytest.mark.asyncio
+async def test_interrupted_before_any_round_still_leaves_a_dated_manifest_entry(tmp_path):
+    # Plan U4: a session that never completes a round (crash mid-fork) still
+    # has a manifest entry an operator can date — started_at is set at
+    # creation, not deferred to round completion.
+    class CrashMidFork(StubRunner):
+        def start_fork(
+            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        ):
+            raise SessionError("orchestrator crashed mid-fork")
+
+    runner = CrashMidFork({})
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(SessionError, match="orchestrator crashed mid-fork"):
+        await harness.run(make_group())
+    sessions = harness.manifest.groups["g1"].sessions
+    assert len(sessions) == 1
+    assert sessions[0].started_at is not None
+    assert sessions[0].retirement_reason is None
+
+
+@pytest.mark.asyncio
+async def test_resume_after_context_fallback_appends_a_second_dated_entry(tmp_path):
+    # Plan U4: the observed bug — a group that died and resumed left only one
+    # manifest entry, not two. The re-entry fallback path (context over the
+    # breaker limit) retires the seeded entry and forks fresh, which must
+    # append a second entry rather than reusing or dropping the first.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_token_limit=100))
+    seed_reentry_session(harness, context_tokens=200)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    sessions = [s for s in harness.manifest.groups["g1"].sessions if s.role == SessionRole.CODER]
+    assert len(sessions) == 2
+    assert sessions[0].retirement_reason is not None  # the seeded, unreachable entry
+    assert sessions[0].started_at is None  # planted directly, not through _record
+    assert sessions[1].retirement_reason is None  # the fresh fork
+    assert sessions[1].started_at is not None
+
+
+def test_session_entries_recorded_before_started_at_existed_load_unchanged():
+    # Plan U4: a manifest written before this field existed must still load,
+    # with started_at absent rather than raising.
+    entry = SessionEntry.model_validate_json(
+        json.dumps({"session_id": "s1", "role": "coder", "generation": 1})
+    )
+    assert entry.started_at is None
+    assert entry.model is None
+
+
+# ------------------------------------------------------------ U3: context ladder
+
+
+@pytest.mark.asyncio
+async def test_ladder_70_percent_fires_once_and_not_again_below_90(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [
+                [TurnUsage(input_tokens=141_000), TurnUsage(input_tokens=150_000)]
+            ]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert len(runner.sent[sid]) == 1
+    assert "summary" in runner.sent[sid][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_ladder_90_percent_sends_exactly_one_prioritised_conclusions_prompt(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            # a single turn jumps straight past both 70% and 90%: only the
+            # higher (90%) prompt is due — the 70% one was never separately due.
+            runner.turn_sequences[sid] = [[TurnUsage(input_tokens=181_000)]]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert len(runner.sent[sid]) == 1
+    assert "prioritized" in runner.sent[sid][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_ladder_99_percent_is_not_interrupted_and_produces_a_normal_report(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [[TurnUsage(input_tokens=198_000)]]  # 99% of 200_000
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert all("reached its limit" not in text.lower() for text in runner.sent[sid])
+
+
+@pytest.mark.asyncio
+async def test_ladder_100_percent_sends_compact_report_prompt_and_ends_gracefully(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [[TurnUsage(input_tokens=201_000)]]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    # the round still ends by its own report being parsed — never killed mid-turn.
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert len(runner.sent[sid]) == 1
+    assert "report" in runner.sent[sid][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_ladder_thresholds_fire_at_most_once_per_round_even_with_many_turns(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [
+                [
+                    TurnUsage(input_tokens=145_000),
+                    TurnUsage(input_tokens=150_000),
+                    TurnUsage(input_tokens=182_000),
+                    TurnUsage(input_tokens=190_000),
+                    TurnUsage(input_tokens=205_000),
+                    TurnUsage(input_tokens=210_000),
+                ]
+            ]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert len(runner.sent[sid]) == 3  # exactly one per threshold, despite six turns
+
+
+@pytest.mark.asyncio
+async def test_ladder_disabled_by_default_sends_nothing_even_crossing_every_threshold(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+
+    def on_fork(name: str) -> None:
+        if name == "r1-g1-coder-g1":
+            sid = runner.session_ids[name]
+            runner.turn_sequences[sid] = [[TurnUsage(input_tokens=250_000)]]
+
+    runner.on_fork = on_fork
+    harness = Harness(tmp_path, runner)  # default BreakerConfig: context_ladder_enabled=False
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    sid = runner.session_ids["r1-g1-coder-g1"]
+    assert runner.sent.get(sid, []) == []
+
+
+@pytest.mark.asyncio
+async def test_reentry_breaker_precheck_against_last_context_tokens_is_unchanged(tmp_path):
+    # Plan U3 note: _reenter's existing breaker comparison must stay exactly as
+    # it was — a session persisted above the limit is still retired on
+    # re-entry, ladder or no ladder.
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_token_limit=100, context_ladder_enabled=True),
+    )
+    seed_reentry_session(harness, context_tokens=200)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    reentry_lines = [line for line in lines if "re-entry" in line]
+    assert len(reentry_lines) == 1
+    assert "context tokens 200 exceed limit 100" in reentry_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_the_launch_line_is_written_before_the_fork_not_after(tmp_path):
+    """A group killed during launch must still say it was launching.
+
+    `start_fork` blocks for as long as the base session takes to absorb the
+    group's prompt — 21 minutes on a real run — and the "coder launched" line was
+    written only once it returned. So an interrupted launch left a run.log whose
+    last line was "worktree ready", implying the group had never started, and a
+    live run showed a long silence with nothing to explain it.
+    """
+
+    class ForkNeverReturns(StubRunner):
+        def start_fork(
+            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        ):
+            raise SessionError("killed mid-launch")
+
+    harness = Harness(tmp_path, ForkNeverReturns({}))
+    with pytest.raises(SessionError, match="killed mid-launch"):
+        await harness.run(make_group())
+
+    lines = run_log_lines(harness)
+    launching = [line for line in lines if "coder launching" in line]
+    assert launching, f"no launch line survived an interrupted fork\ngot: {lines}"
+    # The session id is on the line, so the transcript is findable for a group
+    # that died before any round existed.
+    assert re.search(r"session [0-9a-f-]{36}\)", launching[0])
+    # And the completion line is absent, because the fork never returned.
+    assert not any("coder launched" in line for line in lines)

@@ -24,16 +24,30 @@ import re
 import subprocess
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from orchestrator.execution.confinement import (
+    build_policy,
+    default_cache_root,
+    landlock_preexec,
+    operator_memory_deny_patterns,
+    system_write_paths,
+    warn_once,
+    worker_cache_dirs,
+    worker_cache_env,
+)
+from orchestrator.execution.worktrees import denied_git_tool_patterns
+from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
+
 REQUIRED_CLI_FLAGS = (
     "--print",
     "--output-format",
+    "--verbose",
     "--resume",
     "--fork-session",
     "--session-id",
@@ -62,6 +76,46 @@ class PreflightError(SessionError):
 
 class ReportError(SessionError):
     """The round's final message never produced a valid report block."""
+
+
+class UsageLimit(SessionError):
+    """The account's usage limit was reached — the round never ran.
+
+    A distinct type because it is the one envelope failure where *retrying with a
+    different session changes nothing*. The re-entry path catches ``SessionError``
+    and falls back to forking a fresh generation, which is the right response to a
+    session that has become unreachable; against a usage limit it fails
+    identically and spends a generation of the breaker's budget on a call that
+    could not have succeeded. Re-raised out of the fallback instead, so the group
+    lands INTERRUPTED (resumable, since it is still a ``SessionError``) with its
+    generation intact.
+    """
+
+
+#: How a usage limit announces itself on the wire. It exits non-zero with an
+#: *empty* stderr and the text in the stdout envelope's `result`, which is why
+#: this is matched against `_error_detail`'s output rather than stderr.
+#:
+#: The wordings differ by limit *type* and none of them are documented, so this
+#: list is evidence rather than guesswork — see `tests/test_sessions.py` for each
+#: string verbatim and where it was observed. The `hit your <x> limit` form was
+#: caught by the live tier on 2026-08-13; the older `usage limit reached|<epoch>`
+#: form alone did not match it, which would have sent a limited run down the
+#: pointless-fork path P6 exists to prevent.
+_USAGE_LIMIT_RE = re.compile(
+    r"usage limit reached|hit your \w+ limit|"
+    r"(?:session|usage|weekly|monthly) limit(?:\b|·)|limit · resets|"
+    r"rate[ _-]?limit(?:ed|:)?|too many requests|"
+    r"limit will reset|429\b|overloaded_error",
+    re.IGNORECASE,
+)
+
+
+def is_usage_limit(detail: str) -> bool:
+    """Whether a process-failure detail is an account/rate limit rather than a
+    broken call. Text-matched because the CLI reports it as prose in the
+    envelope's ``result``, with no code or field to key off."""
+    return bool(_USAGE_LIMIT_RE.search(detail))
 
 
 @dataclass(frozen=True)
@@ -138,6 +192,10 @@ class RoundResult:
     text: str
     usage: RoundUsage
     envelope: dict = field(repr=False)
+    #: Refusal/errno text the harness returned to the worker during this round
+    #: (plan P2). Empty for every stub and for any round where nothing matched;
+    #: used only to corroborate a `permission_denied` report's own account.
+    deny_signals: list[str] = field(default_factory=list, repr=False)
 
 
 def session_display_name(run_id: str, group_id: str, role: str, generation: int) -> str:
@@ -169,6 +227,12 @@ class SessionRunner:
         tracker: SubprocessTracker | None = None,
         max_thinking_tokens: int | None = None,
         thinking: str | None = None,
+        disallowed_tools: Sequence[str] | None = None,
+        settings: str | None = None,
+        confine: bool = True,
+        safety_deny: bool = True,
+        cache_root: Path | None = None,
+        extra_write_paths: Sequence[Path] | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -176,11 +240,32 @@ class SessionRunner:
         self.thinking = thinking
         self.permission_mode = permission_mode
         self.allowed_tools = list(allowed_tools) if allowed_tools else None
+        self.disallowed_tools = list(disallowed_tools) if disallowed_tools else None
+        self.settings = settings
+        self.confine = confine
+        self.safety_deny = safety_deny
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
-        self._env = _scrub_virtualenv({**os.environ, **(env or {})})
+        # The one place both halves of the cache mechanism are computed, from one
+        # root: the environment the worker gets, and the paths Landlock allows.
+        # Resolved from *this* process's environ — a worker's own XDG_CACHE_HOME
+        # is about to point inside this root, so re-deriving it there would nest
+        # a root inside itself.
+        self.cache_root = Path(cache_root) if cache_root is not None else default_cache_root()
+        self._cache_dirs = worker_cache_dirs(self.cache_root)
+        self.extra_write_paths = [Path(p) for p in extra_write_paths or []]
+        cache_env = worker_cache_env(self.cache_root, base=dict(os.environ))
+        # HOME is never rewritten: `_claude_home`, transcript discovery,
+        # `probe_claude_runtime_dirs` and the project-slug rule all key off it,
+        # and a worker with a different HOME would lose its own session store.
+        #
+        # Precedence: cache env beats what the orchestrator inherited (that is the
+        # whole point), and an explicit `env=` still beats both — callers pass it
+        # to pin a specific variable and must keep winning.
+        self._env = _scrub_virtualenv({**os.environ, **cache_env, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
+        self._confinement_warned = False
 
     def preflight(self) -> None:
         """Fail fast with a versioned message if the CLI lacks a pinned flag."""
@@ -193,7 +278,14 @@ class SessionRunner:
                 f"{', '.join(missing)} — upgrade to a version that does"
             )
 
-    def start_base(self, *, run_id: str, base_context: str, cwd: Path) -> RoundResult:
+    def start_base(
+        self,
+        *,
+        run_id: str,
+        base_context: str,
+        cwd: Path,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> RoundResult:
         """Create the run's base session loading the compiled base context."""
         prompt = (
             "Internalize the following shared context for an orchestrated run. "
@@ -205,6 +297,7 @@ class SessionRunner:
             prompt,
             cwd=cwd,
             extra=["--session-id", session_id, "--name", f"{run_id}-base"],
+            on_turn=on_turn,
         )
 
     def start_fork(
@@ -216,11 +309,18 @@ class SessionRunner:
         cwd: Path,
         session_id: str | None = None,
         json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """Fork the base session and run the first round in one blocking call.
 
         Serialized: the session store has no documented locking (plan Key Technical
         Decisions); forking is fast, so this never serializes the groups themselves.
+
+        ``on_turn``, when given, is called once per assistant turn *while the
+        round is still running* (plan U1) with that turn's usage and a ``send``
+        callable bound to the live child process — the seam a context-ladder or
+        other per-turn observer hangs off of. ``None`` (the default) preserves
+        today's fully blocking round.
 
         ``session_id``, when given, lets the caller record the id in the manifest
         *before* this blocking call runs (plan U7): a crash mid-call would
@@ -243,13 +343,27 @@ class SessionRunner:
                     name,
                 ],
                 json_schema=json_schema,
+                on_turn=on_turn,
             )
 
     def resume(
-        self, *, session_id: str, prompt: str, cwd: Path, json_schema: dict | None = None
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        cwd: Path,
+        json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        """One warm round against an existing session."""
-        return self._call(prompt, cwd=cwd, extra=["--resume", session_id], json_schema=json_schema)
+        """One warm round against an existing session. ``on_turn`` — see
+        ``start_fork`` — lets a caller observe and speak into this round too."""
+        return self._call(
+            prompt,
+            cwd=cwd,
+            extra=["--resume", session_id],
+            json_schema=json_schema,
+            on_turn=on_turn,
+        )
 
     def usage_of(self, session_id: str) -> SessionUsage:
         return self._usage.get(session_id, SessionUsage())
@@ -258,6 +372,34 @@ class SessionRunner:
         """Locate the session transcript by UUID — exact regardless of cwd encoding."""
         matches = sorted(self.transcript_root.glob(f"*/{session_id}.jsonl"))
         return matches[0] if matches else None
+
+    def effective_disallowed_tools(self) -> list[str]:
+        """Configured deny rules plus the built-in safety rules.
+
+        Composed here rather than at the call site on purpose. The previous
+        arrangement left it to whoever built the runner, and the one production
+        construction site (``cli.py``) passed nothing — so Landlock, the git deny
+        list and ``--settings`` were all unreachable in a real run while their
+        unit tests passed against directly-built runners. A boundary assembled by
+        its consumers is a boundary that goes missing; this one assembles itself,
+        and ``safety_deny=False`` is the single explicit opt-out.
+
+        Order is configured-first so an operator rule keeps precedence, and the
+        result is de-duplicated because the git patterns overlap what a config
+        may already list.
+        """
+        rules = list(self.disallowed_tools or [])
+        if self.safety_deny:
+            rules += denied_git_tool_patterns()
+            rules += operator_memory_deny_patterns(self._claude_home())
+        seen: set[str] = set()
+        return [r for r in rules if not (r in seen or seen.add(r))]
+
+    def _claude_home(self) -> Path:
+        """``~/.claude`` (or its test-double), derived from ``transcript_root``
+        (``<claude_home>/projects``) so confinement and transcript discovery
+        agree on the same root without a second constructor argument."""
+        return self.transcript_root.parent
 
     def _capture(self, args: list[str]) -> str:
         try:
@@ -269,13 +411,42 @@ class SessionRunner:
         return result.stdout + result.stderr
 
     def _call(
-        self, prompt: str, *, cwd: Path, extra: list[str], json_schema: dict | None = None
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        extra: list[str],
+        json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        argv = [*self._bin, "-p", prompt, "--output-format", "json", *extra]
+        argv = [
+            *self._bin,
+            # `--print` only. The prompt travels over stdin as a stream-json
+            # message (see `StreamingProcess.start`) — under `--input-format
+            # stream-json` a prompt on argv is silently ignored.
+            "--print",
+            "--output-format",
+            "stream-json",
+            # The CLI *rejects* `--print --output-format=stream-json` without
+            # `--verbose` ("requires --verbose", exit 1) — it is a hard
+            # precondition of the streaming channel, not a logging preference.
+            # Omitting it made every real worker launch fail at spawn while the
+            # e2e stub CLI, which does not enforce the pairing, stayed green.
+            "--verbose",
+            "--include-partial-messages",
+            "--input-format",
+            "stream-json",
+            *extra,
+        ]
         if self.permission_mode:
             argv += ["--permission-mode", self.permission_mode]
         if self.allowed_tools:
             argv += ["--allowedTools", ",".join(self.allowed_tools)]
+        denied = self.effective_disallowed_tools()
+        if denied:
+            argv += ["--disallowedTools", ",".join(denied)]
+        if self.settings:
+            argv += ["--settings", self.settings]
         if self.model:
             argv += ["--model", self.model]
         if self.max_thinking_tokens is not None:
@@ -285,11 +456,18 @@ class SessionRunner:
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
-        returncode, stdout, stderr = self._spawn(argv, cwd=cwd, context=context)
+        returncode, stdout, stderr, deny_signals = self._spawn(
+            argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
+        )
         if returncode != 0:
-            raise SessionError(
-                f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
-            )
+            detail = _error_detail(stdout, stderr)
+            message = f"claude exited {returncode} ({context}): {detail}"
+            # Typed, not just worded: `_reenter` needs to tell "this session is
+            # unreachable, fork a new one" from "the account is out of budget,
+            # forking changes nothing".
+            if is_usage_limit(detail):
+                raise UsageLimit(message)
+            raise SessionError(message)
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError as exc:
@@ -302,30 +480,77 @@ class SessionRunner:
         usage = RoundUsage.from_envelope(envelope)
         self._usage.setdefault(session_id, SessionUsage()).add(usage)
         return RoundResult(
-            session_id=session_id, text=str(envelope["result"]), usage=usage, envelope=envelope
+            session_id=session_id,
+            text=str(envelope["result"]),
+            usage=usage,
+            envelope=envelope,
+            deny_signals=deny_signals,
         )
 
-    def _spawn(self, argv: list[str], *, cwd: Path, context: str) -> tuple[int, str, str]:
-        """One tracked subprocess: the tracker sees the PID for the round's lifetime,
-        so a crashed orchestrator's resume can reap surviving workers (plan U6)."""
-        proc = subprocess.Popen(
+    def _spawn(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        context: str,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+        prompt: str | None = None,
+    ) -> tuple[int, str, str, list[str]]:
+        """One tracked subprocess, read incrementally rather than a single
+        blocking ``communicate()`` (plan U1): the tracker still sees the PID for
+        exactly the round's lifetime (spawned once, exited once — plan U6's
+        crash-resume reaping depends on that), but the stream is now consumed
+        turn by turn so ``on_turn`` fires while the round is still running, and
+        that callback can ``send()`` a follow-up onto the same live process.
+
+        Returns the same ``(returncode, stdout, stderr)`` shape ``_call`` always
+        parsed: ``stdout`` is the terminal ``result`` stream event re-serialized
+        as one JSON line, so every downstream envelope-parsing rule — including
+        ``RoundUsage.from_envelope``'s ``iterations[-1]`` fallback — is unchanged.
+        """
+        preexec_fn = None
+        if self.confine:
+            # Re-asserted per spawn, not created once at startup: Landlock rules
+            # address *existing* paths, so a cache dir deleted mid-run would drop
+            # silently out of the ruleset and reproduce the original
+            # cache-`EACCES` defect on the next round.
+            worker_cache_dirs(self.cache_root, create=True)
+            policy = build_policy(
+                worktree=cwd,
+                claude_home=self._claude_home(),
+                system_paths=[*system_write_paths(), *self.extra_write_paths],
+                cache_dirs=self._cache_dirs,
+            )
+            preexec_fn, result = landlock_preexec(policy)
+            if not result.applied:
+                self._confinement_warned = warn_once(
+                    result, already_warned=self._confinement_warned
+                )
+        stream = StreamingProcess(
             argv,
             cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
             env=self._env,
+            tracker=self.tracker,
+            context=context,
+            preexec_fn=preexec_fn,
         )
-        if self.tracker is not None:
-            self.tracker.spawned(proc.pid, context)
+        if on_turn is not None:
+            stream.on_turn = lambda usage: on_turn(usage, stream.send)
+        stream.start(prompt=prompt)
         try:
-            # No per-round timeout (R7): a round runs as long as the CLI does —
-            # wall-clock is a terrible proxy for stuck, and long rounds are normal.
-            stdout, stderr = proc.communicate()
-        finally:
-            if self.tracker is not None:
-                self.tracker.exited(proc.pid)
-        return proc.returncode, stdout, stderr
+            outcome = stream.wait()
+        except StreamError as exc:
+            raise SessionError(f"claude stream failed ({context}): {exc}") from exc
+        if outcome.envelope is None:
+            if outcome.returncode == 0:
+                raise SessionError(f"claude stream ended without a terminal result ({context})")
+            return outcome.returncode, "", outcome.stderr, outcome.deny_signals
+        return (
+            outcome.returncode,
+            json.dumps(outcome.envelope),
+            outcome.stderr,
+            outcome.deny_signals,
+        )
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:

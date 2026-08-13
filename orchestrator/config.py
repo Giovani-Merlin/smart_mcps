@@ -14,6 +14,55 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+#: Baseline `--allowedTools` for a worker: the toolchains a coder has to drive to
+#: build, test and commit. File tools are listed explicitly because `acceptEdits`
+#: covers edits but not reads or searches.
+#:
+#: Deny still wins — `disallowed_tools` keeps the repo-global git mutators and the
+#: operator-memory rules blocked regardless of what appears here.
+DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "NotebookEdit",
+    "Bash(git *)",
+    "Bash(uv *)",
+    "Bash(python *)",
+    "Bash(python3 *)",
+    "Bash(pytest*)",
+    "Bash(ruff*)",
+    "Bash(mypy*)",
+    "Bash(pip *)",
+    "Bash(pip3 *)",
+    "Bash(npm *)",
+    "Bash(npx *)",
+    "Bash(node *)",
+    "Bash(pnpm *)",
+    "Bash(yarn *)",
+    "Bash(make *)",
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(find *)",
+    "Bash(rg *)",
+    "Bash(grep *)",
+    "Bash(sed *)",
+    "Bash(awk *)",
+    "Bash(mkdir *)",
+    "Bash(cp *)",
+    "Bash(mv *)",
+    "Bash(echo *)",
+    "Bash(cd *)",
+    "Bash(test *)",
+    "Bash(which *)",
+    "Bash(env)",
+)
+
 
 class EdgeWeightsConfig(BaseModel):
     """Affinity weights for the codegraph signals (plan R3) and the prose fallback.
@@ -112,6 +161,12 @@ class BreakerConfig(BaseModel):
     context_token_limit: int = 200_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
+    # Plan U3: staged in-round prompts at 70%/90%/100% of context_token_limit,
+    # riding the per-turn observer the streaming channel (plan U1) provides —
+    # bounds *cost* inside a round, not stuck-ness (that's R7's wall-clock
+    # rejection; a token ceiling is a proxy for the former, never the latter).
+    # Off by default so an existing run/test is unaffected until it opts in.
+    context_ladder_enabled: bool = False
 
 
 class ExecutionConfig(BaseModel):
@@ -144,7 +199,24 @@ class SessionConfig(BaseModel):
 
     claude_bin: str | list[str] = "claude"
     model: str | None = None
-    allowed_tools: list[str] = Field(default_factory=list)
+    # What a worker is permitted to execute, declared by the *run* rather than
+    # inherited from whoever launched it.
+    #
+    # This shipped empty, so the flag was never passed and a worker could only run
+    # commands enumerated in the operator's personal `~/.claude/settings.json`
+    # (workers run headless under `acceptEdits`, so anything unlisted is denied
+    # outright with no approver to ask). On run r20260812-202855 that operator had
+    # `Bash(git *)` and `Bash(uv *)` but no npm rule, so g8 wrote its whole client
+    # and then failed three rounds running on `npm install --prefix web` — a
+    # failure indistinguishable, from the outside, from confinement being too
+    # tight. It cost this validation an incorrect diagnosis before the argv was
+    # checked.
+    #
+    # The baseline is the toolchain a coder must drive to build and verify work.
+    # It is deliberately not "everything": the denied git mutators and the
+    # operator-memory rules in `disallowed_tools` still apply on top, and deny
+    # beats allow.
+    allowed_tools: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
     transcript_root: str | None = None
     # Thinking budget per worker turn. Left unset the CLI picks its own default,
     # which is neither pinned nor visible in any run artifact — and thinking counts
@@ -163,6 +235,43 @@ class SessionConfig(BaseModel):
     # — adaptive was both cheapest and correct, so it is the default. Pairing it with
     # the medium ceiling means "think only when it helps, never more than medium".
     thinking: str | None = "adaptive"
+    # Plan U2: kernel-enforced confinement via Landlock, layered under the
+    # deny-rules below rather than instead of them (deny-rules give a clearer
+    # error for the accidental case; Landlock is the actual boundary).
+    #
+    # On by default. It shipped off, on the reasoning that a run should opt in —
+    # but the CLI then never passed it at all, so the whole mechanism sat dead
+    # for a release while the P0 it closes (workers editing the operator's
+    # auto-memory) stayed open. An opt-in boundary that nothing opts into is not
+    # a boundary. Defaulting on is safe because absence degrades to a warning
+    # and deny-rules rather than failing a group.
+    confine: bool = True
+    # --disallowedTools patterns (e.g. the denied git subcommands from
+    # worktrees.denied_git_tool_patterns()) and an optional --settings path or
+    # inline JSON string. Empty/None means the flag is omitted entirely.
+    disallowed_tools: list[str] = Field(default_factory=list)
+    settings: str | None = None
+    # Where every worker's toolchain caches go, shared across groups *and* runs.
+    # Defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/smart-mcps-orchestrator`. The
+    # override exists chiefly for the cross-filesystem case: `uv` finishes a venv
+    # by renaming out of its cache, and a cache on a different filesystem from the
+    # repo makes that rename fail with EXDEV. Point this at the repo's filesystem
+    # when that happens.
+    cache_root: str | None = None
+    # The escape hatch that makes "stop enumerating" true rather than aspirational.
+    #
+    # Redirecting caches by environment covers every tool that honours its own
+    # cache variable. Some do not — `~/.bun`, `~/.nuget`, `~/.gem`, `~/.ivy2`,
+    # `~/.pub-cache`, `~/.deno` hardcode a home path — and each of those used to
+    # mean a new line in the confinement source and a new release. Here they are
+    # one config line an operator writes for their own project.
+    extra_write_paths: list[str] = Field(default_factory=list)
+    # Arguments appended to the `uv sync` that provisions a group's worktree venv.
+    # `--all-extras` by default: a group's venv should mirror the dev environment
+    # it is verified against, or its reviewer cannot tell a missing extra from a
+    # regression. It can be heavy on projects with large optional extras — set
+    # this to `[]` to opt out.
+    provision_args: list[str] = Field(default_factory=lambda: ["--all-extras"])
 
 
 class EscalationConfig(BaseModel):

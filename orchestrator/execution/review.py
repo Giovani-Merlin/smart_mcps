@@ -21,6 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
@@ -41,19 +42,25 @@ from orchestrator.execution.prompting import (
     render_conflict_resolve_prompt,
     render_extra_pass_prompt,
     render_handoff_prompt,
+    render_ladder_compact_prompt,
+    render_ladder_prioritized_prompt,
+    render_ladder_summary_prompt,
     render_re_review_prompt,
     render_reentry_prompt,
     render_reviewer_prompt,
     render_revision_prompt,
 )
+from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.scheduler import Executor, GroupContext, GroupState, RunAbort
 from orchestrator.execution.sessions import (
     RoundResult,
     SessionError,
     SessionRunner,
+    UsageLimit,
     nudge_until_report,
     session_display_name,
 )
+from orchestrator.execution.streaming import TurnUsage
 from orchestrator.execution.worktrees import diff_stat, integration_branch
 from orchestrator.model import (
     CoderReport,
@@ -193,7 +200,7 @@ class _GroupExecution:
         # Evidence, not a state (plan P3): the loop only ever tells it when a
         # round started; the writing happens on its own daemon thread and nothing
         # here reads it back.
-        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid)
+        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -224,8 +231,23 @@ class _GroupExecution:
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
         is_reentry = reentry is not None
+        # Re-entry (warm-resumed or fallback-forked) continues this generation's
+        # numbering rather than starting over, so round-numbered artifacts don't
+        # collide with — and silently overwrite — pre-crash ones still on disk.
+        #
+        # Computed *before* the re-entry call, not after (plan P3): the re-entry
+        # resume is itself a full round — it writes files and runs tests, for
+        # twenty minutes on the run that prompted this — so it has to be able to
+        # announce its own number before it blocks. `completed_round_count` reads
+        # only the report artifacts already on disk and takes nothing from the
+        # resume, so hoisting it changes no number.
+        rounds = (
+            completed_round_count(self.deps.store.paths, self.gid, self.generation)
+            if is_reentry
+            else 0
+        )
         if reentry is not None:
-            first = await self._reenter(reentry)
+            first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
             self.handoff_prompt = None
@@ -237,6 +259,17 @@ class _GroupExecution:
             self.coder_sid = str(uuid.uuid4())
             self.reviewer_sid = None
             self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
+            # Logged *before* the fork, not after. `start_fork` blocks for as long
+            # as the base session takes to absorb the group's prompt — 21 minutes
+            # on a real run — and the old "coder launched" line landed only once it
+            # returned, so a group killed mid-launch left a log that never
+            # mentioned it had started, and a live run showed a silent gap with no
+            # indication anything was happening.
+            self._log(
+                f"group {self.gid} generation {self.generation}: "
+                f"coder launching, forking base session (session {self.coder_sid})"
+            )
+            self._heartbeat.mark_phase("forking the base session")
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
                 base_id=self.deps.base_session_id,
@@ -244,20 +277,18 @@ class _GroupExecution:
                 name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                 cwd=self.workspace,
                 session_id=self.coder_sid,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
-        # Re-entry (warm-resumed or fallback-forked) continues this generation's
-        # numbering rather than starting over, so round-numbered artifacts don't
-        # collide with — and silently overwrite — pre-crash ones still on disk.
-        rounds = (
-            completed_round_count(self.deps.store.paths, self.gid, self.generation)
-            if is_reentry
-            else 0
-        )
         result = first
-        self._log(f"{self._round_tag(rounds + 1)}: started")
-        self._heartbeat.mark_round(self.generation, rounds + 1)
+        # Guarded on `is_reentry`, not on whether the resume succeeded: a
+        # fallback fork *is* round N of the same generation, and `_reenter`
+        # already announced N before it blocked. Announcing again here would
+        # double-log the round and reset its start time.
+        if not is_reentry:
+            self._log(f"{self._round_tag(rounds + 1)}: started")
+            self._heartbeat.mark_round(self.generation, rounds + 1)
 
         while True:
             report, result = await asyncio.to_thread(
@@ -283,8 +314,29 @@ class _GroupExecution:
             if report.status == "permission_denied":
                 # Typed denial (plan U3): interrupted, not failed, and no rewrite
                 # spent — bypasses _on_coder_stuck/_rewrite entirely.
-                self._log(f"{self._round_tag(rounds)}: ended (permission_denied)")
-                raise PermissionDenied(f"group {self.gid} denied command: {report.denied_command}")
+                #
+                # Attributed (plan P2), because one status covered three unrelated
+                # causes with three different remedies and the last validation
+                # misdiagnosed one of them. The kind rides in the exception message
+                # as well as on the instance: the scheduler already writes
+                # `f"{type(exc).__name__}: {exc}"` into `state.json`, so `status`
+                # and the Observatory gain it with no schema change anywhere.
+                kind = classify_denial(
+                    denied_command=report.denied_command,
+                    denial_error=report.denial_error,
+                    denial_source=report.denial_source,
+                    deny_rules=self.deps.runner.effective_disallowed_tools(),
+                    observed=result.deny_signals,
+                )
+                self._log(f"{self._round_tag(rounds)}: ended (permission_denied: {kind})")
+                self._log(f"group {self.gid} denial: {denial_remedy(kind)}")
+                raise PermissionDenied(
+                    f"group {self.gid} denied command ({kind}): {report.denied_command}",
+                    kind=str(kind),
+                    denied_command=report.denied_command,
+                    denial_error=report.denial_error,
+                    denial_source=report.denial_source,
+                )
             if report.status != "completed":
                 self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
                 await self._on_coder_stuck(report, report_path)
@@ -324,6 +376,7 @@ class _GroupExecution:
                 session_id=self.coder_sid,
                 prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
 
     # ------------------------------------------------------------ re-entry (R4–R6)
@@ -344,14 +397,19 @@ class _GroupExecution:
         ]
         return live[-1] if live else None
 
-    async def _reenter(self, entry: SessionEntry) -> RoundResult | None:
+    async def _reenter(self, entry: SessionEntry, *, round_no: int) -> RoundResult | None:
         """Warm-resume the interrupted coder in its worktree (R4). Returns the
         resumed round, or None to fall through to a fresh fork from base — when
         the persisted context already exceeds the breaker limit (R5) or the warm
         resume itself fails at the envelope. A SessionError from that fork
         propagates: the group lands interrupted again, since the envelope is
         still failing (no in-run retry loop). Exactly one re-entry lifecycle
-        line is written either way (R6)."""
+        line is written either way (R6).
+
+        ``round_no`` is the number this re-entry carries, announced *before* the
+        blocking resume: the resume performs a whole round's work, so labelling
+        the window `round 0` / `resuming the interrupted coder` for its entire
+        duration hid twenty minutes of real progress from the operator."""
         assert self.workspace is not None
         limit = self.deps.breaker.context_token_limit
         if entry.last_context_tokens > limit:
@@ -359,13 +417,39 @@ class _GroupExecution:
                 entry, f"context tokens {entry.last_context_tokens} exceed limit {limit}"
             )
             return None
+        # Same reasoning as the fork line: the resume blocks while the worker
+        # reloads its context (14 minutes on the run that prompted this), and
+        # announcing it only on success made a resumed run look wedged.
+        #
+        # Deliberately not phrased as a "re-entry" line: R6 promises exactly one
+        # of those per re-entry and they report an *outcome* (resumed, or forked
+        # after a failure). This one announces an attempt, so it must not be
+        # mistaken for the outcome by a reader counting them.
+        self._log(f"group {self.gid}: resuming interrupted coder session {entry.session_id}")
+        # Ordering matters and is load-bearing: `mark_round` calls
+        # `mark_phase("running")` internally, so marking the round *after* the
+        # phase would overwrite "resuming the interrupted coder" with "running",
+        # and marking the phase after the round would undo this whole fix.
+        self._log(f"{self._round_tag(round_no)}: started")
+        self._heartbeat.mark_round(self.generation, round_no)
+        self._heartbeat.mark_phase("resuming the interrupted coder")
         try:
             result = await asyncio.to_thread(
                 self.deps.runner.resume,
                 session_id=entry.session_id,
                 prompt=render_reentry_prompt(self.group),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(entry),
             )
+        except UsageLimit:
+            # Not a fallback case. The fallback exists for a session that has
+            # become unreachable, where a fresh fork is a real second chance; a
+            # usage limit is the account being out of budget, so the fork fails
+            # identically and spends a generation of the breaker's budget on a call
+            # that could not have succeeded. Propagating leaves the group
+            # INTERRUPTED at this generation, which a plain `resume` re-enters
+            # once the limit has reset.
+            raise
         except SessionError as exc:
             self._reentry_fallback(entry, f"warm resume failed: {exc}")
             return None
@@ -406,6 +490,53 @@ class _GroupExecution:
             return
         self._copy_usage(self.coder_entry, self.coder_sid)
         self.deps.store.save(self.deps.manifest)
+
+    def _make_coder_on_turn(
+        self, entry: SessionEntry
+    ) -> Callable[[TurnUsage, Callable[[str], None]], None]:
+        """Per-turn observer for one coder round call (plan U1's seam), doing two
+        unrelated things that happen to ride the same callback:
+
+        - continuous bookkeeping (plan U4): ``last_context_tokens`` updates as
+          turns stream in, not only once the round finishes and
+          ``_persist_coder_usage`` runs — so a group's manifest entry reflects
+          reality while it is still in flight, not just after.
+        - the staged context ladder (plan U3), gated by
+          ``breaker.context_ladder_enabled`` (off by default): 70%/90%/100% of
+          ``context_token_limit`` each send at most one staged prompt onto the
+          still-running round via ``send``. This bounds *cost* inside a round —
+          a token ceiling is a proxy for cost, not for stuck, which is why R7
+          rejected a wall-clock timeout here for the opposite reason.
+
+        ``fired`` is local to this call, so a fresh round always gets its own
+        clean set of thresholds — a round sitting at 99% from a prior round
+        never suppresses this round's own 70% checkpoint.
+        """
+        fired: set[str] = set()
+
+        def on_turn(usage: TurnUsage, send: Callable[[str], None]) -> None:
+            context = (
+                usage.input_tokens
+                + usage.output_tokens
+                + usage.cache_read_input_tokens
+                + usage.cache_creation_input_tokens
+            )
+            entry.last_context_tokens = context
+            self.deps.store.save(self.deps.manifest)
+            if not self.deps.breaker.context_ladder_enabled:
+                return
+            limit = self.deps.breaker.context_token_limit
+            if context >= limit and "100" not in fired:
+                fired.update({"70", "90", "100"})
+                send(render_ladder_compact_prompt())
+            elif context >= limit * 0.9 and "90" not in fired:
+                fired.update({"70", "90"})
+                send(render_ladder_prioritized_prompt())
+            elif context >= limit * 0.7 and "70" not in fired:
+                fired.add("70")
+                send(render_ladder_summary_prompt())
+
+        return on_turn
 
     def _refresh_transcript(self, entry: SessionEntry) -> None:
         """Fill in a pre-registered entry's transcript path once its session
@@ -545,6 +676,7 @@ class _GroupExecution:
                     integration_branch=integration_branch(self.deps.run_id),
                 ),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             report, _ = await asyncio.to_thread(
                 nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
@@ -671,6 +803,7 @@ class _GroupExecution:
                 session_id=self.coder_sid,
                 prompt=render_coder_answer_prompt(response.answer),
                 cwd=self.workspace,
+                on_turn=self._make_coder_on_turn(self.coder_entry),
             )
         extra = [_context_surprise(self.gid, f"coder needs_input: {question}")]
         if response is not None:
@@ -785,12 +918,18 @@ class _GroupExecution:
         self.ctx.set_generation(self.generation)
 
     def _record(self, role: SessionRole, session_id: str) -> SessionEntry:
+        # started_at/model land here, at creation (plan U4) — not only once the
+        # first round completes — so an in-flight group is distinguishable from
+        # one that never started, and a crash before any round finishes still
+        # leaves a manifest entry an operator can date.
         entry = SessionEntry(
             session_id=session_id,
             role=role,
             generation=self.generation,
             name=session_display_name(self.deps.run_id, self.gid, role.value, self.generation),
             transcript_path=_transcript_str(self.deps.runner, session_id),
+            started_at=datetime.now(UTC).isoformat(),
+            model=self.deps.runner.model,
         )
         record_session(
             self.deps.manifest,

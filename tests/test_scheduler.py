@@ -32,6 +32,7 @@ from orchestrator.execution.scheduler import (
     SchedulerError,
 )
 from orchestrator.execution.sessions import ReportError, SessionError
+from orchestrator.execution.worktrees import WorktreeError, WorktreeRefreshConflict
 from orchestrator.grouping.llm import LlmError, LlmProcessError
 from orchestrator.model import (
     EscalationRequest,
@@ -102,6 +103,32 @@ async def test_independent_groups_run_concurrently_up_to_the_cap(tmp_path):
     states = await run
     assert peak == 3
     assert set(states.values()) == {GroupState.COMPLETED}
+
+
+@pytest.mark.asyncio
+async def test_pending_group_ids_names_groups_not_yet_started(tmp_path):
+    """Plan U7: what an escalation's stdout line names as blocked — a group's
+    dependents held by the DAG, or a not-yet-launched sibling under
+    concurrency=1, are still PENDING while the running group is in flight."""
+    gate = asyncio.Event()
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            await gate.wait()
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1"), make_group("g2", deps=["g1"]), make_group("g3")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=1),
+    )
+    run = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: scheduler.state.groups["g1"].state == GroupState.RUNNING)
+    assert scheduler.pending_group_ids() == ["g2", "g3"]
+    gate.set()
+    await run
+    assert scheduler.pending_group_ids() == []
 
 
 @pytest.mark.asyncio
@@ -325,6 +352,51 @@ async def test_permission_denied_marks_the_group_interrupted_with_command_verbat
         persisted.groups["g1"].failure
         == "PermissionDenied: group g1 denied command: rm -rf /some/protected/path"
     )
+
+
+@pytest.mark.asyncio
+async def test_refresh_conflict_marks_the_group_interrupted_naming_paths_and_is_resumable(
+    tmp_path,
+):
+    """Plan U6: a real content conflict on a resumed group's refresh is not lost
+    work — it must stay reachable by `resume`, unlike a terminal WorktreeError."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise WorktreeRefreshConflict(
+            "refreshing group g1's worktree onto main conflicted on: README.md"
+        )
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.INTERRUPTED
+    assert "README.md" in persisted.groups["g1"].failure
+    assert GroupState.INTERRUPTED not in TERMINAL_STATES
+
+    async def resumed_executor(ctx):
+        return GroupState.COMPLETED
+
+    resumed = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=resumed_executor, resume=True
+    )
+    final_states = await resumed.run()
+    assert final_states["g1"] == GroupState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_other_worktree_error_still_marks_the_group_failed(tmp_path):
+    """A plain WorktreeError (e.g. path exists but is not a worktree) is not the
+    resumable refresh-conflict case — it stays terminal FAILED."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise WorktreeError("/some/path exists but is not a worktree on branch-x")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
 
 
 @pytest.mark.asyncio
@@ -1163,3 +1235,63 @@ async def test_exclusion_survives_a_resume(tmp_path):
     states = await second.run()
     assert states == {"g1": GroupState.COMPLETED, "g2": GroupState.COMPLETED}
     assert not any(len(snapshot) > 1 for snapshot in overlaps)
+
+
+# ------------------------------------------------------- interrupt visibility
+
+
+def test_mark_interrupted_stamps_the_run_and_survives_a_reread(tmp_path):
+    """A killed run must not read like a live one.
+
+    `live_pids` is empty in both cases (pids are registered only for a
+    subprocess's lifetime), and mid-flight groups stay RUNNING, so before this
+    marker the only way to tell a Ctrl-C from a healthy run was to diff
+    `state.json`'s mtime against a worker transcript.
+    """
+    paths = RunPaths(tmp_path, "r1")
+    scheduler = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=completing_executor()
+    )
+    assert scheduler.state.interrupted_at is None
+
+    scheduler.set_state("g1", GroupState.RUNNING)
+    scheduler.mark_interrupted()
+
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.interrupted_at is not None
+    assert persisted.groups["g1"].state is GroupState.RUNNING  # the group really was running
+    assert persisted.live_pids == {}  # and this alone never distinguished the two
+
+
+@pytest.mark.asyncio
+async def test_resuming_clears_the_interrupt_marker(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={"g1": GroupRunState(state=GroupState.RUNNING)},
+        interrupted_at="2026-08-12T06:00:00+00:00",
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    # Cleared as soon as a driver attaches, and persisted immediately — a reader
+    # during the run must not still see the previous interrupt.
+    assert scheduler.state.interrupted_at is None
+    assert RunState.model_validate_json(paths.state_path.read_text()).interrupted_at is None
+    assert await scheduler.run() == {"g1": GroupState.COMPLETED}
+
+
+def test_a_broken_state_write_never_replaces_the_interrupt_with_a_traceback(tmp_path, monkeypatch):
+    paths = RunPaths(tmp_path, "r1")
+    scheduler = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=completing_executor()
+    )
+    monkeypatch.setattr(
+        scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone"))
+    )
+    scheduler.mark_interrupted()  # must not raise

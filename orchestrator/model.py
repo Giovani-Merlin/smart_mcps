@@ -132,6 +132,12 @@ class VerificationResult(BaseModel):
     notes: str = ""
 
 
+#: Cap on the verbatim error a coder may quote in `denial_error`. Generous enough
+#: for a stack trace or a build tail, small enough that a runaway log cannot bloat
+#: every report artifact on disk.
+DENIAL_ERROR_MAX_CHARS = 2000
+
+
 class CoderReport(BaseModel):
     """Structured final message of every coder round (origin R11, R19).
 
@@ -148,12 +154,29 @@ class CoderReport(BaseModel):
     unrelated blocked report's envelope classification depend on whether a coder
     happened to leave a field blank — and deliberately not a ``Surprise``, since a
     denial names no other group.
+
+    ``denial_error``/``denial_source`` (plan P2) are what make one status
+    *attributable*. Three unrelated causes used to produce the same opaque
+    report — the operator's allowlist lacking a rule, Landlock denying a write, and
+    a genuinely forbidden command — and the last validation misdiagnosed one of
+    them with the source open. The status stays single by decision; the
+    orchestrator classifies a `DenialKind` from these fields
+    (``execution/denial.py``). ``denial_source`` earns its place by encoding the
+    one thing the model knows for free and the orchestrator cannot recover: whether
+    the *harness refused the call* or the *command ran and hit EACCES*.
     """
 
     status: Literal["completed", "blocked", "failed", "needs_input", "permission_denied"]
     summary: str = ""
     question: str = ""  # required when status == "needs_input"
     denied_command: str = ""  # required when status == "permission_denied"
+    # The observed error, verbatim. Optional and *truncating*, never raising: a
+    # raising validator here would cost a re-nudge round (`nudge_until_report`)
+    # precisely when the worker is already blocked, and `denied_command`'s existing
+    # validator is left untouched so every `report-g*-r*.json` already on disk
+    # stays parseable.
+    denial_error: str = ""
+    denial_source: Literal["", "tool_refused", "command_error"] = ""
     verification_results: list[VerificationResult] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
 
@@ -167,6 +190,21 @@ class CoderReport(BaseModel):
     def _permission_denied_requires_command(self) -> CoderReport:
         if self.status == "permission_denied" and not self.denied_command.strip():
             raise ValueError("status 'permission_denied' requires a non-empty 'denied_command'")
+        return self
+
+    @model_validator(mode="after")
+    def _truncate_denial_error(self) -> CoderReport:
+        """Truncate, never reject.
+
+        A model quoting a build log verbatim can produce a very long field, and the
+        remedy for that is not to fail its report: rejecting costs a re-nudge round
+        exactly when the worker is already blocked, and the classifier only needs
+        the first lines. The head is where errno signatures and refusal wording
+        appear.
+        """
+        if len(self.denial_error) > DENIAL_ERROR_MAX_CHARS:
+            head = self.denial_error[:DENIAL_ERROR_MAX_CHARS].rstrip()
+            object.__setattr__(self, "denial_error", f"{head}… [truncated]")
         return self
 
 
@@ -252,4 +290,27 @@ class PermissionDenied(Exception):
     the review loop (never through its rewrite path), so this costs no rewrite.
     Lives here, not in ``execution/review.py``, so ``execution/scheduler.py`` can
     catch it without importing from ``review.py`` (which imports from
-    ``scheduler.py``, and a cycle isn't worth it for one exception type)."""
+    ``scheduler.py``, and a cycle isn't worth it for one exception type).
+
+    The attributed kind travels in ``str(exc)`` as well as on the instance (plan
+    P2), which is what gets it all the way to the Observatory for free: the
+    scheduler already writes ``f"{type(exc).__name__}: {exc}"`` into
+    ``state.json``, so `status` and every UI reading that field gain the kind with
+    **zero** schema churn. The keyword attributes are for callers that want the
+    parts rather than the sentence.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "",
+        denied_command: str = "",
+        denial_error: str = "",
+        denial_source: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.denied_command = denied_command
+        self.denial_error = denial_error
+        self.denial_source = denial_source

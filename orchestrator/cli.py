@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import tomllib
 import uuid
@@ -23,7 +24,17 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
+from orchestrator.config import (
+    EscalationConfig,
+    OrchestratorConfig,
+    SessionConfig,
+    load_config,
+)
+from orchestrator.execution.confinement import (
+    default_cache_root,
+    landlock_abi_version,
+    worker_cache_env,
+)
 from orchestrator.execution.escalation import (
     EscalationBroker,
     EscalationError,
@@ -31,6 +42,7 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
+from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     GroupingNameError,
     GroupingSelectionError,
@@ -112,6 +124,16 @@ def main(
     client: CodegraphClient | None = None,
 ) -> int:
     """Entry point. ``llm_runner`` and ``client`` are injectable for offline tests."""
+    # A run is normally started as `… > run.log 2>&1 &`, and Python block-buffers
+    # stdout at 8KB when it is not a tty — so `run.log` stayed empty for the life
+    # of the run and a healthy run was indistinguishable from a hang, with the
+    # confinement header invisible. `-u` is not available to us (console-script
+    # entry points take no interpreter flags), and one reconfigure here fixes
+    # every print at once rather than needing `flush=True` on each.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # a replaced/closed stdout in tests
+        pass
     parser = argparse.ArgumentParser(prog="smart-mcps-orchestrate")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -371,13 +393,32 @@ def _load_config(
 # --------------------------------------------------------------------- group
 
 
+def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
+    """Resolve a plan argument the way `run`/`resume` already resolve theirs.
+
+    `group` passed `args.plan` through verbatim, and `Path.is_file()` downstream
+    resolves a relative path against the *process* cwd — so `group docs/plan.md
+    --repo <elsewhere>` from any other directory failed with a plan that plainly
+    exists. `run`/`resume` re-anchor against the repo; the asymmetry was only
+    here.
+
+    cwd still wins when it resolves, so an operator standing inside one repo and
+    pointing `--repo` at another keeps the path they typed.
+    """
+    if plan.is_absolute() or plan.is_file():
+        return plan
+    anchored = repo_root / plan
+    return anchored if anchored.is_file() else plan
+
+
 def _cmd_group(
     args: argparse.Namespace,
     llm_runner: JsonRunner | None,
     client: CodegraphClient | None,
 ) -> int:
     repo_root = args.repo.resolve()
-    name = getattr(args, "name", None) or args.plan.stem
+    plan_path = _anchor_plan_path(args.plan, repo_root)
+    name = getattr(args, "name", None) or plan_path.stem
     try:
         validate_grouping_name(name)
     except GroupingNameError as exc:
@@ -401,7 +442,7 @@ def _cmd_group(
     if getattr(args, "no_spec", False):
         try:
             outcome = compute_partition(
-                plan_path=args.plan,
+                plan_path=plan_path,
                 repo_root=repo_root,
                 config=config,
                 llm_runner=llm_runner,
@@ -424,7 +465,7 @@ def _cmd_group(
 
     try:
         result, base_context = run_grouping(
-            plan_path=args.plan,
+            plan_path=plan_path,
             repo_root=repo_root,
             config=config,
             llm_runner=llm_runner,
@@ -661,6 +702,41 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------- run/resume
 
 
+def build_session_runner(config: OrchestratorConfig) -> SessionRunner:
+    """The one place a production ``SessionRunner`` is built.
+
+    Extracted from ``_cmd_run`` so the wiring is assertable. It was inline, and
+    it silently omitted ``confine``/``disallowed_tools``/``settings`` — leaving
+    Landlock, the git deny list and per-worker settings unreachable in every real
+    run while their own unit tests passed against directly-constructed runners.
+    A construction site no test can see is a construction site that drifts.
+    """
+    session = config.session
+    return SessionRunner(
+        claude_bin=session.claude_bin,
+        model=session.model,
+        permission_mode=config.execution.permission_mode,
+        allowed_tools=session.allowed_tools or None,
+        transcript_root=(
+            Path(session.transcript_root).expanduser() if session.transcript_root else None
+        ),
+        max_thinking_tokens=session.max_thinking_tokens,
+        thinking=session.thinking,
+        disallowed_tools=session.disallowed_tools or None,
+        settings=session.settings,
+        confine=session.confine,
+        cache_root=_cache_root(session),
+        extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
+    )
+
+
+def _cache_root(session: SessionConfig) -> Path:
+    """The orchestrator-owned cache root for this run, resolved once."""
+    if session.cache_root:
+        return Path(session.cache_root).expanduser()
+    return default_cache_root()
+
+
 def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
     repo_root = args.repo.resolve()
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
@@ -751,6 +827,19 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
 
+    # Plan U7: the config file actually loaded, echoed with its own path before
+    # anything spawns — two `.orchestrator/config.toml` files were once found
+    # to disagree on `context_token_limit` (200000 vs 120000), and `.orchestrator/`
+    # is gitignored so that drift never shows up in a diff. An operator who only
+    # sees the resolved values (as the R8 line below already prints) has no way
+    # to tell which file produced them.
+    config_path = (args.config or repo_root / ".orchestrator" / "config.toml").resolve()
+    print(
+        f"config: {config_path} (token_budget={config.estimator.token_budget}, "
+        f"context_token_limit={config.breaker.context_token_limit}, "
+        f"permission_mode={config.execution.permission_mode})"
+    )
+
     # R8: the effective execution config prints before any session spawns —
     # obs1's operator trap was a config file silently beating flag expectations,
     # discovered only after the base session was already paid for.
@@ -764,25 +853,32 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         if config.escalation.enabled
         else "HITL off"
     )
+    # Whether workers are actually confined belongs in the header next to the
+    # permission mode, not in a warning that scrolls past: `confine = true` with
+    # no Landlock is a silently weaker run, and that is the case an operator most
+    # needs to see before it starts.
+    if not config.session.confine:
+        confinement = "confinement off"
+    else:
+        abi = landlock_abi_version()
+        confinement = (
+            f"confinement on (landlock abi {abi})"
+            if abi > 0
+            else "confinement on but UNAVAILABLE (no landlock; deny-rules only)"
+        )
+    # Belt and braces with `main`'s line-buffering: this is the one line an
+    # operator greps for immediately after backgrounding a run, so it must be on
+    # disk before anything else happens.
     print(
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
-        f"permission-mode {config.execution.permission_mode}"
+        f"permission-mode {config.execution.permission_mode}, {confinement}, "
+        f"cache {_cache_root(config.session)}",
+        flush=True,
     )
     if intensity_override_line is not None:
         print(intensity_override_line)
 
-    session = config.session
-    runner = SessionRunner(
-        claude_bin=session.claude_bin,
-        model=session.model,
-        permission_mode=config.execution.permission_mode,
-        allowed_tools=session.allowed_tools or None,
-        transcript_root=(
-            Path(session.transcript_root).expanduser() if session.transcript_root else None
-        ),
-        max_thinking_tokens=session.max_thinking_tokens,
-        thinking=session.thinking,
-    )
+    runner = build_session_runner(config)
     try:
         runner.preflight()
     except SessionError as exc:
@@ -848,6 +944,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker
+    # Wired after construction (plan U7): the broker is built before the
+    # scheduler exists (the scheduler's resolve routine needs it), so its
+    # stdout line naming blocked groups can only be plugged in here.
+    if broker is not None:
+        broker.pending_groups_provider = scheduler.pending_group_ids
 
     if resume:
         if persisted_manifest is None:
@@ -859,6 +960,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             return 1
         base_session_id = manifest.base_session_id
     else:
+        # Establishing the base session is the *first* long silence an operator
+        # meets — it precedes every group, so no group heartbeat exists yet and
+        # the run said nothing at all until it returned. Same machinery as a
+        # group's, run-scoped: 15s file tick, one log line a minute.
+        base_heartbeat = RoundHeartbeat(paths, None, log=lambda message: log_event(paths, message))
+        base_heartbeat.mark_phase("establishing the base session")
+        base_heartbeat.start()
         try:
             base = runner.start_base(
                 run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
@@ -866,6 +974,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         except SessionError as exc:
             print(f"error: base session failed: {exc}", file=sys.stderr)
             return 1
+        finally:
+            base_heartbeat.stop()
         base_session_id = base.session_id
         manifest = RunManifest(
             run_id=run_id,
@@ -881,7 +991,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         # (ADR 0002). Resume keeps the snapshot its run started with.
         atomic_write_text(paths.groups_path, groups_path.read_text())
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
+    workspace_for, base_ref_for = _workspace_seams(
+        repo_root, run_id, merger, paths, config.session
+    )
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -912,6 +1024,16 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         _print_outcomes(scheduler.state)
         print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        # Ctrl-C previously left state.json indistinguishable from a live run, so
+        # the next reader had to diff mtimes against a worker transcript to find
+        # out the run was dead. Record it, say so, and point at resume.
+        scheduler.mark_interrupted()
+        log_event(paths, f"run {run_id} interrupted (SIGINT)")
+        print("\nrun interrupted", file=sys.stderr)
+        _print_outcomes(scheduler.state)
+        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+        return 130
     except SchedulerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         _print_outcomes(scheduler.state)
@@ -924,7 +1046,13 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
-def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, paths: RunPaths):
+def _workspace_seams(
+    repo_root: Path,
+    run_id: str,
+    merger: IntegrationMerger,
+    paths: RunPaths,
+    session: SessionConfig,
+):
     """The workspace_for / base_ref_for pair, sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
@@ -934,6 +1062,11 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
     tip.
     """
     tips: dict[str, str] = {}
+    # The same cache root the workers get. `provision_env` runs unconfined in this
+    # process, so this is about cache *locality*, not permission: without it the
+    # sync warms the operator's `~/.cache/uv` and every worker then rebuilds the
+    # same downloads in the orchestrator's root, cold.
+    cache_env = worker_cache_env(_cache_root(session), base=dict(os.environ))
 
     def workspace_for(group: Group) -> Path:
         branch = group_branch(run_id, group.id)
@@ -943,7 +1076,12 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
         )
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
-        provision_env(path, log=lambda message: log_event(paths, message))
+        provision_env(
+            path,
+            log=lambda message: log_event(paths, message),
+            env=cache_env,
+            extra_args=session.provision_args,
+        )
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 
@@ -1070,6 +1208,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     manifest = store.load() if store.exists() else None
 
     print(f"run {state.run_id}")
+    if state.interrupted_at is not None:
+        # Said before the group list, because it changes how every line below
+        # reads: a RUNNING group under an interrupted run is not running.
+        print(f"interrupted at {state.interrupted_at} — no process is driving this run")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
         print(f"base session: {manifest.base_session_id}")
