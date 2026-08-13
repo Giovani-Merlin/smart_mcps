@@ -364,11 +364,25 @@ def test_a_broken_call_is_not_mistaken_for_a_usage_limit(fake_home, tmp_path):
 
 
 def test_is_usage_limit_recognizes_the_wordings_seen_in_the_wild():
+    """Every string here is one that was actually observed, not one that seemed
+    plausible. The wordings are undocumented and differ by limit type, so the
+    only safe way to extend this is to add evidence.
+
+    The second was caught by the live tier on 2026-08-13, and it is the reason
+    this test is worth having: the original pattern set was written around
+    `usage limit reached|<epoch>` and did **not** match the sentence a real
+    session limit produces — which would have sent a limited run straight down
+    the pointless-fork path P6 exists to prevent.
+    """
     assert is_usage_limit("Claude AI usage limit reached|1700000000")
+    assert is_usage_limit("You've hit your session limit · resets 1pm (Europe/Berlin)")
     assert is_usage_limit("rate limited")
     assert is_usage_limit("429 Too Many Requests")
     assert not is_usage_limit("claude exited 1: Segmentation fault")
     assert not is_usage_limit("")
+    # Not every sentence with "limit" in it is one: a model reporting that it hit
+    # a *code* limit must still fall back to a fresh fork.
+    assert not is_usage_limit("recursion limit exceeded in the parser")
 
 
 def test_failure_with_unparseable_stdout_falls_back_to_stderr_unchanged(fake_home, tmp_path):

@@ -68,6 +68,80 @@ Structural changes, which matter more than the five fixes:
 - **Usage-limit handling**: a real account limit was classified `interrupted`
   (resumable), not terminal.
 
+## Closed — all eight, 2026-08-13
+
+Every item below was implemented on this branch after the doc was first written.
+The section headings are kept intact so the original diagnosis stays readable
+beside what was done about it.
+
+| #  | closed by                                          | what changed                                                                  |
+| -- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| P1 | `bd63cd1`                                          | one orchestrator-owned cache root, env-driven, replacing the home enumeration |
+| P2 | `e27b0e2`                                          | `denial_error`/`denial_source` + a `DenialKind` classifier, one status kept   |
+| P3 | `bc097c9`                                          | the re-entry round announces itself before it blocks                          |
+| P4 | `bc097c9`                                          | run-scoped heartbeat over the base session                                    |
+| P5 | `bc097c9`                                          | `sys.stdout.reconfigure(line_buffering=True)` in `main()`                     |
+| P6 | `298a420`                                          | `UsageLimit` re-raised out of `_reenter`, no generation spent                 |
+| P7 | `bd63cd1`                                          | `provision_env` takes the cache env and `--all-extras`                        |
+| P8 | `bc097c9`                                          | `group` anchors a relative plan against `--repo`                              |
+
+Three test tiers landed with them, chosen because the defects above were not
+found by any amount of unit testing:
+
+- **`tests/test_e2e_live.py`** (`-m llm`, never on a default `pytest`) drives a
+  whole run of *real* processes under a *real* Landlock ruleset. Everything above
+  `SessionRunner.preflight()` had been stub-only, which is precisely the seam this
+  validation blew open. One session-scoped fixture, so N tests cost one run.
+- **`tests/test_cwd_contract.py`** — the P8 class. `grep -rn "monkeypatch.chdir"`
+  over `tests/` returned nothing beforehand: the cwd-vs-`--repo` contract had zero
+  coverage, in a tool designed to be driven from another repo.
+- **Confinement tests off `/tmp`** — a new `confined_root` fixture under
+  `.orchestrator/tests/<uuid>` asserts with the *production* `system_paths`. The
+  existing fixtures pass `system_paths=[]`, which proves each rule in isolation but
+  discards the policy an operator actually gets (trap #2 below).
+
+### What the live tier found on its first run
+
+It earned its keep immediately. Three of these are corrections to beliefs this
+codebase was carrying, none of which any unit test could have contradicted:
+
+1. **`--allowedTools` adds capability; it does not restrict it.** With `Bash`
+   omitted and no deny rule, the model ran `id` and returned its output. That
+   reframes fix #5: shipping `DEFAULT_ALLOWED_TOOLS` on the run was right — a
+   worker's capability no longer depends on the operator's personal settings — but
+   it granted a *floor*, not a ceiling. The ceiling is `--disallowedTools`, which
+   is why deny beats allow and why the safety rules live there.
+2. **A withheld tool leaves nothing at all on the wire.** The CLI does not offer
+   the tool, so no call is attempted and no `tool_result` arrives. P2's passive
+   corroborator is therefore *structurally* unavailable for that kind, and
+   `denial_source: tool_refused` is not a convenience — it is the only evidence
+   that exists. That is what earns it a schema field.
+3. **Model prose is not a protocol.** Two runs of the identical probe produced two
+   different sentences for the same refusal. The classifier's prose patterns are
+   best-effort by design and nothing rests on them: an unmatched phrasing degrades
+   to `UNKNOWN`, which names both remedies, never to a wrong answer.
+
+It also caught a **P6 gap for free**, by hitting a real limit mid-suite: the
+wording is `You've hit your session limit · resets 1pm (Europe/Berlin)`, which the
+first pattern set (written around `usage limit reached|<epoch>`) did **not** match
+— so a limited run would have gone straight down the pointless-fork path P6 exists
+to prevent. Every pattern in `_USAGE_LIMIT_RE` is now an observed string.
+
+And the kernel-denial probe reproduced the original P1 failure verbatim, from the
+operator's own `PreToolUse` hook: `Failed to initialize cache at
+/home/gbm1996/.cache/uv … Permission denied (os error 13)` — classified
+`kernel_denied` from the wire signal alone, which is the case the last validation
+misdiagnosed.
+
+Two smaller things surfaced while fixing these and are worth recording:
+
+- `RoundHeartbeat.mark_phase` only mutated memory, so a phase change did not reach
+  `heartbeat.json` for up to 15 s — exactly when the process was about to block for
+  a long time. It writes immediately now.
+- The orchestrator *did* have an independent signal for P2 and was discarding it:
+  `StreamingProcess._read_stdout` branched only on `assistant` and `result`, so
+  every `user` event — where `tool_result` blocks arrive — was dropped.
+
 ## Open — ranked, for the next session to plan against
 
 ### P1. The confinement allowlist is an unbounded enumeration
@@ -159,10 +233,22 @@ Real merged work, not a throwaway:
 
 ## Merge recommendation
 
-**Merge `orchestrator/run-r20260811-205146` to `main` after the two fix commits**
-(`4e872e2`, `e09d37c`) — not before. The branch's own features are sound; they were
-simply never run. With the fixes they work, and A3 — the P0 that had bitten twice —
-holds under real load.
+**Merge `orchestrator/run-r20260811-205146` to `main`** — which is also what makes
+the editable-install `smart-mcps-orchestrate` on `PATH` carry any of this. Until
+that merge, every invocation of the global command from another repo runs `main`,
+i.e. pre-fix code: no streaming channel, no Landlock, none of the fixes. That is
+trap #1 below in installed-tool form, and it is why the first attempt at a
+cross-repo run failed before it started.
 
-P1 and P2 should be planned before the next long unattended run, because together
-they are what turns a small policy gap into hours of misattributed debugging.
+P1 and P2 are done, so the thing that turned a small policy gap into hours of
+misattributed debugging is closed on both sides: the gap itself is far less likely
+(one cache root, one config line for the exceptions), and when a denial does
+happen it now names its own cause and remedy.
+
+## What is still worth doing
+
+Nothing from P1–P8 remains. The one thing the automated tiers cannot supply is a
+**supervised live run against a real target repo** — the protocol that found the
+original five defects. The live tier proves a run of real processes terminates,
+commits and is confined; it cannot prove P1 against a genuine Node **and** Python
+toolchain in the same repo, because its fixture has neither.

@@ -67,6 +67,26 @@ _KERNEL_PATTERNS = (
 #: ambiguous between the two worlds, so it is *not* here — the kernel patterns
 #: above claim the errno-shaped ones, and anything left over is UNKNOWN rather
 #: than guessed.
+#:
+#: The last group is the *model's own* wording, and it is **best-effort by
+#: design**. The live probe established that when a tool is withheld there is no
+#: refusal event and no tool error at all — the CLI simply does not offer the tool,
+#: so the model's prose is the only text that exists. Two runs of the identical
+#: probe produced:
+#:
+#:     "I don't have the Bash tool available in this session — the tool list here
+#:      doesn't include it, so I can't run `id`."
+#:
+#:     "The Bash tool isn't among the tools available to me in this session … so I
+#:      have no way to execute shell commands here."
+#:
+#: Free prose is not a protocol, and chasing every phrasing with another
+#: alternation is a losing game that ends in a classifier confident about
+#: sentences it has never seen. These patterns catch the common shapes and nothing
+#: is built on their catching any particular one: ``denial_source`` is the reliable
+#: signal for this kind, which is the whole reason it is a schema field, and an
+#: unmatched phrasing degrades to ``UNKNOWN`` — which names both remedies — rather
+#: than to a wrong answer.
 _HARNESS_PATTERNS = (
     r"requires? (?:approval|permission)",
     r"not (?:in the )?allow(?:ed|list)",
@@ -75,6 +95,12 @@ _HARNESS_PATTERNS = (
     r"permission to use",
     r"claude requested permissions",
     r"has not been granted",
+    r"(?:do not|don't|doesn't|does not) have the \S+ tool",
+    r"\S+ tool (?:is |isn't |is not )?(?:not )?(?:available|unavailable|among the tools)",
+    r"tool list .{0,40}(?:does not|doesn't) include",
+    r"no \S+ tool available",
+    r"no way to (?:execute|run) shell",
+    r"tools available to me",
 )
 
 _KERNEL_RE = re.compile("|".join(_KERNEL_PATTERNS), re.IGNORECASE)
@@ -115,6 +141,13 @@ def classify_denial(
     the CLI's to change, so a classification must never rest on it alone — hence
     it only ever contributes to the errno rule, which matches libc text rather
     than CLI prose.
+
+    A live probe established that it is also *structurally* absent for one of the
+    three kinds. When a tool is missing from ``--allowedTools`` the CLI does not
+    offer it to the model at all, so no call is attempted, no ``tool_result``
+    arrives, and there is nothing on the wire to observe — the model's own report
+    is the only evidence that exists. That is precisely the case ``denial_source``
+    covers, and the reason it is worth a schema field.
     """
     if denied_command and _matches_deny_rules(denied_command, deny_rules):
         return DenialKind.POLICY_FORBIDDEN

@@ -95,8 +95,17 @@ class UsageLimit(SessionError):
 #: How a usage limit announces itself on the wire. It exits non-zero with an
 #: *empty* stderr and the text in the stdout envelope's `result`, which is why
 #: this is matched against `_error_detail`'s output rather than stderr.
+#:
+#: The wordings differ by limit *type* and none of them are documented, so this
+#: list is evidence rather than guesswork — see `tests/test_sessions.py` for each
+#: string verbatim and where it was observed. The `hit your <x> limit` form was
+#: caught by the live tier on 2026-08-13; the older `usage limit reached|<epoch>`
+#: form alone did not match it, which would have sent a limited run down the
+#: pointless-fork path P6 exists to prevent.
 _USAGE_LIMIT_RE = re.compile(
-    r"usage limit reached|rate[ _-]?limit(?:ed|:)?|too many requests|"
+    r"usage limit reached|hit your \w+ limit|"
+    r"(?:session|usage|weekly|monthly) limit(?:\b|·)|limit · resets|"
+    r"rate[ _-]?limit(?:ed|:)?|too many requests|"
     r"limit will reset|429\b|overloaded_error",
     re.IGNORECASE,
 )
