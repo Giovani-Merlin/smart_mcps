@@ -55,6 +55,7 @@ from orchestrator.execution.sessions import (
     RoundResult,
     SessionError,
     SessionRunner,
+    UsageLimit,
     nudge_until_report,
     session_display_name,
 )
@@ -418,6 +419,15 @@ class _GroupExecution:
                 cwd=self.workspace,
                 on_turn=self._make_coder_on_turn(entry),
             )
+        except UsageLimit:
+            # Not a fallback case. The fallback exists for a session that has
+            # become unreachable, where a fresh fork is a real second chance; a
+            # usage limit is the account being out of budget, so the fork fails
+            # identically and spends a generation of the breaker's budget on a call
+            # that could not have succeeded. Propagating leaves the group
+            # INTERRUPTED at this generation, which a plain `resume` re-enters
+            # once the limit has reset.
+            raise
         except SessionError as exc:
             self._reentry_fallback(entry, f"warm resume failed: {exc}")
             return None

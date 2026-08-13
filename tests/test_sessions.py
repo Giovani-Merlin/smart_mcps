@@ -34,6 +34,8 @@ from orchestrator.execution.sessions import (
     RoundUsage,
     SessionError,
     SessionRunner,
+    UsageLimit,
+    is_usage_limit,
     nudge_until_report,
     parse_report,
     session_display_name,
@@ -341,8 +343,32 @@ def test_usage_limit_style_failure_surfaces_stdout_result_over_empty_stderr(fake
             "stdout": json.dumps({"result": "Claude AI usage limit reached|1700000000"}),
         },
     )
-    with pytest.raises(SessionError, match="Claude AI usage limit reached"):
+    # Typed, not merely worded (plan P6): the re-entry path forks a fresh
+    # generation on a plain SessionError, which against a usage limit fails
+    # identically and burns a generation. `UsageLimit` is still a `SessionError`,
+    # so the scheduler keeps classifying it INTERRUPTED / resumable.
+    with pytest.raises(UsageLimit, match="Claude AI usage limit reached") as caught:
         runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert isinstance(caught.value, SessionError)
+
+
+def test_a_broken_call_is_not_mistaken_for_a_usage_limit(fake_home, tmp_path):
+    """The other side of the classification: an ordinary crash must stay a plain
+    SessionError, or every failed session would stop being able to fall back to a
+    fresh fork."""
+    runner = make_runner(fake_home)
+    script(fake_home, {"exit_code": 1, "stderr": "Segmentation fault", "stdout": ""})
+    with pytest.raises(SessionError) as caught:
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert not isinstance(caught.value, UsageLimit)
+
+
+def test_is_usage_limit_recognizes_the_wordings_seen_in_the_wild():
+    assert is_usage_limit("Claude AI usage limit reached|1700000000")
+    assert is_usage_limit("rate limited")
+    assert is_usage_limit("429 Too Many Requests")
+    assert not is_usage_limit("claude exited 1: Segmentation fault")
+    assert not is_usage_limit("")
 
 
 def test_failure_with_unparseable_stdout_falls_back_to_stderr_unchanged(fake_home, tmp_path):

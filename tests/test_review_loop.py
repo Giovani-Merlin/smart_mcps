@@ -24,7 +24,13 @@ from orchestrator.execution.review import (
     make_executor,
 )
 from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
-from orchestrator.execution.sessions import RoundResult, RoundUsage, SessionError, SessionUsage
+from orchestrator.execution.sessions import (
+    RoundResult,
+    RoundUsage,
+    SessionError,
+    SessionUsage,
+    UsageLimit,
+)
 from orchestrator.execution.streaming import TurnUsage
 from orchestrator.model import (
     EscalationKind,
@@ -978,6 +984,48 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     assert reentry_lines[0].endswith(
         "group g1 re-entry: forked generation 1 (warm resume failed: claude exited 1)"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
+    """P6: the fallback fork is a second chance, and a usage limit is not one.
+
+    Falling back is right when the *session* has become unreachable — a fresh fork
+    can then succeed. Against a usage limit it fails identically, and the cost is
+    not the wasted call but the generation: the breaker allows a fixed number, and
+    one spent on a call that could not have succeeded is one the group no longer
+    has for real work. The group stays INTERRUPTED at this generation instead, and
+    a plain `resume` re-enters it once the limit resets.
+    """
+
+    class LimitOnResume(StubRunner):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+            if session_id == "sess-warm":
+                raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
+            return super().resume(
+                session_id=session_id,
+                prompt=prompt,
+                cwd=cwd,
+                json_schema=json_schema,
+                on_turn=on_turn,
+            )
+
+    runner = LimitOnResume(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+
+    with pytest.raises(UsageLimit):
+        await harness.run(make_group())
+
+    # No fork was spent, and no re-entry *outcome* was logged — nothing was
+    # decided, the account was simply unavailable.
+    assert runner.forks == []
+    assert not any("re-entry: forked" in line for line in run_log_lines(harness))
+    # Still a SessionError, so the scheduler classifies it INTERRUPTED/resumable
+    # exactly as before (asserted at the scheduler level in test_scheduler.py).
+    assert issubclass(UsageLimit, SessionError)
 
 
 @pytest.mark.asyncio

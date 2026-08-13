@@ -78,6 +78,37 @@ class ReportError(SessionError):
     """The round's final message never produced a valid report block."""
 
 
+class UsageLimit(SessionError):
+    """The account's usage limit was reached — the round never ran.
+
+    A distinct type because it is the one envelope failure where *retrying with a
+    different session changes nothing*. The re-entry path catches ``SessionError``
+    and falls back to forking a fresh generation, which is the right response to a
+    session that has become unreachable; against a usage limit it fails
+    identically and spends a generation of the breaker's budget on a call that
+    could not have succeeded. Re-raised out of the fallback instead, so the group
+    lands INTERRUPTED (resumable, since it is still a ``SessionError``) with its
+    generation intact.
+    """
+
+
+#: How a usage limit announces itself on the wire. It exits non-zero with an
+#: *empty* stderr and the text in the stdout envelope's `result`, which is why
+#: this is matched against `_error_detail`'s output rather than stderr.
+_USAGE_LIMIT_RE = re.compile(
+    r"usage limit reached|rate[ _-]?limit(?:ed|:)?|too many requests|"
+    r"limit will reset|429\b|overloaded_error",
+    re.IGNORECASE,
+)
+
+
+def is_usage_limit(detail: str) -> bool:
+    """Whether a process-failure detail is an account/rate limit rather than a
+    broken call. Text-matched because the CLI reports it as prose in the
+    envelope's ``result``, with no code or field to key off."""
+    return bool(_USAGE_LIMIT_RE.search(detail))
+
+
 @dataclass(frozen=True)
 class RoundUsage:
     """Token usage of one round, from the CLI JSON envelope."""
@@ -416,9 +447,14 @@ class SessionRunner:
             argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
         )
         if returncode != 0:
-            raise SessionError(
-                f"claude exited {returncode} ({context}): {_error_detail(stdout, stderr)}"
-            )
+            detail = _error_detail(stdout, stderr)
+            message = f"claude exited {returncode} ({context}): {detail}"
+            # Typed, not just worded: `_reenter` needs to tell "this session is
+            # unreachable, fork a new one" from "the account is out of budget,
+            # forking changes nothing".
+            if is_usage_limit(detail):
+                raise UsageLimit(message)
+            raise SessionError(message)
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError as exc:
