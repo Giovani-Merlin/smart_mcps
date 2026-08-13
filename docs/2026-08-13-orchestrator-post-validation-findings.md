@@ -74,16 +74,16 @@ Every item below was implemented on this branch after the doc was first written.
 The section headings are kept intact so the original diagnosis stays readable
 beside what was done about it.
 
-| #  | closed by                                          | what changed                                                                  |
-| -- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| P1 | `bd63cd1`                                          | one orchestrator-owned cache root, env-driven, replacing the home enumeration |
-| P2 | `e27b0e2`                                          | `denial_error`/`denial_source` + a `DenialKind` classifier, one status kept   |
-| P3 | `bc097c9`                                          | the re-entry round announces itself before it blocks                          |
-| P4 | `bc097c9`                                          | run-scoped heartbeat over the base session                                    |
-| P5 | `bc097c9`                                          | `sys.stdout.reconfigure(line_buffering=True)` in `main()`                     |
-| P6 | `298a420`                                          | `UsageLimit` re-raised out of `_reenter`, no generation spent                 |
-| P7 | `bd63cd1`                                          | `provision_env` takes the cache env and `--all-extras`                        |
-| P8 | `bc097c9`                                          | `group` anchors a relative plan against `--repo`                              |
+| #   | closed by | what changed                                                                  |
+| --- | --------- | ----------------------------------------------------------------------------- |
+| P1  | `bd63cd1` | one orchestrator-owned cache root, env-driven, replacing the home enumeration |
+| P2  | `e27b0e2` | `denial_error`/`denial_source` + a `DenialKind` classifier, one status kept   |
+| P3  | `bc097c9` | the re-entry round announces itself before it blocks                          |
+| P4  | `bc097c9` | run-scoped heartbeat over the base session                                    |
+| P5  | `bc097c9` | `sys.stdout.reconfigure(line_buffering=True)` in `main()`                     |
+| P6  | `298a420` | `UsageLimit` re-raised out of `_reenter`, no generation spent                 |
+| P7  | `bd63cd1` | `provision_env` takes the cache env and `--all-extras`                        |
+| P8  | `bc097c9` | `group` anchors a relative plan against `--repo`                              |
 
 Three test tiers landed with them, chosen because the defects above were not
 found by any amount of unit testing:
@@ -128,8 +128,7 @@ first pattern set (written around `usage limit reached|<epoch>`) did **not** mat
 to prevent. Every pattern in `_USAGE_LIMIT_RE` is now an observed string.
 
 And the kernel-denial probe reproduced the original P1 failure verbatim, from the
-operator's own `PreToolUse` hook: `Failed to initialize cache at
-/home/gbm1996/.cache/uv … Permission denied (os error 13)` — classified
+operator's own `PreToolUse` hook: `Failed to initialize cache at /home/gbm1996/.cache/uv … Permission denied (os error 13)` — classified
 `kernel_denied` from the wire signal alone, which is the case the last validation
 misdiagnosed.
 
@@ -142,7 +141,12 @@ Two smaller things surfaced while fixing these and are worth recording:
   `StreamingProcess._read_stdout` branched only on `assistant` and `result`, so
   every `user` event — where `tool_result` blocks arrive — was dropped.
 
-## Open — ranked, for the next session to plan against
+## The eight items as originally diagnosed — all now closed
+
+Kept verbatim, and **nothing here is outstanding**: this is the diagnosis that the
+"Closed" table above refers back to, preserved so the reasoning behind each fix
+stays readable next to the fix itself. See that table for which commit closed
+which item.
 
 ### P1. The confinement allowlist is an unbounded enumeration
 
