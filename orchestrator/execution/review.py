@@ -229,8 +229,23 @@ class _GroupExecution:
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
         is_reentry = reentry is not None
+        # Re-entry (warm-resumed or fallback-forked) continues this generation's
+        # numbering rather than starting over, so round-numbered artifacts don't
+        # collide with — and silently overwrite — pre-crash ones still on disk.
+        #
+        # Computed *before* the re-entry call, not after (plan P3): the re-entry
+        # resume is itself a full round — it writes files and runs tests, for
+        # twenty minutes on the run that prompted this — so it has to be able to
+        # announce its own number before it blocks. `completed_round_count` reads
+        # only the report artifacts already on disk and takes nothing from the
+        # resume, so hoisting it changes no number.
+        rounds = (
+            completed_round_count(self.deps.store.paths, self.gid, self.generation)
+            if is_reentry
+            else 0
+        )
         if reentry is not None:
-            first = await self._reenter(reentry)
+            first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
             self.handoff_prompt = None
@@ -264,17 +279,14 @@ class _GroupExecution:
             )
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
-        # Re-entry (warm-resumed or fallback-forked) continues this generation's
-        # numbering rather than starting over, so round-numbered artifacts don't
-        # collide with — and silently overwrite — pre-crash ones still on disk.
-        rounds = (
-            completed_round_count(self.deps.store.paths, self.gid, self.generation)
-            if is_reentry
-            else 0
-        )
         result = first
-        self._log(f"{self._round_tag(rounds + 1)}: started")
-        self._heartbeat.mark_round(self.generation, rounds + 1)
+        # Guarded on `is_reentry`, not on whether the resume succeeded: a
+        # fallback fork *is* round N of the same generation, and `_reenter`
+        # already announced N before it blocked. Announcing again here would
+        # double-log the round and reset its start time.
+        if not is_reentry:
+            self._log(f"{self._round_tag(rounds + 1)}: started")
+            self._heartbeat.mark_round(self.generation, rounds + 1)
 
         while True:
             report, result = await asyncio.to_thread(
@@ -362,14 +374,19 @@ class _GroupExecution:
         ]
         return live[-1] if live else None
 
-    async def _reenter(self, entry: SessionEntry) -> RoundResult | None:
+    async def _reenter(self, entry: SessionEntry, *, round_no: int) -> RoundResult | None:
         """Warm-resume the interrupted coder in its worktree (R4). Returns the
         resumed round, or None to fall through to a fresh fork from base — when
         the persisted context already exceeds the breaker limit (R5) or the warm
         resume itself fails at the envelope. A SessionError from that fork
         propagates: the group lands interrupted again, since the envelope is
         still failing (no in-run retry loop). Exactly one re-entry lifecycle
-        line is written either way (R6)."""
+        line is written either way (R6).
+
+        ``round_no`` is the number this re-entry carries, announced *before* the
+        blocking resume: the resume performs a whole round's work, so labelling
+        the window `round 0` / `resuming the interrupted coder` for its entire
+        duration hid twenty minutes of real progress from the operator."""
         assert self.workspace is not None
         limit = self.deps.breaker.context_token_limit
         if entry.last_context_tokens > limit:
@@ -386,6 +403,12 @@ class _GroupExecution:
         # after a failure). This one announces an attempt, so it must not be
         # mistaken for the outcome by a reader counting them.
         self._log(f"group {self.gid}: resuming interrupted coder session {entry.session_id}")
+        # Ordering matters and is load-bearing: `mark_round` calls
+        # `mark_phase("running")` internally, so marking the round *after* the
+        # phase would overwrite "resuming the interrupted coder" with "running",
+        # and marking the phase after the round would undo this whole fix.
+        self._log(f"{self._round_tag(round_no)}: started")
+        self._heartbeat.mark_round(self.generation, round_no)
         self._heartbeat.mark_phase("resuming the interrupted coder")
         try:
             result = await asyncio.to_thread(

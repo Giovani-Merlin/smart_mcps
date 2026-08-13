@@ -149,9 +149,7 @@ def test_starting_a_round_supersedes_the_previous_phase(tmp_path):
 def test_a_long_phase_emits_periodic_log_lines_naming_what_it_is_doing(tmp_path):
     """The 21-minute silence this exists for: a group mid-fork must say so."""
     lines: list[str] = []
-    hb = RoundHeartbeat(
-        _paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05
-    )
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05)
     hb.mark_phase("forking the base session")
     hb.start()
     try:
@@ -180,6 +178,60 @@ def test_log_lines_are_rate_limited_far_below_the_file_tick(tmp_path):
         hb.stop()
     assert lines == [], "a 30s log interval must not fire within 0.3s of ticking"
     assert read_heartbeat(_paths(tmp_path), "g1") is not None  # the file still ticked
+
+
+def test_mark_round_then_mark_phase_keeps_the_phase_the_caller_asked_for(tmp_path):
+    """P3's ordering trap, pinned.
+
+    ``mark_round`` calls ``mark_phase("running")`` internally. The re-entry path
+    has to announce its round number *and* keep the phase "resuming the
+    interrupted coder", which only works in this order — the other order
+    silently overwrites the phase with "running" and undoes the fix. A test is
+    the only thing that stops a later reader from "tidying" the two calls.
+    """
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+    hb.mark_round(generation=1, round_no=2)
+    hb.mark_phase("resuming the interrupted coder")
+
+    payload = hb.snapshot()
+    assert payload["phase"] == "resuming the interrupted coder"
+    assert payload["round"] == 2  # the round survived naming the phase
+    assert payload["round_started_at"] is not None
+
+
+# --------------------------------------------------------- run-scoped heartbeat
+
+
+def test_a_run_scoped_heartbeat_lives_beside_the_manifest(tmp_path):
+    """P4: the base session precedes every group, so it has no group directory."""
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, None)
+    hb.mark_phase("establishing the base session")
+    hb.write_once()
+
+    path = heartbeat_path(paths, None)
+    assert path == paths.run_dir / HEARTBEAT_NAME
+    payload = json.loads(path.read_text())
+    assert payload["group_id"] is None
+    assert payload["phase"] == "establishing the base session"
+    assert read_heartbeat(paths, None) == payload
+
+
+def test_a_run_scoped_log_line_names_the_run_not_a_missing_group(tmp_path):
+    lines: list[str] = []
+    hb = RoundHeartbeat(_paths(tmp_path), None, interval=0.01, log=lines.append, log_interval=0.05)
+    hb.mark_phase("establishing the base session")
+    hb.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while not lines and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        hb.stop()
+
+    assert lines, "the base-session phase must produce at least one line"
+    assert lines[0].startswith("run r1: still establishing the base session")
+    assert "group" not in lines[0]  # never "group None"
 
 
 def test_a_failing_log_sink_never_takes_the_heartbeat_down(tmp_path):

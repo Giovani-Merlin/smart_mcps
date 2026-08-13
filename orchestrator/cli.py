@@ -32,6 +32,7 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
+from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     GroupingNameError,
     GroupingSelectionError,
@@ -113,6 +114,16 @@ def main(
     client: CodegraphClient | None = None,
 ) -> int:
     """Entry point. ``llm_runner`` and ``client`` are injectable for offline tests."""
+    # A run is normally started as `… > run.log 2>&1 &`, and Python block-buffers
+    # stdout at 8KB when it is not a tty — so `run.log` stayed empty for the life
+    # of the run and a healthy run was indistinguishable from a hang, with the
+    # confinement header invisible. `-u` is not available to us (console-script
+    # entry points take no interpreter flags), and one reconfigure here fixes
+    # every print at once rather than needing `flush=True` on each.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # a replaced/closed stdout in tests
+        pass
     parser = argparse.ArgumentParser(prog="smart-mcps-orchestrate")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -372,13 +383,32 @@ def _load_config(
 # --------------------------------------------------------------------- group
 
 
+def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
+    """Resolve a plan argument the way `run`/`resume` already resolve theirs.
+
+    `group` passed `args.plan` through verbatim, and `Path.is_file()` downstream
+    resolves a relative path against the *process* cwd — so `group docs/plan.md
+    --repo <elsewhere>` from any other directory failed with a plan that plainly
+    exists. `run`/`resume` re-anchor against the repo; the asymmetry was only
+    here.
+
+    cwd still wins when it resolves, so an operator standing inside one repo and
+    pointing `--repo` at another keeps the path they typed.
+    """
+    if plan.is_absolute() or plan.is_file():
+        return plan
+    anchored = repo_root / plan
+    return anchored if anchored.is_file() else plan
+
+
 def _cmd_group(
     args: argparse.Namespace,
     llm_runner: JsonRunner | None,
     client: CodegraphClient | None,
 ) -> int:
     repo_root = args.repo.resolve()
-    name = getattr(args, "name", None) or args.plan.stem
+    plan_path = _anchor_plan_path(args.plan, repo_root)
+    name = getattr(args, "name", None) or plan_path.stem
     try:
         validate_grouping_name(name)
     except GroupingNameError as exc:
@@ -402,7 +432,7 @@ def _cmd_group(
     if getattr(args, "no_spec", False):
         try:
             outcome = compute_partition(
-                plan_path=args.plan,
+                plan_path=plan_path,
                 repo_root=repo_root,
                 config=config,
                 llm_runner=llm_runner,
@@ -425,7 +455,7 @@ def _cmd_group(
 
     try:
         result, base_context = run_grouping(
-            plan_path=args.plan,
+            plan_path=plan_path,
             repo_root=repo_root,
             config=config,
             llm_runner=llm_runner,
@@ -817,9 +847,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             if abi > 0
             else "confinement on but UNAVAILABLE (no landlock; deny-rules only)"
         )
+    # Belt and braces with `main`'s line-buffering: this is the one line an
+    # operator greps for immediately after backgrounding a run, so it must be on
+    # disk before anything else happens.
     print(
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
-        f"permission-mode {config.execution.permission_mode}, {confinement}"
+        f"permission-mode {config.execution.permission_mode}, {confinement}",
+        flush=True,
     )
     if intensity_override_line is not None:
         print(intensity_override_line)
@@ -906,6 +940,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             return 1
         base_session_id = manifest.base_session_id
     else:
+        # Establishing the base session is the *first* long silence an operator
+        # meets — it precedes every group, so no group heartbeat exists yet and
+        # the run said nothing at all until it returned. Same machinery as a
+        # group's, run-scoped: 15s file tick, one log line a minute.
+        base_heartbeat = RoundHeartbeat(paths, None, log=lambda message: log_event(paths, message))
+        base_heartbeat.mark_phase("establishing the base session")
+        base_heartbeat.start()
         try:
             base = runner.start_base(
                 run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
@@ -913,6 +954,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         except SessionError as exc:
             print(f"error: base session failed: {exc}", file=sys.stderr)
             return 1
+        finally:
+            base_heartbeat.stop()
         base_session_id = base.session_id
         manifest = RunManifest(
             run_id=run_id,

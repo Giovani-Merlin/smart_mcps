@@ -1194,6 +1194,57 @@ class TestRoundHeartbeat:
         assert not {"stalled", "hung", "stuck"} & set(payload)
 
     @pytest.mark.asyncio
+    async def test_a_reentry_round_is_visible_while_the_resume_is_still_in_flight(self, tmp_path):
+        """P3: the re-entry resume *is* a round, and must say so before it blocks.
+
+        Every other heartbeat assertion here is post-hoc over the finished run,
+        which is exactly why this defect survived: after the resume returns, the
+        round is announced and the file looks right. The only way to see the bug
+        is to read `heartbeat.json` from inside the blocking call — which is what
+        a real operator does with `tail -f` while a twenty-minute re-entry writes
+        files and runs tests under `round: 0, phase: resuming…`.
+        """
+        hb_path = RunPaths(tmp_path, "r1").group_dir("g1") / "heartbeat.json"
+        in_flight: list[dict] = []
+
+        class SnapshottingRunner(StubRunner):
+            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+                if session_id == "sess-warm" and not in_flight:
+                    in_flight.append(json.loads(hb_path.read_text()))
+                return super().resume(
+                    session_id=session_id,
+                    prompt=prompt,
+                    cwd=cwd,
+                    json_schema=json_schema,
+                    on_turn=on_turn,
+                )
+
+        runner = SnapshottingRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+        runner.prompts["sess-warm"] = []
+        runner.session_queues["sess-warm"] = [coder_report()]
+        harness = Harness(tmp_path, runner)
+        seed_reentry_session(harness)
+        # One round already on disk pre-crash, so the re-entry is round 2.
+        group_dir = harness.store.paths.group_dir("g1")
+        group_dir.mkdir(parents=True)
+        (group_dir / "report-g1-r1.json").write_text("{}")
+
+        assert await harness.run(make_group()) == GroupState.COMPLETED
+
+        assert in_flight, "the resume never ran"
+        payload = in_flight[0]
+        assert payload["generation"] == 1
+        assert payload["round"] == 2
+        assert payload["round_started_at"] is not None
+        # And the phase still names what the group is actually doing — mark_round
+        # sets "running" internally, so this is the ordering trap in situ.
+        assert payload["phase"] == "resuming the interrupted coder"
+
+        # The round was announced once, not twice (the fallback-fork guard).
+        starts = [line for line in run_log_lines(harness) if line.endswith("round 2: started")]
+        assert len(starts) == 1
+
+    @pytest.mark.asyncio
     async def test_a_broken_heartbeat_writer_never_fails_the_group(self, tmp_path, monkeypatch):
         # Break the writer from the inside, below its own guard.
         monkeypatch.setattr(

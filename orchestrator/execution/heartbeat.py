@@ -48,7 +48,13 @@ def _humanize(seconds: float) -> str:
     return f"{secs}s"
 
 
-def heartbeat_path(paths: RunPaths, group_id: str) -> Path:
+def heartbeat_path(paths: RunPaths, group_id: str | None) -> Path:
+    """Where a heartbeat lives. ``group_id=None`` is the *run*-scoped heartbeat,
+    used for the phases that happen before any group exists (establishing the
+    base session), so it sits beside `manifest.json` rather than under a group
+    directory that would have to be invented for it."""
+    if group_id is None:
+        return paths.run_dir / HEARTBEAT_NAME
     return paths.group_dir(group_id) / HEARTBEAT_NAME
 
 
@@ -65,12 +71,16 @@ class RoundHeartbeat:
     ``mark_round`` is called from the review loop at the points where it already
     logs "round N: started"; it only mutates in-memory fields, so it adds nothing
     to the loop's control flow and cannot change round numbering.
+
+    With ``group_id=None`` the same machinery covers a *run*-scoped phase — the
+    base session, which runs before any group exists and was the first long
+    silence an operator met. Rounds are never marked in that mode; only phases.
     """
 
     def __init__(
         self,
         paths: RunPaths,
-        group_id: str,
+        group_id: str | None,
         *,
         interval: float = DEFAULT_INTERVAL_SECONDS,
         log: Callable[[str], None] | None = None,
@@ -78,6 +88,10 @@ class RoundHeartbeat:
     ) -> None:
         self.paths = paths
         self.group_id = group_id
+        # What the periodic line calls the thing it is reporting on. A run-scoped
+        # heartbeat has no group to name, and "group None" would be worse than
+        # nothing in the one log an operator reads while waiting.
+        self.subject = f"group {group_id}" if group_id is not None else f"run {paths.run_id}"
         self.interval = interval
         self._log = log
         self.log_interval = log_interval
@@ -101,9 +115,9 @@ class RoundHeartbeat:
             self._round = round_no
             self._round_started_at = _now()
         # A round is itself a phase, so starting one ends whatever came before
-        # (the fork, a rewrite) and restarts the elapsed clock.
+        # (the fork, a rewrite) and restarts the elapsed clock. `mark_phase`
+        # writes, so this needs no write of its own.
         self.mark_phase("running")
-        self.write_once()
 
     def mark_phase(self, phase: str) -> None:
         """Name what the group is doing between round boundaries.
@@ -119,6 +133,12 @@ class RoundHeartbeat:
             # Reset the log clock so the next periodic line is measured from the
             # phase, not from whenever the previous one happened to fire.
             self._last_log = time.monotonic()
+        # Written immediately, not left to the next tick. A phase change is
+        # announced precisely because the process is about to block for a long
+        # time, so a reader polling `heartbeat.json` in that window would
+        # otherwise be told the *previous* phase for up to a full interval — long
+        # enough to make a re-entry look like it was still on the round before.
+        self.write_once()
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -148,7 +168,7 @@ class RoundHeartbeat:
             phase = self._phase or "working"
             elapsed = now - self._phase_since
             where = f" (generation {self._generation} round {self._round})" if self._round else ""
-        return f"group {self.group_id}: still {phase}{where}, {_humanize(elapsed)} elapsed"
+        return f"{self.subject}: still {phase}{where}, {_humanize(elapsed)} elapsed"
 
     # --------------------------------------------------------------- lifecycle
 
@@ -157,7 +177,7 @@ class RoundHeartbeat:
             return
         self.write_once()
         self._thread = threading.Thread(
-            target=self._loop, name=f"heartbeat-{self.group_id}", daemon=True
+            target=self._loop, name=f"heartbeat-{self.group_id or self.paths.run_id}", daemon=True
         )
         self._thread.start()
 
@@ -202,7 +222,7 @@ class RoundHeartbeat:
             pass
 
 
-def read_heartbeat(paths: RunPaths, group_id: str) -> dict | None:
+def read_heartbeat(paths: RunPaths, group_id: str | None) -> dict | None:
     """Read a group's heartbeat, or None when there is none to read.
 
     Every run currently on disk predates this file, so absence is the normal
