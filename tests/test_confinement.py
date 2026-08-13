@@ -307,6 +307,36 @@ def test_disallowed_tools_and_settings_appear_in_argv_when_configured(tmp_path):
     assert "Bash(git stash:*)" in plain_rules
 
 
+def test_worker_argv_carries_the_default_allowlist(tmp_path):
+    """A worker's capability must come from the run, not from whoever launched it.
+
+    `allowed_tools` shipped empty, so `--allowedTools` was never passed and workers
+    could only run what the operator's personal `~/.claude/settings.json` happened
+    to list. On run r20260812-202855 that file had no npm rule, and g8 failed three
+    rounds on `npm install --prefix web` after writing its entire client.
+    """
+    from orchestrator.config import DEFAULT_ALLOWED_TOOLS
+
+    env = {"FAKE_CLAUDE_HOME": str(tmp_path / "fake-home")}
+    (tmp_path / "fake-home" / "sessions").mkdir(parents=True)
+    runner = SessionRunner(
+        claude_bin=[sys.executable, str(FAKE_CLAUDE)],
+        env=env,
+        transcript_root=tmp_path / "fake-home" / "projects",
+        allowed_tools=list(DEFAULT_ALLOWED_TOOLS),
+    )
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    argv = json.loads((tmp_path / "fake-home" / "calls.jsonl").read_text().splitlines()[0])["argv"]
+    allowed = argv[argv.index("--allowedTools") + 1]
+    for rule in ("Bash(npm *)", "Bash(uv *)", "Bash(git *)", "Read", "Edit"):
+        assert rule in allowed, f"{rule} missing from --allowedTools"
+
+    # Deny still beats allow: the git mutators stay blocked even though
+    # `Bash(git *)` is allowed.
+    denied = argv[argv.index("--disallowedTools") + 1]
+    assert "Bash(git stash:*)" in denied
+
+
 def test_streaming_argv_carries_verbose(tmp_path):
     """`--print --output-format=stream-json` without `--verbose` is rejected by the
     real CLI with exit 1, so no worker could ever spawn. Observed live on run

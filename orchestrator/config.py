@@ -14,6 +14,55 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+#: Baseline `--allowedTools` for a worker: the toolchains a coder has to drive to
+#: build, test and commit. File tools are listed explicitly because `acceptEdits`
+#: covers edits but not reads or searches.
+#:
+#: Deny still wins — `disallowed_tools` keeps the repo-global git mutators and the
+#: operator-memory rules blocked regardless of what appears here.
+DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "NotebookEdit",
+    "Bash(git *)",
+    "Bash(uv *)",
+    "Bash(python *)",
+    "Bash(python3 *)",
+    "Bash(pytest*)",
+    "Bash(ruff*)",
+    "Bash(mypy*)",
+    "Bash(pip *)",
+    "Bash(pip3 *)",
+    "Bash(npm *)",
+    "Bash(npx *)",
+    "Bash(node *)",
+    "Bash(pnpm *)",
+    "Bash(yarn *)",
+    "Bash(make *)",
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(find *)",
+    "Bash(rg *)",
+    "Bash(grep *)",
+    "Bash(sed *)",
+    "Bash(awk *)",
+    "Bash(mkdir *)",
+    "Bash(cp *)",
+    "Bash(mv *)",
+    "Bash(echo *)",
+    "Bash(cd *)",
+    "Bash(test *)",
+    "Bash(which *)",
+    "Bash(env)",
+)
+
 
 class EdgeWeightsConfig(BaseModel):
     """Affinity weights for the codegraph signals (plan R3) and the prose fallback.
@@ -150,7 +199,24 @@ class SessionConfig(BaseModel):
 
     claude_bin: str | list[str] = "claude"
     model: str | None = None
-    allowed_tools: list[str] = Field(default_factory=list)
+    # What a worker is permitted to execute, declared by the *run* rather than
+    # inherited from whoever launched it.
+    #
+    # This shipped empty, so the flag was never passed and a worker could only run
+    # commands enumerated in the operator's personal `~/.claude/settings.json`
+    # (workers run headless under `acceptEdits`, so anything unlisted is denied
+    # outright with no approver to ask). On run r20260812-202855 that operator had
+    # `Bash(git *)` and `Bash(uv *)` but no npm rule, so g8 wrote its whole client
+    # and then failed three rounds running on `npm install --prefix web` — a
+    # failure indistinguishable, from the outside, from confinement being too
+    # tight. It cost this validation an incorrect diagnosis before the argv was
+    # checked.
+    #
+    # The baseline is the toolchain a coder must drive to build and verify work.
+    # It is deliberately not "everything": the denied git mutators and the
+    # operator-memory rules in `disallowed_tools` still apply on top, and deny
+    # beats allow.
+    allowed_tools: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
     transcript_root: str | None = None
     # Thinking budget per worker turn. Left unset the CLI picks its own default,
     # which is neither pinned nor visible in any run artifact — and thinking counts
