@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import tomllib
 import uuid
@@ -23,8 +24,17 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
-from orchestrator.execution.confinement import landlock_abi_version
+from orchestrator.config import (
+    EscalationConfig,
+    OrchestratorConfig,
+    SessionConfig,
+    load_config,
+)
+from orchestrator.execution.confinement import (
+    default_cache_root,
+    landlock_abi_version,
+    worker_cache_env,
+)
 from orchestrator.execution.escalation import (
     EscalationBroker,
     EscalationError,
@@ -715,7 +725,16 @@ def build_session_runner(config: OrchestratorConfig) -> SessionRunner:
         disallowed_tools=session.disallowed_tools or None,
         settings=session.settings,
         confine=session.confine,
+        cache_root=_cache_root(session),
+        extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
     )
+
+
+def _cache_root(session: SessionConfig) -> Path:
+    """The orchestrator-owned cache root for this run, resolved once."""
+    if session.cache_root:
+        return Path(session.cache_root).expanduser()
+    return default_cache_root()
 
 
 def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
@@ -852,7 +871,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # disk before anything else happens.
     print(
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
-        f"permission-mode {config.execution.permission_mode}, {confinement}",
+        f"permission-mode {config.execution.permission_mode}, {confinement}, "
+        f"cache {_cache_root(config.session)}",
         flush=True,
     )
     if intensity_override_line is not None:
@@ -971,7 +991,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         # (ADR 0002). Resume keeps the snapshot its run started with.
         atomic_write_text(paths.groups_path, groups_path.read_text())
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths)
+    workspace_for, base_ref_for = _workspace_seams(
+        repo_root, run_id, merger, paths, config.session
+    )
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -1024,7 +1046,13 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
-def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, paths: RunPaths):
+def _workspace_seams(
+    repo_root: Path,
+    run_id: str,
+    merger: IntegrationMerger,
+    paths: RunPaths,
+    session: SessionConfig,
+):
     """The workspace_for / base_ref_for pair, sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
@@ -1034,6 +1062,11 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
     tip.
     """
     tips: dict[str, str] = {}
+    # The same cache root the workers get. `provision_env` runs unconfined in this
+    # process, so this is about cache *locality*, not permission: without it the
+    # sync warms the operator's `~/.cache/uv` and every worker then rebuilds the
+    # same downloads in the orchestrator's root, cold.
+    cache_env = worker_cache_env(_cache_root(session), base=dict(os.environ))
 
     def workspace_for(group: Group) -> Path:
         branch = group_branch(run_id, group.id)
@@ -1043,7 +1076,12 @@ def _workspace_seams(repo_root: Path, run_id: str, merger: IntegrationMerger, pa
         )
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
-        provision_env(path, log=lambda message: log_event(paths, message))
+        provision_env(
+            path,
+            log=lambda message: log_event(paths, message),
+            env=cache_env,
+            extra_args=session.provision_args,
+        )
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 

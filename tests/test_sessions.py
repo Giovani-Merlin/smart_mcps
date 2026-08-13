@@ -6,6 +6,7 @@ Every test runs against tests/fake_claude.py — zero live CLI calls, zero token
 
 from __future__ import annotations
 
+import os
 import json
 import re
 import subprocess
@@ -628,6 +629,48 @@ def test_provision_env_runs_uv_sync_only_in_uv_worktrees(tmp_path):
     (locked / "uv.lock").write_text("")
     assert provision_env(locked, runner=fake_run) is True
     assert recorded == [(["uv", "sync"], marked), (["uv", "sync"], locked)]
+
+
+def test_provision_env_passes_the_cache_env_and_the_configured_extras(tmp_path):
+    """P7: the sync must warm the *worker's* cache, and build the *dev* env.
+
+    It ran with no `env=` at all, so it warmed the operator's `~/.cache/uv` while
+    every worker it provisioned for used the orchestrator's cache root — two
+    caches, the worker's cold on a venv the other had already built, plus the
+    cross-filesystem rename that produced the observed EXDEV.
+
+    `--all-extras` is the second half: a group's venv should mirror the dev
+    environment its work is verified against, or its reviewer cannot tell a
+    missing extra from a regression.
+    """
+    recorded: list[dict] = []
+
+    def fake_run(argv, **kwargs):
+        recorded.append({"argv": argv, "env": kwargs.get("env")})
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "uv.lock").write_text("")
+    assert (
+        provision_env(
+            worktree,
+            runner=fake_run,
+            env={"UV_CACHE_DIR": "/caches/uv"},
+            extra_args=["--all-extras"],
+        )
+        is True
+    )
+    assert recorded[0]["argv"] == ["uv", "sync", "--all-extras"]
+    env = recorded[0]["env"]
+    assert env["UV_CACHE_DIR"] == "/caches/uv"
+    assert env["PATH"] == os.environ["PATH"]  # overlaid on the real environment
+
+    # No env given → no env passed, i.e. plain inheritance (the old behaviour,
+    # still what a test or a non-cache caller gets).
+    provision_env(worktree, runner=fake_run)
+    assert recorded[1]["env"] is None
+    assert recorded[1]["argv"] == ["uv", "sync"]
 
 
 def test_provision_env_failure_logs_an_event_and_does_not_raise(tmp_path, capsys):

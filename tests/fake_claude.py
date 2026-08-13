@@ -263,8 +263,21 @@ def main() -> int:
                     "exit_code": code,
                     # The env slice the U6 scrub tests assert on: workers must
                     # never inherit the orchestrator's VIRTUAL_ENV / its PATH.
+                    # The cache variables are recorded for the same reason —
+                    # asserting on what the *process* received is the only way to
+                    # tell an env overlay that was built from one that was passed.
                     "env": {
-                        key: os.environ[key] for key in ("VIRTUAL_ENV", "PATH") if key in os.environ
+                        key: os.environ[key]
+                        for key in (
+                            "VIRTUAL_ENV",
+                            "PATH",
+                            "UV_CACHE_DIR",
+                            "npm_config_cache",
+                            "XDG_CACHE_HOME",
+                            "MAVEN_OPTS",
+                            "HOME",
+                        )
+                        if key in os.environ
                     },
                 },
             )

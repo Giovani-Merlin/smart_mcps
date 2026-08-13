@@ -8,6 +8,7 @@ under the repo root guarantees this by construction.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -184,6 +185,8 @@ def provision_env(
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     log: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
+    extra_args: Sequence[str] | None = None,
 ) -> bool:
     """Provision the worktree's own venv via ``uv sync`` (plan U6, R16).
 
@@ -192,12 +195,32 @@ def provision_env(
     is non-fatal — the worker can re-sync per its guidance, so a fixable env
     hiccup must never kill the group: log the lifecycle event, warn on stderr,
     move on. ``runner`` is the injectable subprocess seam for offline tests.
+
+    ``env`` is overlaid on the current environment and exists for cache
+    *locality*, not permission — this runs in the orchestrator process, entirely
+    unconfined. It used to run with no ``env=`` at all, so it warmed
+    ``~/.cache/uv`` while the worker it was provisioning for used the
+    orchestrator's cache root: two caches, and the worker's one cold on a venv
+    the other had already built. It also produced the observed ``EXDEV`` — `uv`
+    finishes by renaming out of its cache, which fails across filesystems.
+
+    ``extra_args`` is appended to ``uv sync`` (``["--all-extras"]`` in
+    production): a group's venv should mirror the environment its work is
+    verified against, or its reviewer cannot tell a missing extra from a
+    regression.
     """
     if not (worktree / "pyproject.toml").is_file() and not (worktree / "uv.lock").is_file():
         return False
     run = runner or subprocess.run
+    argv = ["uv", "sync", *(extra_args or [])]
     try:
-        result = run(["uv", "sync"], cwd=worktree, capture_output=True, text=True)
+        result = run(
+            argv,
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env} if env else None,
+        )
     except OSError as exc:  # uv missing entirely — same non-fatal contract
         _report_sync_failure(f"uv sync failed in {worktree}: {exc}", log)
         return False

@@ -33,9 +33,13 @@ from pydantic import BaseModel, ValidationError
 
 from orchestrator.execution.confinement import (
     build_policy,
+    default_cache_root,
     landlock_preexec,
     operator_memory_deny_patterns,
+    system_write_paths,
     warn_once,
+    worker_cache_dirs,
+    worker_cache_env,
 )
 from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
@@ -183,6 +187,8 @@ class SessionRunner:
         settings: str | None = None,
         confine: bool = True,
         safety_deny: bool = True,
+        cache_root: Path | None = None,
+        extra_write_paths: Sequence[Path] | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -195,7 +201,23 @@ class SessionRunner:
         self.confine = confine
         self.safety_deny = safety_deny
         self.transcript_root = transcript_root or Path.home() / ".claude" / "projects"
-        self._env = _scrub_virtualenv({**os.environ, **(env or {})})
+        # The one place both halves of the cache mechanism are computed, from one
+        # root: the environment the worker gets, and the paths Landlock allows.
+        # Resolved from *this* process's environ — a worker's own XDG_CACHE_HOME
+        # is about to point inside this root, so re-deriving it there would nest
+        # a root inside itself.
+        self.cache_root = Path(cache_root) if cache_root is not None else default_cache_root()
+        self._cache_dirs = worker_cache_dirs(self.cache_root)
+        self.extra_write_paths = [Path(p) for p in extra_write_paths or []]
+        cache_env = worker_cache_env(self.cache_root, base=dict(os.environ))
+        # HOME is never rewritten: `_claude_home`, transcript discovery,
+        # `probe_claude_runtime_dirs` and the project-slug rule all key off it,
+        # and a worker with a different HOME would lose its own session store.
+        #
+        # Precedence: cache env beats what the orchestrator inherited (that is the
+        # whole point), and an explicit `env=` still beats both — callers pass it
+        # to pin a specific variable and must keep winning.
+        self._env = _scrub_virtualenv({**os.environ, **cache_env, **(env or {})})
         self.tracker = tracker
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
@@ -435,7 +457,17 @@ class SessionRunner:
         """
         preexec_fn = None
         if self.confine:
-            policy = build_policy(worktree=cwd, claude_home=self._claude_home())
+            # Re-asserted per spawn, not created once at startup: Landlock rules
+            # address *existing* paths, so a cache dir deleted mid-run would drop
+            # silently out of the ruleset and reproduce the original
+            # cache-`EACCES` defect on the next round.
+            worker_cache_dirs(self.cache_root, create=True)
+            policy = build_policy(
+                worktree=cwd,
+                claude_home=self._claude_home(),
+                system_paths=[*system_write_paths(), *self.extra_write_paths],
+                cache_dirs=self._cache_dirs,
+            )
             preexec_fn, result = landlock_preexec(policy)
             if not result.applied:
                 self._confinement_warned = warn_once(

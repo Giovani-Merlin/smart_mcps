@@ -160,47 +160,122 @@ _SYSTEM_WRITE_PATHS = (
 
 def system_write_paths() -> list[Path]:
     """The always-writable system paths, including ``$TMPDIR`` when it points
-    somewhere other than the standard temp dirs, and the user's tool cache."""
+    somewhere other than the standard temp dirs.
+
+    Deliberately **no cache dirs**. They used to be appended here, which meant
+    the policy grew a line per ecosystem — `~/.cache`, then `~/.npm`, with
+    `~/.cargo`, `~/.gradle`, `~/.m2`, `~/go/pkg` queued behind them, each
+    omission presenting as a mysterious `permission_denied`. A worker's caches
+    now live under one orchestrator-owned root that the worker's *environment*
+    points every toolchain at (see ``_CACHE_LAYOUT``), so the allowlist carries
+    one rule instead of an enumeration of other people's conventions.
+    """
     paths = [Path(p) for p in _SYSTEM_WRITE_PATHS]
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         candidate = Path(tmpdir)
         if candidate not in paths:
             paths.append(candidate)
-    for cache in tool_cache_dirs():
-        if cache not in paths:
-            paths.append(cache)
     return paths
 
 
-def tool_cache_dirs() -> list[Path]:
-    """Every cache root a worker's toolchain writes to.
+#: The directory name under ``${XDG_CACHE_HOME:-$HOME/.cache}`` that holds every
+#: worker cache, for every group of every run.
+CACHE_ROOT_NAME = "smart-mcps-orchestrator"
 
-    XDG covers `uv`, `pip` and most of the modern world, but **npm does not follow
-    it** — its cache is `~/.npm`. Observed on run r20260812-202855: with the XDG
-    fix in place, g8 still could not run `npm install --prefix web`, so `npm run
-    build` never ran and `web/dist` was never produced.
+#: ``env var -> subdirectory`` under the cache root. The single source of truth
+#: for both halves of the mechanism: ``worker_cache_env`` (what the worker's
+#: toolchains are told) and ``worker_cache_dirs`` (what Landlock allows). Deriving
+#: both from this tuple is what makes them incapable of drifting — a new entry
+#: lands in the environment *and* the allowlist at once, and the anti-drift test
+#: proves it.
+#:
+#: Notes on the awkward ones:
+#:
+#: - ``CARGO_HOME``/``RUSTUP_HOME``/``GRADLE_USER_HOME``/``GOPATH`` are not
+#:   caches strictly speaking — they are tool *homes* that happen to hold the
+#:   cache. Redirecting the whole home is what the tools support, and the content
+#:   is regenerable either way.
+#: - Maven has no cache env var; it takes ``-Dmaven.repo.local`` on the command
+#:   line, which is why ``MAVEN_OPTS`` is handled specially (and *appended*) in
+#:   ``worker_cache_env`` rather than assigned from here.
+#: - ``XDG_CACHE_HOME`` comes last as the catch-all, covering every XDG-abiding
+#:   tool nobody has enumerated. ``XDG_DATA_HOME`` and ``XDG_CONFIG_HOME`` are
+#:   deliberately *not* redirected: those hold credentials and configuration a
+#:   worker legitimately reads, not regenerable caches.
+_CACHE_LAYOUT: tuple[tuple[str, str], ...] = (
+    ("UV_CACHE_DIR", "uv"),
+    ("npm_config_cache", "npm"),
+    ("PIP_CACHE_DIR", "pip"),
+    ("CARGO_HOME", "cargo"),
+    ("RUSTUP_HOME", "rustup"),
+    ("GRADLE_USER_HOME", "gradle"),
+    ("GOPATH", "go"),
+    ("GOCACHE", "go-build"),
+    ("XDG_CACHE_HOME", "xdg"),
+)
 
-    This is an enumeration, and enumerations of other people's conventions are
-    never finished — `~/.cargo`, `~/.gradle`, `~/.m2`, `~/go/pkg` will each want
-    adding the first time a worker is pointed at that ecosystem. See the note in
-    the validation findings: redirecting each tool's cache *into the worktree* via
-    environment variables would be the design that stops needing maintenance.
+#: Maven's repository is set on the command line, not by an env var.
+_MAVEN_SUBDIR = "maven"
+_MAVEN_OPT = "-Dmaven.repo.local="
+
+
+def default_cache_root(environ: dict[str, str] | None = None) -> Path:
+    """``${XDG_CACHE_HOME:-$HOME/.cache}/smart-mcps-orchestrator``.
+
+    Resolved from the **orchestrator's** environment, once, at CLI startup — not
+    from a worker's, which is about to have its own ``XDG_CACHE_HOME`` pointed
+    inside this very root. Reading it later, from the wrong environment, would
+    nest a root inside itself.
+
+    User-level rather than per-repo, on purpose. The Landlock cost is one rule
+    either way, while per-repo would pay a full cold cache for every repo *and*
+    park a multi-gigabyte cache inside the same `.orchestrator/` tree operators
+    delete to clean up run artifacts. Shared across groups and across runs, so
+    the second group of a run finds the first one's downloads already there.
     """
-    dirs: list[Path] = []
-    cache = user_cache_dir()
-    if cache is not None:
-        dirs.append(cache)
-    home = os.environ.get("HOME")
-    npm_cache = os.environ.get("npm_config_cache")
-    candidates = [Path(npm_cache)] if npm_cache else ([Path(home) / ".npm"] if home else [])
-    for candidate in candidates:
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
-        if candidate not in dirs:
-            dirs.append(candidate)
+    env = os.environ if environ is None else environ
+    raw = env.get("XDG_CACHE_HOME")
+    if raw:
+        base = Path(raw)
+    else:
+        home = env.get("HOME")
+        base = Path(home) / ".cache" if home else Path.home() / ".cache"
+    return base / CACHE_ROOT_NAME
+
+
+def worker_cache_env(root: Path, *, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment overlay that points a worker's toolchains at ``root``.
+
+    ``base`` is consulted for one reason only: ``MAVEN_OPTS`` is a free-form
+    option string an operator may already be setting, so this **appends** to it
+    rather than clobbering it. Everything else is an assignment.
+    """
+    env = {var: str(root / subdir) for var, subdir in _CACHE_LAYOUT}
+    existing = (base or {}).get("MAVEN_OPTS", "").strip()
+    maven_opt = f"{_MAVEN_OPT}{root / _MAVEN_SUBDIR}"
+    env["MAVEN_OPTS"] = f"{existing} {maven_opt}".strip() if existing else maven_opt
+    return env
+
+
+def worker_cache_dirs(root: Path, *, create: bool = False) -> list[Path]:
+    """Every directory ``worker_cache_env`` points a toolchain at, for the
+    allowlist.
+
+    ``create=True`` materializes them, and callers spawning a worker must pass it
+    every time rather than once at startup: **Landlock rules address existing
+    paths** (see ``_add_rule``'s early return) so a directory that has been
+    deleted mid-run — by an operator clearing caches, say — would silently drop
+    out of the ruleset and reproduce the original cache-`EACCES` defect exactly.
+    """
+    dirs = [root / subdir for _, subdir in _CACHE_LAYOUT]
+    dirs.append(root / _MAVEN_SUBDIR)
+    if create:
+        for path in dirs:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
     return dirs
 
 
@@ -251,38 +326,6 @@ def worktree_git_dirs(worktree: Path) -> list[Path]:
         if path.is_dir() and path not in dirs:
             dirs.append(path)
     return dirs
-
-
-def user_cache_dir() -> Path | None:
-    """The XDG user cache root, created if missing.
-
-    Every toolchain a worker actually runs writes here — `uv` (hence
-    `uv run pytest`, the verification command of any uv project), `pip`, `npm`,
-    `cargo`, `go`. Denying it does not harden anything: a cache is regenerable
-    by construction and holds none of the operator state confinement exists to
-    protect. Denying it *does* stop the worker dead, which is what happened on
-    run r20260812-202855 — g1 and g8 both died before reading a single file with
-
-        Failed to initialize cache at ~/.cache/uv … Permission denied (os error 13)
-
-    That was not the operator's hook being unusual; it was the first command in
-    the worktree that needed a cache.
-    """
-    raw = os.environ.get("XDG_CACHE_HOME")
-    home = os.environ.get("HOME")
-    if raw:
-        cache = Path(raw)
-    elif home:
-        cache = Path(home) / ".cache"
-    else:
-        return None
-    try:
-        # Landlock rules address existing paths; a cache root that does not exist
-        # yet would silently drop out of the ruleset and fail the same way.
-        cache.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    return cache
 
 
 #: File-editing tools that could rewrite an operator memory file. ``Read`` is
@@ -343,6 +386,7 @@ def build_policy(
     claude_home: Path,
     project_slug: str | None = None,
     system_paths: Sequence[Path] | None = None,
+    cache_dirs: Sequence[Path] | None = None,
 ) -> ConfinementPolicy:
     """The policy for a worker running in ``worktree`` with ``~/.claude`` at
     ``claude_home``. ``project_slug`` defaults to the real CLI's own encoding
@@ -353,6 +397,12 @@ def build_policy(
     its ``tmp_path`` fixtures, so a boundary assertion written against a fake
     ``claude_home`` under ``/tmp`` would otherwise be allowed by the ``/tmp``
     rule rather than by the rule under test. Production never passes it.
+
+    ``cache_dirs`` is allowlisted **exactly as handed in** — this function never
+    re-derives it from a root. The caller (``SessionRunner``) computes the cache
+    root once and derives both the worker's environment and this list from it, so
+    there is exactly one place where "which caches exist" is decided; deriving it
+    again here would be a second place, free to disagree.
     """
     slug = project_slug or encode_cwd(worktree)
     project_dir = claude_home / "projects" / slug
@@ -370,7 +420,14 @@ def build_policy(
     # worktree; without these the worker can edit and test but never commit.
     git_dirs = worktree_git_dirs(worktree)
     return ConfinementPolicy(
-        read_write=[worktree, project_dir, *git_dirs, *runtime_dirs, *system],
+        read_write=[
+            worktree,
+            project_dir,
+            *git_dirs,
+            *runtime_dirs,
+            *system,
+            *(list(cache_dirs) if cache_dirs else []),
+        ],
         read_only=[],
     )
 

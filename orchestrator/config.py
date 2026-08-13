@@ -251,6 +251,27 @@ class SessionConfig(BaseModel):
     # inline JSON string. Empty/None means the flag is omitted entirely.
     disallowed_tools: list[str] = Field(default_factory=list)
     settings: str | None = None
+    # Where every worker's toolchain caches go, shared across groups *and* runs.
+    # Defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/smart-mcps-orchestrator`. The
+    # override exists chiefly for the cross-filesystem case: `uv` finishes a venv
+    # by renaming out of its cache, and a cache on a different filesystem from the
+    # repo makes that rename fail with EXDEV. Point this at the repo's filesystem
+    # when that happens.
+    cache_root: str | None = None
+    # The escape hatch that makes "stop enumerating" true rather than aspirational.
+    #
+    # Redirecting caches by environment covers every tool that honours its own
+    # cache variable. Some do not — `~/.bun`, `~/.nuget`, `~/.gem`, `~/.ivy2`,
+    # `~/.pub-cache`, `~/.deno` hardcode a home path — and each of those used to
+    # mean a new line in the confinement source and a new release. Here they are
+    # one config line an operator writes for their own project.
+    extra_write_paths: list[str] = Field(default_factory=list)
+    # Arguments appended to the `uv sync` that provisions a group's worktree venv.
+    # `--all-extras` by default: a group's venv should mirror the dev environment
+    # it is verified against, or its reviewer cannot tell a missing extra from a
+    # regression. It can be heavy on projects with large optional extras — set
+    # this to `[]` to opt out.
+    provision_args: list[str] = Field(default_factory=lambda: ["--all-extras"])
 
 
 class EscalationConfig(BaseModel):

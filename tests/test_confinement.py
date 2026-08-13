@@ -10,30 +10,86 @@ path itself is covered separately by monkeypatching the ABI probe.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
 from orchestrator.execution.confinement import (
+    CACHE_ROOT_NAME,
     ConfinementPolicy,
     UNAVAILABLE_WARNING,
     build_policy,
+    default_cache_root,
     landlock_abi_version,
     landlock_preexec,
     probe_claude_runtime_dirs,
-    tool_cache_dirs,
-    user_cache_dir,
+    system_write_paths,
     warn_once,
+    worker_cache_dirs,
+    worker_cache_env,
 )
 from orchestrator.execution.sessions import SessionRunner
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 landlock_unavailable = pytest.mark.skipif(
     landlock_abi_version() <= 0, reason="Landlock is unavailable on this kernel"
 )
+
+
+@pytest.fixture
+def confined_root():
+    """A scratch base that is **not** under `/tmp` and **not** under any cache dir.
+
+    `/tmp` is blanket-writable in the production policy (`_SYSTEM_WRITE_PATHS`),
+    so a boundary test whose fixtures live under pytest's `tmp_path` can pass with
+    the bug present — every "denied" path is writable via the `/tmp` rule instead.
+    That already happened once here, which is why the existing fixtures pass
+    `system_paths=[]` to neutralize the defaults.
+
+    Passing `[]` proves the rule under test in isolation, but it cannot prove the
+    *production* policy denies anything, because the production policy is exactly
+    what it discards. This fixture is the other half: real defaults, on ground no
+    default rule covers.
+    """
+    base = PROJECT_ROOT / ".orchestrator" / "tests" / uuid.uuid4().hex
+    base.mkdir(parents=True)
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture
+def confined_prod(confined_root: Path):
+    """The **production** policy — real `system_write_paths()`, real cache layout —
+    around fixtures on ground none of its rules already cover.
+
+    The cache root is under `confined_root` rather than the operator's real one so
+    the test writes probe files into its own scratch, not into `~/.cache`.
+    """
+    worktree = confined_root / "worktree"
+    worktree.mkdir()
+    claude_home = confined_root / "claude"
+    (claude_home / "projects" / "other-slug" / "memory").mkdir(parents=True)
+    (claude_home / "shell-snapshots").mkdir(parents=True)
+    cache_root = confined_root / "cache-root"
+    cache_dirs = worker_cache_dirs(cache_root, create=True)
+    policy = build_policy(
+        worktree=worktree,
+        claude_home=claude_home,
+        project_slug="my-slug",
+        cache_dirs=cache_dirs,
+    )
+    preexec_fn, result = landlock_preexec(policy)
+    assert result.applied
+    return worktree, claude_home, cache_root, cache_dirs, preexec_fn
 
 
 @pytest.fixture
@@ -75,29 +131,176 @@ def _run(preexec_fn, script: str) -> subprocess.CompletedProcess:
     )
 
 
+# --------------------------------------------------- the orchestrator cache root
+
+
 @landlock_unavailable
-def test_confined_subprocess_can_write_the_user_tool_cache(confined_with_system, monkeypatch):
-    """`uv`, `pip`, `npm` and friends all write the XDG cache, so a worker that
-    cannot is a worker that cannot run its own verification command.
+def test_confined_subprocess_can_write_every_worker_cache_dir(confined_prod):
+    """A worker that cannot write its caches cannot run its own verification
+    command.
 
     Observed on run r20260812-202855: g1 and g8 both reported `permission_denied`
     before reading a single source file, with `Failed to initialize cache at
-    ~/.cache/uv … Permission denied (os error 13)`.
+    ~/.cache/uv … Permission denied (os error 13)`. The fix then was to allowlist
+    `~/.cache`, and then `~/.npm` — an enumeration of other people's conventions
+    that was never going to finish. Now every toolchain is pointed at one
+    orchestrator-owned root instead, and *that* is what has to be writable.
     """
-    _worktree, _claude_home, preexec_fn = confined_with_system
-    caches = tool_cache_dirs()
-    assert caches, "no tool cache dirs resolved"
-    # npm does not use XDG — its cache is ~/.npm — so asserting only the XDG root
-    # would still have let `npm install` fail, which is exactly what happened.
-    assert any(c == user_cache_dir() for c in caches)
-    for cache in caches:
+    _worktree, _claude_home, _cache_root, cache_dirs, preexec_fn = confined_prod
+    assert cache_dirs
+    for cache in cache_dirs:
         probe = cache / "smart-mcps-confinement-probe"
         result = _run(preexec_fn, f"echo ok > {probe}")
+        assert result.returncode == 0, f"{cache} unwritable: {result.stderr}"
+        assert probe.read_text() == "ok\n"
+
+
+@landlock_unavailable
+def test_confined_subprocess_can_no_longer_write_the_operators_home_caches(confined_prod):
+    """`~/.cache` and `~/.npm` stop being worker-writable, on purpose.
+
+    They were blanket-allowlisted, which is a large grant on the operator's home
+    for something the worker no longer needs: its caches live under the
+    orchestrator's own root. This is the assertion that keeps the narrowing real —
+    without it, someone re-adding a home cache dir "to be safe" would face no test.
+    """
+    _worktree, _claude_home, _cache_root, _cache_dirs, preexec_fn = confined_prod
+    home = Path(os.environ["HOME"])
+    for denied in (home / ".cache", home / ".npm"):
+        if not denied.is_dir():
+            continue
+        probe = denied / "smart-mcps-confinement-probe"
+        result = _run(preexec_fn, f"echo evil > {probe}")
         try:
-            assert result.returncode == 0, f"{cache} unwritable: {result.stderr}"
-            assert probe.read_text() == "ok\n"
+            assert result.returncode != 0, f"{denied} is still writable"
+            assert not probe.exists()
         finally:
             probe.unlink(missing_ok=True)
+
+
+def test_worker_cache_env_and_worker_cache_dirs_cannot_drift():
+    """The anti-drift invariant, which is the whole reason both halves derive from
+    one table.
+
+    Every filesystem path the worker's environment names must be inside some
+    directory the allowlist grants. Break that and you get the original defect
+    back in a new costume: a toolchain confidently writing to a path the kernel
+    denies, reported as an opaque `permission_denied` from a worker that looks
+    broken. Maven is included deliberately — its path is parsed out of a
+    command-line option inside `MAVEN_OPTS`, the one value that is not simply a
+    path, and therefore the one most likely to be forgotten.
+    """
+    root = Path("/nonexistent-cache-root")
+    env = worker_cache_env(root, base={"MAVEN_OPTS": "-Xmx2g"})
+    allowed = worker_cache_dirs(root)
+
+    # MAVEN_OPTS appends rather than clobbers: an operator's own flags survive.
+    assert env["MAVEN_OPTS"].startswith("-Xmx2g ")
+
+    named: list[Path] = []
+    for var, value in env.items():
+        if var == "MAVEN_OPTS":
+            for token in value.split():
+                if token.startswith("-Dmaven.repo.local="):
+                    named.append(Path(token.split("=", 1)[1]))
+            continue
+        named.append(Path(value))
+
+    assert named, "no cache paths found in the worker environment"
+    for path in named:
+        assert any(path == entry or entry in path.parents for entry in allowed), (
+            f"{path} is set in the worker environment but not in the allowlist"
+        )
+    # And nothing escapes the root — a typo'd absolute path would be a hole.
+    for path in named:
+        assert root in path.parents or path == root
+
+
+def test_the_cache_root_is_read_from_the_orchestrators_own_environment():
+    """Resolved once, from *this* process — never from a worker's.
+
+    A worker's `XDG_CACHE_HOME` is about to point inside this root, so re-deriving
+    the root from a worker environment would nest a root inside itself, once per
+    generation.
+    """
+    root = default_cache_root({"XDG_CACHE_HOME": "/xdg-cache"})
+    assert root == Path("/xdg-cache") / CACHE_ROOT_NAME
+    assert (
+        default_cache_root({"HOME": "/home/someone"})
+        == Path("/home/someone/.cache") / CACHE_ROOT_NAME
+    )
+
+    # The worker's own environment points *inside* the root, so feeding it back in
+    # would produce a doubly-nested path. This is the shape of that mistake.
+    worker_env = worker_cache_env(root)
+    assert default_cache_root(worker_env) != root
+
+
+def test_system_write_paths_no_longer_enumerate_home_caches():
+    paths = system_write_paths()
+    home = Path(os.environ["HOME"])
+    assert home / ".cache" not in paths
+    assert home / ".npm" not in paths
+    assert Path("/tmp") in paths  # still there: the temp dir is a different argument
+
+
+@landlock_unavailable
+def test_extra_write_paths_are_honoured(confined_root):
+    """The escape hatch, exercised end to end.
+
+    Some tools hardcode a home path and ignore their cache variable — `~/.bun`,
+    `~/.nuget`, `~/.gem`. Before this, each one meant editing the confinement
+    source and shipping a release. It has to be an operator config line, or
+    "stop enumerating" is only a slogan.
+    """
+    worktree = confined_root / "wt"
+    worktree.mkdir()
+    hardcoded = confined_root / "dot-bun"
+    hardcoded.mkdir()
+
+    without = build_policy(
+        worktree=worktree,
+        claude_home=confined_root / "claude",
+        system_paths=system_write_paths(),
+    )
+    denied_fn, denied_result = landlock_preexec(without)
+    assert denied_result.applied
+    assert _run(denied_fn, f"echo x > {hardcoded}/probe").returncode != 0
+
+    with_extra = build_policy(
+        worktree=worktree,
+        claude_home=confined_root / "claude",
+        system_paths=[*system_write_paths(), hardcoded],
+    )
+    allowed_fn, allowed_result = landlock_preexec(with_extra)
+    assert allowed_result.applied
+    assert _run(allowed_fn, f"echo ok > {hardcoded}/probe").returncode == 0
+    assert (hardcoded / "probe").read_text() == "ok\n"
+
+
+@landlock_unavailable
+def test_the_production_policy_denies_a_path_no_default_rule_covers(confined_prod):
+    """The counterpart to the `system_paths=[]` fixtures: proof that the policy an
+    operator actually gets denies something.
+
+    The `[]` fixtures below prove each rule in isolation but discard the very
+    defaults under test, so they cannot catch a default that grants too much. This
+    one runs the real thing, on ground outside `/tmp` and outside every cache.
+    """
+    worktree, claude_home, cache_root, _cache_dirs, preexec_fn = confined_prod
+    outside = worktree.parent / "operator-checkout"
+    outside.mkdir()
+    assert _run(preexec_fn, f"echo x > {outside}/stolen.txt").returncode != 0
+    assert not (outside / "stolen.txt").exists()
+
+    other_memory = claude_home / "projects" / "other-slug" / "memory"
+    assert _run(preexec_fn, f"echo evil > {other_memory}/note.md").returncode != 0
+    assert not (other_memory / "note.md").exists()
+
+    # Its own worktree and its own caches still work — a boundary that denies
+    # everything is not a boundary, it is an outage.
+    assert _run(preexec_fn, f"echo ok > {worktree}/file.txt").returncode == 0
+    assert _run(preexec_fn, f"echo ok > {cache_root}/uv/probe").returncode == 0
 
 
 @landlock_unavailable
@@ -406,3 +609,70 @@ def test_cli_built_runner_is_confined_and_carries_safety_rules(tmp_path, monkeyp
     runner = build_session_runner(config)
     assert runner.confine is True
     assert any("memory" in r for r in runner.effective_disallowed_tools())
+    # Same class of wiring bug, same guard: the cache root and the escape hatch
+    # are useless if the CLI does not hand them to the runner it builds.
+    assert runner.cache_root == default_cache_root()
+    assert runner.extra_write_paths == []
+
+    configured = build_session_runner(
+        OrchestratorConfig.model_validate(
+            {"session": {"cache_root": "/somewhere/caches", "extra_write_paths": ["/opt/bun"]}}
+        )
+    )
+    assert configured.cache_root == Path("/somewhere/caches")
+    assert configured.extra_write_paths == [Path("/opt/bun")]
+
+
+def test_the_worker_process_really_receives_the_cache_environment(tmp_path):
+    """Asserted on the environment the spawned process *saw*, not on the overlay.
+
+    Building the right dict and then not passing it is the exact shape of the bug
+    that left Landlock dead for a release, so the assertion has to come from the
+    other side of the fork.
+    """
+    env = {"FAKE_CLAUDE_HOME": str(tmp_path / "fake-home")}
+    (tmp_path / "fake-home" / "sessions").mkdir(parents=True)
+    cache_root = tmp_path / "cache-root"
+    runner = SessionRunner(
+        claude_bin=[sys.executable, str(FAKE_CLAUDE)],
+        env=env,
+        transcript_root=tmp_path / "fake-home" / "projects",
+        cache_root=cache_root,
+        confine=False,
+    )
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    call = json.loads((tmp_path / "fake-home" / "calls.jsonl").read_text().splitlines()[0])
+
+    assert call["env"]["UV_CACHE_DIR"] == str(cache_root / "uv")
+    assert call["env"]["npm_config_cache"] == str(cache_root / "npm")
+    assert call["env"]["XDG_CACHE_HOME"] == str(cache_root / "xdg")
+    assert f"-Dmaven.repo.local={cache_root / 'maven'}" in call["env"]["MAVEN_OPTS"]
+    # HOME is untouched: `_claude_home`, transcript discovery, the runtime-dir
+    # probe and the project-slug rule all key off it, so a worker with a rewritten
+    # HOME would lose its own session store.
+    assert call["env"]["HOME"] == os.environ["HOME"]
+
+
+def test_an_explicit_env_argument_still_beats_the_cache_overlay(tmp_path):
+    """Precedence: cache env over inherited environ, explicit `env=` over both.
+
+    Callers pass `env=` to pin one specific variable, and several tests depend on
+    that winning; an overlay that silently outranked it would break them quietly.
+    """
+    env = {
+        "FAKE_CLAUDE_HOME": str(tmp_path / "fake-home"),
+        "UV_CACHE_DIR": str(tmp_path / "pinned-by-caller"),
+    }
+    (tmp_path / "fake-home" / "sessions").mkdir(parents=True)
+    runner = SessionRunner(
+        claude_bin=[sys.executable, str(FAKE_CLAUDE)],
+        env=env,
+        transcript_root=tmp_path / "fake-home" / "projects",
+        cache_root=tmp_path / "cache-root",
+        confine=False,
+    )
+    runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    call = json.loads((tmp_path / "fake-home" / "calls.jsonl").read_text().splitlines()[0])
+    assert call["env"]["UV_CACHE_DIR"] == str(tmp_path / "pinned-by-caller")
+    # Everything the caller did not pin still comes from the overlay.
+    assert call["env"]["npm_config_cache"] == str(tmp_path / "cache-root" / "npm")

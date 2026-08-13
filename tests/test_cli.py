@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 from orchestrator.cli import _load_config, _print_outcomes, apply_overrides, main
-from orchestrator.config import EscalationConfig, OrchestratorConfig, load_config
+from orchestrator.config import (
+    EscalationConfig,
+    OrchestratorConfig,
+    SessionConfig,
+    load_config,
+)
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import (
     GroupHold,
@@ -1040,7 +1045,9 @@ class TestWorkspaceForFreshCut:
             )
         merger.merge_group(upstream, wt0)
 
-        workspace_for, _ = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        workspace_for, _ = _workspace_seams(
+            repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
+        )
         path = workspace_for(make_group("g1"))
         assert (path / "upstream.txt").read_text() == "from g0\n"
 
@@ -1187,7 +1194,9 @@ class TestWorkspaceProvisioning:
             "orchestrator.cli.provision_env",
             lambda path, **kwargs: recorded.append((path, path.is_dir())),
         )
-        workspace_for, base_ref_for = _workspace_seams(repo, "r1", merger, RunPaths(repo, "r1"))
+        workspace_for, base_ref_for = _workspace_seams(
+            repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
+        )
         group = make_group("g1")
         path = workspace_for(group)
         assert recorded == [(path, True)]  # invoked once, after the worktree existed
