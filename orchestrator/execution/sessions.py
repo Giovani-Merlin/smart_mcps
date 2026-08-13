@@ -183,6 +183,10 @@ class RoundResult:
     text: str
     usage: RoundUsage
     envelope: dict = field(repr=False)
+    #: Refusal/errno text the harness returned to the worker during this round
+    #: (plan P2). Empty for every stub and for any round where nothing matched;
+    #: used only to corroborate a `permission_denied` report's own account.
+    deny_signals: list[str] = field(default_factory=list, repr=False)
 
 
 def session_display_name(run_id: str, group_id: str, role: str, generation: int) -> str:
@@ -443,7 +447,7 @@ class SessionRunner:
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
-        returncode, stdout, stderr = self._spawn(
+        returncode, stdout, stderr, deny_signals = self._spawn(
             argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
         )
         if returncode != 0:
@@ -467,7 +471,11 @@ class SessionRunner:
         usage = RoundUsage.from_envelope(envelope)
         self._usage.setdefault(session_id, SessionUsage()).add(usage)
         return RoundResult(
-            session_id=session_id, text=str(envelope["result"]), usage=usage, envelope=envelope
+            session_id=session_id,
+            text=str(envelope["result"]),
+            usage=usage,
+            envelope=envelope,
+            deny_signals=deny_signals,
         )
 
     def _spawn(
@@ -478,7 +486,7 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         prompt: str | None = None,
-    ) -> tuple[int, str, str]:
+    ) -> tuple[int, str, str, list[str]]:
         """One tracked subprocess, read incrementally rather than a single
         blocking ``communicate()`` (plan U1): the tracker still sees the PID for
         exactly the round's lifetime (spawned once, exited once — plan U6's
@@ -527,8 +535,13 @@ class SessionRunner:
         if outcome.envelope is None:
             if outcome.returncode == 0:
                 raise SessionError(f"claude stream ended without a terminal result ({context})")
-            return outcome.returncode, "", outcome.stderr
-        return outcome.returncode, json.dumps(outcome.envelope), outcome.stderr
+            return outcome.returncode, "", outcome.stderr, outcome.deny_signals
+        return (
+            outcome.returncode,
+            json.dumps(outcome.envelope),
+            outcome.stderr,
+            outcome.deny_signals,
+        )
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:

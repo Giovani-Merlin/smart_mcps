@@ -50,6 +50,7 @@ from orchestrator.execution.prompting import (
     render_reviewer_prompt,
     render_revision_prompt,
 )
+from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.scheduler import Executor, GroupContext, GroupState, RunAbort
 from orchestrator.execution.sessions import (
     RoundResult,
@@ -313,8 +314,29 @@ class _GroupExecution:
             if report.status == "permission_denied":
                 # Typed denial (plan U3): interrupted, not failed, and no rewrite
                 # spent — bypasses _on_coder_stuck/_rewrite entirely.
-                self._log(f"{self._round_tag(rounds)}: ended (permission_denied)")
-                raise PermissionDenied(f"group {self.gid} denied command: {report.denied_command}")
+                #
+                # Attributed (plan P2), because one status covered three unrelated
+                # causes with three different remedies and the last validation
+                # misdiagnosed one of them. The kind rides in the exception message
+                # as well as on the instance: the scheduler already writes
+                # `f"{type(exc).__name__}: {exc}"` into `state.json`, so `status`
+                # and the Observatory gain it with no schema change anywhere.
+                kind = classify_denial(
+                    denied_command=report.denied_command,
+                    denial_error=report.denial_error,
+                    denial_source=report.denial_source,
+                    deny_rules=self.deps.runner.effective_disallowed_tools(),
+                    observed=result.deny_signals,
+                )
+                self._log(f"{self._round_tag(rounds)}: ended (permission_denied: {kind})")
+                self._log(f"group {self.gid} denial: {denial_remedy(kind)}")
+                raise PermissionDenied(
+                    f"group {self.gid} denied command ({kind}): {report.denied_command}",
+                    kind=str(kind),
+                    denied_command=report.denied_command,
+                    denial_error=report.denial_error,
+                    denial_source=report.denial_source,
+                )
             if report.status != "completed":
                 self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
                 await self._on_coder_stuck(report, report_path)

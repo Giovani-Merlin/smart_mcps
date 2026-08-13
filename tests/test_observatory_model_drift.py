@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.execution.denial import DenialKind
 from orchestrator.execution.scheduler import GroupState
 from orchestrator.model import CoderReport, EscalationKind, HumanAction, SessionEntry
 from orchestrator.observatory import artifacts, escalations, events, grouping, transcripts
@@ -24,8 +25,6 @@ OBSERVATORY_DIR = Path(runs.__file__).parent
 
 def _observatory_sources() -> list[Path]:
     return sorted(p for p in OBSERVATORY_DIR.glob("*.py") if p.name != "__init__.py")
-
-
 
 
 def _ui_types_source() -> str:
@@ -57,6 +56,29 @@ def test_coder_report_statuses_are_known_to_the_ui() -> None:
     source = _ui_types_source()
     for status in statuses:
         assert f'"{status}"' in source, f"CoderReport status {status!r} is missing from types.ts"
+
+
+def test_every_denial_kind_is_known_to_the_ui() -> None:
+    """A kind the UI never learned renders as an unstyled chip — worse than an
+    error, because it looks like it worked. Same rule as GroupState, and the
+    reason for the whole file."""
+    source = _ui_types_source()
+    for kind in DenialKind:
+        assert f'"{kind.value}"' in source, f"DenialKind.{kind.value} is missing from types.ts"
+
+
+def test_denial_report_fields_reach_the_ui() -> None:
+    """The kind is derived from these two, so a client that cannot see them cannot
+    show an operator *why* it was classified that way."""
+    source = _ui_types_source()
+    for field in ("denial_error", "denial_source"):
+        assert field in CoderReport.model_fields
+        assert field in source, f"CoderReport.{field} is missing from ui/src/types.ts"
+    for value in CoderReport.model_fields["denial_source"].annotation.__args__:
+        assert f'"{value}"' in source, f"denial_source {value!r} is missing from types.ts"
+    # And the server-derived field on the artifact envelope itself.
+    assert "denial_kind" in artifacts.Artifact.model_fields
+    assert "denial_kind" in source
 
 
 def test_session_entry_cost_fields_reach_the_ui() -> None:

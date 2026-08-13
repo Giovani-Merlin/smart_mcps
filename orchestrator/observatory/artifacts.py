@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from orchestrator.execution.denial import classify_denial
 from orchestrator.observatory.runs import RUN_PREFIX, resolve_run
 
 router = APIRouter(tags=["artifacts"], prefix=RUN_PREFIX)
@@ -69,6 +70,12 @@ class Artifact(BaseModel):
     kind: str  # report | verdict | other
     content: Any = None
     error: str | None = None
+    #: For a `permission_denied` report only: which of the three unrelated causes
+    #: it was (plan P2). Derived on read by the *same* `classify_denial` the review
+    #: loop uses, rather than stored — so artifacts are never rewritten, every
+    #: report already on disk gains attribution retroactively, and there is exactly
+    #: one classifier to keep correct.
+    denial_kind: str | None = None
 
 
 @router.get("/groups/{group_id}/artifacts", response_model=list[Artifact])
@@ -87,4 +94,27 @@ def _read(path: Path) -> Artifact:
     artifact = Artifact(name=path.name, kind=kind if kind in ("report", "verdict") else "other")
     content, error = load_json(path)
     # Half-written or unreadable: name it rather than failing the whole list.
-    return artifact.model_copy(update={"content": content, "error": error})
+    return artifact.model_copy(
+        update={"content": content, "error": error, "denial_kind": _denial_kind(content)}
+    )
+
+
+def _denial_kind(content: Any) -> str | None:
+    """Attribute a denial report on read, or return None for anything else.
+
+    Unvalidated on purpose, like everything else here: a report from an older
+    schema has no `denial_error`/`denial_source` and must still classify (as
+    UNKNOWN, honestly) rather than 500 the Artifacts tab. `deny_rules` is not
+    available to this process — it belongs to the run that spawned the worker — so
+    a `POLICY_FORBIDDEN` can only be attributed live, in the run log; here that
+    same report reads as whatever its text supports.
+    """
+    if not isinstance(content, dict) or content.get("status") != "permission_denied":
+        return None
+    return str(
+        classify_denial(
+            denied_command=str(content.get("denied_command") or ""),
+            denial_error=str(content.get("denial_error") or ""),
+            denial_source=str(content.get("denial_source") or ""),
+        )
+    )

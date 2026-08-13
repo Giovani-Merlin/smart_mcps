@@ -169,9 +169,28 @@ export interface CoderReport {
   // Verbatim, and required whenever status is `permission_denied` — it is what
   // the operator has to clear before a `resume` gets any further.
   denied_command: string;
+  // The observed error, verbatim, and how the coder came by it. Both optional:
+  // every report written before these existed has neither, and the classifier
+  // treats their absence as `unknown` rather than guessing.
+  denial_error: string;
+  denial_source: DenialSource;
   verification_results: VerificationResult[];
   surprises: Surprise[];
 }
+
+// Where the coder's account of the denial came from (model.py). The one thing
+// the model knows for free and the orchestrator cannot recover: whether the
+// harness refused the call, or the command ran and hit EACCES.
+export type DenialSource = "" | "tool_refused" | "command_error";
+
+// DenialKind (execution/denial.py) — which of the three unrelated causes of a
+// `permission_denied` this was, and therefore which remedy applies. Derived on
+// read from the report rather than stored, so historical artifacts classify too.
+export type DenialKind =
+  | "harness_allowlist"
+  | "kernel_denied"
+  | "policy_forbidden"
+  | "unknown";
 
 // ReviewerVerdict (model.py:133) — the parsed content of a `verdict-*.json` artifact.
 export interface ReviewerVerdict {
@@ -418,6 +437,9 @@ export interface Artifact {
   kind: string; // report | verdict | other
   content?: unknown;
   error?: string | null;
+  // Set only for a `permission_denied` report. Server-derived on read, so the
+  // UI never re-implements the classification.
+  denial_kind?: DenialKind | null;
 }
 
 // ------------------------------------------------------------- grouping tab

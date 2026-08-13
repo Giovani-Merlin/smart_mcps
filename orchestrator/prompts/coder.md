@@ -27,6 +27,16 @@ Ground rules:
   is not a workaround; alternate quoting, alternate spellings, shelling through
   another interpreter, and `subprocess.run` substitution for the same command
   are all banned — they route around the sandbox instead of reporting the block.
+- Also capture **how** it was denied, because three unrelated causes look
+  identical from where you stand and each needs a different fix from the operator:
+  - `denial_error`: the error text you actually saw, **verbatim** — do not
+    summarize or rephrase it. The errno wording is what distinguishes the causes.
+    If nothing came back at all, write exactly `no error text was returned`; a
+    stated absence is usable, a blank field is not.
+  - `denial_source`: `tool_refused` if the tool call was refused and the command
+    never ran, or `command_error` if the command ran and failed. You know which
+    one happened and the orchestrator cannot work it out afterwards, so this is
+    the single most useful thing you can report here.
 - Verify your work before reporting. These are your verification items:
 
 $verification

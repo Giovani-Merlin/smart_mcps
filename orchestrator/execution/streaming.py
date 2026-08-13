@@ -24,10 +24,11 @@ by the process itself exiting or by the caller closing stdin/killing it.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -57,6 +58,43 @@ class TurnUsage:
         )
 
 
+#: Text in a ``tool_result`` that looks like a refusal or a kernel denial. Kept
+#: here rather than imported from ``denial.py`` because this is a *collection*
+#: filter, not the classifier: its job is to keep the passive signal small enough
+#: to carry, and it deliberately errs wide — the classifier decides.
+_DENY_SIGNAL_RE = re.compile(
+    r"permission denied|os error 13|EACCES|\[Errno 13\]|EPERM|"
+    r"read-only file system|operation not permitted|"
+    r"requires? (?:approval|permission)|not allowed|"
+    r"tool use was (?:rejected|denied|blocked)|user (?:rejected|denied)",
+    re.IGNORECASE,
+)
+
+#: Cap per signal and in total. This rides on an outcome object and exists only to
+#: corroborate a classification, so it must never grow with a chatty build log.
+_DENY_SIGNAL_MAX_CHARS = 500
+_DENY_SIGNAL_MAX_COUNT = 10
+
+
+def _tool_result_text(content: object) -> str:
+    """Flatten a ``tool_result`` block's ``content`` to text.
+
+    The field is a union in practice — a plain string, or a list of typed blocks —
+    so both are handled rather than assuming whichever one this session happened
+    to see first.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
 @dataclass
 class StreamOutcome:
     """What a completed (exited) stream-json process produced."""
@@ -64,6 +102,12 @@ class StreamOutcome:
     returncode: int
     envelope: dict | None  # the terminal "result" event, or None if never seen
     stderr: str
+    #: Refusal/errno text seen in `tool_result` blocks during the round (plan P2).
+    #: Passive and advisory: an *independent* corroborator for attributing a
+    #: `permission_denied` report, since it comes from the harness rather than from
+    #: the model's own account of what happened. Never the sole basis for a
+    #: classification — the CLI owns this wording and may change it.
+    deny_signals: list[str] = field(default_factory=list)
 
 
 class SubprocessTracker(Protocol):
@@ -110,6 +154,7 @@ class StreamingProcess:
         self._proc: subprocess.Popen[str] | None = None
         self._result_envelope: dict | None = None
         self._stderr_lines: list[str] = []
+        self._deny_signals: list[str] = []
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._exit_reported = False
@@ -172,6 +217,13 @@ class StreamingProcess:
                 usage = ((event.get("message") or {}).get("usage")) or {}
                 if usage and self.on_turn is not None:
                     self.on_turn(TurnUsage.from_message_usage(usage))
+            elif event_type == "user":
+                # `user` events carry the `tool_result` blocks — i.e. what actually
+                # came back from every tool call. This branch did not exist, so
+                # every one of them was dropped: the only account of a denial the
+                # orchestrator had was the model's own, in its report. Collected
+                # passively here, capped, and used to corroborate that account.
+                self._collect_deny_signals(event)
             elif event_type == "result":
                 self._result_envelope = event
                 # The child does **not** exit on `result` while stdin is open —
@@ -189,6 +241,31 @@ class StreamingProcess:
         # open here, or a child that failed without a `result` wedges `wait()`.
         with self._lock:
             self._close_stdin_locked()
+
+    def _collect_deny_signals(self, event: dict) -> None:
+        """Harvest refusal/errno text from a ``user`` event's ``tool_result`` blocks.
+
+        Wrapped broadly and capped: this is advisory evidence, so a surprising
+        event shape must cost nothing. A round that fails because its *diagnostics*
+        raised would be a strictly worse outcome than the opaque denial this exists
+        to explain.
+        """
+        try:
+            with self._lock:
+                if len(self._deny_signals) >= _DENY_SIGNAL_MAX_COUNT:
+                    return
+            for block in (event.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                text = _tool_result_text(block.get("content"))
+                if not text or not _DENY_SIGNAL_RE.search(text):
+                    continue
+                with self._lock:
+                    if len(self._deny_signals) >= _DENY_SIGNAL_MAX_COUNT:
+                        return
+                    self._deny_signals.append(text[:_DENY_SIGNAL_MAX_CHARS])
+        except Exception:  # noqa: BLE001 — advisory evidence never fails a round
+            pass
 
     def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -259,4 +336,5 @@ class StreamingProcess:
             returncode=returncode,
             envelope=self._result_envelope,
             stderr="".join(self._stderr_lines),
+            deny_signals=list(self._deny_signals),
         )

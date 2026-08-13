@@ -25,6 +25,13 @@ Rules for the block:
   changes; the group is marked interrupted and resumed once the denial is
   cleared. Do not use it for a `blocked` report — that status is unrelated to
   permission denials and always routes to the escalate-then-rewrite path.
+- With `permission_denied`, also set two top-level fields that say *how* it was
+  denied. Three unrelated causes produce this one status and each needs a
+  different fix, so without these the operator is guessing:
+  - `"denial_error"`: the error text you saw, **verbatim** — no summarizing, no
+    rephrasing. If there was none, write exactly `no error text was returned`.
+  - `"denial_source"`: `"tool_refused"` when the tool call was refused and the
+    command never ran, or `"command_error"` when the command ran and failed.
 - Every verification item you were given must appear in "verification_results"
   with status pass | fail | skipped.
 - A surprise is a finding that likely invalidates another group's assignment — an

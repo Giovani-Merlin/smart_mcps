@@ -168,13 +168,48 @@ def _emit_assistant_turn(usage: dict, session_id: str, text: str = "") -> None:
     )
 
 
+def _emit_tool_result(text: str, session_id: str, *, is_error: bool = True) -> None:
+    """A ``user`` event carrying one ``tool_result`` block — what the real CLI emits
+    after every tool call, and therefore where a refusal or an errno actually
+    appears. The orchestrator dropped these events entirely, so the only account of
+    a denial it had was the model's own; the shape is reproduced here so the
+    collector is tested against the event it will really see.
+    """
+    print(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_stub",
+                            "is_error": is_error,
+                            "content": [{"type": "text", "text": text}],
+                        }
+                    ],
+                },
+                "session_id": session_id,
+            }
+        ),
+        flush=True,
+    )
+
+
 def _emit_streamed_turns(scripted: dict, session_id: str) -> None:
     """Emit one ``assistant`` stream event per scripted turn (default: a single
     turn using the top-level ``usage``), each carrying its own usage — the
-    per-turn signal ``StreamingProcess.on_turn`` fires on."""
+    per-turn signal ``StreamingProcess.on_turn`` fires on.
+
+    ``tool_results`` interleaves ``user``/``tool_result`` events after the turns,
+    which is the channel a denial's evidence arrives on.
+    """
     turns = scripted.get("turns") or [scripted.get("usage", {})]
     for turn_usage in turns:
         _emit_assistant_turn(turn_usage, session_id)
+    for text in scripted.get("tool_results") or []:
+        _emit_tool_result(text, session_id)
 
 
 def _emit_streamed_turns_awaiting_send(scripted: dict, session_id: str) -> str:

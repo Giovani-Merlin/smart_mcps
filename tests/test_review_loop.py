@@ -54,6 +54,8 @@ def coder_report(
     surprises: list[dict] | None = None,
     question: str = "",
     denied_command: str = "",
+    denial_error: str = "",
+    denial_source: str = "",
 ) -> str:
     body: dict = {
         "status": status,
@@ -65,6 +67,10 @@ def coder_report(
         body["question"] = question
     if denied_command:
         body["denied_command"] = denied_command
+    if denial_error:
+        body["denial_error"] = denial_error
+    if denial_source:
+        body["denial_source"] = denial_source
     return f'<run-report status="{status}">\n{json.dumps(body)}\n</run-report>'
 
 
@@ -105,6 +111,7 @@ class StubRunner:
         # session_id -> every string handed to on_turn's `send` across every
         # call, in order — what a context-ladder prompt actually looked like.
         self.sent: dict[str, list[str]] = {}
+        self.disallowed: list[str] = []
 
     def start_fork(
         self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
@@ -124,6 +131,12 @@ class StubRunner:
         self.prompts[session_id].append(prompt)
         self._play_turns(session_id, on_turn)
         return self._round(session_id)
+
+    def effective_disallowed_tools(self) -> list[str]:
+        # The real runner composes deny rules from config plus its built-in safety
+        # set; the classifier reads them to attribute POLICY_FORBIDDEN. Tests that
+        # care set `disallowed` on the instance.
+        return list(self.disallowed)
 
     def usage_of(self, session_id: str) -> SessionUsage:
         return SessionUsage(last_context_tokens=self.context_tokens.get(session_id, 1_000))
@@ -590,6 +603,72 @@ async def test_permission_denied_raises_and_costs_no_rewrite(tmp_path):
     with pytest.raises(PermissionDenied, match=re.escape("rm -rf /etc")):
         await harness.run(make_group())
     assert harness.rewritten == []  # same rewrite count as a group that never reported
+
+
+@pytest.mark.asyncio
+async def test_a_denial_carries_its_attributed_kind_all_the_way_out(tmp_path):
+    """P2: three causes, one status — so the *kind* has to reach the operator.
+
+    It rides in `str(exc)` deliberately, not only on the instance: the scheduler
+    already writes `f"{type(exc).__name__}: {exc}"` into `state.json`, which
+    `status` prints and the Observatory reads, so this is the whole path from a
+    worker's report to a UI with no schema change on the way.
+    """
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [
+                coder_report(
+                    "permission_denied",
+                    denied_command="uv run pytest",
+                    denial_error=(
+                        "Failed to initialize cache at /home/op/.cache/uv: "
+                        "Permission denied (os error 13)"
+                    ),
+                    denial_source="command_error",
+                )
+            ]
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+
+    assert caught.value.kind == "kernel_denied"
+    assert "kernel_denied" in str(caught.value)
+    assert caught.value.denied_command == "uv run pytest"
+
+    lines = run_log_lines(harness)
+    assert any(line.endswith("round 1: ended (permission_denied: kernel_denied)") for line in lines)
+    # And the remedy, because a kind without one tells an operator nothing.
+    assert any("the kernel refused a write" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_forbidden_command_is_attributed_from_the_runners_own_deny_rules(tmp_path):
+    """The rule that needs nothing from the report: the orchestrator knows its own
+    deny list, so this attribution holds even for a coder that quoted nothing."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="git stash pop")]}
+    )
+    runner.disallowed = ["Bash(git stash:*)"]
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+    assert caught.value.kind == "policy_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_an_unattributable_denial_is_reported_as_unknown_not_guessed(tmp_path):
+    """A confidently wrong attribution is how the original misdiagnosis happened."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report("permission_denied", denied_command="make build")]}
+    )
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(PermissionDenied) as caught:
+        await harness.run(make_group())
+    assert caught.value.kind == "unknown"
+    lines = run_log_lines(harness)
+    assert any("not attributable" in line for line in lines)
 
 
 @pytest.mark.asyncio

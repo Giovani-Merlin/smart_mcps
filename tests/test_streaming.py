@@ -164,3 +164,83 @@ def test_tracker_sees_spawned_and_exited_exactly_once_per_round(fake_home, tmp_p
     assert len(tracker.exited_calls) == 1
     spawned_pid, _ = tracker.spawned_calls[0]
     assert tracker.exited_calls[0] == spawned_pid
+
+
+# ----------------------------------------------------- passive denial evidence
+
+
+def test_tool_result_events_yield_deny_signals(fake_home, tmp_path):
+    """Plan P2: the orchestrator's own account of a denial, independent of the
+    model's.
+
+    `_read_stdout` branched only on `assistant` and `result`, so every `user`
+    event — where `tool_result` blocks arrive, i.e. what every tool call actually
+    returned — was dropped. That left the report as the sole source for
+    attributing a `permission_denied`, and the report is the model's own account of
+    what happened to it.
+    """
+    script(
+        fake_home,
+        {
+            "result": "OK",
+            "tool_results": [
+                "Failed to initialize cache at /home/op/.cache/uv: Permission denied (os error 13)",
+                "ok, nothing interesting here",
+            ],
+        },
+    )
+    runner = make_runner(fake_home)
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+
+    assert len(result.deny_signals) == 1  # the benign result is filtered out
+    assert "os error 13" in result.deny_signals[0]
+
+
+def test_a_round_with_nothing_denied_carries_no_signals(fake_home, tmp_path):
+    script(fake_home, {"result": "OK", "tool_results": ["3 files changed", "tests passed"]})
+    runner = make_runner(fake_home)
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert result.deny_signals == []
+
+
+def test_deny_signals_are_capped_so_a_chatty_round_cannot_bloat_the_outcome(fake_home, tmp_path):
+    """This rides on an outcome object and only ever corroborates a
+    classification, so it must not grow with the log it is reading."""
+    script(
+        fake_home,
+        {
+            "result": "OK",
+            "tool_results": ["EACCES: permission denied, open '/x'" + "y" * 5000] * 40,
+        },
+    )
+    runner = make_runner(fake_home)
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert len(result.deny_signals) <= 10
+    assert all(len(signal) <= 500 for signal in result.deny_signals)
+
+
+def test_a_malformed_user_event_cannot_fail_the_round(fake_home, tmp_path, monkeypatch):
+    """Advisory evidence never costs a round. A round that failed because its own
+    diagnostics raised would be strictly worse than the opaque denial this exists
+    to explain."""
+    import orchestrator.execution.streaming as streaming_mod
+
+    monkeypatch.setattr(
+        streaming_mod,
+        "_tool_result_text",
+        lambda _content: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    script(fake_home, {"result": "OK", "tool_results": ["permission denied"]})
+    runner = make_runner(fake_home)
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert result.text == "OK"
+    assert result.deny_signals == []
+
+
+def test_tool_result_text_accepts_both_shapes_the_field_takes():
+    from orchestrator.execution.streaming import _tool_result_text
+
+    assert _tool_result_text("plain string") == "plain string"
+    assert _tool_result_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+    assert _tool_result_text(None) == ""
+    assert _tool_result_text([{"type": "image"}]) == ""
