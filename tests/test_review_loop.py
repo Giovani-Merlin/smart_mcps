@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -1669,3 +1670,42 @@ async def test_the_launch_line_is_written_before_the_fork_not_after(tmp_path):
     assert re.search(r"session [0-9a-f-]{36}\)", launching[0])
     # And the completion line is absent, because the fork never returned.
     assert not any("coder launched" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_the_group_heartbeat_is_registered_with_the_runners_usage_limit_gate(tmp_path):
+    """The wiring, not the mechanism.
+
+    This repo has been bitten before by a mechanism that was built, unit-tested
+    and then never actually connected — Landlock sat dead for a release exactly
+    that way. The gate's overlay is only reachable if the review loop hands its
+    heartbeat to the runner's gate, and unhands it when the group is done; a
+    heartbeat left registered would keep receiving pauses after its group ended.
+    """
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+    watched: list[object] = []
+    unwatched: list[object] = []
+    runner.gate = SimpleNamespace(
+        watch=watched.append, unwatch=unwatched.append, enabled=True
+    )
+    harness = Harness(tmp_path, runner)
+
+    await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+
+    assert len(watched) == 1
+    assert unwatched == watched  # the same heartbeat, released when the group ended
+    # Duck-typed against the real thing, so a rename on either side fails here.
+    assert callable(getattr(watched[0], "push_phase", None))
+    assert callable(getattr(watched[0], "pop_phase", None))
+
+
+@pytest.mark.asyncio
+async def test_a_runner_without_a_gate_is_unaffected(tmp_path):
+    """Every StubRunner in this file has no `gate` attribute at all — the loop
+    must treat that as "no auto-resume configured", not as a crash."""
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
+    assert not hasattr(runner, "gate")
+    harness = Harness(tmp_path, runner)
+    assert await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY)) == (
+        GroupState.COMPLETED
+    )

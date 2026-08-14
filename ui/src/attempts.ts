@@ -113,6 +113,17 @@ export function isBreakerRetirement(reason: string | null | undefined): boolean 
  * `LlmProcessError` the orchestrator raises when the CLI dies without ever
  * printing an envelope. Both mean "the harness went away", which is a wait,
  * not a rewrite.
+ *
+ * This is the **display** mirror of `sessions.py`'s `_USAGE_LIMIT_RE`, and
+ * deliberately not the same pattern. That one decides control flow — whether a
+ * run pauses and retries — and must only match evidence actually observed on
+ * the wire. This one labels a *recorded failure string* after the fact, so it
+ * is looser on purpose and also matches the orchestrator's own error class
+ * names, which never appear in a live envelope. Three divergent pattern sets
+ * already existed before this comment; keeping them honestly separate is
+ * better than a shared regex that would have to serve both jobs badly. If you
+ * change one, check whether the other actually wants the same change — usually
+ * it does not.
  */
 export function isUsageLimitOutage(text: string | null | undefined): boolean {
   if (!text) return false;

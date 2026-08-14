@@ -189,6 +189,32 @@ class ExecutionConfig(BaseModel):
     max_conflict_resolve_attempts: int = 1
 
 
+class UsageLimitConfig(BaseModel):
+    """What a run does when the account's usage limit is reached.
+
+    The default is to wait it out. Before this existed a limit ended the run —
+    the reset time the classifier's regex had just matched was discarded, the
+    scheduler marked the group INTERRUPTED, and a human had to notice and type
+    `resume`. One recorded run spent most of ~2.7 days that way.
+
+    ``max_wait_s = 0`` means "however long it takes", weekly limits included:
+    the pause costs nothing but wall clock, and the alternative is a stopped run
+    nobody is watching. Set it to bound the wait when a run has a deadline.
+    """
+
+    auto_resume: bool = True
+    max_wait_s: float = 0.0
+    # Retries of the *same* call, across pauses, before the limit is treated as
+    # unrecoverable and today's INTERRUPTED path takes over unchanged.
+    max_attempts: int = 6
+    # Retry this far *after* the announced reset. The reset time is a claim, not
+    # a guarantee, and a retry that lands one second early spends an attempt.
+    skew_s: float = 60.0
+    # Only used when the prose carries no parseable reset time: re-check on this
+    # interval rather than guessing a deadline.
+    fallback_poll_s: float = 900.0
+
+
 class SessionConfig(BaseModel):
     """How the run command shells the claude CLI (plan U9).
 
@@ -272,6 +298,9 @@ class SessionConfig(BaseModel):
     # regression. It can be heavy on projects with large optional extras — set
     # this to `[]` to opt out.
     provision_args: list[str] = Field(default_factory=lambda: ["--all-extras"])
+    # What to do when the account's usage limit is reached mid-run: by default,
+    # pause in place and retry the identical call once the limit releases.
+    usage_limit: UsageLimitConfig = Field(default_factory=UsageLimitConfig)
 
 
 class EscalationConfig(BaseModel):

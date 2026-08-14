@@ -10,15 +10,25 @@
 // the strip — it is route-addressable (`…/session/:groupId/:sessionId`) but it
 // is not a tab, because it is a thing you open, not a place you are.
 //
-// Non-goals, carried verbatim from the plan and enforced here by absence: no
-// launching, resuming or aborting a run from the UI, and no editing of plans or
-// config. The only write surface in the whole Observatory is answering an
-// escalation, which `EscalationPanel` owns.
+// Write surfaces. This used to say "no launching, resuming or aborting a run
+// from the UI" — that non-goal has been deliberately reversed. Launching lives
+// at `/p/:project/launch`, and the Resume link in this header points at it with
+// the run pre-chosen. What reversed it: `--intensity` turned out to be
+// droppable on a terminal `resume`, silently reverting a run to block-forever
+// HITL, and a form that shows the tier as a field is a *safer* surface than a
+// flag someone has to remember. Aborting a run is still absent, and editing
+// plans or config still is too.
+//
+// This layout also carries the usage-limit banner, because "paused" is a
+// property of the whole run rather than of any one tab: a limited run stops
+// moving on every tab at once, and without the banner that is indistinguishable
+// from wedged.
 
 import { NavLink, Outlet, useNavigate, useOutletContext, useParams } from "react-router-dom";
 
 import PathsDrawer from "./components/PathsDrawer";
 import ProjectRunSwitcher from "./components/ProjectRunSwitcher";
+import UsageLimitBanner from "./components/UsageLimitBanner";
 import { useRunStream } from "./useRunStream";
 import type { RunSnapshot } from "./types";
 
@@ -49,6 +59,9 @@ export function RunLayout() {
   const { project = "", runId = "" } = useParams();
   const navigate = useNavigate();
   const { snapshot, revision, error, loading } = useRunStream(project, runId);
+  const hasInterrupted = Boolean(
+    snapshot?.groups.some((group) => group.state === "interrupted"),
+  );
 
   return (
     <div className="app">
@@ -63,6 +76,13 @@ export function RunLayout() {
             {project} / {runId}
           </p>
         </div>
+        {/* Offered only when there is something to resume. A Resume button on a
+          * run that is running invites the 409 the backend exists to refuse. */}
+        {hasInterrupted && (
+          <NavLink className="launch__entry" to={`/p/${encodeURIComponent(project)}/launch`}>
+            Resume this run
+          </NavLink>
+        )}
         <ProjectRunSwitcher
           project={project}
           runId={runId}
@@ -79,6 +99,8 @@ export function RunLayout() {
           }
         />
       </header>
+
+      <UsageLimitBanner usageLimit={snapshot?.usage_limit} />
 
       {error && <p className="app__error">{error}</p>}
 

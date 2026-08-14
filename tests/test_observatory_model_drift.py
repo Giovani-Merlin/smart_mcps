@@ -16,7 +16,7 @@ import pytest
 from orchestrator.execution.denial import DenialKind
 from orchestrator.execution.scheduler import GroupState
 from orchestrator.model import CoderReport, EscalationKind, HumanAction, SessionEntry
-from orchestrator.observatory import artifacts, escalations, events, grouping, transcripts
+from orchestrator.observatory import artifacts, escalations, events, grouping, launch, transcripts
 from orchestrator.observatory import runs
 
 UI_TYPES = Path(__file__).resolve().parents[1] / "ui" / "src" / "types.ts"
@@ -103,9 +103,19 @@ def test_grouping_router_is_mounted() -> None:
     from tests.test_observatory_api import route_paths
 
     paths = route_paths(create_app().routes)
-    for router in (events, escalations, transcripts, artifacts, grouping):
+    for router in (events, escalations, transcripts, artifacts, grouping, launch):
         for route in router.router.routes:
             assert route.path in paths, f"{route.path} is not mounted on the app"
+
+
+#: Modules where two genuinely different kinds of pid meet, with the reason.
+#: ``launch.py`` probes the pids of *jobs it spawned itself* (recorded in
+#: ``jobs/<id>/command.json``) — a pid this server minted and owns. That is not
+#: what R9 is about: the rule protects ``state.json``'s ``live_pids``, which
+#: belong to a scheduler that may have died hours ago on another boot. The
+#: whole-file ban cannot tell the two apart, so these files get the sharper
+#: assertion below instead of the blunt one.
+LIVENESS_PROBE_EXEMPT = {"launch.py"}
 
 
 def test_no_liveness_logic_consults_live_pids() -> None:
@@ -114,10 +124,33 @@ def test_no_liveness_logic_consults_live_pids() -> None:
     banned = ("os.kill", "psutil", "pid_alive", "is_alive", "process_exists")
     for source in _observatory_sources():
         text = source.read_text()
-        if "live_pids" not in text:
+        if "live_pids" not in text or source.name in LIVENESS_PROBE_EXEMPT:
             continue
         for token in banned:
             assert token not in text, f"{source.name} mixes live_pids with liveness probing"
+
+
+def test_exempt_modules_never_probe_a_run_recorded_pid() -> None:
+    """The exemption is narrow: an exempt module may probe its own job pids, but
+    a ``live_pids`` value must never reach a liveness probe.
+
+    Checked per-expression rather than per-file, which is the distinction the
+    blunt rule above cannot make — and the distinction is the whole point. A
+    double-launch guard that decided a run was dead because ``os.kill`` said so
+    would start a second scheduler over a live run's worktrees the first time a
+    run outlived its recorded pids' visibility.
+    """
+    banned = ("os.kill", "psutil", "pid_alive", "is_alive", "process_exists")
+    for source in _observatory_sources():
+        if source.name not in LIVENESS_PROBE_EXEMPT:
+            continue
+        for number, line in enumerate(source.read_text().splitlines(), start=1):
+            if "live_pids" not in line or line.lstrip().startswith("#"):
+                continue
+            for token in banned:
+                assert token not in line, (
+                    f"{source.name}:{number} probes liveness of a run-recorded pid"
+                )
 
 
 def test_ui_never_branches_on_live_pids() -> None:

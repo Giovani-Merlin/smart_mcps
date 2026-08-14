@@ -1,0 +1,37 @@
+.usage-limit {
+  /* The attention palette, not the danger one: a pause is not a failure. */
+  border: 1px solid var(--status-attention);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background-color: var(--surface-sunken);
+  padding: 0.6rem 0.9rem;
+  margin: 0 0 1rem;
+}
+
+.usage-limit__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.usage-limit__when {
+  color: var(--status-attention);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-limit__detail {
+  margin: 0.4rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.usage-limit__note {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+}

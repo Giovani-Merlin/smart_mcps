@@ -212,6 +212,13 @@ class _GroupExecution:
         self.workspace = self.deps.workspace_for(self.group)
         self._log(f"group {self.gid}: worktree ready at {self.workspace}")
         self._heartbeat.start()
+        # A usage-limit pause is announced on this group's heartbeat for as long
+        # as the group is live (see `UsageLimitGate.watch`) — a run that has
+        # stopped because the account is out of budget must read as *paused*,
+        # not as wedged, on the board as well as in the log.
+        gate = getattr(self.deps.runner, "gate", None)
+        if gate is not None:
+            gate.watch(self._heartbeat)
         try:
             while True:
                 merged = await self._run_generation()
@@ -220,6 +227,8 @@ class _GroupExecution:
                     return GroupState.COMPLETED
                 # a rewrite or a retirement happened inside; loop spawns the next session
         finally:
+            if gate is not None:
+                gate.unwatch(self._heartbeat)
             self._heartbeat.stop()
 
     # ------------------------------------------------------------ generation
@@ -279,6 +288,7 @@ class _GroupExecution:
                 session_id=self.coder_sid,
                 on_turn=self._make_coder_on_turn(self.coder_entry),
             )
+            self._adopt_actual_session_id(first)
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
         result = first
@@ -537,6 +547,26 @@ class _GroupExecution:
                 send(render_ladder_summary_prompt())
 
         return on_turn
+
+    def _adopt_actual_session_id(self, result: RoundResult) -> None:
+        """Reconcile the pre-registered coder id with the one the CLI really used.
+
+        Plan U7 records the id *before* the fork, which assumes the fork uses it.
+        A usage-limit retry breaks that assumption: the first attempt spends the
+        id, so the retry mints a fresh one (see ``_call_with_retry``). Without
+        this, the manifest keeps an id no session was ever created under, and a
+        later resume would `--resume` into nothing — turning a recovered run
+        into an unrecoverable one.
+        """
+        actual = result.session_id
+        if not actual or actual == self.coder_sid:
+            return
+        self._log(
+            f"group {self.gid} generation {self.generation}: coder session is {actual}, "
+            f"not the pre-registered {self.coder_sid} (usage-limit retry minted a new id)"
+        )
+        self.coder_sid = actual
+        self.coder_entry.session_id = actual
 
     def _refresh_transcript(self, entry: SessionEntry) -> None:
         """Fill in a pre-registered entry's transcript path once its session

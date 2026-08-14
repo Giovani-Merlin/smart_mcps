@@ -15,6 +15,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { errorMessage, listRuns } from "../api";
 import type { RunInfo } from "../types";
+import "./Launch.css";
 
 function formatUpdated(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -55,6 +56,12 @@ export function ProjectIndex() {
           </h1>
           <p className="app__run-id">{project}</p>
         </div>
+        {/* The entry point into the launch surface. It sits here rather than on
+          * a run, because grouping and starting are things you do *before* a
+          * run exists — there is no run page to hang them off. */}
+        <Link className="launch__entry" to={`/p/${encodeURIComponent(project)}/launch`}>
+          New run
+        </Link>
       </header>
 
       <h2>Runs</h2>

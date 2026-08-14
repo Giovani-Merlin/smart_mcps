@@ -1,0 +1,54 @@
+.exec-options {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem 1rem;
+  margin: 0 0 1rem;
+}
+
+.exec-options legend {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  padding: 0 0.35rem;
+}
+
+.exec-options__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.exec-options__grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.exec-options__grid select,
+.exec-options__grid input {
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background-color: var(--surface);
+  color: var(--fg);
+}
+
+.exec-options__checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-top: 0.85rem;
+  font-size: 0.85rem;
+}
+
+.exec-options__checks label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.exec-options[disabled] {
+  opacity: 0.6;
+}

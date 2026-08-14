@@ -1,0 +1,79 @@
+.launch__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  align-items: start;
+  margin-bottom: 1.5rem;
+}
+
+.launch__card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--surface);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.launch__card h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.launch__card > label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.launch__card select,
+.launch__card input[type="text"],
+.launch__card input[type="number"] {
+  font: inherit;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background-color: var(--surface);
+  color: var(--fg);
+}
+
+.launch__card > label.launch__check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.launch__hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+}
+
+.launch__card button {
+  font: inherit;
+  align-self: flex-start;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background-color: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+}
+
+.launch__card button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.launch__entry {
+  font: inherit;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background-color: var(--surface);
+  color: var(--fg);
+  text-decoration: none;
+}

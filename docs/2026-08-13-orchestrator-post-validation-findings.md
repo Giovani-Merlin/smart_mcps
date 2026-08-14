@@ -200,6 +200,14 @@ A warm resume that fails on an account limit falls back to forking a fresh
 generation, which fails identically and burns a generation. "Session unusable" and
 "account exhausted" need distinguishing before the fallback.
 
+**Superseded 2026-08-13 by auto-resume.** P6 fixed the *symptom* — the fallback
+no longer burns a generation — but the limit still ended the run, and only a
+human could restart it. That cost is now gone: the retry moved down to
+`SessionRunner._call`, below where generations are counted, so a limited call
+waits for the reset and replays itself. See "Auto-resume after a usage limit" in
+`orchestrator/README.md`. P6's classification is what made it possible and stays
+exactly as it was.
+
 ### P7. Group worktree venvs lack the operator's optional extras
 
 drummAI's `audio_separator` extra is installed in the main checkout but not in a
@@ -249,10 +257,36 @@ misattributed debugging is closed on both sides: the gap itself is far less like
 (one cache root, one config line for the exceptions), and when a denial does
 happen it now names its own cause and remedy.
 
+## Closed since: a usage limit no longer costs a human wait
+
+The finding behind P6 was narrower than the problem. A limit did not just burn a
+generation — it **stopped the run**, and the reset time the classifier had
+already matched was discarded. One recorded run took ~2.7 days, "mostly
+rate-limit-reset waits". Three things landed together:
+
+1. **The run waits it out.** `execution/ratelimit.py` parses the reset time out
+   of the limit prose and blocks until it passes, then retries the identical
+   call. One gate per run, so concurrent groups join the same pause rather than
+   each launching into an active limit. On by default; `--no-auto-resume` keeps
+   the old behaviour exactly.
+2. **The one-shot `claude -p` path can finally recognise a limit.** It raised a
+   bare `LlmProcessError` and never called `is_usage_limit` at all, so `group`
+   and every run-time spec rewrite treated a reset-in-40-minutes like a segfault.
+3. **A pause reads as paused.** `run.log`, the group heartbeat's phase, and a new
+   `runs/<id>/usage-limit.json` that drives an Observatory banner.
+
+**Still unproven, deliberately:** the automated tiers cannot produce a genuine
+account limit, so the reset-time parse has only ever run against strings captured
+by hand. The **weekly** wording in particular is *unconfirmed* — the parse table
+pins the behaviour chosen for a day-qualified reset, not a wording anyone has
+seen. Capture the verbatim string the first time a real weekly limit fires and
+add it to `tests/test_ratelimit.py`.
+
 ## What is still worth doing
 
 Nothing from P1–P8 remains. The one thing the automated tiers cannot supply is a
 **supervised live run against a real target repo** — the protocol that found the
 original five defects. The live tier proves a run of real processes terminates,
 commits and is confined; it cannot prove P1 against a genuine Node **and** Python
-toolchain in the same repo, because its fixture has neither.
+toolchain in the same repo, because its fixture has neither. The same gap now
+covers the usage-limit parse above.

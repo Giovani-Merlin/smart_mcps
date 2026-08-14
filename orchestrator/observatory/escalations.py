@@ -1,6 +1,14 @@
-"""The HITL channel over HTTP: pending escalations and the one write (plan U6).
+"""The HITL channel over HTTP: pending escalations and answering them (plan U6).
 
-This module is the Observatory's only write path, and it does not implement it:
+This was for a long time the Observatory's *only* write path, and the module
+docstring said so. That is no longer true and the sentence has been rewritten
+rather than left contradicting the code: ``launch.py`` now starts groupings,
+runs and resumes. Answering an escalation is still the only write that touches a
+*live* run's state, and it remains the more delicate of the two — a launch that
+goes wrong has not started, while an answer here unblocks a group that is
+already waiting on it.
+
+This module does not implement the answer:
 listing delegates to ``pending_escalations`` and answering to
 ``answer_escalation``, both in ``orchestrator.execution.escalation``. The
 request/response pairing rule therefore has exactly one implementation, shared

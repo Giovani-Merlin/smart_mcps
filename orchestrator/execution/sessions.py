@@ -42,6 +42,7 @@ from orchestrator.execution.confinement import (
     worker_cache_env,
 )
 from orchestrator.execution.worktrees import denied_git_tool_patterns
+from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 
 REQUIRED_CLI_FLAGS = (
@@ -89,7 +90,16 @@ class UsageLimit(SessionError):
     could not have succeeded. Re-raised out of the fallback instead, so the group
     lands INTERRUPTED (resumable, since it is still a ``SessionError``) with its
     generation intact.
+
+    ``detail`` carries the limit prose *unwrapped* — no ``claude exited 1 (…)``
+    prefix — because that is what ``ratelimit.parse_reset_at`` reads the reset
+    time out of, and re-extracting it from a formatted message would be a second
+    parser of the same string.
     """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail or message
 
 
 #: How a usage limit announces itself on the wire. It exits non-zero with an
@@ -233,6 +243,7 @@ class SessionRunner:
         safety_deny: bool = True,
         cache_root: Path | None = None,
         extra_write_paths: Sequence[Path] | None = None,
+        gate: UsageLimitGate | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -263,6 +274,10 @@ class SessionRunner:
         # to pin a specific variable and must keep winning.
         self._env = _scrub_virtualenv({**os.environ, **cache_env, **(env or {})})
         self.tracker = tracker
+        # One gate per run, shared by every group (see `_call`'s retry loop).
+        # ``None`` restores the pre-auto-resume behaviour exactly: a usage limit
+        # raises straight out of the call.
+        self.gate = gate
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
         self._confinement_warned = False
@@ -456,6 +471,75 @@ class SessionRunner:
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
         context = _argv_context(extra)
+        return self._call_with_retry(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
+
+    def _call_with_retry(
+        self,
+        argv: list[str],
+        *,
+        prompt: str,
+        cwd: Path,
+        context: str,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> RoundResult:
+        """Spawn, and on a usage limit wait for the reset and re-send the same argv.
+
+        This is the right level for the retry for three reasons. It covers every
+        session path at once — base, coder fork, warm resume, reviewer — with one
+        edit. It sits *below* where generations and spec rewrites are counted, so
+        a pause costs no generation of the breaker's budget (what the P6 fix at
+        ``review.py`` reached for and could only half-achieve). And the failed
+        call never reached the model, so re-sending the same prompt to the same
+        session is a replay, not a second attempt.
+
+        One honest caveat: a limit can land *mid-round*, after some turns already
+        committed to the transcript. A retried ``--resume`` then re-enters a
+        session holding partial work — precisely what a manual ``resume`` does
+        today, minus the human wait. A retried ``--fork-session`` discards that
+        partial. Neither is new behaviour; both are now automatic.
+
+        The retry cannot replay ``--session-id`` verbatim. The CLI *registers*
+        the id before the call dies on the limit, so re-sending it fails with
+        "Session ID <uuid> is already in use" — in the same second, after a wait
+        of hours. A live run lost 3h42m to exactly that (run r20260812-202855,
+        group g4, 2026-08-14) and every ``--session-id`` retry before this fix
+        was guaranteed to fail that way. So each attempt mints a fresh id; the
+        id the CLI actually used comes back on ``RoundResult.session_id``, which
+        is read from the envelope, and callers that pre-registered the old id
+        must reconcile against it (see ``ReviewLoop`` and plan U7).
+
+        ``--resume`` needs no such treatment: resuming an existing session twice
+        is legal, and the id must not change or the retry would address the
+        wrong session.
+
+        Exhausting ``max_attempts`` re-raises ``UsageLimit``, so today's
+        INTERRUPTED path applies unchanged when the mechanism gives up.
+        """
+        gate = self.gate
+        attempts = gate.max_attempts if gate is not None and gate.enabled else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._invoke(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
+            except UsageLimit as exc:
+                if gate is None or not gate.enabled or attempt == attempts:
+                    raise
+                # A cancelled pause means the operator stopped the run: re-raise
+                # rather than retry into a limit that is still active.
+                if not gate.pause(exc.detail):
+                    raise
+                argv = _with_fresh_session_id(argv)
+                context = _argv_context(argv)
+        raise AssertionError("unreachable")
+
+    def _invoke(
+        self,
+        argv: list[str],
+        *,
+        prompt: str,
+        cwd: Path,
+        context: str,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> RoundResult:
         returncode, stdout, stderr, deny_signals = self._spawn(
             argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
         )
@@ -466,7 +550,7 @@ class SessionRunner:
             # unreachable, fork a new one" from "the account is out of budget,
             # forking changes nothing".
             if is_usage_limit(detail):
-                raise UsageLimit(message)
+                raise UsageLimit(message, detail)
             raise SessionError(message)
         try:
             envelope = json.loads(stdout)
@@ -585,6 +669,22 @@ def _error_detail(stdout: str, stderr: str) -> str:
     if isinstance(envelope, dict) and envelope.get("result"):
         return str(envelope["result"])[:500]
     return stderr.strip()[:500]
+
+
+def _with_fresh_session_id(argv: list[str]) -> list[str]:
+    """A copy of ``argv`` with a new ``--session-id``, for a usage-limit retry.
+
+    The id the first attempt carried is spent even though that attempt never
+    reached the model: the CLI registers it, then fails on the limit. Only the
+    explicit ``--session-id`` value is replaced — ``--resume`` ids address a
+    session that must stay the same, and argv without ``--session-id`` (a plain
+    new session) is returned unchanged.
+    """
+    if "--session-id" not in argv:
+        return argv
+    fresh = list(argv)
+    fresh[fresh.index("--session-id") + 1] = str(uuid.uuid4())
+    return fresh
 
 
 def _argv_context(extra: list[str]) -> str:

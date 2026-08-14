@@ -149,6 +149,17 @@ class RunPaths:
         return self.run_dir / "escalations"
 
     @property
+    def usage_limit_path(self) -> Path:
+        """The rate-limit gate's current pause, for the snapshot and the UI banner.
+
+        A file of its own rather than a field on ``state.json``: the gate fires
+        from a worker thread while the scheduler's event loop owns ``state.json``,
+        and a separate write-then-rename file avoids that cross-thread hazard
+        entirely instead of needing a lock nothing else in the run needs.
+        """
+        return self.run_dir / "usage-limit.json"
+
+    @property
     def surprises_path(self) -> Path:
         """Persisted SurpriseBoard state (plan U7): an in-memory-only board dies
         with the process, silently dropping a surprise marked for a group that

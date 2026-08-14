@@ -3,6 +3,7 @@
 //
 //   /                                          project picker
 //   /p/:project                                run index (no auto-jump)
+//   /p/:project/launch                         group / run / resume
 //   /p/:project/r/:runId/board                 Board
 //   /p/:project/r/:runId/history               attempt grid
 //   /p/:project/r/:runId/grouping?stage=&edge= how this plan became groups
@@ -30,6 +31,7 @@ import EventLog from "./components/EventLog";
 import GroupBoard from "./components/GroupBoard";
 import GroupDrillIn from "./components/GroupDrillIn";
 import GroupingTab from "./components/grouping/GroupingTab";
+import Launch from "./routes/Launch";
 import ProjectIndex from "./routes/ProjectIndex";
 import ProjectPicker from "./routes/ProjectPicker";
 import RunLayout, { useRunContext } from "./RunLayout";
@@ -145,6 +147,7 @@ export const routes: RouteObject[] = [
   { path: "/", element: <ProjectPicker /> },
   { path: "/p", element: <Navigate to="/" replace /> },
   { path: "/p/:project", element: <ProjectIndex /> },
+  { path: "/p/:project/launch", element: <Launch /> },
   {
     path: "/p/:project/r/:runId",
     element: <RunLayout />,

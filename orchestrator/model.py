@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from orchestrator.config import EscalationConfig
+from orchestrator.config import EscalationConfig, UsageLimitConfig
 
 # Downstream session titles derived from summaries cap at 120 chars
 # (docs/research/infinity-skills-analysis.md); validated here, never truncated later.
@@ -115,6 +115,11 @@ class RunManifest(BaseModel):
     # instead of silently reverting to EscalationConfig()'s on_stuck default
     # (plan U2). None on manifests written before this field existed.
     escalation: EscalationConfig | None = None
+    # Persisted for the same reason as `escalation`, and against the same trap:
+    # an omitted `--auto-resume` on `resume` must restore what the run started
+    # with, not silently revert to the library default. None on manifests
+    # written before this field existed.
+    usage_limit: UsageLimitConfig | None = None
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 
 

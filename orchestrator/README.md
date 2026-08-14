@@ -10,10 +10,12 @@ no API client anywhere, and the orchestrator itself spends zero tokens.
 
 ```sh
 smart-mcps-orchestrate group <plan.md> [--repo DIR] [--name NAME] [--dry-run] [--token-budget N]
+                             [--auto-resume | --no-auto-resume]
 smart-mcps-orchestrate run   [--repo DIR] [--run-id ID] [--grouping NAME] [--sequential]
                              [--concurrency N] [--permission-mode MODE]
                              [--review-intensity TIER] [--hitl] [--intensity TIER]
                              [--escalation-source SRC] [--escalation-timeout S]
+                             [--auto-resume | --no-auto-resume]
 smart-mcps-orchestrate groupings [--repo DIR]
 smart-mcps-orchestrate status [RUN_ID] [--repo DIR]
 smart-mcps-orchestrate resume RUN_ID [--repo DIR] [...same execution flags as run]
@@ -51,10 +53,52 @@ smart-mcps-orchestrate ui    [--registry PATH] [--port N] [--repo DIR]
   or guides the blocked group, `--action skip` fails it, `--action abort` stops
   the run. The blocked group's coroutine picks the answer up by correlation id.
 - **`ui`** — serves the **Observatory**, a local web tool for watching runs across
-  registered projects and answering HITL escalations from the browser. Binds
-  `127.0.0.1:8765`, no auth. See [docs/observatory.md](../docs/observatory.md) for
-  the registry format, the dev and build-and-serve recipes, every endpoint, and
-  the R18 live HITL runbook.
+  registered projects, answering HITL escalations, and starting work: its launch
+  page (`/p/:project/launch`) groups a plan, starts a run, or resumes one, with
+  the execution options above as form fields. Binds `127.0.0.1:8765`, no auth.
+  See [docs/observatory.md](../docs/observatory.md) for the registry format, the
+  dev and build-and-serve recipes, every endpoint, and the R18 live HITL runbook.
+
+## Auto-resume after a usage limit
+
+**A usage limit pauses the run in place; it no longer ends it.** When the account
+hits its limit, the run waits for the reset and then retries **the identical
+call** — same session, same prompt, nothing restarted and no generation spent.
+This is on by default (`--no-auto-resume` restores the old stop-and-`resume`-by-hand
+behaviour).
+
+How it works:
+
+- The limit's own prose carries the reset time (`… resets 1pm (Europe/Berlin)`,
+  or a `|<epoch>` suffix). `execution/ratelimit.py` parses it and waits until
+  that instant plus a 60-second skew. **Every accepted wording is one that was
+  observed** — when the prose says nothing parseable, the gate falls back to
+  polling every 15 minutes rather than guessing a deadline.
+- The retry lives at the *call* boundary (`SessionRunner._call`), which is below
+  where generations and spec rewrites are counted. That is what makes a pause
+  free: the refused call never reached the model, so re-sending it is a replay.
+  It also covers every session path at once — base, coder fork, warm resume,
+  reviewer — plus the one-shot `claude -p` path that `group` and run-time spec
+  rewrites use.
+- One gate per run, shared by every group: concurrent groups **join** the same
+  pause instead of each launching into the active limit and burning a launch.
+  A second limit hit only ever extends the deadline, never shortens it.
+- After `max_attempts` (6) the `UsageLimit` is re-raised and today's INTERRUPTED
+  path applies unchanged, so nothing regresses when the mechanism gives up.
+
+While paused it says so, in three places at once: `run.log` gets an arm line, a
+countdown every five minutes and a release line; the group heartbeat's `phase`
+reads `paused: usage limit until …` so `status` and the Observatory board show
+it; and `runs/<id>/usage-limit.json` drives the UI's banner.
+
+One honest caveat: a limit can land *mid-round*, after some turns have already
+committed to the transcript. A retried warm resume then re-enters a session
+holding partial work — which is exactly what a manual `resume` does today, minus
+the human wait. A retried fork discards that partial.
+
+**Out of scope:** none of this unblocks your own interactive Claude Code session
+if it is monitoring the run. Nothing in this repo can reach that process; the
+log lines and the UI banner are what tell you it is safe to type again.
 
 ## Human-in-the-loop (HITL)
 
@@ -129,6 +173,13 @@ model = ""                    # optional --model for worker sessions
 allowed_tools = []            # optional --allowedTools list
 transcript_root = ""          # default: ~/.claude/projects
 
+[session.usage_limit]         # what a run does when the account limit is reached
+auto_resume = true            # pause and retry the same call (--auto-resume/--no-auto-resume)
+max_wait_s = 0                # 0 = wait however long it takes, weekly limits included
+max_attempts = 6              # retries of the same call before it gives up and INTERRUPTs
+skew_s = 60                   # retry this far after the announced reset
+fallback_poll_s = 900         # used only when the prose carries no parseable reset time
+
 [difficulty]                  # review-tier thresholds
 d_review = 0.35               # below: self_verify (no reviewer session)
 d_hard = 0.65                 # above: paired_plus (mandatory extra pass)
@@ -157,6 +208,7 @@ All run state lives in the target repo, never under `~/.claude`:
       groups.json              # grouping output (the run's input)
       base-context.md          # compiled shared context for the base session
     failures/                 # raw LLM output that failed validation
+    jobs/<job_id>/            # jobs launched from the Observatory: command.json + log
     runs/<run_id>/
       groups.json              # snapshot of the grouping the run started with
       base-context.md          # snapshot of the base context at run start
@@ -166,6 +218,9 @@ All run state lives in the target repo, never under `~/.claude`:
                               #   at run start, so the Observatory renders the DAG this run
                               #   actually used even after a later planning cycle rewrites the shared file
       groups/<gid>/           # report-g<G>-r<R>.json / verdict-g<G>-r<R>.json
+      usage-limit.json        # the rate-limit gate's current/last pause (drives the UI banner);
+                              #   a separate file, not a state.json field, because the gate fires
+                              #   from a worker thread while the event loop owns state.json
       logs/run.log            # HITL event log — the live log the main session tails
       escalations/            # HITL request-<id>.json / response-<id>.json (correlation ids)
   .worktrees/

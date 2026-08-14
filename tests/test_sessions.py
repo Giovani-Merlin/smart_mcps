@@ -7,6 +7,7 @@ Every test runs against tests/fake_claude.py — zero live CLI calls, zero token
 from __future__ import annotations
 
 import os
+import datetime
 import json
 import re
 import subprocess
@@ -840,3 +841,166 @@ def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_abort
         ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"], cwd=path, capture_output=True
     )
     assert result.returncode != 0  # merge was aborted, no dangling MERGE_HEAD
+
+
+# ------------------------------------------------------- usage-limit auto-resume
+
+
+def _limit_gate(**config):
+    """A gate on a fake clock, so a "wait until 1pm" pause costs no wall time."""
+    from tests.test_ratelimit import FakeClock
+
+    from orchestrator.config import UsageLimitConfig
+    from orchestrator.execution.ratelimit import UsageLimitGate
+
+    clock = FakeClock(datetime.datetime(2026, 8, 13, 9, tzinfo=datetime.UTC).astimezone())
+    lines: list[str] = []
+    gate = UsageLimitGate(
+        UsageLimitConfig(**config), now=clock.now, sleep=clock.sleep, log=lines.append
+    )
+    return gate, lines
+
+
+def test_a_usage_limit_pauses_and_the_call_is_replayed_under_a_fresh_session_id(
+    fake_home, tmp_path
+):
+    """The whole point: the round returns, having waited rather than failed.
+
+    Scripted to refuse once with the session-limit envelope and then succeed —
+    the shape of a real limit that resets while the run is still standing there.
+
+    This test used to assert the two spawns were argv-identical, which encoded the
+    very bug it was meant to guard: the real CLI spends a `--session-id` on first
+    use, so replaying it verbatim dies with "already in use" (see
+    `tests/test_streaming_live.py`). `fake_claude.py` accepts the reuse, so the
+    suite stayed green while a live run lost 3h42m to it. Everything *except* the
+    session id must still be identical — that part was always right.
+    """
+    gate, lines = _limit_gate()
+    runner = make_runner(fake_home, gate=gate)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps(
+                {"result": "You've hit your session limit · resets 1pm (Europe/Berlin)"}
+            ),
+        },
+        {"result": "OK"},
+    )
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert result.text == "OK"
+    assert gate.pauses == 1
+    assert len([line for line in lines if "pausing this run" in line]) == 1
+    spawns = [call for call in calls(fake_home) if "--print" in call["argv"]]
+    assert len(spawns) == 2
+    first, second = (list(spawn["argv"]) for spawn in spawns)
+
+    sid_at = first.index("--session-id") + 1
+    assert first[sid_at] != second[sid_at], "the retry replayed a spent session id"
+    uuid.UUID(second[sid_at])
+
+    # Everything else is a byte-for-byte replay: same prompt, same flags.
+    first[sid_at] = second[sid_at] = "<sid>"
+    assert first == second
+
+
+def test_the_pause_costs_no_generation_and_no_round(fake_home, tmp_path):
+    """The retry sits below where generations and rewrites are counted, so a
+    limit that resolves itself leaves no trace in the breaker's budget — that is
+    what makes it different from the P6 fix it supersedes."""
+    gate, _ = _limit_gate()
+    runner = make_runner(fake_home, gate=gate)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps({"result": "Claude AI usage limit reached|1700000000"}),
+        },
+        {"result": "OK"},
+    )
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    # One session, one recorded round: the refused call never reached the model,
+    # so it is not a round that happened.
+    assert runner.usage_of(result.session_id).rounds == 1
+
+
+def test_auto_resume_off_still_raises_usage_limit(fake_home, tmp_path):
+    """Today's behaviour, preserved exactly under `--no-auto-resume`: the group
+    lands INTERRUPTED and a human decides when to resume."""
+    from orchestrator.config import UsageLimitConfig
+    from orchestrator.execution.ratelimit import UsageLimitGate
+
+    gate = UsageLimitGate(UsageLimitConfig(auto_resume=False))
+    runner = make_runner(fake_home, gate=gate)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps({"result": "You've hit your session limit · resets 1pm"}),
+        },
+        {"result": "OK"},
+    )
+    with pytest.raises(UsageLimit):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert gate.pauses == 0
+
+
+def test_no_gate_at_all_is_the_pre_auto_resume_behaviour(fake_home, tmp_path):
+    runner = make_runner(fake_home)
+    script(
+        fake_home,
+        {
+            "exit_code": 1,
+            "stderr": "",
+            "stdout": json.dumps({"result": "usage limit reached|1700000000"}),
+        },
+    )
+    with pytest.raises(UsageLimit):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+
+
+def test_exhausting_the_attempts_re_raises_so_the_interrupted_path_still_applies(
+    fake_home, tmp_path
+):
+    gate, _ = _limit_gate(max_attempts=3)
+    runner = make_runner(fake_home, gate=gate)
+    for _ in range(5):
+        script(
+            fake_home,
+            {
+                "exit_code": 1,
+                "stderr": "",
+                "stdout": json.dumps({"result": "session limit · resets 1pm (Europe/Berlin)"}),
+            },
+        )
+    with pytest.raises(UsageLimit):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    # Three attempts means two pauses between them, not three.
+    assert gate.pauses == 2
+
+
+def test_a_plain_session_error_is_never_retried(fake_home, tmp_path):
+    """The gate is for limits only — retrying a segfault would just spend the
+    same broken call six times."""
+    gate, _ = _limit_gate()
+    runner = make_runner(fake_home, gate=gate)
+    script(fake_home, {"exit_code": 1, "stderr": "Segmentation fault", "stdout": ""})
+    with pytest.raises(SessionError):
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert gate.pauses == 0
+    assert len([call for call in calls(fake_home) if "--print" in call["argv"]]) == 1
+
+
+def test_the_limit_prose_reaches_the_gate_unwrapped(fake_home, tmp_path):
+    """`parse_reset_at` reads the deadline out of `UsageLimit.detail`, so the
+    exception has to carry the envelope's own text, not the formatted message."""
+    runner = make_runner(fake_home)
+    detail = "You've hit your session limit · resets 1pm (Europe/Berlin)"
+    script(fake_home, {"exit_code": 1, "stderr": "", "stdout": json.dumps({"result": detail})})
+    with pytest.raises(UsageLimit) as caught:
+        runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    assert caught.value.detail == detail

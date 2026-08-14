@@ -74,7 +74,7 @@ async def test_log_streams_backlog_then_each_appended_line_once(paths):
 
     req = FakeRequest()
     sink: list = []
-    task = asyncio.create_task(_drain_into(events._log_stream(paths, req), sink))
+    task = asyncio.create_task(_drain_into(events.tail_file(paths.event_log_path, req), sink))
     try:
         await _until(lambda: len(sink) >= 2)
         assert [event["data"] for event in sink] == ["backlog-1", "backlog-2"]
@@ -111,7 +111,7 @@ async def test_log_stream_holds_open_for_a_missing_file_then_tails_it(paths):
 
     req = FakeRequest()
     sink: list = []
-    task = asyncio.create_task(_drain_into(events._log_stream(paths, req), sink))
+    task = asyncio.create_task(_drain_into(events.tail_file(paths.event_log_path, req), sink))
     try:
         await asyncio.sleep(events.POLL_S * 4)
         assert sink == []
@@ -135,7 +135,7 @@ async def test_log_stream_holds_a_torn_final_line_until_its_newline(paths):
 
     req = FakeRequest()
     sink: list = []
-    task = asyncio.create_task(_drain_into(events._log_stream(paths, req), sink))
+    task = asyncio.create_task(_drain_into(events.tail_file(paths.event_log_path, req), sink))
     try:
         await _until(lambda: len(sink) >= 1)
         await asyncio.sleep(events.POLL_S * 3)
@@ -248,7 +248,9 @@ async def test_stream_tears_down_on_client_disconnect(paths, stream):
     req = FakeRequest()
     sink: list = []
     generator = (
-        events._log_stream(paths, req) if stream == "log" else events._run_stream(paths, req)
+        events.tail_file(paths.event_log_path, req)
+        if stream == "log"
+        else events._run_stream(paths, req)
     )
     task = asyncio.create_task(_drain_into(generator, sink))
 

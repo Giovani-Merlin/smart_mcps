@@ -104,6 +104,11 @@ class RoundHeartbeat:
         self._round_started_at: str | None = None
         self._phase: str | None = None
         self._phase_since = time.monotonic()
+        # An externally-owned phase that temporarily shadows `_phase` — see
+        # `push_phase`. Not folded into `_phase`, because what the group goes
+        # back to when the overlay lifts has to survive it.
+        self._overlay: str | None = None
+        self._overlay_since = time.monotonic()
         self._last_log = time.monotonic()
 
     # ------------------------------------------------------------------ facts
@@ -140,8 +145,37 @@ class RoundHeartbeat:
         # enough to make a re-entry look like it was still on the round before.
         self.write_once()
 
+    def push_phase(self, phase: str) -> None:
+        """Overlay a phase owned by something outside this group's loop, keeping
+        the underlying one to restore.
+
+        The rate-limit gate is the case this exists for: it pauses from a worker
+        thread, on behalf of every group at once, and it must not clobber the
+        phase the review loop set — that phase is exactly what the group goes
+        back to doing when the limit releases. Overlays do not nest; a second
+        push replaces the overlay and keeps the original base phase.
+        """
+        with self._lock:
+            self._overlay = phase
+            self._overlay_since = time.monotonic()
+        self.write_once()
+
+    def pop_phase(self) -> None:
+        """Drop the overlay; the phase underneath becomes current again."""
+        with self._lock:
+            if self._overlay is None:
+                return
+            self._overlay = None
+        self.write_once()
+
     def snapshot(self) -> dict:
         with self._lock:
+            if self._overlay is not None:
+                phase: str | None = self._overlay
+                phase_since = self._overlay_since
+            else:
+                phase = self._phase
+                phase_since = self._phase_since
             return {
                 "schema_version": SCHEMA_VERSION,
                 "group_id": self.group_id,
@@ -149,8 +183,8 @@ class RoundHeartbeat:
                 "generation": self._generation,
                 "round": self._round,
                 "round_started_at": self._round_started_at,
-                "phase": self._phase,
-                "phase_elapsed_s": round(time.monotonic() - self._phase_since, 1),
+                "phase": phase,
+                "phase_elapsed_s": round(time.monotonic() - phase_since, 1),
                 "updated_at": _now(),
             }
 

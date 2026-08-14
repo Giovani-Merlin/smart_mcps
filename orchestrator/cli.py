@@ -16,9 +16,11 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import tomllib
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from orchestrator.config import (
     EscalationConfig,
     OrchestratorConfig,
     SessionConfig,
+    UsageLimitConfig,
     load_config,
 )
 from orchestrator.execution.confinement import (
@@ -56,6 +59,7 @@ from orchestrator.execution.manifest import (
     validate_grouping_name,
 )
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
     Executor,
@@ -78,7 +82,12 @@ from orchestrator.execution.worktrees import (
     worktree_path,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
-from orchestrator.grouping.llm import JsonRunner, LlmError, claude_json_runner
+from orchestrator.grouping.llm import (
+    JsonRunner,
+    LlmError,
+    claude_json_runner,
+    with_usage_limit_retry,
+)
 from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
@@ -204,6 +213,7 @@ def main(
             "are set."
         ),
     )
+    _add_auto_resume_arg(group_cmd)
     _add_common_args(group_cmd)
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
@@ -318,6 +328,22 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         default=None,
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
+    _add_auto_resume_arg(cmd)
+
+
+def _add_auto_resume_arg(cmd: argparse.ArgumentParser) -> None:
+    """``--auto-resume`` / ``--no-auto-resume``, on both the execution commands
+    and ``group`` — the one-shot grouping path meets the same account limit."""
+    cmd.add_argument(
+        "--auto-resume",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "on a usage limit, pause until it resets and retry the same call "
+            "instead of stopping the run (default: on; --no-auto-resume restores "
+            "the stop-and-resume-by-hand behaviour)"
+        ),
+    )
 
 
 def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> OrchestratorConfig:
@@ -353,7 +379,15 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         escalation_updates["source"] = args.escalation_source
     if getattr(args, "escalation_timeout", None) is not None:
         escalation_updates["timeout_s"] = args.escalation_timeout
+    session_updates: dict = {}
+    auto_resume = getattr(args, "auto_resume", None)
+    if auto_resume is not None:
+        session_updates["usage_limit"] = config.session.usage_limit.model_copy(
+            update={"auto_resume": auto_resume}
+        )
     updates: dict = {}
+    if session_updates:
+        updates["session"] = config.session.model_copy(update=session_updates)
     if execution_updates:
         updates["execution"] = config.execution.model_copy(update=execution_updates)
     if estimator_updates:
@@ -370,6 +404,7 @@ def _load_config(
     repo_root: Path,
     *,
     persisted_escalation: EscalationConfig | None = None,
+    persisted_usage_limit: UsageLimitConfig | None = None,
 ) -> OrchestratorConfig | None:
     """Load config.toml, then layer CLI flags on top (flag > config-file > default).
 
@@ -378,12 +413,24 @@ def _load_config(
     library default, so an omitted flag on resume restores the run's original
     tier instead of resetting to ``EscalationConfig()``'s on_stuck/HITL-on
     default; an explicit flag on resume still wins via ``apply_overrides``.
+
+    ``persisted_usage_limit`` slots in at the same rung for the same reason: a
+    run started with ``--no-auto-resume`` must not silently regain auto-resume
+    when it is resumed without the flag.
     """
     config_path = args.config or repo_root / ".orchestrator" / "config.toml"
     try:
         loaded = load_config(config_path)
         if persisted_escalation is not None:
             loaded = loaded.model_copy(update={"escalation": persisted_escalation})
+        if persisted_usage_limit is not None:
+            loaded = loaded.model_copy(
+                update={
+                    "session": loaded.session.model_copy(
+                        update={"usage_limit": persisted_usage_limit}
+                    )
+                }
+            )
         return apply_overrides(loaded, args)
     except (ValidationError, tomllib.TOMLDecodeError) as exc:
         print(f"error: invalid config {config_path}: {exc}", file=sys.stderr)
@@ -428,6 +475,13 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+    # `group` has no run directory, so its gate logs to stdout and writes no
+    # state file — but it waits out a limit exactly as a run does. Grouping is a
+    # handful of expensive calls; losing the last one to a reset that clears in
+    # twenty minutes is the same waste here as mid-run.
+    llm_runner = with_usage_limit_retry(
+        llm_runner or claude_json_runner, build_usage_limit_gate(config)
+    )
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
     out_dir = grouping_dir(repo_root, name)
     trace_path = out_dir / "grouping-trace.json"
@@ -702,7 +756,33 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------- run/resume
 
 
-def build_session_runner(config: OrchestratorConfig) -> SessionRunner:
+def build_usage_limit_gate(
+    config: OrchestratorConfig, paths: RunPaths | None = None
+) -> UsageLimitGate:
+    """The run's one rate-limit gate, with its two visibility sinks attached.
+
+    ``paths=None`` (the ``group`` command, which has no run directory) still gets
+    a gate — it logs to stdout and writes no file. The run's gate logs through
+    ``log_event``, so every arm/countdown/release line already flows to
+    ``/events/log`` and the UI's event pane with no new plumbing, and mirrors its
+    state into ``usage-limit.json`` for the snapshot.
+    """
+    if paths is None:
+        return UsageLimitGate(config.session.usage_limit, log=print)
+
+    def publish(state: UsageLimitState) -> None:
+        atomic_write_text(paths.usage_limit_path, json.dumps(state.to_dict(), indent=2) + "\n")
+
+    return UsageLimitGate(
+        config.session.usage_limit,
+        log=lambda message: log_event(paths, message),
+        on_change=publish,
+    )
+
+
+def build_session_runner(
+    config: OrchestratorConfig, gate: UsageLimitGate | None = None
+) -> SessionRunner:
     """The one place a production ``SessionRunner`` is built.
 
     Extracted from ``_cmd_run`` so the wiring is assertable. It was inline, and
@@ -727,7 +807,21 @@ def build_session_runner(config: OrchestratorConfig) -> SessionRunner:
         confine=session.confine,
         cache_root=_cache_root(session),
         extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
+        gate=gate,
     )
+
+
+def _auto_resume_line(usage_limit: UsageLimitConfig) -> str:
+    """How the run will behave when the account limit lands — in the header an
+    operator reads before anything spawns, for the same reason HITL is there."""
+    if not usage_limit.auto_resume:
+        return "auto-resume off (a usage limit stops the run)"
+    bound = (
+        "no wait limit"
+        if usage_limit.max_wait_s <= 0
+        else f"waiting at most {int(usage_limit.max_wait_s)}s"
+    )
+    return f"auto-resume on ({bound}, {usage_limit.max_attempts} attempts)"
 
 
 def _cache_root(session: SessionConfig) -> Path:
@@ -757,6 +851,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         repo_root,
         persisted_escalation=(
             persisted_manifest.escalation if persisted_manifest is not None else None
+        ),
+        persisted_usage_limit=(
+            persisted_manifest.usage_limit if persisted_manifest is not None else None
         ),
     )
     if config is None:
@@ -872,13 +969,15 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     print(
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}, {confinement}, "
+        f"{_auto_resume_line(config.session.usage_limit)}, "
         f"cache {_cache_root(config.session)}",
         flush=True,
     )
     if intensity_override_line is not None:
         print(intensity_override_line)
 
-    runner = build_session_runner(config)
+    gate = build_usage_limit_gate(config, paths)
+    runner = build_session_runner(config, gate)
     try:
         runner.preflight()
     except SessionError as exc:
@@ -983,6 +1082,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             base_session_id=base_session_id,
             grouping=grouping_name,
             escalation=config.escalation,
+            usage_limit=config.session.usage_limit,
         )
         store.save(manifest)
         # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
@@ -991,9 +1091,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         # (ADR 0002). Resume keeps the snapshot its run started with.
         atomic_write_text(paths.groups_path, groups_path.read_text())
 
-    workspace_for, base_ref_for = _workspace_seams(
-        repo_root, run_id, merger, paths, config.session
-    )
+    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths, config.session)
     deps = ReviewDeps(
         run_id=run_id,
         runner=runner,
@@ -1005,8 +1103,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         board=SurpriseBoard(paths),
         workspace_for=workspace_for,
         merge_group=merger.merge_group,
+        # The rewrite path is the run's other claude call, and it is a one-shot
+        # `claude -p` rather than a session — so it needs the same gate, applied
+        # at its own boundary.
         rewrite_spec=_rewrite_provider(
-            plan_text, llm_runner or claude_json_runner, orch_dir / "failures"
+            plan_text,
+            with_usage_limit_retry(llm_runner or claude_json_runner, gate),
+            orch_dir / "failures",
         ),
         base_ref_for=base_ref_for,
         broker=broker,
@@ -1015,7 +1118,8 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     executor_slot.append(make_executor(deps))
 
     try:
-        asyncio.run(scheduler.run())
+        with _interruptible_pause(gate):
+            asyncio.run(scheduler.run())
     except RunAbort as exc:
         # The operator stopped the run; state stays resumable (mid-flight groups
         # restart from ready on `resume`).
@@ -1039,6 +1143,41 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         _print_outcomes(scheduler.state)
         return 1
     return _print_outcomes(scheduler.state)
+
+
+@contextmanager
+def _interruptible_pause(gate: UsageLimitGate):
+    """Make Ctrl-C release a usage-limit pause on its way through.
+
+    Worker calls run in ``asyncio.to_thread`` pool threads, and ``asyncio.run``
+    *joins that pool* as it unwinds — so a thread parked in a five-hour pause
+    would hold the process open long after the operator pressed Ctrl-C, and the
+    existing ``except KeyboardInterrupt`` below could not help: it runs after
+    that join, not before. Cancelling from the signal handler itself is what
+    makes the ordering work.
+
+    The default behaviour is preserved exactly: the handler re-raises
+    ``KeyboardInterrupt``, so every existing Ctrl-C path still runs. Installing a
+    handler needs the main thread, and a caller that is not on it (an embedding
+    test) simply keeps the default handler rather than failing the run.
+    """
+    try:
+        previous = signal.signal(signal.SIGINT, _cancelling_handler(gate))
+    except ValueError:  # not the main thread — nothing to install
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _cancelling_handler(gate: UsageLimitGate):
+    def handler(signum, frame):  # noqa: ANN001 — signal handler signature
+        gate.cancel()
+        raise KeyboardInterrupt
+
+    return handler
 
 
 def _default_run_id() -> str:

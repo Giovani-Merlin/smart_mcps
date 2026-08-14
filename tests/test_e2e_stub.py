@@ -837,3 +837,80 @@ def test_overlapping_groups_are_serialized_end_to_end_and_both_land(repo, fake_h
     # Whichever order was chosen, every group's work reached integration.
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     assert all(f"merge({run_id}): {gid}" in log for gid in ("g1", "g2", "g3"))
+
+
+# --------------------------------------------------------- usage-limit pause
+
+
+def test_a_usage_limit_pauses_the_run_and_the_group_completes_anyway(repo, fake_home, capsys):
+    """End to end: a limited coder waits it out and finishes, with nothing lost.
+
+    The whole mechanism only matters if it holds together in a real run — the
+    unit tests prove the gate waits and the runner replays, but the question an
+    operator has is whether the *group* still lands. Before this, the same
+    scripted failure ended the run at INTERRUPTED and needed a human to type
+    `resume`.
+
+    The limit prose here carries no reset time on purpose, so the gate takes its
+    polling fallback and the test can make that interval short instead of
+    waiting for a wall-clock hour.
+    """
+    run_id = "rlimit"
+    groups = [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)]
+    write_run_artifacts(repo, groups)
+    write_config(
+        repo,
+        fake_home,
+        extra="\n[session.usage_limit]\nfallback_poll_s = 0.05\nskew_s = 0\n",
+    )
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        # Refused once with the envelope a real limit produces...
+        {"exit_code": 1, "stderr": "", "stdout": json.dumps({"result": "usage limit reached"})},
+        # ...then the same call succeeds, because the limit released.
+        coder_entry(files={"g1.out": "one\n"}, commit="g1: work"),
+    )
+
+    exit_code = main(["run", "--repo", str(repo), "--run-id", run_id], llm_runner=StubLlm())
+
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g1"]["state"] == "completed"
+    # The pause cost no generation: the refused call never reached the model.
+    assert state["groups"]["g1"]["generation"] == 1
+
+    log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    assert "usage limit: pausing this run" in log
+    assert "usage limit: resuming after" in log
+    # And the pause is legible from the header before anything spawned.
+    assert "auto-resume on" in capsys.readouterr().out
+
+    # The gate's state file is what the UI banner renders, and it says released.
+    record = json.loads((repo / ".orchestrator" / "runs" / run_id / "usage-limit.json").read_text())
+    assert record["released_at"]
+    assert record["detail"] == "usage limit reached"
+
+
+def test_no_auto_resume_keeps_todays_stop_and_resume_behaviour(repo, fake_home):
+    """The opt-out is exact: the group lands INTERRUPTED and the run exits 2,
+    resumable, exactly as it did before any of this existed."""
+    run_id = "rlimitoff"
+    groups = [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)]
+    write_run_artifacts(repo, groups)
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        {"exit_code": 1, "stderr": "", "stdout": json.dumps({"result": "usage limit reached"})},
+    )
+
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--no-auto-resume"], llm_runner=StubLlm()
+    )
+
+    assert exit_code == 2
+    assert state_of(repo, run_id)["groups"]["g1"]["state"] == "interrupted"
+    # And the choice is persisted, so a bare `resume` does not silently regain
+    # auto-resume — the trap `--intensity` already fell into.
+    assert manifest_of(repo, run_id)["usage_limit"]["auto_resume"] is False

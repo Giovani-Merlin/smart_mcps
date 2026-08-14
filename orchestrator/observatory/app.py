@@ -23,6 +23,7 @@ from orchestrator.observatory import (
     escalations,
     events,
     grouping,
+    launch,
     transcripts,
 )
 
@@ -87,6 +88,10 @@ def create_app(
     app.include_router(artifacts.router)
     app.include_router(grouping.router)
     app.include_router(paths_api.router)
+    # The launch surface: two routers because its SSE job-log stream belongs
+    # under /events with the run streams, not under the project prefix.
+    app.include_router(launch.router)
+    app.include_router(launch.events_router)
 
     _mount_spa(app, dist_dir if dist_dir is not None else default_dist_dir())
     return app

@@ -122,10 +122,22 @@ export interface Manifest {
 // EscalationConfig (config.py) — the run's HITL tier as it was persisted.
 // Without it there is no way to tell a run with escalation switched off from
 // one that simply never escalated, and those look identical on the board.
+// Named so the launch form's tier picker and the persisted config cannot drift
+// apart into two spellings of the same four tiers.
+export type EscalationIntensity = "autonomous" | "on_failure" | "on_stuck" | "interactive";
+export const ESCALATION_INTENSITIES: readonly EscalationIntensity[] = [
+  "autonomous",
+  "on_failure",
+  "on_stuck",
+  "interactive",
+];
+
+export type EscalationSource = "orchestrator_only" | "workers_via_orchestrator";
+
 export interface EscalationConfig {
   enabled: boolean;
-  intensity: "autonomous" | "on_failure" | "on_stuck" | "interactive";
-  source: "orchestrator_only" | "workers_via_orchestrator";
+  intensity: EscalationIntensity;
+  source: EscalationSource;
   timeout_s?: number | null;
   on_timeout: "autonomous" | "skip" | "abort";
   poll_interval_s: number;
@@ -346,6 +358,86 @@ export interface RunSnapshot {
   live_pids: Record<number, string>;
   grouping?: string | null;
   escalation?: EscalationConfig | null;
+  // Null until this run has ever hit an account usage limit. A record with
+  // `released_at` set is history — the pause is over and the banner clears.
+  usage_limit?: UsageLimitView | null;
+}
+
+// UsageLimitView (runs.py) — the rate-limit gate's `usage-limit.json`.
+//
+// Facts only, like the heartbeat: there is no "is it paused" boolean, because
+// the client can compare `released_at` and `reset_at` to the clock itself and a
+// persisted verdict would become a state something later branches on.
+export interface UsageLimitView {
+  armed_at?: string | null;
+  detail: string;
+  attempt: number;
+  reset_at?: string | null;
+  wake_at?: string | null;
+  released_at?: string | null;
+}
+
+// --------------------------------------------------------------------- launch.py
+
+// One field per `cli._add_execution_args` flag. `null`/undefined means "not
+// specified" — the CLI resolves it from the config file — and never "off".
+export interface ExecutionOptions {
+  sequential?: boolean;
+  concurrency?: number | null;
+  permission_mode?: string | null;
+  review_intensity?: string | null;
+  hitl?: boolean;
+  intensity?: EscalationIntensity | null;
+  escalation_source?: EscalationSource | null;
+  escalation_timeout?: number | null;
+  auto_resume?: boolean | null;
+}
+
+export interface PlanDoc {
+  path: string;
+  title: string;
+  modified_at?: string | null;
+}
+
+export interface GroupingSummary {
+  name: string;
+  plan_path: string;
+  group_count: number;
+}
+
+export type JobKind = "group" | "run" | "resume";
+
+// `running` is derived from the recorded pid at read time, not from a wait —
+// jobs are detached so they outlive the UI process (launch.py).
+export interface JobInfo {
+  job_id: string;
+  kind: JobKind;
+  argv: string[];
+  pid?: number | null;
+  started_at?: string | null;
+  running: boolean;
+  log_path: string;
+  options: Record<string, unknown>;
+}
+
+export interface GroupJobBody {
+  plan: string;
+  name?: string | null;
+  granularity?: "independent" | "balanced" | "monolithic" | null;
+  token_budget?: number | null;
+  dry_run?: boolean;
+  auto_resume?: boolean | null;
+}
+
+export interface RunJobBody {
+  grouping?: string | null;
+  run_id?: string | null;
+  options: ExecutionOptions;
+}
+
+export interface ResumeJobBody {
+  run_id: string;
+  options: ExecutionOptions;
 }
 
 // PathEntry (paths.py) — one `PathChip`'s worth of on-disk location. `root` and

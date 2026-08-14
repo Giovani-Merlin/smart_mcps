@@ -17,6 +17,7 @@ register routes without touching ``app.py``.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -143,6 +144,24 @@ class DagEdge(BaseModel):
     to: str
 
 
+class UsageLimitView(BaseModel):
+    """The run's rate-limit gate, as ``usage-limit.json`` recorded it.
+
+    Present as soon as a pause has ever been armed; ``released_at`` set means it
+    is over and the banner should clear. Kept a passthrough of the gate's own
+    record — no "is it still paused" boolean — for the same reason the heartbeat
+    serves facts and not a ``stalled`` verdict: the client can compare
+    ``released_at`` and ``reset_at`` to the clock itself.
+    """
+
+    armed_at: datetime | None = None
+    detail: str = ""
+    attempt: int = 1
+    reset_at: datetime | None = None
+    wake_at: datetime | None = None
+    released_at: datetime | None = None
+
+
 class RunSnapshot(BaseModel):
     """One body with everything the board needs — states, the sessions join, and
     the DAG — so the SPA renders a run from a single request."""
@@ -164,6 +183,11 @@ class RunSnapshot(BaseModel):
     # switched off from one that simply never escalated, and those look
     # identical on the board.
     escalation: dict | None = None
+    # None until the run has ever hit a usage limit, which is the normal case
+    # and never an error. A pause in progress is what makes the difference
+    # between "this run is wedged" and "this run is waiting", and that question
+    # was previously unanswerable from the UI at all.
+    usage_limit: UsageLimitView | None = None
 
 
 # ------------------------------------------------------------------ resolution
@@ -306,6 +330,25 @@ def _group_heartbeat(paths: RunPaths, group_id: str) -> GroupHeartbeat | None:
         return None
 
 
+def _usage_limit(paths: RunPaths) -> UsageLimitView | None:
+    """The gate's record, or None when there is none to read.
+
+    Malformed is treated as absent for the same reason the heartbeat does it: a
+    file written from a worker thread while the reader polls must never be able
+    to 500 the whole snapshot.
+    """
+    try:
+        payload = json.loads(paths.usage_limit_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return UsageLimitView.model_validate(payload)
+    except ValidationError:
+        return None
+
+
 def _is_stale_failure(run_state: GroupRunState | None) -> bool:
     """A ``failure`` string left attached to a state that is not a failure.
 
@@ -401,6 +444,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
             if manifest and manifest.escalation
             else None
         ),
+        usage_limit=_usage_limit(paths),
         # Recorded for display only — the read path never checks whether these
         # pids are alive, which is what lets a crashed run render (R9).
         live_pids=dict(state.live_pids) if state else {},

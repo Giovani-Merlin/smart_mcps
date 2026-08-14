@@ -1,10 +1,18 @@
 # Orchestrator Observatory
 
 A local, single-user web tool for watching an orchestration run — while it runs
-and after it finishes — across every project you register, with exactly one write
-path: answering a run's human-in-the-loop (HITL) escalations.
+and after it finishes — across every project you register.
 
-It is a **reader of run directories**. A run is a directory on disk, not a
+It is primarily a **reader of run directories**, with two write surfaces:
+answering a run's human-in-the-loop (HITL) escalations, and the launch page,
+which starts a grouping, a run or a resume as a detached background job.
+
+Launching from the UI reverses an earlier non-goal ("no launching, resuming or
+aborting a run from the UI"). What changed the call: `--intensity` is droppable
+on a terminal `resume`, and omitting it silently reverts a run to block-forever
+HITL — a form that shows the tier as a visible field is a *safer* surface than a
+flag someone has to remember. Aborting a run from the UI is still a non-goal, as
+is editing plans or config. A run is a directory on disk, not a
 process, so the Observatory renders finished runs, failed runs, and runs whose
 orchestrator crashed mid-flight identically — it never needs a live process and
 never checks whether a recorded worker PID is still alive. The backend binds
@@ -109,10 +117,11 @@ segments identify **objects**; query params identify **view state**.
 | -------------------------------------------- | ---------------------------------------- |
 | `/`                                          | Project picker                           |
 | `/p/:project`                                | Run index — every run, newest first      |
+| `/p/:project/launch`                         | Group a plan, start a run, resume a run  |
 | `/p/:project/r/:run/board`                   | Board                                    |
 | `/p/:project/r/:run/history`                 | Attempt history grid                     |
 | `/p/:project/r/:run/grouping`                | How this plan became groups              |
-| `/p/:project/r/:run/escalations`             | Pending escalations (the one write path) |
+| `/p/:project/r/:run/escalations`             | Pending escalations — answer them        |
 | `/p/:project/r/:run/log`                     | `run.log`, full height                   |
 | `/p/:project/r/:run/cost`                    | Estimate vs actual                       |
 | `/p/:project/r/:run/session/:group/:session` | Session viewer — addressable, not a tab  |
@@ -170,7 +179,8 @@ disk in a single request:
   ],
   "edges": [{"from": "g0", "to": "g1"}],  // DAG dependency edges
   "stale_dag": false,
-  "live_pids": {}                          // recorded for display only; never checked for liveness
+  "live_pids": {},                         // recorded for display only; never checked for liveness
+  "usage_limit": null                      // null unless this run has hit an account limit
 }
 ```
 
@@ -182,8 +192,62 @@ disk in a single request:
   shared file is available the snapshot falls back to it and sets `stale_dag: true`.
   When neither exists the snapshot still returns `200` with `edges: []` and
   `stale_dag: true` rather than erroring.
+- **`usage_limit`** — the rate-limit gate's `runs/<id>/usage-limit.json`, passed
+  through: `{armed_at, detail, attempt, reset_at, wake_at, released_at}`. `null`
+  until the run has ever hit an account limit; a record with `released_at` set is
+  history and clears the UI banner. Like the heartbeat it carries **facts only** —
+  there is no "is it paused" boolean, because a persisted verdict becomes a state
+  something later branches on. See "Auto-resume after a usage limit" in
+  `orchestrator/README.md` for the mechanism behind it.
 
-### Escalations (the one write path)
+### Launching work
+
+The launch page (`/p/:project/launch`) posts to these. Each starts a **detached**
+background job — `[sys.executable, "-u", "-m", "orchestrator.cli", ...]` in its
+own session — so a run outlives the UI process that started it, and restarting
+the server does not kill a four-hour run.
+
+| Method & path                                    | Body / returns                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `GET  /api/projects/{project}/plans`             | Plan documents under `docs/plans/*.md` and `docs/*plan*.md`: `[{path, title, modified_at}]`, newest first, paths relative to the repo. |
+| `GET  /api/projects/{project}/groupings`         | `[{name, plan_path, group_count}]` — the same `describe_groupings()` the `groupings` CLI command prints. |
+| `POST /api/projects/{project}/jobs/group`        | `{plan, name?, granularity?, token_budget?, dry_run?, auto_resume?}` → the job.       |
+| `POST /api/projects/{project}/jobs/run`          | `{grouping?, run_id?, options}` → the job.                                            |
+| `POST /api/projects/{project}/jobs/resume`       | `{run_id, options}` → the job.                                                        |
+| `GET  /api/projects/{project}/jobs[/{job_id}]`   | Job list (newest first) or one job. Unknown job → `404`.                              |
+
+`options` mirrors `_add_execution_args` one-for-one: `sequential`, `concurrency`,
+`permission_mode`, `review_intensity`, `hitl`, `intensity`, `escalation_source`,
+`escalation_timeout`, `auto_resume`. **An omitted field means "not specified"**,
+never "off" — the CLI then resolves it from the run's config exactly as it does
+for an omitted flag. This is one shared control block in the UI (`ExecutionOptions.tsx`)
+used by both the run and resume forms, precisely so resume can never again be
+started with a different escalation tier than intended.
+
+A job record is `{job_id, kind, argv, pid, started_at, running, log_path, options}`,
+stored at `.orchestrator/jobs/<job_id>/command.json` beside its `log`. **`running`
+is derived from the recorded pid** (`os.kill(pid, 0)`), not from a wait: the
+server cannot reap a detached child, and after a server restart it is not even
+the parent. A recycled pid after a reboot can therefore read as alive — weigh
+`started_at` against it.
+
+Error mapping:
+
+| Condition                                                        | Status |
+| ---------------------------------------------------------------- | ------ |
+| Unknown project                                                   | `404`  |
+| Unknown job id                                                    | `404`  |
+| Run already live (recorded pids, no `interrupted_at`)             | `409`  |
+| Body fails validation (e.g. an unknown `intensity`)               | `422`  |
+
+The `409` is the double-launch guard, and it is a refusal rather than a
+de-duplication: two schedulers over one set of worktrees would interleave commits
+and merges with nothing arbitrating, and a double-clicked button is the ordinary
+way to ask for it. A run whose `state.json` records pids **and** an
+`interrupted_at` is resumable — nothing clears `live_pids` on a crash, so pids
+alone would make every crashed run permanently un-resumable.
+
+### Escalations
 
 | Method & path                                                            | Returns                                                          |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------- |
@@ -244,9 +308,10 @@ Both take `project` and `run` as **query parameters** (not path segments):
 | Method & path                     | Emits                                                                                                                                                                       |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /events/log?project=P&run=R` | Unnamed SSE messages, one per `run.log` line: the existing backlog first, then each newly appended line, never re-emitting one already sent.                                |
-| `GET /events/run?project=P&run=R` | Named `changed` events (data = run id) when `state.json`, `manifest.json`, `escalations/` or `groups/` mutate — **debounced**, so a burst of writes collapses to one event. |
+| `GET /events/run?project=P&run=R` | Named `changed` events (data = run id) when `state.json`, `manifest.json`, `usage-limit.json`, `escalations/` or `groups/` mutate — **debounced**, so a burst of writes collapses to one event. |
+| `GET /events/job?project=P&job=J` | Unnamed SSE messages, one per line of a launched job's log. Same tail as `/events/log`, keyed by job rather than run — which is what makes a *grouping* watchable while it runs, before any run directory exists. |
 
-Both open successfully for artifacts that do not exist yet (a client that connects
+All three open successfully for artifacts that do not exist yet (a client that connects
 before `run.log` exists gets an open stream, not a 404, and starts receiving once
 the file appears), and both tear their watcher down cleanly when the client
 disconnects. The SPA uses `/events/run` to know *when* to re-fetch the snapshot

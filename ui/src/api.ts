@@ -14,17 +14,28 @@
 //   GET  /api/projects/{project}/runs/{run}/sessions/{session}/transcript
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
 //   GET  /api/projects/{project}/runs/{run}/paths
+//   GET  /api/projects/{project}/plans
+//   GET  /api/projects/{project}/groupings
+//   GET  /api/projects/{project}/jobs[/{job}]
+//   POST /api/projects/{project}/jobs/{group|run|resume}
 //   SSE  /events/log?project=&run=
 //   SSE  /events/run?project=&run=
+//   SSE  /events/job?project=&job=
 
 import type {
   AnswerBody,
   AnswerResult,
   Artifact,
   EscalationRequest,
+  GroupJobBody,
+  GroupingSummary,
   GroupingView,
+  JobInfo,
+  PlanDoc,
   Project,
+  ResumeJobBody,
   RunInfo,
+  RunJobBody,
   RunPathsView,
   RunSnapshot,
   TranscriptEvent,
@@ -150,6 +161,53 @@ export function getArtifacts(
   return request<Artifact[]>(`${runPath(project, run)}/groups/${enc(groupId)}/artifacts`);
 }
 
+// -------------------------------------------------------------------- launch
+
+function projectPath(project: string): string {
+  return `/api/projects/${enc(project)}`;
+}
+
+function post<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Plan documents the launch form's picker offers. Paths come back relative to
+ * the repo and are accepted back the same way — the CLI re-anchors them. */
+export function listPlans(project: string): Promise<PlanDoc[]> {
+  return request<PlanDoc[]>(`${projectPath(project)}/plans`);
+}
+
+export function listGroupings(project: string): Promise<GroupingSummary[]> {
+  return request<GroupingSummary[]>(`${projectPath(project)}/groupings`);
+}
+
+export function listJobs(project: string): Promise<JobInfo[]> {
+  return request<JobInfo[]>(`${projectPath(project)}/jobs`);
+}
+
+export function getJob(project: string, jobId: string): Promise<JobInfo> {
+  return request<JobInfo>(`${projectPath(project)}/jobs/${enc(jobId)}`);
+}
+
+export function startGroupJob(project: string, body: GroupJobBody): Promise<JobInfo> {
+  return post<JobInfo>(`${projectPath(project)}/jobs/group`, body);
+}
+
+/** Starting a run can fail with 409 — a scheduler is already driving it. That
+ * arrives as an `ApiError` carrying the backend's own explanation, which the
+ * form shows verbatim rather than paraphrasing. */
+export function startRunJob(project: string, body: RunJobBody): Promise<JobInfo> {
+  return post<JobInfo>(`${projectPath(project)}/jobs/run`, body);
+}
+
+export function startResumeJob(project: string, body: ResumeJobBody): Promise<JobInfo> {
+  return post<JobInfo>(`${projectPath(project)}/jobs/resume`, body);
+}
+
 // ---------------------------------------------------------------------- SSE
 
 /** Handlers for a live stream. `onError` fires on transport failure; the
@@ -188,6 +246,23 @@ export function openRunStream(
 ): EventSource {
   const source = new EventSource(streamUrl("/events/run", project, run));
   source.addEventListener("changed", () => onChanged());
+  if (handlers.onError) source.onerror = handlers.onError;
+  return source;
+}
+
+/** Subscribe to a launched job's log (`/events/job`). Same line-at-a-time shape
+ * as `openLogStream`, but keyed by job rather than run — which is what makes a
+ * grouping watchable while it runs, before any run directory exists. */
+export function openJobStream(
+  project: string,
+  jobId: string,
+  onLine: (line: string) => void,
+  handlers: StreamHandlers = {},
+): EventSource {
+  const source = new EventSource(
+    `${API_BASE}/events/job?project=${enc(project)}&job=${enc(jobId)}`,
+  );
+  source.onmessage = (event) => onLine(event.data);
   if (handlers.onError) source.onerror = handlers.onError;
   return source;
 }

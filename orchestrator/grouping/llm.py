@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TypeVar
 
+from orchestrator.execution.ratelimit import UsageLimitGate
+from orchestrator.execution.sessions import is_usage_limit
+
 T = TypeVar("T")
 
 # (prompt, json_schema) → raw model text. The production runner shells the CLI;
@@ -150,6 +153,25 @@ class LlmProcessError(LlmError):
     """
 
 
+class LlmUsageLimit(LlmProcessError):
+    """The one-shot ``claude -p`` path hit the account's usage limit.
+
+    Until this existed, this path could not tell a limit from any other process
+    death: ``claude_json_runner`` raised a bare ``LlmProcessError`` and
+    ``is_usage_limit`` — sitting one module away in ``execution.sessions`` — was
+    never called on it at all. So the grouping stage and every run-time spec
+    rewrite treated a reset-in-40-minutes exactly like a segfault.
+
+    A subclass rather than a new branch: the scheduler already classifies
+    ``LlmProcessError`` as INTERRUPTED, and that stays true when the retry gives
+    up. ``detail`` carries the limit prose unwrapped, for ``parse_reset_at``.
+    """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail or message
+
+
 def _error_detail(stdout: str, stderr: str) -> str:
     """Best available error text for a non-zero exit (plan U4).
 
@@ -210,9 +232,15 @@ def claude_json_runner(prompt: str, schema: dict) -> LlmCallResult:
         result = subprocess.run(base, capture_output=True, text=True)
     duration_ms = int((time.monotonic() - started) * 1000)
     if result.returncode != 0:
-        raise LlmProcessError(
-            f"claude -p failed ({result.returncode}): {_error_detail(result.stdout, result.stderr)}"
-        )
+        # Classify *before* raising. The session path has always done this; this
+        # path never did, which is the standing gap that made a usage limit
+        # indistinguishable from a crashed CLI for `group` and for run-time spec
+        # rewrites alike.
+        detail = _error_detail(result.stdout, result.stderr)
+        message = f"claude -p failed ({result.returncode}): {detail}"
+        if is_usage_limit(detail):
+            raise LlmUsageLimit(message, detail)
+        raise LlmProcessError(message)
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -221,6 +249,33 @@ def claude_json_runner(prompt: str, schema: dict) -> LlmCallResult:
         raise LlmError("claude -p envelope is missing the 'result' field")
     meta = LlmCallMeta.from_envelope(envelope, session_id, duration_ms)
     return LlmCallResult(str(envelope["result"]), meta)
+
+
+def with_usage_limit_retry(runner: JsonRunner, gate: UsageLimitGate | None) -> JsonRunner:
+    """Wrap a one-shot runner so a usage limit pauses and re-sends the same call.
+
+    The session path gets this inside ``SessionRunner._call``; this is the same
+    mechanism for the stateless path, which the ``group`` command and every
+    run-time spec rewrite go through. ``gate=None`` (or a disabled gate) returns
+    the runner untouched, so nothing changes for a caller that has not opted in.
+
+    A one-shot call is the easy case: nothing was resumed and no transcript was
+    appended to, so a retry after the reset is byte-identical to the call that
+    was refused.
+    """
+    if gate is None or not gate.enabled:
+        return runner
+
+    def wrapped(prompt: str, schema: dict) -> str:
+        for attempt in range(1, gate.max_attempts + 1):
+            try:
+                return runner(prompt, schema)
+            except LlmUsageLimit as exc:
+                if attempt == gate.max_attempts or not gate.pause(exc.detail):
+                    raise  # exhausted, or the operator cancelled the run
+        raise AssertionError("unreachable")
+
+    return wrapped
 
 
 def transcript_path_for(session_id: str, transcript_root: Path | None = None) -> Path | None:

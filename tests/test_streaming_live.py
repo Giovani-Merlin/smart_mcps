@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -84,3 +85,39 @@ def test_a_mid_round_followup_is_answered_and_still_terminates(tmp_path: Path) -
     assert outcome.returncode == 0, outcome.stderr
     assert outcome.envelope is not None
     assert "SECOND" in (outcome.envelope.get("result") or "")
+
+
+def test_a_session_id_is_spent_by_its_first_use_and_the_cli_refuses_the_second(
+    tmp_path: Path,
+) -> None:
+    """`--session-id` is single-use. This is the premise `_call_with_retry` got wrong.
+
+    Its docstring reasoned that a call which never reached the model could be
+    replayed verbatim — "a replay, not a second attempt". The CLI does not work
+    that way: it registers the id up front, so the id is spent even by an attempt
+    that fails. On a live run the usage-limit gate waited 3h42m and then died in
+    the same second with "Session ID <uuid> is already in use" (r20260812-202855,
+    group g4, 2026-08-14), and every `--session-id` retry before the fix was
+    guaranteed to fail identically.
+
+    `tests/fake_claude.py` accepts any `--session-id`, reused or not, so no
+    stub-based test can express this. Only the real binary can.
+    """
+    session_id = str(uuid.uuid4())
+    argv = [*ARGV, "--session-id", session_id]
+
+    first = StreamingProcess(argv, cwd=tmp_path, env=dict(os.environ))
+    first.start(prompt="Reply with exactly: ONE")
+    first_outcome = first.wait()
+    assert first_outcome.returncode == 0, first_outcome.stderr
+
+    second = StreamingProcess(argv, cwd=tmp_path, env=dict(os.environ))
+    second.start(prompt="Reply with exactly: TWO")
+    second_outcome = second.wait()
+
+    assert second_outcome.returncode != 0, (
+        "the CLI accepted a reused --session-id; if this ever becomes true, the "
+        "retry no longer needs to mint a fresh id"
+    )
+    combined = f"{second_outcome.stderr}{second_outcome.envelope or ''}"
+    assert "already in use" in combined, combined[:400]

@@ -68,10 +68,17 @@ async def _closed() -> None:
 # --------------------------------------------------------------------- log
 
 
-async def _log_stream(paths: RunPaths, request: Request) -> AsyncIterator[dict]:
-    """Backlog then tail, by byte offset so no line is emitted twice."""
+async def tail_file(path: Path, request: Request) -> AsyncIterator[dict]:
+    """Backlog then tail, by byte offset so no line is emitted twice.
+
+    Takes a ``Path`` rather than a ``RunPaths`` because it now serves two very
+    different files: a run's ``run.log`` and a launched job's log. A job log is
+    the more demanding of the two — it has to be watchable *before* any run
+    directory exists, which is the whole point of being able to watch a plan
+    being grouped — so the missing-file case is a wait, not a 404, exactly as it
+    already was for a run whose log had not been created yet.
+    """
     await _opened()
-    path = paths.event_log_path
     offset = 0
     pending = ""
     try:
@@ -99,7 +106,7 @@ async def _log_stream(paths: RunPaths, request: Request) -> AsyncIterator[dict]:
 async def stream_log(request: Request, project: str, run: str) -> EventSourceResponse:
     """Tail ``logs/run.log`` as unnamed SSE messages (``EventSource.onmessage``)."""
     paths = resolve_run(request, project, run)
-    return EventSourceResponse(_log_stream(paths, request))
+    return EventSourceResponse(tail_file(paths.event_log_path, request))
 
 
 # --------------------------------------------------------------------- run
@@ -112,7 +119,16 @@ def _signature(paths: RunPaths) -> tuple:
     folding them in here would make every event line re-fetch the snapshot.
     """
     parts: list[tuple] = []
-    for path in (paths.state_path, paths.manifest_path, run_groups_path(paths)):
+    # `usage-limit.json` is in here and not under the excluded `logs/` for a
+    # reason: the pause banner is snapshot content, and without it the `changed`
+    # nudge never fires for a run whose only movement is arming or releasing the
+    # gate — which is exactly the run an operator is staring at.
+    for path in (
+        paths.state_path,
+        paths.manifest_path,
+        run_groups_path(paths),
+        paths.usage_limit_path,
+    ):
         parts.append((path.name, _stat(path)))
     for directory in (paths.escalations_dir, paths.run_dir / "groups"):
         if not directory.is_dir():
