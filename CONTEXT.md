@@ -164,3 +164,13 @@ lets the normal path pick it up. Distinct from `resume`, which re-enters
 Interrupted groups automatically and never touches a Work Failure.
 _Avoid_: resume (that is the automatic, non-terminal path), rerun (implies
 starting the group over cold)
+
+**Failure Policy**:
+What the run does about *other* groups once one has ended without landing its
+work — `halt` (the default: admit nothing further) or `overlap` (admit anything
+not sharing a declared file, the pre-2026-08-19 behaviour). Both [[Work Failure]]
+and Interrupted trigger it, because both leave the same hole in the integration
+tip. In-flight groups are never cancelled to effect a halt; they run to their own
+outcome first.
+_Avoid_: fail-fast (says nothing about the groups already running), abort (that
+is the operator stopping the whole run)
