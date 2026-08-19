@@ -419,3 +419,106 @@ def test_a_kernel_write_denial_does_reach_the_wire(live_repo, tmp_path):
         classify_denial(denied_command="touch probe.txt", observed=outcome.deny_signals)
         == DenialKind.KERNEL_DENIED
     ), outcome.deny_signals
+
+
+# --------------------------------------------------------------- U2/R37: SIGKILL
+
+
+def test_sigkill_mid_round_leaves_the_worktree_intact_and_resume_reenters_it(
+    tmp_path_factory,
+):
+    """A crash mid-round must not lose the group's stranded work, and a plain
+    `resume` must re-enter it rather than leaving it wedged (plan U1/U2, R37).
+
+    Runs the orchestrator as its own subprocess (an in-process ``main()`` call
+    cannot be SIGKILLed without killing the test runner too — the crash has to
+    be real for the ``finally``/cleanup-skipping distinction to mean anything),
+    kills it once the group's worktree has real uncommitted content, and asserts
+    the worktree survives dirty. A follow-up ``resume`` (in-process — no crash
+    needed there) must then re-enter the same group instead of finding it wedged
+    in terminal FAILED.
+    """
+    repo = tmp_path_factory.mktemp("sigkill-repo")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "live@test")
+    _git(repo, "config", "user.name", "live")
+    (repo / "README.md").write_text("# sigkill fixture\n")
+    (repo / "slow.py").write_text("def slow():\n    return 1\n")
+    (repo / "plan.md").write_text(
+        "# live plan\n\n## Tasks\n\n- T1: add a slower() function beside slow()\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    (repo / ".orchestrator").mkdir()
+    (repo / ".orchestrator" / "config.toml").write_text(
+        "[session]\nconfine = true\n\n[escalation]\nenabled = false\n"
+    )
+    group = Group(
+        id="g1",
+        name="slower",
+        summary="Add a slower function.",
+        spec=(
+            "In slow.py, add a function `slower()` returning the integer 2, right "
+            "after `slow()`. Write the file, then pause for a few seconds before "
+            "committing so a crash mid-round has something uncommitted to strand. "
+            "Then commit the change. Do not change anything else."
+        ),
+        difficulty=0.1,
+        intensity=ReviewIntensity.SELF_VERIFY,
+        files=["slow.py"],
+        verification=[VerificationItem(id="v1", description="slower() exists and returns 2")],
+    )
+    grouping = repo / ".orchestrator" / "groupings" / "plan"
+    grouping.mkdir(parents=True)
+    (grouping / "groups.json").write_text(
+        serialize_grouping(GroupingResult(plan_path="plan.md", groups=[group]))
+    )
+    (grouping / "base-context.md").write_text("Tiny scratch repo for a SIGKILL test.\n")
+
+    run_id = "livekill1"
+    log_path = repo / "run.log"
+    probe = repo / "probe.py"
+    probe.write_text(
+        "import sys\n"
+        "from orchestrator.cli import main\n"
+        f"sys.exit(main(['run', '--repo', {str(repo)!r}, '--run-id', {run_id!r}, "
+        "'--intensity', 'autonomous']))\n"
+    )
+    worktree = repo / ".worktrees" / run_id / "g1-slower"
+    with log_path.open("w") as sink:
+        proc = subprocess.Popen([sys.executable, str(probe)], stdout=sink, stderr=sink)
+    try:
+        # Wait for the worktree to exist, then for it to actually carry
+        # uncommitted content — the moment worth killing at.
+        deadline = time.time() + RUN_TIMEOUT_S
+        while time.time() < deadline and not worktree.exists():
+            time.sleep(1)
+        assert worktree.exists(), f"worktree never appeared\n{log_path.read_text()}"
+        while time.time() < deadline:
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True
+            ).stdout.strip()
+            if dirty:
+                break
+            time.sleep(1)
+        proc.send_signal(9)  # SIGKILL: no cleanup, no finally
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    assert worktree.exists(), "the crash must not have removed the group's worktree"
+    status_after_kill = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True
+    ).stdout
+    assert status_after_kill.strip(), (
+        "the worktree was clean at the moment of the kill — the test proved nothing; "
+        "widen the window between the coder's write and its commit"
+    )
+
+    exit_code = main(["resume", run_id, "--repo", str(repo)])
+    output = log_path.read_text()
+    assert exit_code == 0, f"resume did not complete\n{output}"
+    state = json.loads(RunPaths(repo, run_id).state_path.read_text())
+    assert state["groups"]["g1"]["state"] in ("completed", "resolved"), state["groups"]["g1"]
