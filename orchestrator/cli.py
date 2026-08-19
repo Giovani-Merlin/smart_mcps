@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from orchestrator.config import (
     EscalationConfig,
+    ExecutionConfig,
     OrchestratorConfig,
     SessionConfig,
     UsageLimitConfig,
@@ -60,6 +61,8 @@ from orchestrator.execution.manifest import (
     validate_grouping_name,
 )
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
@@ -68,13 +71,19 @@ from orchestrator.execution.scheduler import (
     HoldReason,
     ResolveConflict,
     ResolveDeps,
+    ResolvePreflightFailed,
     RunAbort,
     RunState,
     RunStateVersionError,
     Scheduler,
     SchedulerError,
 )
-from orchestrator.execution.sessions import SessionError, SessionRunner
+from orchestrator.execution.sessions import (
+    ReportError,
+    SessionError,
+    SessionRunner,
+    nudge_until_report,
+)
 from orchestrator.execution.worktrees import (
     WorktreeError,
     _git_ok,
@@ -107,11 +116,13 @@ from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
+    CoderReport,
     Group,
     GroupingResult,
     HumanAction,
     ReviewIntensity,
     RunManifest,
+    SessionRole,
     Surprise,
 )
 
@@ -1025,7 +1036,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         # run was the default or an explicit --on-failure override.
         log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
 
-        merger = IntegrationMerger(repo_root, run_id)
+        merger = IntegrationMerger(
+            repo_root,
+            run_id,
+            preflight_config=config.preflight,
+            preflight_output_dir=paths.group_dir,
+            log=lambda message: log_event(paths, message),
+        )
         try:
             merger.ensure()
         except WorktreeError as exc:
@@ -1052,7 +1069,15 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             policy = None
             log_event(paths, f"run {run_id} started (autonomous)")
 
-        resolve_deps = _resolve_deps(repo_root, run_id, merger)
+        resolve_deps = _resolve_deps(
+            repo_root,
+            run_id,
+            merger,
+            runner=runner,
+            store=store,
+            execution=config.execution,
+            paths=paths,
+        )
 
         # Construction is circular on paper (scheduler → executor → deps → runner →
         # scheduler.tracker); the executor closes over a slot assigned once deps exist —
@@ -1276,11 +1301,31 @@ def _workspace_seams(
     return workspace_for, base_ref_for
 
 
-def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> ResolveDeps:
+def _resolve_deps(
+    repo_root: Path,
+    run_id: str,
+    merger: IntegrationMerger,
+    *,
+    runner: SessionRunner,
+    store: ManifestStore,
+    execution: ExecutionConfig,
+    paths: RunPaths,
+) -> ResolveDeps:
     """Wires the scheduler's resolve routine (plan U2) to real git, translating
     ``MergeConflict`` into the scheduler's own ``ResolveConflict`` so scheduler.py
     never has to import merge/review machinery (review.py already imports
     scheduler.py — a reverse import there would cycle).
+
+    ``merge_for_resolve`` also carries U5's conflict ladder: up to
+    ``execution.max_conflict_resolve_attempts`` in-place resolution attempts,
+    warm-resuming the group's own recorded coder session, before giving up and
+    raising ``ResolveConflict`` — the same shape the approved path already
+    uses in ``_GroupExecution._resolve_conflict_in_place``, transplanted here
+    because the resolve path has no live ``_GroupExecution`` to call it on. A
+    Preflight failure is not a conflict: it raises ``ResolvePreflightFailed``,
+    which ``Scheduler._resolve_autonomously`` catches and turns into a
+    (non-run-stopping) FAILED outcome, the work committed and unmerged on the
+    group's own branch.
     """
 
     def branch_for(group: Group) -> str:
@@ -1295,13 +1340,77 @@ def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> Re
     def commits_ahead_fn(group: Group) -> int:
         return commits_ahead(merger.ensure(), merger.branch, branch_for(group))
 
-    def merge_for_resolve(group: Group) -> None:
+    def latest_coder_session_id(gid: str) -> str | None:
+        """The group's own recorded coder session (plan U5): re-read from disk
+        at call time, since resolve can run long after ``_resolve_deps`` was
+        built and manifest state changes throughout the run."""
+        if not store.exists():
+            return None
+        manifest = store.load()
+        entry = manifest.groups.get(gid)
+        if entry is None:
+            return None
+        for session in reversed(entry.sessions):
+            if session.role == SessionRole.CODER:
+                return session.session_id
+        return None
+
+    def attempt_conflict_resolve(
+        group: Group, worktree: Path, session_id: str, exc: MergeConflict
+    ) -> bool:
         try:
-            merger.merge_group(group, worktree_for(group))
-        except MergeConflict as exc:
-            raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
-        except MergeError:
-            pass  # commits_ahead already gated this — defensive no-op
+            result = runner.resume(
+                session_id=session_id,
+                prompt=render_conflict_resolve_prompt(
+                    group, conflict_summary=str(exc), integration_branch=merger.branch
+                ),
+                cwd=worktree,
+            )
+            report, _ = nudge_until_report(runner, result, CoderReport, cwd=worktree)
+        except (SessionError, ReportError) as inner_exc:
+            log_event(
+                paths,
+                f"group {group.id}: resolve in-place conflict resolution attempt failed: {inner_exc}",
+            )
+            return False
+        if report.status != "completed":
+            log_event(
+                paths,
+                f"group {group.id}: resolve conflict resolution attempt ended ({report.status})",
+            )
+            return False
+        return True
+
+    def merge_for_resolve(group: Group) -> None:
+        worktree = worktree_for(group)
+        attempts_left = execution.max_conflict_resolve_attempts
+        while True:
+            try:
+                merger.merge_group(group, worktree)
+                return
+            except MergeConflict as exc:
+                session_id = latest_coder_session_id(group.id) if attempts_left > 0 else None
+                if session_id is None:
+                    raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+                attempts_left -= 1
+                log_event(
+                    paths,
+                    f"group {group.id}: resolve — attempting in-place conflict resolution "
+                    f"({attempts_left} attempt(s) left)",
+                )
+                if not attempt_conflict_resolve(group, worktree, session_id, exc):
+                    raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+                # loop retries the merge against the resolved worktree
+            except PreflightFailure as exc:
+                retry_cmd = f"smart-mcps-orchestrate retry --repo {repo_root} {run_id} {group.id}"
+                log_event(
+                    paths,
+                    f"group {group.id}: resolve preflight failed on branch "
+                    f"{branch_for(group)}: {exc} — retry with: {retry_cmd}",
+                )
+                raise ResolvePreflightFailed(str(exc)) from exc
+            except MergeError:
+                return  # commits_ahead already gated this — defensive no-op
 
     return ResolveDeps(
         commit_stranded=commit_stranded,

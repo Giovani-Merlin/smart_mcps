@@ -1190,6 +1190,27 @@ class TestResolveDeps:
         _git(repo, "commit", "--allow-empty", "-m", "init")
         return repo
 
+    def _resolve_deps_kwargs(self, repo: Path, run_id: str) -> dict:
+        """No manifest on disk and a runner that errors if ever called: none of
+        these tests exercise the U5 in-place conflict-resolve ladder — that has
+        its own coverage in test_scheduler.py's resolve tests — so the ladder's
+        `latest_coder_session_id` must read "no session" and never touch the
+        runner."""
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+
+        class _UnreachableRunner:
+            def resume(self, *args, **kwargs):
+                raise AssertionError("runner.resume must not be called in this test")
+
+        paths = RunPaths(repo, run_id)
+        return {
+            "runner": _UnreachableRunner(),
+            "store": ManifestStore(paths),
+            "execution": ExecutionConfig(),
+            "paths": paths,
+        }
+
     def test_autonomous_resolve_commits_stranded_changes_and_merges(self, tmp_path):
         from orchestrator.cli import _resolve_deps
         from orchestrator.execution.merge import IntegrationMerger
@@ -1209,7 +1230,7 @@ class TestResolveDeps:
         )
         (worktree / "stranded.txt").write_text("uncommitted work\n")  # never committed
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is True
         assert deps.commits_ahead(group) == 1
         deps.merge_group(group)  # must not raise
@@ -1239,7 +1260,7 @@ class TestResolveDeps:
             branch=group_branch("r1", "g1"),
             start_point=merger.tip(),
         )
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is False
         assert deps.commits_ahead(group) == 0
 
@@ -1284,7 +1305,7 @@ class TestResolveDeps:
         merger.merge_group(g1, wt1)
         tip_before = merger.tip()
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         with pytest.raises(ResolveConflict, match="g2"):
             deps.merge_group(g2)
         assert merger.tip() == tip_before  # U1's gate left the integration tip untouched
