@@ -553,11 +553,16 @@ def test_identity_block_escapes_attribute_breaking_characters():
 
 def test_reviewer_prompt_ferries_pointers_not_payloads():
     prompt = render_reviewer_prompt(
-        "run1", make_group(), report_path="/runs/r1/groups/g1/report-g1-r1.json", base_ref="abc123"
+        "run1",
+        make_group(),
+        report_path="/runs/r1/groups/g1/report-g1-r1.json",
+        base_ref="abc123",
+        scratch_dir="/worktree/.review-scratch",
     )
     assert "/runs/r1/groups/g1/report-g1-r1.json" in prompt
     assert "git diff abc123" in prompt
     assert "approved | changes_required | too_hard" in prompt
+    assert "/worktree/.review-scratch" in prompt
 
 
 def test_handoff_prompt_carries_generation_and_outstanding_items():
