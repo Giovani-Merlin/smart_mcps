@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import subprocess
 import sys
@@ -534,6 +535,157 @@ async def test_completing_after_a_resume_clears_the_stale_failure_text(tmp_path)
     assert persisted.groups["g1"].failure is None
 
 
+# --------------------------------------------------- U1: reentry bound + quarantine
+
+
+@pytest.mark.asyncio
+async def test_reentry_count_increments_once_per_resume(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.PENDING)})
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=completing_executor())
+    await scheduler.run()
+    assert scheduler.state.groups["g1"].reentry_count == 0  # never interrupted, never re-entered
+
+    async def interrupting_once(ctx):
+        raise RuntimeError("boom")
+
+    scheduler2 = Scheduler(
+        groups=[make_group("g1")], paths=RunPaths(tmp_path, "r2"), executor=interrupting_once
+    )
+    await scheduler2.run()
+    assert scheduler2.state.groups["g1"].reentry_count == 0  # interrupted, not yet re-entered
+
+    resumed = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r2"),
+        executor=completing_executor(),
+        resume=True,
+    )
+    await resumed.run()
+    assert resumed.state.groups["g1"].reentry_count == 1
+
+    resumed_again = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r2"),
+        executor=completing_executor(),
+        resume=True,
+    )
+    # already terminal (COMPLETED) — a further resume must not keep incrementing
+    await resumed_again.run()
+    assert resumed_again.state.groups["g1"].reentry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_group_quarantined_after_max_reentries_is_not_readmitted(tmp_path):
+    from orchestrator.config import BreakerConfig
+
+    paths = RunPaths(tmp_path, "r1")
+
+    async def always_interrupts(ctx):
+        raise RuntimeError("still broken")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=always_interrupts,
+        breaker=BreakerConfig(max_reentries=2),
+    )
+    await scheduler.run()
+    assert scheduler.state.groups["g1"].state == GroupState.INTERRUPTED
+    assert scheduler.state.groups["g1"].quarantined is False
+
+    for _ in range(2):
+        resumed = Scheduler(
+            groups=[make_group("g1")],
+            paths=paths,
+            executor=always_interrupts,
+            breaker=BreakerConfig(max_reentries=2),
+            resume=True,
+        )
+        await resumed.run()
+
+    # third resume: reentry_count would exceed max_reentries=2 — quarantined
+    # instead of re-entered, and admission does not return it.
+    final = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=always_interrupts,
+        breaker=BreakerConfig(max_reentries=2),
+        resume=True,
+    )
+    await final.run()
+    assert final.state.groups["g1"].quarantined is True
+    assert final.state.groups["g1"].state == GroupState.INTERRUPTED
+    assert final._admissible() == []  # noqa: SLF001 - the thing under test
+    # GroupState's own value set is unchanged — quarantine is a flag, not a state
+    assert {s.value for s in GroupState} == {
+        "pending",
+        "ready",
+        "running",
+        "reviewing",
+        "rewriting",
+        "merging",
+        "completed",
+        "failed",
+        "resolved",
+        "interrupted",
+    }
+
+
+def test_max_reentries_defaults_to_three():
+    from orchestrator.config import BreakerConfig
+
+    assert BreakerConfig().max_reentries == 3
+
+
+def test_max_reentries_is_settable_from_config_toml(tmp_path):
+    from orchestrator.config import load_config
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[breaker]\nmax_reentries = 7\n")
+    assert load_config(config_path).breaker.max_reentries == 7
+
+
+# ------------------------------------------------------- U1: state schema version
+
+
+def test_runstate_schema_version_roundtrips(tmp_path):
+    from orchestrator.execution.scheduler import RUN_STATE_SCHEMA_VERSION
+
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState()})
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+    scheduler = Scheduler(
+        groups=[make_group("g1")], paths=paths, executor=completing_executor(), resume=True
+    )
+    assert scheduler.state.schema_version == RUN_STATE_SCHEMA_VERSION
+
+
+def test_resuming_an_unsupported_schema_version_raises_naming_both_versions(tmp_path):
+    from orchestrator.execution.scheduler import RunStateVersionError
+
+    paths = RunPaths(tmp_path, "r1")
+    paths.run_dir.mkdir(parents=True, exist_ok=True)
+    raw = {
+        "run_id": "r1",
+        "schema_version": 99,
+        "groups": {"g1": {"state": "pending"}},
+        "live_pids": {},
+        "interrupted_at": None,
+    }
+    atomic_write_text(paths.state_path, json.dumps(raw) + "\n")
+    with pytest.raises(RunStateVersionError) as excinfo:
+        Scheduler(
+            groups=[make_group("g1")], paths=paths, executor=completing_executor(), resume=True
+        )
+    assert "99" in str(excinfo.value)
+    from orchestrator.execution.scheduler import RUN_STATE_SCHEMA_VERSION
+
+    assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
+
+
 @pytest.mark.asyncio
 async def test_no_progress_watchdog_aborts_a_wedged_run_naming_blocked_groups(tmp_path):
     # A dependency cycle sneaking past partition-time detection must fail loudly.
@@ -622,6 +774,142 @@ def test_unknown_dependency_is_rejected_at_construction(tmp_path):
             paths=RunPaths(tmp_path, "r1"),
             executor=completing_executor(),
         )
+
+
+# -------------------------------------------------- U3/R41: on_group_failure=halt
+
+
+@pytest.mark.asyncio
+async def test_halt_blocks_admission_of_a_disjoint_group_after_a_failure(tmp_path):
+    """The default policy halts admission even for a group sharing no declared
+    file and having no DAG edge with the failed one (plan U3/R41)."""
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise GroupFailure("boom")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert states["g2"] == GroupState.PENDING  # never admitted, despite no overlap
+
+
+@pytest.mark.asyncio
+async def test_halt_also_triggers_on_an_interrupted_group(tmp_path):
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise RuntimeError("harness died")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
+    assert states["g2"] == GroupState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_halt_does_not_cancel_in_flight_groups(tmp_path):
+    """A group already admitted when the halt triggers runs to its own terminal
+    state rather than being cancelled (plan U3/R41)."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    g2_result: dict = {}
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise GroupFailure("boom")
+        started.set()
+        await release.wait()
+        g2_result["ran"] = True
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=2),
+    )
+    run_task = asyncio.create_task(scheduler.run())
+    await wait_until(lambda: started.is_set())
+    # g1 has failed by now (concurrency=2 admits both at once); g2 is in flight
+    # and must be allowed to finish rather than being cancelled underneath it.
+    release.set()
+    states = await run_task
+    assert g2_result.get("ran") is True
+    assert states["g2"] == GroupState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_halt_returns_cleanly_without_no_progress_error(tmp_path):
+    """A halted run returns from Scheduler.run() rather than raising
+    NoProgressError, even though the un-admitted group lies outside
+    _blocked_by_failure()'s DAG/overlap reachability (plan U3/R41)."""
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise GroupFailure("boom")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+    )
+    states = await scheduler.run()  # must not raise
+    assert states["g1"] == GroupState.FAILED
+    assert states["g2"] == GroupState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_overlap_policy_admits_a_disjoint_group_unchanged(tmp_path):
+    """With on_group_failure='overlap', a group sharing no declared file with a
+    failed group is admitted and runs — today's pre-U3 behaviour (plan R41)."""
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise GroupFailure("boom")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(concurrency=2, on_group_failure="overlap"),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert states["g2"] == GroupState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_halted_run_with_only_a_failed_group_halts_again(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(
+        run_id="r1",
+        groups={
+            "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: boom"),
+            "g2": GroupRunState(state=GroupState.PENDING),
+        },
+    )
+    atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
+    scheduler = Scheduler(
+        groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
+        paths=paths,
+        executor=completing_executor(),
+        resume=True,
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert states["g2"] == GroupState.PENDING  # halted again, immediately
 
 
 # --------------------------------------------------- U2: resolve + overlap gate
