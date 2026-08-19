@@ -600,7 +600,7 @@ def git_repo(tmp_path: Path) -> Path:
 
 
 def test_worktree_path_keeps_repo_dir_name_as_substring(git_repo):
-    path = worktree_path(git_repo, "g1", "Fix Auth Flow!")
+    path = worktree_path(git_repo, "run1", "g1", "Fix Auth Flow!")
     assert git_repo.name in str(path)  # analyzer allowlist substring rule
     assert path.name == "g1-fix-auth-flow"
 
@@ -608,10 +608,10 @@ def test_worktree_path_keeps_repo_dir_name_as_substring(git_repo):
 def test_create_worktree_is_idempotent_and_checks_out_the_group_branch(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     again = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert path == again and (path / "README.md").is_file()
     head = subprocess.run(
@@ -624,14 +624,14 @@ def test_create_worktree_is_idempotent_and_checks_out_the_group_branch(git_repo)
 def test_create_worktree_resumes_an_existing_branch_after_removal(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "work.txt").write_text("progress\n")
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "wip"], cwd=path, check=True, capture_output=True)
     remove_worktree(git_repo, path)
     resumed = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert (resumed / "work.txt").read_text() == "progress\n"
 
@@ -639,7 +639,7 @@ def test_create_worktree_resumes_an_existing_branch_after_removal(git_repo):
 def test_remove_worktree_refuses_dirty_without_force_and_is_idempotent(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "uncommitted.txt").write_text("precious\n")
     with pytest.raises(WorktreeError, match="dirty"):
@@ -737,14 +737,15 @@ def test_provision_env_failure_logs_an_event_and_does_not_raise(tmp_path, capsys
 
 
 def test_conflicting_directory_at_worktree_path_is_rejected(git_repo):
-    path = worktree_path(git_repo, "g1", "fix auth")
+    path = worktree_path(git_repo, "run1", "g1", "fix auth")
     path.mkdir(parents=True)
     with pytest.raises(WorktreeError, match="not a worktree"):
         create_worktree(
             git_repo,
+            run_id="run1",
             group_id="g1",
             name="fix auth",
-            branch=group_branch("r", "g1"),
+            branch=group_branch("run1", "g1"),
             start_point="main",
         )
 
@@ -758,7 +759,7 @@ def _git_config(cwd: Path, *args: str) -> str:
 def test_worktree_reports_worktree_config_extension_and_isolates_user_email(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert _git_config(path, "extensions.worktreeConfig") == "true"
     subprocess.run(
@@ -774,17 +775,17 @@ def test_worktree_reports_worktree_config_extension_and_isolates_user_email(git_
 def test_create_worktree_idempotent_and_rejects_other_branch(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     again = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert path == again
 
     subprocess.run(
         ["git", "checkout", "-b", "other"], cwd=git_repo, check=True, capture_output=True
     )
-    other_path = worktree_path(git_repo, "g2", "fix auth 2")
+    other_path = worktree_path(git_repo, "run1", "g2", "fix auth 2")
     subprocess.run(
         ["git", "worktree", "add", str(other_path), "-b", "some-other-branch"],
         cwd=git_repo,
@@ -794,6 +795,7 @@ def test_create_worktree_idempotent_and_rejects_other_branch(git_repo):
     with pytest.raises(WorktreeError, match="some-other-branch"):
         create_worktree(
             git_repo,
+            run_id="run1",
             group_id="g2",
             name="fix auth 2",
             branch=group_branch("run1", "g2"),
@@ -816,7 +818,7 @@ def test_denied_git_subcommands_are_rejected_others_accepted():
 def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_aborts(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "README.md").write_text("worker change\n")
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
@@ -831,7 +833,14 @@ def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_abort
     )
 
     with pytest.raises(WorktreeRefreshConflict, match="README.md"):
-        create_worktree(git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main")
+        create_worktree(
+            git_repo,
+            run_id="run1",
+            group_id="g1",
+            name="fix auth",
+            branch=branch,
+            start_point="main",
+        )
     status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
     ).stdout
@@ -841,6 +850,83 @@ def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_abort
         ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"], cwd=path, capture_output=True
     )
     assert result.returncode != 0  # merge was aborted, no dangling MERGE_HEAD
+
+
+def test_run_scoped_paths_keep_the_repo_dir_name_and_nest_under_the_run_id(git_repo):
+    """plan U2/R19: every worktree path lives under .worktrees/<run_id>/, and
+    the integration worktree resolves to exactly .worktrees/<run_id>/integration."""
+    group_path = worktree_path(git_repo, "run7", "g1", "fix auth")
+    assert group_path == git_repo / ".worktrees" / "run7" / "g1-fix-auth"
+    assert git_repo.name in str(group_path)
+
+    integration_path = worktree_path(git_repo, "run7", "integration", "integration")
+    assert integration_path == git_repo / ".worktrees" / "run7" / "integration"
+    assert git_repo.name in str(integration_path)
+
+
+def test_stranded_uncommitted_work_is_committed_before_refresh_on_reentry(git_repo):
+    """plan U2/R3: re-entering a group whose worktree carries uncommitted and
+    untracked changes must not lose them — they are committed with a
+    ``recover(<run_id>): ...`` subject, distinct from ``resolve(...)``, before
+    the refresh even runs."""
+    branch = group_branch("run1", "g1")
+    path = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    (path / "tracked.txt").write_text("tracked but never committed\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True, capture_output=True)
+    (path / "untracked.txt").write_text("never even staged\n")
+
+    reentered = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert reentered == path
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
+    ).stdout
+    assert status.strip() == ""  # clean: everything landed in the recover commit
+    assert (path / "tracked.txt").read_text() == "tracked but never committed\n"
+    assert (path / "untracked.txt").read_text() == "never even staged\n"
+
+    subjects = subprocess.run(
+        ["git", "log", "--format=%s"], cwd=path, capture_output=True, text=True
+    ).stdout.splitlines()
+    recover_subjects = [s for s in subjects if s.startswith("recover(")]
+    assert len(recover_subjects) == 1
+    assert recover_subjects[0] == "recover(run1): g1 work stranded by an interrupted run"
+    assert not any(s.startswith("resolve(") for s in subjects)
+
+
+def test_legacy_worktree_is_adopted_in_place_not_duplicated(git_repo):
+    """plan U2/R20: a worktree still registered at the pre-U2 (run-unscoped)
+    path, on the group's branch, is moved to the run-scoped path rather than
+    creating a second worktree for the same branch."""
+    branch = group_branch("run1", "g1")
+    legacy_path = git_repo / ".worktrees" / "g1-fix-auth"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(legacy_path), "main"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+    )
+    (legacy_path / "in_progress.txt").write_text("legacy work in flight\n")
+
+    run_scoped_path = worktree_path(git_repo, "run1", "g1", "fix auth")
+    assert not run_scoped_path.exists()
+
+    adopted = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert adopted == run_scoped_path
+    assert not legacy_path.exists()  # moved, not copied
+    assert (run_scoped_path / "in_progress.txt").read_text() == "legacy work in flight\n"
+
+    registered = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=git_repo, capture_output=True, text=True
+    ).stdout
+    # exactly one registered worktree carries this branch
+    assert registered.count(f"branch refs/heads/{branch}\n") == 1
 
 
 # ------------------------------------------------------- usage-limit auto-resume

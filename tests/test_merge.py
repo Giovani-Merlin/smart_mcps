@@ -59,6 +59,7 @@ def group_worktree(repo: Path, merger: IntegrationMerger, group: Group) -> Path:
     """A group's worktree branches from the integration tip at launch (plan U5)."""
     return create_worktree(
         repo,
+        run_id=merger.run_id,
         group_id=group.id,
         name=group.name,
         branch=group_branch(merger.run_id, group.id),
@@ -111,6 +112,7 @@ def test_conflict_leaves_integration_untouched_and_names_both_groups(repo):
     g2 = make_group("g2", files=["shared.txt"])
     wt2 = create_worktree(
         repo,
+        run_id="r1",
         group_id="g2",
         name="group g2",
         branch=group_branch("r1", "g2"),
@@ -139,6 +141,7 @@ def test_worktree_cleanup_runs_only_after_a_successful_merge(repo):
     g2 = make_group("g2", files=["shared.txt"])
     wt2 = create_worktree(
         repo,
+        run_id="r1",
         group_id="g2",
         name="group g2",
         branch=group_branch("r1", "g2"),
@@ -218,7 +221,7 @@ def test_refresh_fast_forwards_a_strictly_behind_branch(repo):
     new_tip = merger.tip()
 
     resumed = create_worktree(
-        repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
     )
     assert resumed == wt1
     assert git(resumed, "rev-parse", "HEAD").strip() == new_tip
@@ -240,7 +243,7 @@ def test_refresh_merges_a_diverged_branch_reaching_both_tips(repo):
     new_tip = merger.tip()
 
     refreshed = create_worktree(
-        repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
     )
     assert git(refreshed, "merge-base", "--is-ancestor", own_commit, "HEAD").strip() == ""
     assert git(refreshed, "merge-base", "--is-ancestor", new_tip, "HEAD").strip() == ""
@@ -261,7 +264,7 @@ def test_refresh_conflict_raises_naming_group_and_paths_and_leaves_head_untouche
 
     with pytest.raises(WorktreeError, match=r"g1.*shared\.txt"):
         create_worktree(
-            repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+            repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
         )
     assert git(wt1, "rev-parse", "HEAD").strip() == head_before
     assert not (wt1 / ".git" / "MERGE_HEAD").exists()
@@ -282,7 +285,7 @@ def test_refresh_preserves_uncommitted_changes_it_cannot_safely_apply_over(repo)
 
     with pytest.raises(WorktreeError, match="g1"):
         create_worktree(
-            repo, group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+            repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
         )
     assert (wt1 / "shared.txt").read_text() == "uncommitted local edit\n"
 
@@ -301,7 +304,7 @@ def test_refresh_reaches_the_tip_whether_worktree_survived_or_only_branch_did(re
     tip_a = merger.tip()
 
     resumed = create_worktree(
-        repo, group_id="ga", name=ga.name, branch=group_branch("r1", "ga"), start_point=tip_a
+        repo, run_id="r1", group_id="ga", name=ga.name, branch=group_branch("r1", "ga"), start_point=tip_a
     )
     assert resumed == wta
     assert (resumed / "x.txt").read_text() == "landed while ga was down\n"
@@ -317,6 +320,6 @@ def test_refresh_reaches_the_tip_whether_worktree_survived_or_only_branch_did(re
     tip_b = merger.tip()
 
     reentered = create_worktree(
-        repo, group_id="gb", name=gb.name, branch=group_branch("r1", "gb"), start_point=tip_b
+        repo, run_id="r1", group_id="gb", name=gb.name, branch=group_branch("r1", "gb"), start_point=tip_b
     )
     assert (reentered / "y.txt").read_text() == "landed while gb was down\n"

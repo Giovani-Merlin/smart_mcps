@@ -64,10 +64,12 @@ from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoa
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    HoldReason,
     ResolveConflict,
     ResolveDeps,
     RunAbort,
     RunState,
+    RunStateVersionError,
     Scheduler,
     SchedulerError,
 )
@@ -328,6 +330,16 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         default=None,
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
+    cmd.add_argument(
+        "--on-failure",
+        default=None,
+        choices=["halt", "overlap"],
+        help=(
+            "admission policy once a group ends FAILED or INTERRUPTED (plan U3/R41): "
+            "'halt' (default) admits no further group; 'overlap' keeps only the "
+            "file-overlap gate"
+        ),
+    )
     _add_auto_resume_arg(cmd)
 
 
@@ -355,6 +367,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         execution_updates["concurrency"] = args.concurrency
     if getattr(args, "permission_mode", None):
         execution_updates["permission_mode"] = args.permission_mode
+    if getattr(args, "on_failure", None) is not None:
+        execution_updates["on_group_failure"] = args.on_failure
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
@@ -970,6 +984,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}, {confinement}, "
         f"{_auto_resume_line(config.session.usage_limit)}, "
+        f"on-failure {config.execution.on_group_failure}, "
         f"cache {_cache_root(config.session)}",
         flush=True,
     )
@@ -990,6 +1005,10 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # succeeds, so a dead worker CLI never leaves a run directory behind.
     if not resume:
         snapshot_grouping(source_grouping_dir, paths.run_dir)
+    # Plan U3/R41: the resolved admission policy, recorded once — an operator
+    # reading logs/run.log after the fact must be able to tell whether a halted
+    # run was the default or an explicit --on-failure override.
+    log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
 
     merger = IntegrationMerger(repo_root, run_id)
     try:
@@ -1034,12 +1053,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             paths=paths,
             executor=executor,
             config=config.execution,
+            breaker=config.breaker,
             resume=resume,
             broker=broker,
             policy=policy,
             resolve=resolve_deps,
         )
-    except SchedulerError as exc:
+    except (SchedulerError, RunStateVersionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker
@@ -1211,7 +1231,12 @@ def _workspace_seams(
         branch = group_branch(run_id, group.id)
         tip = merger.tip()
         path = create_worktree(
-            repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
+            repo_root,
+            run_id=run_id,
+            group_id=group.id,
+            name=group.name,
+            branch=branch,
+            start_point=tip,
         )
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
@@ -1241,7 +1266,7 @@ def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> Re
         return group_branch(run_id, group.id)
 
     def worktree_for(group: Group) -> Path:
-        return worktree_path(repo_root, group.id, group.name)
+        return worktree_path(repo_root, run_id, group.id, group.name)
 
     def commit_stranded(group: Group) -> bool:
         return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
@@ -1294,6 +1319,12 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
 
 
 def _print_outcomes(state: RunState) -> int:
+    """Print every group's outcome plus, for anything stalled, enough to act on
+    it without diffing state.json (plan U3/R41): its failure text, what it
+    holds and on which files, its branch, its re-entry count, and the command
+    to act on it. Read-only — it derives everything from the already-persisted
+    ``holds`` field each group carries from the scheduler's last admission
+    pass, so calling it never changes state.json."""
     print(f"\nrun {state.run_id}:")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
@@ -1302,11 +1333,66 @@ def _print_outcomes(state: RunState) -> int:
             line += f" (generation {entry.generation})"
         if entry.failure:
             line += f" — {entry.failure}"
+        if entry.quarantined:
+            line += " [quarantined]"
         print(line)
     completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
     if completed:
         print("all groups completed; merge the integration branch when ready")
         return 0
+
+    # Invert each group's persisted holds into "who does gid hold, and on what":
+    # a FAILURE_GATE hold on gid2 naming gid1 means gid1 is holding gid2.
+    holds_by: dict[str, list[tuple[str, list[str]]]] = {}
+    halted_by: str | None = None
+    not_admitted: list[str] = []
+    for held_gid, entry in state.groups.items():
+        for hold in entry.holds:
+            if hold.reason == HoldReason.FAILURE_GATE:
+                holds_by.setdefault(hold.group_id, []).append((held_gid, hold.files))
+            elif hold.reason == HoldReason.RUN_HALTED:
+                halted_by = hold.group_id
+                not_admitted.append(held_gid)
+    not_admitted.sort()
+
+    stalled = sorted(
+        gid
+        for gid, entry in state.groups.items()
+        if entry.state in (GroupState.FAILED, GroupState.INTERRUPTED)
+    )
+    for gid in stalled:
+        entry = state.groups[gid]
+        branch = group_branch(state.run_id, gid)
+        overlap = sorted(holds_by.get(gid, []))
+        held = (
+            "; ".join(f"{other} ({', '.join(files)})" for other, files in overlap)
+            if overlap
+            else "none"
+        )
+        command = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {gid}"
+            if entry.quarantined
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"  {gid} ({entry.state.value}): {entry.failure or 'no failure text recorded'} — "
+            f"holds: {held} — branch {branch} — reentry_count {entry.reentry_count} — {command}"
+        )
+
+    if halted_by is not None:
+        trigger_state = state.groups[halted_by].state.value
+        clears = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {halted_by}"
+            if state.groups[halted_by].state == GroupState.FAILED
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"\nrun halted: group {halted_by} ended {trigger_state}, so no further group "
+            f"was admitted — not admitted: {', '.join(not_admitted) if not_admitted else 'none'}. "
+            f"Fix {halted_by}, then `{clears}`; or re-run with `--on-failure overlap` "
+            "to admit as far as possible."
+        )
+
     interrupted = sorted(
         gid for gid, entry in state.groups.items() if entry.state == GroupState.INTERRUPTED
     )

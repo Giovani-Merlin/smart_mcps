@@ -57,7 +57,8 @@ class IntegrationMerger:
         """Create (or reuse) the integration branch and its worktree. Idempotent."""
         return create_worktree(
             self.repo_root,
-            group_id=f"run-{self.run_id}",
+            run_id=self.run_id,
+            group_id="integration",
             name="integration",
             branch=self.branch,
             start_point=self.launch_ref,
