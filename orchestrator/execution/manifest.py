@@ -109,6 +109,55 @@ def snapshot_grouping(source_dir: Path, dest_dir: Path) -> None:
             shutil.copytree(path, dest_dir / path.name, dirs_exist_ok=True)
 
 
+def archive_review_scratch(
+    scratch_dir: Path,
+    dest_dir: Path,
+    *,
+    cap_bytes: int,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Move a group's reviewer scratch litter out of its worktree (plan U6).
+
+    Files are visited in sorted (deterministic) order; once the running total
+    would exceed ``cap_bytes`` every remaining file is left out of the archive
+    and named — with its size — in ``skipped.txt`` rather than silently
+    dropped. The whole scratch directory is removed from the worktree either
+    way: an oversized directory does not get to keep blocking every future
+    Preflight cleanliness check, and a skipped file's record survives in the
+    archive even though its bytes do not.
+
+    A no-op when ``scratch_dir`` does not exist — the common case for a group
+    whose reviewer never wrote to it, and for every ``self_verify`` group,
+    which has no reviewer session to write to it at all.
+    """
+    if not scratch_dir.is_dir():
+        return
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    skipped: list[tuple[str, int]] = []
+    for path in sorted(scratch_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(scratch_dir)
+        size = path.stat().st_size
+        if total + size > cap_bytes:
+            skipped.append((str(rel), size))
+            continue
+        total += size
+        target = dest_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+    if skipped:
+        lines = "\n".join(f"{name} ({size} bytes)" for name, size in skipped)
+        (dest_dir / "skipped.txt").write_text(lines + "\n")
+        if log is not None:
+            log(
+                f"review scratch archive: {len(skipped)} file(s) exceeded the "
+                f"{cap_bytes} byte cap and were skipped (see skipped.txt)"
+            )
+    shutil.rmtree(scratch_dir)
+
+
 class RunPaths:
     """The one place the run-directory layout is spelled out."""
 
@@ -168,6 +217,11 @@ class RunPaths:
 
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
+
+    def review_scratch_archive_dir(self, group_id: str) -> Path:
+        """Where reviewer scratch litter lands once archived out of the group's
+        worktree (plan U6)."""
+        return self.group_dir(group_id) / "review-scratch"
 
     @property
     def driver_lock_path(self) -> Path:
