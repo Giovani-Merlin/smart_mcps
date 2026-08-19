@@ -848,6 +848,119 @@ class TestPrintOutcomes:
         assert "g2: completed" in out
         assert "g1: completed" not in out
 
+    def test_stall_report_names_failure_holds_branch_reentry_and_resume_command(self, capsys):
+        """Plan U3: a stalled group's line carries its failure text verbatim,
+        the groups it holds and on which files, its branch, its reentry_count,
+        and the exact resume command."""
+        state = RunState(
+            run_id="rstall",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED,
+                    failure="WorktreeError: refusing to overwrite",
+                    reentry_count=2,
+                ),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[
+                        GroupHold(reason=HoldReason.FAILURE_GATE, group_id="g1", files=["a.py"])
+                    ],
+                ),
+            },
+        )
+        exit_code = _print_outcomes(state)
+        assert exit_code == 2
+        out = capsys.readouterr().out
+        assert "WorktreeError: refusing to overwrite" in out
+        assert "g2 (a.py)" in out
+        assert "orchestrator/rstall-g1" in out
+        assert "reentry_count 2" in out
+        assert "smart-mcps-orchestrate resume rstall" in out
+
+    def test_quarantined_group_points_at_retry_not_resume(self, capsys):
+        state = RunState(
+            run_id="rq",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED,
+                    failure="RuntimeError: still broken",
+                    reentry_count=4,
+                    quarantined=True,
+                )
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "[quarantined]" in out
+        assert "smart-mcps-orchestrate retry --repo <repo> rq g1" in out
+        assert "smart-mcps-orchestrate resume rq" not in out
+
+    def test_report_is_read_only(self, capsys):
+        """Plan U3: printing the report never mutates state.json."""
+        state = RunState(
+            run_id="rro",
+            groups={
+                "g1": GroupRunState(state=GroupState.INTERRUPTED, failure="x"),
+                "g2": GroupRunState(state=GroupState.COMPLETED),
+            },
+        )
+        before = state.model_dump_json()
+        _print_outcomes(state)
+        capsys.readouterr()
+        assert state.model_dump_json() == before
+
+    def test_no_interrupted_or_failed_group_prints_no_stall_section(self, capsys):
+        state = RunState(
+            run_id="rnone",
+            groups={"g1": GroupRunState(state=GroupState.COMPLETED)},
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "holds:" not in out
+
+    def test_halted_run_names_trigger_not_admitted_and_both_ways_forward(self, capsys):
+        """Plan U3/R41: a halted run's report names the triggering group, the
+        groups it kept off admission, and both the fix-and-resume path and the
+        --on-failure overlap escape hatch."""
+        state = RunState(
+            run_id="rhalt",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: boom"),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+                "g3": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "run halted: group g1 ended failed" in out
+        assert "g2" in out and "g3" in out
+        assert "smart-mcps-orchestrate retry --repo <repo> rhalt g1" in out
+        assert "--on-failure overlap" in out
+
+    def test_resuming_a_failed_halt_says_retry_clears_it(self, capsys):
+        # A resume that re-admits nothing (the only unsuccessful group is
+        # terminally FAILED) still has a pending group carrying the RUN_HALTED
+        # hold from the scheduler's last admission pass before it returned.
+        state = RunState(
+            run_id="rretry",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: boom"),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "smart-mcps-orchestrate retry --repo <repo> rretry g1" in out
+
 
 class TestRunBanner:
     """R8: the effective execution config prints before any session spawns."""

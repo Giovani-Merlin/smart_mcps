@@ -476,3 +476,40 @@ def test_fault_typed_denial_interrupts_resumes_and_costs_no_rewrite(repo, fake_h
     manifest = manifest_of(repo, run_id)
     coder_sessions = [s for s in manifest["groups"]["g1"]["sessions"] if s["role"] == "coder"]
     assert len(coder_sessions) == 1  # resumed the same session, no second fork
+
+
+# ----------------------------------------------------- U3/R41: on_group_failure
+
+
+def test_on_failure_flag_overrides_config_and_is_logged_once(repo, fake_home):  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
+    """--on-failure overrides the config-file value, and the resolved policy is
+    recorded once in logs/run.log (plan U3/R41)."""
+    run_id = "rpol"
+    write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
+    write_config(repo, fake_home, '[execution]\non_group_failure = "halt"\n')
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry_completed({"g1.out": "done\n"}, "g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--intensity",
+            "autonomous",
+            "--on-failure",
+            "overlap",
+        ],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    log = RunPaths(repo, run_id).event_log_path.read_text()
+    lines = [line for line in log.splitlines() if "on_group_failure=" in line]
+    assert len(lines) == 1  # logged exactly once
+    assert "on_group_failure=overlap" in lines[0]  # the flag won over the config file
