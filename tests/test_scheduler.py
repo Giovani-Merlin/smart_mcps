@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -27,6 +28,7 @@ from orchestrator.execution.scheduler import (
     NoProgressError,
     ResolveConflict,
     ResolveDeps,
+    ResolvePreflightFailed,
     RunAbort,
     RunState,
     Scheduler,
@@ -927,9 +929,21 @@ async def test_resuming_a_halted_run_with_only_a_failed_group_halts_again(tmp_pa
 class StubResolve:
     """Records what the resolve routine did instead of touching real git."""
 
-    def __init__(self, *, commits_ahead: int = 1, conflict: bool = False):
+    def __init__(
+        self,
+        *,
+        commits_ahead: int = 1,
+        conflict: bool = False,
+        preflight_failure: bool = False,
+        block_until: "threading.Event | None" = None,
+    ):
         self.commits_ahead_value = commits_ahead
         self.conflict = conflict
+        self.preflight_failure = preflight_failure
+        # Merge blocks until this event is set (plan U5): simulates a slow
+        # merge_group (real wiring warm-resumes a coder) without a real
+        # session, proving _resolve_autonomously does not freeze the loop.
+        self.block_until = block_until
         self.committed: list[str] = []
         self.merged: list[str] = []
 
@@ -941,8 +955,12 @@ class StubResolve:
         return self.commits_ahead_value
 
     def merge_group(self, group: Group) -> None:
+        if self.block_until is not None:
+            self.block_until.wait(timeout=5)
         if self.conflict:
             raise ResolveConflict(f"conflict merging {group.id}")
+        if self.preflight_failure:
+            raise ResolvePreflightFailed(f"preflight failed resolving {group.id}")
         self.merged.append(group.id)
 
     def deps(self) -> ResolveDeps:
@@ -1030,6 +1048,64 @@ async def test_resolve_conflict_stops_the_run(tmp_path):
     )
     with pytest.raises(ResolveConflict):
         await scheduler.run()
+
+
+@pytest.mark.asyncio
+async def test_resolve_preflight_failure_leaves_group_failed_without_stopping_the_run(tmp_path):
+    """Plan U5: a Preflight failure on the resolve path is not a conflict — the
+    run keeps going and the group ends FAILED, not RESOLVED."""
+    resolve = StubResolve(commits_ahead=1, preflight_failure=True)
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(GroupFailure("boom")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert resolve.committed == ["g1"]
+    assert resolve.merged == []
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.FAILED
+    assert persisted.groups["g1"].resolve_settled is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_does_not_block_a_second_groups_progress(tmp_path):
+    """Plan U5 Decisions: _resolve_autonomously awaits merge_group off the
+    event loop, so a slow resolve for one group does not freeze another."""
+    block = threading.Event()
+    resolve = StubResolve(commits_ahead=1, block_until=block)
+
+    g2_progress: list[str] = []
+
+    async def executor(ctx):
+        if ctx.group.id == "g1":
+            raise GroupFailure("boom")
+        g2_progress.append("started")
+        await asyncio.sleep(0.05)
+        g2_progress.append("finished")
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(
+        groups=[make_group("g1"), make_group("g2", files=["unrelated.py"])],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=executor,
+        config=ExecutionConfig(on_group_failure="overlap", concurrency=2),
+        resolve=resolve.deps(),
+    )
+
+    async def run_and_release():
+        task = asyncio.create_task(scheduler.run())
+        # g2 must be able to finish while g1's resolve is still blocked.
+        await asyncio.sleep(0.2)
+        assert g2_progress == ["started", "finished"]
+        block.set()
+        return await task
+
+    states = await run_and_release()
+    assert states["g1"] == GroupState.RESOLVED
+    assert states["g2"] == GroupState.COMPLETED
 
 
 @pytest.mark.asyncio
