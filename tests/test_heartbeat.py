@@ -248,3 +248,108 @@ def test_a_failing_log_sink_never_takes_the_heartbeat_down(tmp_path):
         hb.stop()
     # The file kept being written despite every log call raising.
     assert read_heartbeat(paths, "g1") is not None
+
+
+# ------------------------------------------------------------------- overlay
+
+
+def test_periodic_log_line_names_the_overlay_while_it_is_pushed(tmp_path):
+    """R22: `_due_log_line` must honour the overlay exactly as `snapshot` does,
+    or a paused group keeps logging its pre-pause phase forever."""
+    lines: list[str] = []
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05)
+    hb.mark_phase("running")
+    hb.push_phase("paused: usage limit")
+    hb.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while not lines and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        hb.stop()
+
+    assert lines, "an overlaid phase must still produce a periodic line"
+    assert "still paused: usage limit" in lines[0]
+    assert "running" not in lines[0].split(",")[0]
+
+
+def test_periodic_log_line_reverts_to_the_underlying_phase_after_pop(tmp_path):
+    lines: list[str] = []
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05)
+    hb.mark_phase("running")
+    hb.push_phase("paused: usage limit")
+    hb.pop_phase()
+    hb.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while not lines and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        hb.stop()
+
+    assert lines, "the phase underneath must still produce a periodic line"
+    assert "still running" in lines[0]
+    assert "paused: usage limit" not in lines[0]
+
+
+# ------------------------------------------------------- paused vs. elapsed
+
+
+def test_snapshot_exposes_round_elapsed_and_paused_separately(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+    hb.mark_round(generation=1, round_no=1)
+    time.sleep(0.15)
+    hb.push_phase("paused: usage limit")
+    time.sleep(0.15)
+    hb.pop_phase()
+
+    payload = hb.snapshot()
+    assert payload["round_elapsed_s"] >= 0.2
+    assert payload["paused_s"] >= 0.1
+    assert payload["paused_s"] < payload["round_elapsed_s"]
+
+
+def test_paused_seconds_accumulate_across_more_than_one_push_pop_cycle(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+    hb.mark_round(generation=1, round_no=1)
+
+    hb.push_phase("paused: usage limit")
+    time.sleep(0.15)
+    hb.pop_phase()
+
+    hb.push_phase("paused: usage limit again")
+    time.sleep(0.15)
+    hb.pop_phase()
+
+    payload = hb.snapshot()
+    assert payload["paused_s"] >= 0.25  # both cycles summed, not just the last
+
+
+def test_a_new_round_resets_the_paused_accumulator(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+    hb.mark_round(generation=1, round_no=1)
+    hb.push_phase("paused: usage limit")
+    time.sleep(0.15)
+    hb.pop_phase()
+    assert hb.snapshot()["paused_s"] >= 0.1
+
+    hb.mark_round(generation=1, round_no=2)
+    assert hb.snapshot()["paused_s"] == 0.0
+
+
+def test_periodic_log_line_renders_both_round_elapsed_and_paused(tmp_path):
+    lines: list[str] = []
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05)
+    hb.mark_round(generation=1, round_no=1)
+    hb.push_phase("paused: usage limit")
+    hb.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while not lines and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        hb.stop()
+
+    assert lines, "a round in progress must produce a periodic line"
+    assert "elapsed" in lines[0]
+    assert "paused" in lines[0]

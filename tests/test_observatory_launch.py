@@ -8,13 +8,18 @@ schedulers from a unit test would be neither fast nor honest.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from orchestrator.execution.driver import DriverLock
+from orchestrator.execution.manifest import RunPaths
 from orchestrator.observatory import launch
 from orchestrator.observatory.app import create_app
 from orchestrator.observatory.launch import (
@@ -165,34 +170,51 @@ class TestBuildArgv:
 
 
 class TestDoubleLaunchGuard:
-    def test_a_live_run_refuses_a_second_scheduler(self, repo):
-        write_state(repo, "r1", live_pids={"4242": "coder g1"}, interrupted_at=None)
-        with pytest.raises(ConflictError):
-            check_not_live(repo, "r1")
+    def test_a_run_holding_the_driver_lock_refuses_a_second_scheduler(self, repo):
+        write_state(repo, "r1")
+        lock = DriverLock(RunPaths(repo, "r1"))
+        lock.acquire()
+        try:
+            with pytest.raises(ConflictError):
+                check_not_live(repo, "r1")
+        finally:
+            lock.release()
 
-    def test_an_interrupted_run_may_be_resumed_even_with_stale_pids(self, repo):
+    def test_a_run_whose_driver_lock_is_free_is_launchable_even_with_stale_pids(self, repo):
         """Nothing clears ``live_pids`` on a crash, so pids alone would make every
-        crashed run permanently un-resumable — the interruption mark is what says
-        no scheduler is driving it."""
-        write_state(
-            repo, "r1", live_pids={"4242": "coder g1"}, interrupted_at="2026-08-13T10:00:00"
-        )
+        crashed run permanently un-resumable — the lock (not present, or present
+        but unlocked) is what actually says no scheduler is driving it."""
+        write_state(repo, "r1", live_pids={"4242": "coder g1"})
         check_not_live(repo, "r1")
 
     def test_a_run_with_no_recorded_pids_is_launchable(self, repo):
         write_state(repo, "r1", live_pids={})
         check_not_live(repo, "r1")
 
+    def test_a_run_becomes_launchable_again_once_the_lock_holder_releases_it(self, repo):
+        write_state(repo, "r1")
+        lock = DriverLock(RunPaths(repo, "r1"))
+        lock.acquire()
+        with pytest.raises(ConflictError):
+            check_not_live(repo, "r1")
+        lock.release()
+        check_not_live(repo, "r1")  # admitted now that the first driver is gone
+
     def test_an_unknown_run_is_not_a_conflict(self, repo):
         check_not_live(repo, "never-existed")
         check_not_live(repo, None)
 
     def test_the_endpoint_answers_409(self, client, repo, monkeypatch):
-        write_state(repo, "r1", live_pids={"4242": "coder g1"})
-        monkeypatch.setattr(launch, "spawn_job", _never_spawn)
-        response = client.post("/api/projects/proj/jobs/resume", json={"run_id": "r1"})
-        assert response.status_code == 409
-        assert "already running" in response.json()["detail"]
+        write_state(repo, "r1")
+        lock = DriverLock(RunPaths(repo, "r1"))
+        lock.acquire()
+        try:
+            monkeypatch.setattr(launch, "spawn_job", _never_spawn)
+            response = client.post("/api/projects/proj/jobs/resume", json={"run_id": "r1"})
+            assert response.status_code == 409
+            assert "already running" in response.json()["detail"]
+        finally:
+            lock.release()
 
 
 def _never_spawn(*args, **kwargs):  # pragma: no cover — asserts by being called
@@ -291,6 +313,48 @@ class TestJobs:
     def test_job_log_stream_404s_for_an_unknown_job(self, client):
         response = client.get("/events/job", params={"project": "proj", "job": "nope"})
         assert response.status_code == 404
+
+
+class TestPidRecycling:
+    """A finished job's pid can be reused by an unrelated process before this
+    server ever reads the job again — the classic post-reboot false positive.
+    ``started_at`` cross-checked against the live process's actual start time
+    (read from /proc) is what tells the two apart."""
+
+    def test_a_job_reads_as_not_running_once_its_pid_is_reused(self, repo, monkeypatch):
+        info = spawn_job(repo, [sys.executable, "-c", "print('done')"], "group")
+        _wait_for(lambda: read_job(repo, info.job_id).running is False)
+
+        # Simulate the pid having been recycled by an unrelated, currently-alive
+        # process: patch the job record's own pid to this test process's pid
+        # (definitely alive) but leave `started_at` as the long-dead job's.
+        command_path = launch.job_dir(repo, info.job_id) / "command.json"
+        record = json.loads(command_path.read_text())
+        record["pid"] = os.getpid()
+        command_path.write_text(json.dumps(record))
+
+        # The recycled pid's own real start time is forced far from the job
+        # record's `started_at`, exactly like an unrelated process reusing a
+        # freed pid long after the original job exited.
+        monkeypatch.setattr(launch, "_process_start_time", lambda pid: 0.0)
+
+        stored = read_job(repo, info.job_id)
+        assert stored is not None
+        assert stored.running is False
+
+    def test_a_job_still_reads_as_running_when_the_start_time_matches(self, repo):
+        info = spawn_job(repo, [sys.executable, "-c", "import time; time.sleep(5)"], "group")
+        try:
+            stored = read_job(repo, info.job_id)
+            assert stored is not None
+            assert stored.running is True
+        finally:
+            _kill_pid(info.pid)
+
+
+def _kill_pid(pid: int) -> None:
+    with contextlib.suppress(OSError, ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def _wait_for(predicate, timeout: float = 5.0) -> None:

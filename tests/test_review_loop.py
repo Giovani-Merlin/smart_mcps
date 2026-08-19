@@ -859,16 +859,16 @@ async def test_autonomous_run_writes_the_full_lifecycle_log(tmp_path):
     lines = run_log_lines(harness)
     expected_in_order = [
         f"group g1: worktree ready at {harness.workspace}",
-        "group g1 generation 1: coder launched",
         "group g1 generation 1 round 1: started",
+        "group g1 generation 1: coder launched",
         "group g1 generation 1 round 1: reviewer verdict changes_required",
         "group g1 generation 1 round 1: ended (changes_required)",
         "group g1 generation 1 round 2: started",
         "group g1 generation 1 round 2: reviewer verdict changes_required",
         "group g1 generation 1 round 2: ended (changes_required)",
         "group g1 generation 1: coder retired (round threshold reached (2 rounds this generation))",
-        "group g1 generation 2: coder launched",  # the follow-up fork
         "group g1 generation 2 round 1: started",
+        "group g1 generation 2: coder launched",  # the follow-up fork
         "group g1 generation 2 round 1: reviewer verdict approved",
         "group g1 generation 2 round 1: ended (approved)",
         "group g1: merge attempt",
@@ -968,6 +968,79 @@ def seed_reentry_session(
             )
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_round_started_is_logged_before_start_fork_is_invoked(tmp_path):
+    """R21: the round-start line must cover the fork, not trail it — asserted
+    with a `start_fork` stub that reads the log at call time."""
+    seen_at_call_time: list[list[str]] = []
+
+    class RoundStartAssertingRunner(StubRunner):
+        def start_fork(self, **kwargs):
+            seen_at_call_time.append(run_log_lines(harness))
+            return super().start_fork(**kwargs)
+
+    runner = RoundStartAssertingRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert seen_at_call_time, "start_fork stub never ran"
+    lines_before_fork = seen_at_call_time[0]
+    assert any(
+        line.endswith("group g1 generation 1 round 1: started") for line in lines_before_fork
+    )
+
+
+@pytest.mark.asyncio
+async def test_round_start_and_round_end_do_not_share_a_to_the_second_timestamp(tmp_path):
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    text = (harness.store.paths.logs_dir / "run.log").read_text()
+    lines = text.splitlines()
+    started = next(
+        line for line in lines if line.endswith("group g1 generation 1 round 1: started")
+    )
+    ended = next(
+        line for line in lines if line.endswith("group g1 generation 1 round 1: ended (approved)")
+    )
+    # Millisecond timestamps, so an earlier-and-later pair proves the round-start
+    # line was not simply copy-pasted from the end line at write time.
+    assert started.split()[0] <= ended.split()[0]
+
+
+@pytest.mark.asyncio
+async def test_reentry_refreshes_the_transcript_path_after_a_successful_resume(tmp_path):
+    """R24: a warm resume can be the first moment the session's transcript
+    exists on disk — the manifest entry must pick that up rather than staying
+    null forever."""
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    transcript_after_resume = tmp_path / "sess-warm.jsonl"
+    original_transcript_path = runner.transcript_path
+
+    def transcript_path(session_id: str):
+        if session_id == "sess-warm":
+            return transcript_after_resume
+        return original_transcript_path(session_id)
+
+    runner.transcript_path = transcript_path  # type: ignore[method-assign]
+
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness)
+    entry = harness.manifest.groups["g1"].sessions[0]
+    assert entry.transcript_path is None  # not yet on disk pre-resume
+
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert entry.transcript_path == str(transcript_after_resume)
 
 
 @pytest.mark.asyncio
@@ -1685,9 +1758,7 @@ async def test_the_group_heartbeat_is_registered_with_the_runners_usage_limit_ga
     runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
     watched: list[object] = []
     unwatched: list[object] = []
-    runner.gate = SimpleNamespace(
-        watch=watched.append, unwatch=unwatched.append, enabled=True
-    )
+    runner.gate = SimpleNamespace(watch=watched.append, unwatch=unwatched.append, enabled=True)
     harness = Harness(tmp_path, runner)
 
     await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
