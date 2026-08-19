@@ -45,6 +45,7 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
+from orchestrator.execution.driver import DriverAlreadyRunning, DriverLock, driver_status_line
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     GroupingNameError,
@@ -991,178 +992,198 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     if intensity_override_line is not None:
         print(intensity_override_line)
 
-    gate = build_usage_limit_gate(config, paths)
-    runner = build_session_runner(config, gate)
+    driver_lock = DriverLock(paths)
     try:
-        runner.preflight()
-    except SessionError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        gate = build_usage_limit_gate(config, paths)
+        runner = build_session_runner(config, gate)
+        try:
+            runner.preflight()
+        except SessionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
-    # The run keeps its own frozen copy of the grouping it started with (plan
-    # U10): a later `group --name <same>` against a different plan must not be
-    # able to rewrite a finished run's history. Done only after preflight
-    # succeeds, so a dead worker CLI never leaves a run directory behind.
-    if not resume:
-        snapshot_grouping(source_grouping_dir, paths.run_dir)
-    # Plan U3/R41: the resolved admission policy, recorded once — an operator
-    # reading logs/run.log after the fact must be able to tell whether a halted
-    # run was the default or an explicit --on-failure override.
-    log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
+        # Acquired only once preflight has passed, so a dead worker CLI still
+        # never leaves a run directory behind (the lock file lives under
+        # `run_dir`, same as the frozen grouping snapshot right below it) — and
+        # held for the rest of this function (plan U11): a second `run`/`resume`
+        # over the same run id must fail here, fast, rather than after paying
+        # for a base-session fork a losing race would then have no use for.
+        try:
+            driver_lock.acquire()
+        except DriverAlreadyRunning as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
-    merger = IntegrationMerger(repo_root, run_id)
-    try:
-        merger.ensure()
-    except WorktreeError as exc:
-        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
-        return 1
+        # The run keeps its own frozen copy of the grouping it started with (plan
+        # U10): a later `group --name <same>` against a different plan must not be
+        # able to rewrite a finished run's history. Done only after preflight
+        # succeeds, so a dead worker CLI never leaves a run directory behind.
+        if not resume:
+            snapshot_grouping(source_grouping_dir, paths.run_dir)
+        # Plan U3/R41: the resolved admission policy, recorded once — an operator
+        # reading logs/run.log after the fact must be able to tell whether a halted
+        # run was the default or an explicit --on-failure override.
+        log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
 
-    # The lifecycle log is always on (R10): the run-start line lands in every
-    # mode; only the escalation channel itself is HITL-gated. Built before the
-    # Scheduler (plan U2): a FAILED group's resolve routine needs the same
-    # broker/policy the review loop's escalations already use.
-    if config.escalation.enabled:
-        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
-        policy: EscalationPolicy | None = EscalationPolicy(
-            config.escalation.intensity, config.escalation.source
+        merger = IntegrationMerger(repo_root, run_id)
+        try:
+            merger.ensure()
+        except WorktreeError as exc:
+            print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
+            return 1
+
+        # The lifecycle log is always on (R10): the run-start line lands in every
+        # mode; only the escalation channel itself is HITL-gated. Built before the
+        # Scheduler (plan U2): a FAILED group's resolve routine needs the same
+        # broker/policy the review loop's escalations already use.
+        if config.escalation.enabled:
+            broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
+            policy: EscalationPolicy | None = EscalationPolicy(
+                config.escalation.intensity, config.escalation.source
+            )
+            log_event(
+                paths,
+                f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
+                f"source={config.escalation.source}, "
+                f"timeout={config.escalation.timeout_s}",
+            )
+        else:
+            broker = None
+            policy = None
+            log_event(paths, f"run {run_id} started (autonomous)")
+
+        resolve_deps = _resolve_deps(repo_root, run_id, merger)
+
+        # Construction is circular on paper (scheduler → executor → deps → runner →
+        # scheduler.tracker); the executor closes over a slot assigned once deps exist —
+        # it is only invoked inside scheduler.run().
+        executor_slot: list[Executor] = []
+
+        async def executor(ctx):  # noqa: ANN001 — GroupContext, kept light for the closure
+            return await executor_slot[0](ctx)
+
+        try:
+            scheduler = Scheduler(
+                groups=groups,
+                paths=paths,
+                executor=executor,
+                config=config.execution,
+                breaker=config.breaker,
+                resume=resume,
+                broker=broker,
+                policy=policy,
+                resolve=resolve_deps,
+            )
+        except (SchedulerError, RunStateVersionError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        runner.tracker = scheduler.tracker
+        # Wired after construction (plan U7): the broker is built before the
+        # scheduler exists (the scheduler's resolve routine needs it), so its
+        # stdout line naming blocked groups can only be plugged in here.
+        if broker is not None:
+            broker.pending_groups_provider = scheduler.pending_group_ids
+
+        if resume:
+            if persisted_manifest is None:
+                print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
+                return 1
+            manifest = persisted_manifest
+            if not manifest.base_session_id:
+                print("error: manifest has no base session — start a fresh run", file=sys.stderr)
+                return 1
+            base_session_id = manifest.base_session_id
+        else:
+            # Establishing the base session is the *first* long silence an operator
+            # meets — it precedes every group, so no group heartbeat exists yet and
+            # the run said nothing at all until it returned. Same machinery as a
+            # group's, run-scoped: 15s file tick, one log line a minute.
+            base_heartbeat = RoundHeartbeat(
+                paths, None, log=lambda message: log_event(paths, message)
+            )
+            base_heartbeat.mark_phase("establishing the base session")
+            base_heartbeat.start()
+            try:
+                base = runner.start_base(
+                    run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
+                )
+            except SessionError as exc:
+                print(f"error: base session failed: {exc}", file=sys.stderr)
+                return 1
+            finally:
+                base_heartbeat.stop()
+            base_session_id = base.session_id
+            manifest = RunManifest(
+                run_id=run_id,
+                plan_path=grouping.plan_path,
+                base_session_id=base_session_id,
+                grouping=grouping_name,
+                escalation=config.escalation,
+                usage_limit=config.session.usage_limit,
+            )
+            store.save(manifest)
+            # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
+            # shared across runs and every planning cycle overwrites it, so without
+            # this a post-mortem reader renders whatever DAG is on disk today
+            # (ADR 0002). Resume keeps the snapshot its run started with.
+            atomic_write_text(paths.groups_path, groups_path.read_text())
+
+        workspace_for, base_ref_for = _workspace_seams(
+            repo_root, run_id, merger, paths, config.session
         )
-        log_event(
-            paths,
-            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
-            f"source={config.escalation.source}, "
-            f"timeout={config.escalation.timeout_s}",
-        )
-    else:
-        broker = None
-        policy = None
-        log_event(paths, f"run {run_id} started (autonomous)")
-
-    resolve_deps = _resolve_deps(repo_root, run_id, merger)
-
-    # Construction is circular on paper (scheduler → executor → deps → runner →
-    # scheduler.tracker); the executor closes over a slot assigned once deps exist —
-    # it is only invoked inside scheduler.run().
-    executor_slot: list[Executor] = []
-
-    async def executor(ctx):  # noqa: ANN001 — GroupContext, kept light for the closure
-        return await executor_slot[0](ctx)
-
-    try:
-        scheduler = Scheduler(
-            groups=groups,
-            paths=paths,
-            executor=executor,
-            config=config.execution,
+        deps = ReviewDeps(
+            run_id=run_id,
+            runner=runner,
+            store=store,
+            manifest=manifest,
+            base_session_id=base_session_id,
             breaker=config.breaker,
-            resume=resume,
+            execution=config.execution,
+            board=SurpriseBoard(paths),
+            workspace_for=workspace_for,
+            merge_group=merger.merge_group,
+            # The rewrite path is the run's other claude call, and it is a one-shot
+            # `claude -p` rather than a session — so it needs the same gate, applied
+            # at its own boundary.
+            rewrite_spec=_rewrite_provider(
+                plan_text,
+                with_usage_limit_retry(llm_runner or claude_json_runner, gate),
+                orch_dir / "failures",
+            ),
+            base_ref_for=base_ref_for,
             broker=broker,
             policy=policy,
-            resolve=resolve_deps,
         )
-    except (SchedulerError, RunStateVersionError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    runner.tracker = scheduler.tracker
-    # Wired after construction (plan U7): the broker is built before the
-    # scheduler exists (the scheduler's resolve routine needs it), so its
-    # stdout line naming blocked groups can only be plugged in here.
-    if broker is not None:
-        broker.pending_groups_provider = scheduler.pending_group_ids
+        executor_slot.append(make_executor(deps))
 
-    if resume:
-        if persisted_manifest is None:
-            print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
-            return 1
-        manifest = persisted_manifest
-        if not manifest.base_session_id:
-            print("error: manifest has no base session — start a fresh run", file=sys.stderr)
-            return 1
-        base_session_id = manifest.base_session_id
-    else:
-        # Establishing the base session is the *first* long silence an operator
-        # meets — it precedes every group, so no group heartbeat exists yet and
-        # the run said nothing at all until it returned. Same machinery as a
-        # group's, run-scoped: 15s file tick, one log line a minute.
-        base_heartbeat = RoundHeartbeat(paths, None, log=lambda message: log_event(paths, message))
-        base_heartbeat.mark_phase("establishing the base session")
-        base_heartbeat.start()
         try:
-            base = runner.start_base(
-                run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
-            )
-        except SessionError as exc:
-            print(f"error: base session failed: {exc}", file=sys.stderr)
+            with _interruptible_pause(gate):
+                asyncio.run(scheduler.run())
+        except RunAbort as exc:
+            # The operator stopped the run; state stays resumable (mid-flight groups
+            # restart from ready on `resume`).
+            print(f"run aborted by operator: {exc}", file=sys.stderr)
+            log_event(paths, f"run {run_id} aborted by operator: {exc}")
+            _print_outcomes(scheduler.state)
+            print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            # Ctrl-C previously left state.json indistinguishable from a live run, so
+            # the next reader had to diff mtimes against a worker transcript to find
+            # out the run was dead. Record it, say so, and point at resume.
+            scheduler.mark_interrupted()
+            log_event(paths, f"run {run_id} interrupted (SIGINT)")
+            print("\nrun interrupted", file=sys.stderr)
+            _print_outcomes(scheduler.state)
+            print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+            return 130
+        except SchedulerError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            _print_outcomes(scheduler.state)
             return 1
-        finally:
-            base_heartbeat.stop()
-        base_session_id = base.session_id
-        manifest = RunManifest(
-            run_id=run_id,
-            plan_path=grouping.plan_path,
-            base_session_id=base_session_id,
-            grouping=grouping_name,
-            escalation=config.escalation,
-            usage_limit=config.session.usage_limit,
-        )
-        store.save(manifest)
-        # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
-        # shared across runs and every planning cycle overwrites it, so without
-        # this a post-mortem reader renders whatever DAG is on disk today
-        # (ADR 0002). Resume keeps the snapshot its run started with.
-        atomic_write_text(paths.groups_path, groups_path.read_text())
-
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths, config.session)
-    deps = ReviewDeps(
-        run_id=run_id,
-        runner=runner,
-        store=store,
-        manifest=manifest,
-        base_session_id=base_session_id,
-        breaker=config.breaker,
-        execution=config.execution,
-        board=SurpriseBoard(paths),
-        workspace_for=workspace_for,
-        merge_group=merger.merge_group,
-        # The rewrite path is the run's other claude call, and it is a one-shot
-        # `claude -p` rather than a session — so it needs the same gate, applied
-        # at its own boundary.
-        rewrite_spec=_rewrite_provider(
-            plan_text,
-            with_usage_limit_retry(llm_runner or claude_json_runner, gate),
-            orch_dir / "failures",
-        ),
-        base_ref_for=base_ref_for,
-        broker=broker,
-        policy=policy,
-    )
-    executor_slot.append(make_executor(deps))
-
-    try:
-        with _interruptible_pause(gate):
-            asyncio.run(scheduler.run())
-    except RunAbort as exc:
-        # The operator stopped the run; state stays resumable (mid-flight groups
-        # restart from ready on `resume`).
-        print(f"run aborted by operator: {exc}", file=sys.stderr)
-        log_event(paths, f"run {run_id} aborted by operator: {exc}")
-        _print_outcomes(scheduler.state)
-        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        # Ctrl-C previously left state.json indistinguishable from a live run, so
-        # the next reader had to diff mtimes against a worker transcript to find
-        # out the run was dead. Record it, say so, and point at resume.
-        scheduler.mark_interrupted()
-        log_event(paths, f"run {run_id} interrupted (SIGINT)")
-        print("\nrun interrupted", file=sys.stderr)
-        _print_outcomes(scheduler.state)
-        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
-        return 130
-    except SchedulerError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        _print_outcomes(scheduler.state)
-        return 1
-    return _print_outcomes(scheduler.state)
+        return _print_outcomes(scheduler.state)
+    finally:
+        driver_lock.release()
 
 
 @contextmanager
@@ -1433,10 +1454,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
     manifest = store.load() if store.exists() else None
 
     print(f"run {state.run_id}")
+    # Said before the group list, because it changes how every line below
+    # reads: a RUNNING group under a run nothing is driving is not running.
+    # Two separate facts (plan U11): whether a process holds the driver lock
+    # at all, and — only if one does — whether it looks like it is still
+    # making progress, read from the freshest active group's heartbeat mtime
+    # rather than the driver record's own `updated_at` (which advances just
+    # because the process is alive, wedged or not).
+    active_group_ids = [
+        gid
+        for gid, entry in state.groups.items()
+        if entry.state in (GroupState.RUNNING, GroupState.REVIEWING, GroupState.MERGING)
+    ]
+    print(driver_status_line(paths, active_group_ids=active_group_ids))
     if state.interrupted_at is not None:
-        # Said before the group list, because it changes how every line below
-        # reads: a RUNNING group under an interrupted run is not running.
-        print(f"interrupted at {state.interrupted_at} — no process is driving this run")
+        print(f"interrupted at {state.interrupted_at}")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
         print(f"base session: {manifest.base_session_id}")

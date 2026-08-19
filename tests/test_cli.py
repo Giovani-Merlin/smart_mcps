@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ from orchestrator.config import (
     SessionConfig,
     load_config,
 )
+from orchestrator.execution.driver import STALE_HEARTBEAT_SECONDS, DriverLock
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import (
     GroupHold,
@@ -1370,6 +1372,70 @@ class TestStatus:
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out and "r2" in out
+
+
+class TestStatusDriverLiveness:
+    """Plan U11: `status` reports whether a process is driving the run — the
+    advisory flock, not `state.json`'s worker pids — separately from whether it
+    looks like it is making progress, read from the freshest active group's
+    heartbeat file mtime."""
+
+    def _write_state(self, tmp_path, *, group_state: GroupState = GroupState.RUNNING) -> RunPaths:
+        paths = RunPaths(tmp_path, "r1")
+        atomic_write_text(
+            paths.state_path,
+            RunState(
+                run_id="r1", groups={"g1": GroupRunState(state=group_state)}
+            ).model_dump_json(),
+        )
+        return paths
+
+    def test_no_driver_record_at_all(self, tmp_path, capsys):
+        self._write_state(tmp_path)
+        exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no process is driving this run" in capsys.readouterr().out
+
+    def test_a_process_holding_the_lock_is_reported_as_driving(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+            assert exit_code == 0
+            out = capsys.readouterr().out
+            assert "a process is driving this run" in out
+        finally:
+            lock.release()
+
+    def test_none_is_driving_once_the_lock_is_released(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        lock = DriverLock(paths)
+        lock.acquire()
+        lock.release()
+        exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no process is driving this run" in capsys.readouterr().out
+
+    def test_a_stale_heartbeat_is_reported_from_the_files_mtime(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        hb_path = paths.group_dir("g1") / "heartbeat.json"
+        hb_path.parent.mkdir(parents=True, exist_ok=True)
+        # Content lies and claims "just now" — only the mtime should count.
+        atomic_write_text(hb_path, '{"updated_at": "2099-01-01T00:00:00+00:00"}')
+        old = time.time() - (STALE_HEARTBEAT_SECONDS + 30)
+        os.utime(hb_path, (old, old))
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+            assert exit_code == 0
+            out = capsys.readouterr().out
+            assert "a process is driving this run" in out
+            assert "stale" in out
+        finally:
+            lock.release()
 
 
 class TestUiCommand:

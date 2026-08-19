@@ -22,18 +22,26 @@ PATH dependency and no console-script resolution; ``-u`` is there because the
 console-script entry point cannot pass it and a block-buffered job log reads
 exactly like a hung job (finding P5).
 
-**Jobs are detached, and liveness is pid-derived.** ``start_new_session=True``
-means a run outlives the UI process that started it — restarting the server must
-not kill a four-hour run. The consequence is that this server can never
-``wait()`` on the child (it is not its parent after a restart, and even before
-one nothing reaps it), so "is it still running?" is answered by ``os.kill(pid,
-0)`` against the recorded pid and nothing else. That is a real approximation:
-after a reboot a recycled pid can read as alive. The job record keeps
-``started_at`` so a reader can weigh it.
+**Jobs are detached; job liveness is pid-derived, run liveness is not.**
+``start_new_session=True`` means a run outlives the UI process that started
+it — restarting the server must not kill a four-hour run. The consequence is
+that this server can never ``wait()`` on the child (it is not its parent
+after a restart, and even before one nothing reaps it), so a *job's* running
+flag is answered by ``os.kill(pid, 0)``-plus-``started_at``, which stays a
+real approximation (``pid_alive`` cross-checks against ``/proc`` start time
+where available, to close the reboot-recycled-pid case as far as it can be
+closed without a lock of its own). A *run's* liveness (``run_liveness``,
+``check_not_live``) does not use this at all — plan U11 rebuilt it on the
+driver's advisory ``flock`` (`orchestrator.execution.driver`), which the
+kernel releases on any process death with no staleness window.
 
 **Double-launch is refused, not de-duplicated.** Two schedulers over one set of
 worktrees is the worst thing this surface could do, and a double-clicked button
-is the ordinary way to ask for it.
+is the ordinary way to ask for it. ``check_not_live`` is a fast pre-check
+against the driver lock, not itself the final arbiter — the real exclusion is
+the launched process's own ``DriverLock.acquire()``, which a losing race still
+hits: its spawned subprocess starts, fails to acquire, and exits immediately
+with an error instead of two schedulers silently sharing one set of worktrees.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+from orchestrator.execution.driver import is_driving, read_driver_record
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, describe_groupings
 from orchestrator.observatory.events import tail_file
 from orchestrator.observatory.runs import resolve_repo
@@ -228,13 +237,42 @@ def new_job_id() -> str:
 _OWN_CHILDREN: dict[int, subprocess.Popen] = {}
 
 
-def pid_alive(pid: int | None) -> bool:
-    """Whether the recorded pid still names a live process.
+#: How far a live process's actual start time may drift from the job record's
+#: `started_at` (itself sampled just before `Popen`) and still count as "the
+#: same process". A recycled pid reused by an unrelated process — the classic
+#: post-reboot case — differs by far more than scheduling jitter ever would.
+_PID_RECYCLE_SLACK_SECONDS = 10.0
+
+
+def _process_start_time(pid: int) -> float | None:
+    """A running process's wall-clock start time (Linux `/proc`), or None when
+    it cannot be determined — process gone, non-Linux, or `/proc` unavailable.
+    Read from `/proc/<pid>/stat`'s starttime field (in clock ticks since boot)
+    plus the kernel's own boot time from `/proc/stat`, not from the directory's
+    ctime, which is not guaranteed to track process start."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            fields = fh.read().split()
+        starttime_ticks = int(fields[21])
+        clk_tck = os.sysconf("SC_CLK_TCK")
+        with open("/proc/stat") as fh:
+            btime = next(int(line.split()[1]) for line in fh if line.startswith("btime"))
+    except (OSError, IndexError, ValueError, StopIteration):
+        return None
+    return btime + starttime_ticks / clk_tck
+
+
+def pid_alive(pid: int | None, started_at: datetime | None = None) -> bool:
+    """Whether the recorded pid still names *the same* process that started it.
 
     Signal 0 is the portable "does this exist and may I signal it" probe, used
     for pids we do not own. A ``PermissionError`` counts as alive: the process
-    exists, it simply is not ours — which after a reboot with a recycled pid is a
-    false positive this cannot distinguish, hence ``started_at`` in the record.
+    exists, it simply is not ours. Neither step distinguishes the process this
+    job actually launched from an unrelated one that has since reused its pid —
+    the classic post-reboot false positive — so when ``started_at`` is given,
+    the live process's own start time (read from `/proc`) is cross-checked
+    against it; a mismatch beyond scheduling jitter means the pid was recycled,
+    and the job reads as not running even though *some* process answers to it.
     """
     if not pid:
         return False
@@ -252,6 +290,12 @@ def pid_alive(pid: int | None) -> bool:
         return True
     except OSError:
         return False
+    if started_at is not None:
+        actual_start = _process_start_time(pid)
+        if actual_start is not None and abs(actual_start - started_at.timestamp()) > (
+            _PID_RECYCLE_SLACK_SECONDS
+        ):
+            return False
     return True
 
 
@@ -306,7 +350,7 @@ def read_job(repo: Path, job_id: str) -> JobInfo | None:
         info = JobInfo.model_validate(payload)
     except ValueError:
         return None
-    return info.model_copy(update={"running": pid_alive(info.pid)})
+    return info.model_copy(update={"running": pid_alive(info.pid, started_at=info.started_at)})
 
 
 def list_jobs(repo: Path, limit: int = 50) -> list[JobInfo]:
@@ -328,32 +372,32 @@ def list_jobs(repo: Path, limit: int = 50) -> list[JobInfo]:
 
 @dataclass(frozen=True)
 class RunLiveness:
-    """Why a run does or does not look live, as the double-launch guard sees it."""
+    """Why a run does or does not look live, as the double-launch guard sees it.
+
+    Rebuilt on the driver lock (plan U11), not ``state.json``'s ``live_pids``:
+    those are *worker* subprocess pids, empty between workers on a perfectly
+    healthy run, so treating an empty dict as "not live" misread that ordinary
+    gap as a crash. The lock has no such gap — a driver holds it for its whole
+    lifetime, not just while a worker subprocess happens to be up.
+    """
 
     exists: bool
-    live_pids: dict[str, str]
-    interrupted_at: str | None
+    driving: bool
+    driver_pid: int | None
 
     @property
     def live(self) -> bool:
-        # Both conditions, not either: `live_pids` alone goes stale on a crash
-        # (nothing clears it), and `interrupted_at` alone is unset on a run that
-        # is genuinely still going. A run with recorded pids and no interruption
-        # mark is the one shape that means "a scheduler is driving this".
-        return self.exists and bool(self.live_pids) and self.interrupted_at is None
+        return self.exists and self.driving
 
 
 def run_liveness(repo: Path, run_id: str) -> RunLiveness:
     paths = RunPaths(repo, run_id)
-    try:
-        state = json.loads(paths.state_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return RunLiveness(exists=False, live_pids={}, interrupted_at=None)
-    pids = state.get("live_pids") or {}
+    if not paths.state_path.is_file():
+        return RunLiveness(exists=False, driving=False, driver_pid=None)
+    driving = is_driving(paths)
+    record = read_driver_record(paths) if driving else None
     return RunLiveness(
-        exists=True,
-        live_pids={str(k): str(v) for k, v in pids.items()} if isinstance(pids, dict) else {},
-        interrupted_at=state.get("interrupted_at"),
+        exists=True, driving=driving, driver_pid=record.get("pid") if record else None
     )
 
 
@@ -370,7 +414,7 @@ def check_not_live(repo: Path, run_id: str | None) -> None:
     liveness = run_liveness(repo, run_id)
     if liveness.live:
         raise ConflictError(
-            f"run {run_id} is already running (pids {sorted(liveness.live_pids)}) — "
+            f"run {run_id} is already running (driver pid {liveness.driver_pid}) — "
             "stop it before starting another, or resume it after it exits"
         )
 
