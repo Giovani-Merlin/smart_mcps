@@ -64,6 +64,7 @@ from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoa
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    HoldReason,
     ResolveConflict,
     ResolveDeps,
     RunAbort,
@@ -1318,6 +1319,12 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
 
 
 def _print_outcomes(state: RunState) -> int:
+    """Print every group's outcome plus, for anything stalled, enough to act on
+    it without diffing state.json (plan U3/R41): its failure text, what it
+    holds and on which files, its branch, its re-entry count, and the command
+    to act on it. Read-only — it derives everything from the already-persisted
+    ``holds`` field each group carries from the scheduler's last admission
+    pass, so calling it never changes state.json."""
     print(f"\nrun {state.run_id}:")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
@@ -1326,11 +1333,66 @@ def _print_outcomes(state: RunState) -> int:
             line += f" (generation {entry.generation})"
         if entry.failure:
             line += f" — {entry.failure}"
+        if entry.quarantined:
+            line += " [quarantined]"
         print(line)
     completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
     if completed:
         print("all groups completed; merge the integration branch when ready")
         return 0
+
+    # Invert each group's persisted holds into "who does gid hold, and on what":
+    # a FAILURE_GATE hold on gid2 naming gid1 means gid1 is holding gid2.
+    holds_by: dict[str, list[tuple[str, list[str]]]] = {}
+    halted_by: str | None = None
+    not_admitted: list[str] = []
+    for held_gid, entry in state.groups.items():
+        for hold in entry.holds:
+            if hold.reason == HoldReason.FAILURE_GATE:
+                holds_by.setdefault(hold.group_id, []).append((held_gid, hold.files))
+            elif hold.reason == HoldReason.RUN_HALTED:
+                halted_by = hold.group_id
+                not_admitted.append(held_gid)
+    not_admitted.sort()
+
+    stalled = sorted(
+        gid
+        for gid, entry in state.groups.items()
+        if entry.state in (GroupState.FAILED, GroupState.INTERRUPTED)
+    )
+    for gid in stalled:
+        entry = state.groups[gid]
+        branch = group_branch(state.run_id, gid)
+        overlap = sorted(holds_by.get(gid, []))
+        held = (
+            "; ".join(f"{other} ({', '.join(files)})" for other, files in overlap)
+            if overlap
+            else "none"
+        )
+        command = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {gid}"
+            if entry.quarantined
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"  {gid} ({entry.state.value}): {entry.failure or 'no failure text recorded'} — "
+            f"holds: {held} — branch {branch} — reentry_count {entry.reentry_count} — {command}"
+        )
+
+    if halted_by is not None:
+        trigger_state = state.groups[halted_by].state.value
+        clears = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {halted_by}"
+            if state.groups[halted_by].state == GroupState.FAILED
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"\nrun halted: group {halted_by} ended {trigger_state}, so no further group "
+            f"was admitted — not admitted: {', '.join(not_admitted) if not_admitted else 'none'}. "
+            f"Fix {halted_by}, then `{clears}`; or re-run with `--on-failure overlap` "
+            "to admit as far as possible."
+        )
+
     interrupted = sorted(
         gid for gid, entry in state.groups.items() if entry.state == GroupState.INTERRUPTED
     )
