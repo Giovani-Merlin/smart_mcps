@@ -30,13 +30,16 @@ from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
+    archive_review_scratch,
     artifact_name,
     atomic_write_text,
     completed_round_count,
     log_event,
     record_session,
 )
+from orchestrator.execution.preflight import PreflightFailure
 from orchestrator.execution.prompting import (
+    REVIEW_SCRATCH_DIRNAME,
     render_coder_answer_prompt,
     render_coder_prompt,
     render_conflict_resolve_prompt,
@@ -67,7 +70,7 @@ from orchestrator.execution.sessions import (
     session_display_name,
 )
 from orchestrator.execution.streaming import TurnUsage
-from orchestrator.execution.worktrees import diff_stat, integration_branch
+from orchestrator.execution.worktrees import diff_stat, ensure_excluded, integration_branch
 from orchestrator.model import (
     CoderReport,
     EscalationContext,
@@ -620,6 +623,7 @@ class _GroupExecution:
                     self.group,
                     report_path=str(report_path),
                     base_ref=self.deps.base_ref_for(self.group),
+                    scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
                 ),
                 name=session_display_name(self.deps.run_id, self.gid, "reviewer", self.generation),
                 cwd=self.workspace,
@@ -666,7 +670,29 @@ class _GroupExecution:
             )
             self._spread(verdict.surprises)
             self._log(f"{self._round_tag(rounds)}: reviewer verdict {verdict.status} (extra pass)")
+        self._archive_review_scratch()
         return verdict, verdict_path
+
+    def _archive_review_scratch(self) -> None:
+        """Exclude and archive the reviewer's scratch directory at round end
+        (plan U6), so Preflight's cleanliness check (plan U4) sees a worktree
+        whose only "dirt" was the reviewer's own litter as clean.
+
+        A no-op when the scratch directory was never created — the common case
+        for a reviewer round that never touched it, and cheap insurance against
+        touching git at all in a workspace that (in some tests) isn't one.
+        """
+        assert self.workspace is not None
+        scratch_dir = self.workspace / REVIEW_SCRATCH_DIRNAME
+        if not scratch_dir.exists():
+            return
+        ensure_excluded(self.workspace, REVIEW_SCRATCH_DIRNAME)
+        archive_review_scratch(
+            scratch_dir,
+            self.deps.store.paths.review_scratch_archive_dir(self.gid),
+            cap_bytes=self.deps.execution.review_scratch_cap_bytes,
+            log=self._log,
+        )
 
     # ------------------------------------------------------------ outcomes
 
@@ -697,6 +723,25 @@ class _GroupExecution:
                 if response is not None:
                     extra.append(_operator_surprise(self.gid, response.answer))
                 await self._rewrite(f"merge conflict: {exc}", extra=extra)
+                return False
+            except PreflightFailure as exc:
+                # Not a git conflict — no coder resume is attempted in place
+                # (plan U4 Decisions: only a concrete git/test failure ever
+                # warrants an LLM call, and the in-place resume is specific to
+                # resolving conflict markers). Escalate then rewrite, same as
+                # a merge conflict past its resolve attempts.
+                self._log(f"group {self.gid}: preflight failed ({exc})")
+                surprise = Surprise(kind="other", description=str(exc), affected_groups=[self.gid])
+                self._spread([surprise])
+                response = await self._escalate(
+                    EscalationKind.MERGE_CONFLICT,
+                    prompt=f"preflight failed for {self.gid}: {exc}",
+                    surprises=[surprise],
+                )
+                extra = [surprise]
+                if response is not None:
+                    extra.append(_operator_surprise(self.gid, response.answer))
+                await self._rewrite(f"preflight failed: {exc}", extra=extra)
                 return False
             self._log(f"group {self.gid}: merged into the integration branch")
             return True

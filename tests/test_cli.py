@@ -1190,6 +1190,27 @@ class TestResolveDeps:
         _git(repo, "commit", "--allow-empty", "-m", "init")
         return repo
 
+    def _resolve_deps_kwargs(self, repo: Path, run_id: str) -> dict:
+        """No manifest on disk and a runner that errors if ever called: none of
+        these tests exercise the U5 in-place conflict-resolve ladder — that has
+        its own coverage in test_scheduler.py's resolve tests — so the ladder's
+        `latest_coder_session_id` must read "no session" and never touch the
+        runner."""
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+
+        class _UnreachableRunner:
+            def resume(self, *args, **kwargs):
+                raise AssertionError("runner.resume must not be called in this test")
+
+        paths = RunPaths(repo, run_id)
+        return {
+            "runner": _UnreachableRunner(),
+            "store": ManifestStore(paths),
+            "execution": ExecutionConfig(),
+            "paths": paths,
+        }
+
     def test_autonomous_resolve_commits_stranded_changes_and_merges(self, tmp_path):
         from orchestrator.cli import _resolve_deps
         from orchestrator.execution.merge import IntegrationMerger
@@ -1209,7 +1230,7 @@ class TestResolveDeps:
         )
         (worktree / "stranded.txt").write_text("uncommitted work\n")  # never committed
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is True
         assert deps.commits_ahead(group) == 1
         deps.merge_group(group)  # must not raise
@@ -1239,7 +1260,7 @@ class TestResolveDeps:
             branch=group_branch("r1", "g1"),
             start_point=merger.tip(),
         )
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is False
         assert deps.commits_ahead(group) == 0
 
@@ -1284,10 +1305,235 @@ class TestResolveDeps:
         merger.merge_group(g1, wt1)
         tip_before = merger.tip()
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         with pytest.raises(ResolveConflict, match="g2"):
             deps.merge_group(g2)
         assert merger.tip() == tip_before  # U1's gate left the integration tip untouched
+
+
+class TestResolveConflictLadder:
+    """Plan U5: merge_for_resolve's in-place conflict-resolution ladder."""
+
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        (repo / "shared.txt").write_text("original\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        return repo
+
+    def _conflicting_groups(self, repo: Path, merger):
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        launch_tip = merger.tip()
+        g1 = make_group("g1", files=["shared.txt"])
+        wt1 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=launch_tip,
+        )
+        (wt1 / "shared.txt").write_text("g1 version\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-m", "g1 edits")
+
+        # g2 forks from the *same* pre-g1 tip, so once g1 merges, g2's own
+        # base no longer has g1's edit — the refresh conflicts.
+        g2 = make_group("g2", files=["shared.txt"])
+        wt2 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g2",
+            name=g2.name,
+            branch=group_branch("r1", "g2"),
+            start_point=launch_tip,
+        )
+        (wt2 / "shared.txt").write_text("g2 version\n")
+        _git(wt2, "add", "-A")
+        _git(wt2, "commit", "-m", "g2 edits")
+        merger.merge_group(g1, wt1)
+        return g2, wt2
+
+    def _manifest_with_coder(self, paths, gid: str, session_id: str) -> None:
+        from orchestrator.execution.manifest import ManifestStore
+        from orchestrator.model import GroupManifestEntry, RunManifest, SessionEntry, SessionRole
+
+        manifest = RunManifest(run_id="r1", plan_path="p.md", base_session_id="base-0")
+        manifest.groups[gid] = GroupManifestEntry(
+            group_id=gid,
+            group_name=gid,
+            summary="s",
+            sessions=[SessionEntry(session_id=session_id, role=SessionRole.CODER)],
+        )
+        ManifestStore(paths).save(manifest)
+
+    def _fake_resume_runner(self, *, resolve: bool, integration_branch: str = ""):
+        """Mirrors what conflict_resolve.md actually asks a coder to do: merge
+        the integration branch into its own worktree by hand and resolve the
+        conflict markers — not just overwrite the file, since a plain
+        overwrite (with no merge ever attempted) diverges again exactly the
+        same way on the retry's own refresh."""
+        import json as _json
+
+        from orchestrator.execution.sessions import RoundResult, RoundUsage
+
+        class FakeResumeRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+                self.calls += 1
+                if resolve:
+                    subprocess.run(
+                        ["git", "merge", integration_branch], cwd=cwd, capture_output=True
+                    )
+                    (cwd / "shared.txt").write_text("resolved version\n")
+                    _git(cwd, "add", "-A")
+                    _git(cwd, "commit", "--no-edit")
+                body = {
+                    "status": "completed",
+                    "summary": "resolved",
+                    "verification_results": [],
+                    "surprises": [],
+                }
+                text = f'<run-report status="completed">\n{_json.dumps(body)}\n</run-report>'
+                return RoundResult(
+                    session_id=session_id, text=text, usage=RoundUsage(), envelope={}
+                )
+
+        return FakeResumeRunner()
+
+    def test_warm_resume_resolves_and_the_retry_merges(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")
+        self._manifest_with_coder(paths, "g2", "coder-1")
+        runner = self._fake_resume_runner(resolve=True, integration_branch=merger.branch)
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=1),
+            paths=paths,
+        )
+        deps.merge_group(g2)  # must not raise
+        assert runner.calls == 1
+        assert deps.commits_ahead(g2) == 0
+
+    def test_attempts_never_exceed_the_configured_bound(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolveConflict
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")
+        self._manifest_with_coder(paths, "g2", "coder-1")
+        runner = self._fake_resume_runner(resolve=False)  # never actually fixes the conflict
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=1),
+            paths=paths,
+        )
+        with pytest.raises(ResolveConflict):
+            deps.merge_group(g2)
+        assert runner.calls == 1  # exactly the configured bound, never more
+
+    def test_no_reachable_session_raises_on_the_first_conflict_with_zero_attempts(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolveConflict
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")  # no manifest written — no session to find
+        runner = self._fake_resume_runner(resolve=True)
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=3),
+            paths=paths,
+        )
+        with pytest.raises(ResolveConflict):
+            deps.merge_group(g2)
+        assert runner.calls == 0
+
+    def test_preflight_failure_on_resolve_path_logs_branch_reason_and_retry_command(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig, PreflightConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths, log_event
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolvePreflightFailed
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = self._repo(tmp_path)
+        paths = RunPaths(repo, "r1")
+        merger = IntegrationMerger(
+            repo,
+            "r1",
+            preflight_config=PreflightConfig(check_command=["false"]),
+            preflight_output_dir=paths.group_dir,
+            log=lambda message: log_event(paths, message),
+        )
+        merger.ensure()
+        g1 = make_group("g1", files=["own.txt"])
+        wt1 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=merger.tip(),
+        )
+        (wt1 / "own.txt").write_text("g1 work\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-m", "g1 work")
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=self._fake_resume_runner(resolve=True),
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(),
+            paths=paths,
+        )
+        with pytest.raises(ResolvePreflightFailed):
+            deps.merge_group(g1)
+        log_text = paths.event_log_path.read_text()
+        assert group_branch("r1", "g1") in log_text
+        assert "retry" in log_text
+        assert "smart-mcps-orchestrate retry" in log_text
 
 
 class TestWorkspaceProvisioning:

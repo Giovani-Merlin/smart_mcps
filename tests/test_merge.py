@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.preflight import PreflightFailure
 from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
     WorktreeError,
@@ -156,14 +157,21 @@ def test_worktree_cleanup_runs_only_after_a_successful_merge(repo):
     assert wt2.exists()  # conflicting group's worktree survives for the rewrite
 
 
-def test_dirty_worktree_survives_merge_for_inspection(repo):
+def test_dirty_worktree_fails_preflight_and_never_merges(repo):
+    """Preflight's cleanliness check (plan U4) now runs before every merge: a
+    worktree with uncommitted litter fails preflight and the merge never
+    happens, superseding the pre-U4 behaviour where the dirty worktree merged
+    anyway and only cleanup afterwards was refused."""
     merger = IntegrationMerger(repo, "r1")
     g1 = make_group("g1")
     wt1 = group_worktree(repo, merger, g1)
     coder_commit(wt1, "one.txt", "g1 work\n", "feat: g1")
     (wt1 / "scratch.log").write_text("uncommitted leftovers\n")
-    merger.merge_group(g1, wt1)  # merge succeeds
-    assert wt1.exists()  # cleanup refused to destroy uncommitted state
+    tip_before = merger.tip()
+    with pytest.raises(PreflightFailure, match="scratch.log"):
+        merger.merge_group(g1, wt1)
+    assert wt1.exists()
+    assert merger.tip() == tip_before
 
 
 def test_ensure_is_idempotent_and_creates_branch_from_launch_ref(repo):
@@ -221,7 +229,12 @@ def test_refresh_fast_forwards_a_strictly_behind_branch(repo):
     new_tip = merger.tip()
 
     resumed = create_worktree(
-        repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        repo,
+        run_id="r1",
+        group_id="g1",
+        name=g1.name,
+        branch=group_branch("r1", "g1"),
+        start_point=new_tip,
     )
     assert resumed == wt1
     assert git(resumed, "rev-parse", "HEAD").strip() == new_tip
@@ -243,7 +256,12 @@ def test_refresh_merges_a_diverged_branch_reaching_both_tips(repo):
     new_tip = merger.tip()
 
     refreshed = create_worktree(
-        repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+        repo,
+        run_id="r1",
+        group_id="g1",
+        name=g1.name,
+        branch=group_branch("r1", "g1"),
+        start_point=new_tip,
     )
     assert git(refreshed, "merge-base", "--is-ancestor", own_commit, "HEAD").strip() == ""
     assert git(refreshed, "merge-base", "--is-ancestor", new_tip, "HEAD").strip() == ""
@@ -264,7 +282,12 @@ def test_refresh_conflict_raises_naming_group_and_paths_and_leaves_head_untouche
 
     with pytest.raises(WorktreeError, match=r"g1.*shared\.txt"):
         create_worktree(
-            repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=new_tip,
         )
     assert git(wt1, "rev-parse", "HEAD").strip() == head_before
     assert not (wt1 / ".git" / "MERGE_HEAD").exists()
@@ -285,7 +308,12 @@ def test_refresh_preserves_uncommitted_changes_it_cannot_safely_apply_over(repo)
 
     with pytest.raises(WorktreeError, match="g1"):
         create_worktree(
-            repo, run_id="r1", group_id="g1", name=g1.name, branch=group_branch("r1", "g1"), start_point=new_tip
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=new_tip,
         )
     assert (wt1 / "shared.txt").read_text() == "uncommitted local edit\n"
 
@@ -304,7 +332,12 @@ def test_refresh_reaches_the_tip_whether_worktree_survived_or_only_branch_did(re
     tip_a = merger.tip()
 
     resumed = create_worktree(
-        repo, run_id="r1", group_id="ga", name=ga.name, branch=group_branch("r1", "ga"), start_point=tip_a
+        repo,
+        run_id="r1",
+        group_id="ga",
+        name=ga.name,
+        branch=group_branch("r1", "ga"),
+        start_point=tip_a,
     )
     assert resumed == wta
     assert (resumed / "x.txt").read_text() == "landed while ga was down\n"
@@ -320,6 +353,11 @@ def test_refresh_reaches_the_tip_whether_worktree_survived_or_only_branch_did(re
     tip_b = merger.tip()
 
     reentered = create_worktree(
-        repo, run_id="r1", group_id="gb", name=gb.name, branch=group_branch("r1", "gb"), start_point=tip_b
+        repo,
+        run_id="r1",
+        group_id="gb",
+        name=gb.name,
+        branch=group_branch("r1", "gb"),
+        start_point=tip_b,
     )
     assert (reentered / "y.txt").read_text() == "landed while gb was down\n"
