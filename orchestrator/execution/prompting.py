@@ -15,6 +15,12 @@ from string import Template
 from orchestrator.model import Group, VerificationItem
 from orchestrator.prompts import load_template
 
+# The one scratch directory named to the reviewer (plan U6): a single fixed
+# name so the review loop knows exactly where to look at round end to archive
+# it and exclude it via the worktree's own `.git/info/exclude`, never the
+# target repo's tracked `.gitignore`.
+REVIEW_SCRATCH_DIRNAME = ".review-scratch"
+
 
 def _attr(value: str) -> str:
     """Escape a value for use inside a double-quoted XML-ish attribute."""
@@ -51,13 +57,16 @@ def render_coder_prompt(run_id: str, group: Group) -> str:
     )
 
 
-def render_reviewer_prompt(run_id: str, group: Group, *, report_path: str, base_ref: str) -> str:
+def render_reviewer_prompt(
+    run_id: str, group: Group, *, report_path: str, base_ref: str, scratch_dir: str
+) -> str:
     return Template(load_template("reviewer")).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
         report_path=report_path,
         base_ref=base_ref,
+        scratch_dir=scratch_dir,
     )
 
 
