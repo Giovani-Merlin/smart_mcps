@@ -305,6 +305,15 @@ def test_interrupted_is_a_known_non_terminal_state():
     )
 
 
+def test_groupfailure_is_the_same_class_via_either_import_path():
+    """GroupFailure lives in scheduler.py (plan U1 Decisions) — review.py's
+    import of it must resolve to the identical class, not a shadow copy."""
+    import orchestrator.execution.review as review
+    import orchestrator.execution.scheduler as scheduler
+
+    assert review.GroupFailure is scheduler.GroupFailure
+
+
 @pytest.mark.asyncio
 async def test_session_error_marks_the_group_interrupted_with_failure_text(tmp_path):
     paths = RunPaths(tmp_path, "r1")
