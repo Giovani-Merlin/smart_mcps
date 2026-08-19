@@ -51,7 +51,13 @@ from orchestrator.execution.prompting import (
     render_revision_prompt,
 )
 from orchestrator.execution.denial import classify_denial, denial_remedy
-from orchestrator.execution.scheduler import Executor, GroupContext, GroupState, RunAbort
+from orchestrator.execution.scheduler import (
+    Executor,
+    GroupContext,
+    GroupFailure,
+    GroupState,
+    RunAbort,
+)
 from orchestrator.execution.sessions import (
     RoundResult,
     SessionError,
@@ -78,10 +84,6 @@ from orchestrator.model import (
     SessionRole,
     Surprise,
 )
-
-
-class GroupFailure(Exception):
-    """The group exhausted its bounds; surfaced to the operator, never retried."""
 
 
 class MergeConflict(Exception):

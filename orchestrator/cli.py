@@ -68,6 +68,7 @@ from orchestrator.execution.scheduler import (
     ResolveDeps,
     RunAbort,
     RunState,
+    RunStateVersionError,
     Scheduler,
     SchedulerError,
 )
@@ -1034,12 +1035,13 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             paths=paths,
             executor=executor,
             config=config.execution,
+            breaker=config.breaker,
             resume=resume,
             broker=broker,
             policy=policy,
             resolve=resolve_deps,
         )
-    except SchedulerError as exc:
+    except (SchedulerError, RunStateVersionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     runner.tracker = scheduler.tracker

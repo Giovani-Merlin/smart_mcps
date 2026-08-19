@@ -201,6 +201,12 @@ class BreakerConfig(BaseModel):
     context_token_limit: int = 200_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
+    # Bound on the envelope side (plan U1 Decisions): a group re-entered this many
+    # times after an unrecognised (INTERRUPTED) exception is quarantined rather
+    # than re-entered again on the next resume — `retry` is what releases it.
+    # Nothing bounded this before: a group could die under the harness and be
+    # silently re-entered forever with no counter anywhere recording it.
+    max_reentries: int = 3
     # Plan U3: staged in-round prompts at 70%/90%/100% of context_token_limit,
     # riding the per-turn observer the streaming channel (plan U1) provides —
     # bounds *cost* inside a round, not stuck-ness (that's R7's wall-clock
@@ -227,6 +233,14 @@ class ExecutionConfig(BaseModel):
     # attempt from the session that just built the work is the right cost/benefit
     # ahead of the proven (but expensive) rewrite path.
     max_conflict_resolve_attempts: int = 1
+    # What admission does once a group has ended unsuccessfully (plan U3/R41).
+    # "halt": no further group is admitted once any group is FAILED or
+    # INTERRUPTED — in-flight groups still run to their own terminal state, they
+    # are just never joined by a new one forking from a tip that may carry a hole
+    # or unverified resolve-merged work. "overlap" keeps the pre-U3 behaviour:
+    # only groups whose declared files overlap the failed/interrupted group are
+    # held.
+    on_group_failure: Literal["halt", "overlap"] = "halt"
 
 
 class UsageLimitConfig(BaseModel):

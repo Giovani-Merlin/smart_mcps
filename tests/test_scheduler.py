@@ -33,7 +33,7 @@ from orchestrator.execution.scheduler import (
 )
 from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.execution.worktrees import WorktreeError, WorktreeRefreshConflict
-from orchestrator.grouping.llm import LlmError, LlmProcessError
+from orchestrator.grouping.llm import LlmProcessError
 from orchestrator.model import (
     EscalationRequest,
     EscalationResponse,
@@ -273,6 +273,11 @@ async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path
 
 @pytest.mark.asyncio
 async def test_executor_exception_fails_the_group_and_records_the_failure(tmp_path):
+    """An unrecognised exception is INTERRUPTED, not terminal FAILED (plan U1,
+    R1/R2 inverted): the orchestrator has no basis for judging the work when it
+    does not recognise what broke — only GroupFailure/ReportError are work
+    judgements."""
+
     async def executor(ctx):
         raise RuntimeError("coder produced no diff")
 
@@ -282,7 +287,7 @@ async def test_executor_exception_fails_the_group_and_records_the_failure(tmp_pa
         executor=executor,
     )
     states = await scheduler.run()  # returns: stranded dependents are not a wedge
-    assert states["g1"] == GroupState.FAILED
+    assert states["g1"] == GroupState.INTERRUPTED
     assert states["g2"] == GroupState.PENDING
     entry = scheduler.state.groups["g1"]
     assert entry.failure == "RuntimeError: coder produced no diff"
@@ -386,9 +391,10 @@ async def test_refresh_conflict_marks_the_group_interrupted_naming_paths_and_is_
 
 
 @pytest.mark.asyncio
-async def test_other_worktree_error_still_marks_the_group_failed(tmp_path):
-    """A plain WorktreeError (e.g. path exists but is not a worktree) is not the
-    resumable refresh-conflict case — it stays terminal FAILED."""
+async def test_other_worktree_error_still_marks_the_group_interrupted(tmp_path):
+    """A plain WorktreeError (e.g. path exists but is not a worktree) is an
+    envelope failure like any other unrecognised exception (plan U1 inversion):
+    INTERRUPTED, not terminal FAILED, so a plain `resume` re-enters it."""
     paths = RunPaths(tmp_path, "r1")
 
     async def executor(ctx):
@@ -396,7 +402,9 @@ async def test_other_worktree_error_still_marks_the_group_failed(tmp_path):
 
     scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
     states = await scheduler.run()
-    assert states["g1"] == GroupState.FAILED
+    assert states["g1"] == GroupState.INTERRUPTED
+    entry = scheduler.state.groups["g1"]
+    assert entry.failure == "WorktreeError: /some/path exists but is not a worktree on branch-x"
 
 
 @pytest.mark.asyncio
@@ -405,14 +413,10 @@ async def test_other_worktree_error_still_marks_the_group_failed(tmp_path):
     [
         ReportError("no valid report block after 2 nudges"),
         GroupFailure("coder blocked: missing dependency"),
-        # Validation exhaustion is the model failing, not the harness — the
-        # LlmProcessError sibling above resumes, this one stays terminal.
-        LlmError("mapper output failed validation after 3 attempts: bad JSON"),
     ],
     ids=[
         "report_error_is_a_work_failure",
         "group_failure_is_a_work_failure",
-        "llm_validation_exhaustion_is_a_work_failure",
     ],
 )
 async def test_work_failures_still_mark_the_group_failed(tmp_path, exc):
@@ -427,6 +431,22 @@ async def test_work_failures_still_mark_the_group_failed(tmp_path, exc):
     persisted = RunState.model_validate_json(paths.state_path.read_text())
     assert persisted.groups["g1"].state == GroupState.FAILED
     assert persisted.groups["g1"].failure == f"{type(exc).__name__}: {exc}"
+
+
+@pytest.mark.asyncio
+async def test_llm_validation_exhaustion_is_now_interrupted_not_failed(tmp_path):
+    """Under the plan U1 inversion only GroupFailure/ReportError are terminal
+    work judgements — a plain LlmError (mapper validation exhaustion) is an
+    exception the orchestrator does not otherwise recognise, so it is
+    INTERRUPTED like everything else in the envelope, not FAILED."""
+    paths = RunPaths(tmp_path, "r1")
+
+    async def executor(ctx):
+        raise LlmError("mapper output failed validation after 3 attempts: bad JSON")
+
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=executor)
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.INTERRUPTED
 
 
 @pytest.mark.asyncio
@@ -671,7 +691,7 @@ async def test_failed_group_with_stranded_commits_resolves_autonomously(tmp_path
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("coder crashed mid-round")),
+        executor=failing_executor(GroupFailure("coder crashed mid-round")),
         resolve=resolve.deps(),
     )
     states = await scheduler.run()
@@ -681,7 +701,7 @@ async def test_failed_group_with_stranded_commits_resolves_autonomously(tmp_path
     persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
     assert persisted.groups["g1"].state == GroupState.RESOLVED
     assert persisted.groups["g1"].resolve_settled is True
-    assert "RuntimeError" in persisted.groups["g1"].failure
+    assert "GroupFailure" in persisted.groups["g1"].failure
 
 
 @pytest.mark.asyncio
@@ -690,7 +710,7 @@ async def test_failed_group_with_nothing_lost_stays_failed_and_settles(tmp_path)
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
     )
     states = await scheduler.run()
@@ -708,7 +728,7 @@ async def test_resolve_conflict_stops_the_run(tmp_path):
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
     )
     with pytest.raises(ResolveConflict):
@@ -721,7 +741,7 @@ async def test_scheduler_without_resolve_deps_leaves_failed_group_unchanged(tmp_
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
     )
     states = await scheduler.run()
     assert states["g1"] == GroupState.FAILED
@@ -752,7 +772,7 @@ async def test_escalation_names_the_failed_group_overlap_and_successors(tmp_path
 
     async def executor(ctx):
         if ctx.group.id == "g1":
-            raise RuntimeError("boom")
+            raise GroupFailure("boom")
         return GroupState.COMPLETED
 
     scheduler = Scheduler(
@@ -763,6 +783,9 @@ async def test_escalation_names_the_failed_group_overlap_and_successors(tmp_path
         ],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
+        # U2's overlap-gate semantics under test here, not R41's halt (plan U3):
+        # g3 shares no declared file with g1 and must complete regardless.
+        config=ExecutionConfig(on_group_failure="overlap"),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
@@ -791,7 +814,7 @@ async def test_escalation_skip_leaves_the_group_failed_and_settled(tmp_path):
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
@@ -809,7 +832,7 @@ async def test_escalation_answer_delegates_to_autonomous_resolve(tmp_path):
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
@@ -826,7 +849,7 @@ async def test_escalation_abort_raises_run_abort(tmp_path):
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
@@ -843,7 +866,7 @@ async def test_escalation_timeout_falls_back_to_autonomous_resolve(tmp_path):
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("on_stuck", "workers_via_orchestrator"),
@@ -859,7 +882,7 @@ async def test_policy_not_covering_group_resolve_falls_back_to_autonomous(tmp_pa
     scheduler = Scheduler(
         groups=[make_group("g1")],
         paths=RunPaths(tmp_path, "r1"),
-        executor=failing_executor(RuntimeError("boom")),
+        executor=failing_executor(GroupFailure("boom")),
         resolve=resolve.deps(),
         broker=broker,
         policy=EscalationPolicy("autonomous", "workers_via_orchestrator"),
@@ -910,6 +933,9 @@ async def test_settled_failed_group_no_longer_holds_its_overlap(tmp_path):
         groups=[make_group("g1", files=["shared.py"]), make_group("g2", files=["shared.py"])],
         paths=paths,
         executor=completing_executor(started),
+        # U2's overlap-gate semantics under test here, not R41's halt (plan U3):
+        # halt does not consult resolve_settled, so it would keep g2 held.
+        config=ExecutionConfig(on_group_failure="overlap"),
         resume=True,
     )
     states = await scheduler.run()
@@ -935,7 +961,9 @@ async def test_interrupted_group_holds_only_overlapping_successors(tmp_path):
         ],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
-        config=ExecutionConfig(concurrency=1),
+        # g3 shares no declared file with g1 and must complete regardless — the
+        # U9 exclusion under test here, not R41's halt (plan U3).
+        config=ExecutionConfig(concurrency=1, on_group_failure="overlap"),
     )
     states = await scheduler.run()
     assert states["g1"] == GroupState.INTERRUPTED
@@ -960,6 +988,7 @@ async def test_groups_with_no_overlap_are_unaffected_by_a_sibling_failure(tmp_pa
         groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
         paths=paths,
         executor=completing_executor(started),
+        config=ExecutionConfig(on_group_failure="overlap"),
         resume=True,
     )
     states = await scheduler.run()
@@ -1249,9 +1278,7 @@ def test_mark_interrupted_stamps_the_run_and_survives_a_reread(tmp_path):
     `state.json`'s mtime against a worker transcript.
     """
     paths = RunPaths(tmp_path, "r1")
-    scheduler = Scheduler(
-        groups=[make_group("g1")], paths=paths, executor=completing_executor()
-    )
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=completing_executor())
     assert scheduler.state.interrupted_at is None
 
     scheduler.set_state("g1", GroupState.RUNNING)
@@ -1288,10 +1315,6 @@ async def test_resuming_clears_the_interrupt_marker(tmp_path):
 
 def test_a_broken_state_write_never_replaces_the_interrupt_with_a_traceback(tmp_path, monkeypatch):
     paths = RunPaths(tmp_path, "r1")
-    scheduler = Scheduler(
-        groups=[make_group("g1")], paths=paths, executor=completing_executor()
-    )
-    monkeypatch.setattr(
-        scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone"))
-    )
+    scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=completing_executor())
+    monkeypatch.setattr(scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone")))
     scheduler.mark_interrupted()  # must not raise
