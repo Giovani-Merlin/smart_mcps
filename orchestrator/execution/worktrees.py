@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -144,7 +145,20 @@ def create_worktree(
         legacy = _legacy_worktree_path(repo_root, group_id, name)
         if legacy.exists() and legacy != path and _registered_branch(repo_root, legacy) == branch:
             path.parent.mkdir(parents=True, exist_ok=True)
-            _git_ok(repo_root, "worktree", "move", str(legacy), str(path))
+            result = _git(repo_root, "worktree", "move", str(legacy), str(path))
+            if result.returncode != 0:
+                if "cross-device" not in result.stderr.lower():
+                    raise WorktreeError(
+                        f"git worktree move {legacy} {path} failed: {result.stderr.strip()[:500]}"
+                    )
+                # `git worktree move` shells out to a plain rename, which fails
+                # EXDEV when .worktrees/<run_id>/ lands on a different mount
+                # (e.g. a tmpfs /tmp) than the legacy directory it is adopting.
+                # shutil.move falls back to copy+delete across devices; `git
+                # worktree repair` then re-links both sides of the gitdir
+                # pointer that a plain move leaves stale.
+                shutil.move(str(legacy), str(path))
+                _git_ok(repo_root, "worktree", "repair", str(path))
     if path.exists():
         existing = _registered_branch(repo_root, path)
         if existing == branch:

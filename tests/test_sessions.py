@@ -852,6 +852,83 @@ def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_abort
     assert result.returncode != 0  # merge was aborted, no dangling MERGE_HEAD
 
 
+def test_run_scoped_paths_keep_the_repo_dir_name_and_nest_under_the_run_id(git_repo):
+    """plan U2/R19: every worktree path lives under .worktrees/<run_id>/, and
+    the integration worktree resolves to exactly .worktrees/<run_id>/integration."""
+    group_path = worktree_path(git_repo, "run7", "g1", "fix auth")
+    assert group_path == git_repo / ".worktrees" / "run7" / "g1-fix-auth"
+    assert git_repo.name in str(group_path)
+
+    integration_path = worktree_path(git_repo, "run7", "integration", "integration")
+    assert integration_path == git_repo / ".worktrees" / "run7" / "integration"
+    assert git_repo.name in str(integration_path)
+
+
+def test_stranded_uncommitted_work_is_committed_before_refresh_on_reentry(git_repo):
+    """plan U2/R3: re-entering a group whose worktree carries uncommitted and
+    untracked changes must not lose them — they are committed with a
+    ``recover(<run_id>): ...`` subject, distinct from ``resolve(...)``, before
+    the refresh even runs."""
+    branch = group_branch("run1", "g1")
+    path = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    (path / "tracked.txt").write_text("tracked but never committed\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True, capture_output=True)
+    (path / "untracked.txt").write_text("never even staged\n")
+
+    reentered = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert reentered == path
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
+    ).stdout
+    assert status.strip() == ""  # clean: everything landed in the recover commit
+    assert (path / "tracked.txt").read_text() == "tracked but never committed\n"
+    assert (path / "untracked.txt").read_text() == "never even staged\n"
+
+    subjects = subprocess.run(
+        ["git", "log", "--format=%s"], cwd=path, capture_output=True, text=True
+    ).stdout.splitlines()
+    recover_subjects = [s for s in subjects if s.startswith("recover(")]
+    assert len(recover_subjects) == 1
+    assert recover_subjects[0] == "recover(run1): g1 work stranded by an interrupted run"
+    assert not any(s.startswith("resolve(") for s in subjects)
+
+
+def test_legacy_worktree_is_adopted_in_place_not_duplicated(git_repo):
+    """plan U2/R20: a worktree still registered at the pre-U2 (run-unscoped)
+    path, on the group's branch, is moved to the run-scoped path rather than
+    creating a second worktree for the same branch."""
+    branch = group_branch("run1", "g1")
+    legacy_path = git_repo / ".worktrees" / "g1-fix-auth"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(legacy_path), "main"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+    )
+    (legacy_path / "in_progress.txt").write_text("legacy work in flight\n")
+
+    run_scoped_path = worktree_path(git_repo, "run1", "g1", "fix auth")
+    assert not run_scoped_path.exists()
+
+    adopted = create_worktree(
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
+    )
+    assert adopted == run_scoped_path
+    assert not legacy_path.exists()  # moved, not copied
+    assert (run_scoped_path / "in_progress.txt").read_text() == "legacy work in flight\n"
+
+    registered = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=git_repo, capture_output=True, text=True
+    ).stdout
+    # exactly one registered worktree carries this branch
+    assert registered.count(f"branch refs/heads/{branch}\n") == 1
+
+
 # ------------------------------------------------------- usage-limit auto-resume
 
 
