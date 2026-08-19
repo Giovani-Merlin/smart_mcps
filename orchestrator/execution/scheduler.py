@@ -91,6 +91,14 @@ class ResolveConflict(SchedulerError):
     """
 
 
+class ResolvePreflightFailed(Exception):
+    """A FAILED group's resolve merge was declined by Preflight (plan U5) —
+    not a conflict, so unlike ``ResolveConflict`` this never stops the run:
+    the group's committed work stays on its own branch, unmerged, and the
+    group stays FAILED. Caught only inside ``_resolve_autonomously``, so it
+    never needs to be a ``SchedulerError``."""
+
+
 @dataclass
 class ResolveDeps:
     """What the scheduler needs to resolve a FAILED group's stranded work (plan
@@ -638,7 +646,7 @@ class Scheduler:
         if self._broker is not None and self._policy is not None:
             final = await self._resolve_via_escalation(gid)
         else:
-            final = self._resolve_autonomously(gid)
+            final = await self._resolve_autonomously(gid)
         with self._lock:
             if final == GroupState.RESOLVED:
                 self.state.groups[gid].state = GroupState.RESOLVED
@@ -646,25 +654,38 @@ class Scheduler:
             self._persist()
         return final
 
-    def _resolve_autonomously(self, gid: str) -> GroupState:
+    async def _resolve_autonomously(self, gid: str) -> GroupState:
         """Commit any stranded uncommitted work, then merge through U1's gate.
         A zero commit-count (nothing to commit and nothing already on the
         branch — including a branch already merged by hand, since its commits
-        are then reachable from the tip too) means nothing was lost."""
+        are then reachable from the tip too) means nothing was lost.
+
+        ``merge_group`` is awaited off the event loop (plan U5 Decisions): its
+        real wiring makes up to ``max_conflict_resolve_attempts`` in-place
+        conflict-resolution attempts by warm-resuming the group's coder, which
+        blocks for as long as that session takes — running it inline here
+        would freeze every other group's progress for the duration.
+        """
         group = self.groups[gid]
         assert self._resolve is not None
         self._resolve.commit_stranded(group)
         if self._resolve.commits_ahead(group) == 0:
             log_event(self.paths, f"group {gid}: resolve found nothing lost")
             return GroupState.FAILED
-        self._resolve.merge_group(group)  # raises ResolveConflict on collision
+        try:
+            # raises ResolveConflict on a real conflict (stops the run) or
+            # ResolvePreflightFailed when Preflight declined the merge (does not).
+            await asyncio.to_thread(self._resolve.merge_group, group)
+        except ResolvePreflightFailed as exc:
+            log_event(self.paths, f"group {gid}: {exc}")
+            return GroupState.FAILED
         log_event(self.paths, f"group {gid}: resolved (stranded work merged)")
         return GroupState.RESOLVED
 
     async def _resolve_via_escalation(self, gid: str) -> GroupState:
         assert self._broker is not None and self._policy is not None
         if not self._policy.should_escalate(EscalationKind.GROUP_RESOLVE):
-            return self._resolve_autonomously(gid)
+            return await self._resolve_autonomously(gid)
         request = EscalationRequest(
             id=uuid.uuid4().hex[:12],
             run_id=self.paths.run_id,
@@ -675,7 +696,7 @@ class Scheduler:
         )
         response = await asyncio.to_thread(self._broker.raise_escalation, request)
         if response is None:
-            return self._resolve_autonomously(gid)  # timeout → autonomous fallback
+            return await self._resolve_autonomously(gid)  # timeout → autonomous fallback
         if response.action == HumanAction.ABORT:
             self._broker.trigger_abort()
             raise RunAbort(f"operator aborted the run while resolving group {gid}")
@@ -689,7 +710,7 @@ class Scheduler:
         # gate U1 uses, never taking the operator's word for it. A real
         # conflict still raises ResolveConflict and stops the run rather than
         # silently releasing successors onto an unfixed branch.
-        return self._resolve_autonomously(gid)
+        return await self._resolve_autonomously(gid)
 
     def _resolve_prompt(self, gid: str) -> str:
         overlap = self._overlap_report(gid)
