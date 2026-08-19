@@ -280,6 +280,14 @@ class _GroupExecution:
                 f"group {self.gid} generation {self.generation}: "
                 f"coder launching, forking base session (session {self.coder_sid})"
             )
+            # `round N: started` logged and marked *before* the fork call, not
+            # after — matching `_reenter`'s pattern. `start_fork` is itself round
+            # N's whole first turn, so logging it once the call returns leaves the
+            # round-start line trailing behind everything it is supposed to
+            # cover, and a group killed mid-fork looks like it never started a
+            # round at all.
+            self._log(f"{self._round_tag(rounds + 1)}: started")
+            self._heartbeat.mark_round(self.generation, rounds + 1)
             self._heartbeat.mark_phase("forking the base session")
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
@@ -296,11 +304,9 @@ class _GroupExecution:
         result = first
         # Guarded on `is_reentry`, not on whether the resume succeeded: a
         # fallback fork *is* round N of the same generation, and `_reenter`
-        # already announced N before it blocked. Announcing again here would
-        # double-log the round and reset its start time.
-        if not is_reentry:
-            self._log(f"{self._round_tag(rounds + 1)}: started")
-            self._heartbeat.mark_round(self.generation, rounds + 1)
+        # already announced N before it blocked. The fresh-fork branch above
+        # announces its own round before `start_fork` too, so nothing further is
+        # needed here in either case.
 
         while True:
             report, result = await asyncio.to_thread(
@@ -469,6 +475,12 @@ class _GroupExecution:
         self.coder_entry = entry
         self.reviewer_sid = None
         self.sessions_spawned += 1  # live session again: a later rewrite respawns fresh
+        # A warm resume can be the first time this session's transcript actually
+        # exists on disk — the entry was pre-registered before any turn ran, so
+        # its `transcript_path` may still be null until this resume creates the
+        # file. Refreshed here rather than left to the next `_persist_coder_usage`
+        # call, which never touches `transcript_path` at all.
+        self._refresh_transcript(entry)
         self._log(f"group {self.gid} re-entry: resumed session {entry.session_id}")
         return result
 

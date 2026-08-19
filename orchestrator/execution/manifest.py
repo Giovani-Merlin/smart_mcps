@@ -169,6 +169,22 @@ class RunPaths:
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
 
+    @property
+    def driver_lock_path(self) -> Path:
+        """The advisory lock a driver process holds for its lifetime (plan U11).
+
+        The kernel drops an ``flock`` on any process death, SIGKILL included, so
+        this file's *lock state* — not its contents — is the liveness authority;
+        the record below is evidence for a human, not what `run_liveness` reads.
+        """
+        return self.run_dir / "driver.lock"
+
+    @property
+    def driver_record_path(self) -> Path:
+        """Human-readable evidence of who last held ``driver_lock_path``: pid,
+        when it started, and a freshening ``updated_at`` (plan U11)."""
+        return self.run_dir / "driver.json"
+
 
 def log_event(paths: RunPaths, text: str) -> None:
     """Append one timestamped line to the run's event log (plan Phase D).
