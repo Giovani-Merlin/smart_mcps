@@ -20,7 +20,15 @@ from pydantic import BaseModel, Field
 #:
 #: Deny still wins — `disallowed_tools` keeps the repo-global git mutators and the
 #: operator-memory rules blocked regardless of what appears here.
-DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+#:
+#: Each executable rule is paired with a `*/`-prefixed twin by
+#: `_with_path_qualified_forms`, because a rule matches the command *as written*
+#: and one program has many names: `python` and `.venv/bin/python` are the same
+#: interpreter but different strings. Group g2 of run r20260812-202855 died on
+#: `.venv/bin/python -m pytest …` with `Bash(python *)` sitting right there in
+#: this list — the npm incident's structural twin, a missing *spelling* rather
+#: than a missing tool.
+_BASE_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
     "Write",
     "Edit",
@@ -62,6 +70,38 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(which *)",
     "Bash(env)",
 )
+
+
+def _with_path_qualified_forms(rules: tuple[str, ...]) -> tuple[str, ...]:
+    """Pair every `Bash(<cmd>…)` rule with a `Bash(*/<cmd>…)` twin.
+
+    A worker legitimately invokes tools by path — `.venv/bin/python`,
+    `./node_modules/.bin/vite`, `/usr/bin/make` — and those strings match none of
+    the bare-name rules. The wildcard form was chosen by probing the real CLI
+    (`tests/test_permission_patterns_live.py`), which is the only authority here:
+
+        Bash(python *)            denied
+        Bash(*python *)           denied      <- a bare leading * does NOT work
+        Bash(*/python *)          ALLOWED     <- the wildcard must align to a `/`
+        Bash(.venv/bin/python *)  ALLOWED     <- exact, but one path per rule
+
+    So `*/` is the general form, and `*` alone is not. `Bash(*)` would also work
+    and is deliberately not used: it grants every command, which is the ceiling
+    this list exists to stay below.
+
+    Non-Bash entries (`Read`, `Edit`, …) and argument-less ones (`Bash(env)`) are
+    passed through untouched — there is no path to qualify.
+    """
+    out: list[str] = []
+    for rule in rules:
+        out.append(rule)
+        if rule.startswith("Bash(") and rule != "Bash(env)":
+            out.append(f"Bash(*/{rule[len('Bash(') :]}")
+    return tuple(out)
+
+
+#: The baseline as shipped: every rule above, plus its path-qualified twin.
+DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = _with_path_qualified_forms(_BASE_ALLOWED_TOOLS)
 
 
 class EdgeWeightsConfig(BaseModel):

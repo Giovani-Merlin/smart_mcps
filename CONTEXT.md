@@ -54,15 +54,19 @@ Work Failure. A coder that meets one reports it; it never improvises around it.
 _Avoid_: blocked (that is the coder's judgement that the work itself cannot proceed)
 
 **Work Failure**:
-A group failure decided by an agent or a bound — coder blocked/failed, reviewer
-abort, operator skip, generation/rewrite caps exhausted. Includes `ReportError`:
-a coder that exhausted its report-format nudges (2 warm corrective resumes) was
-judged unable to report, not killed by the harness. Terminal by design; a
-human must look at it.
+A group failure decided by an agent or a bound. A **closed set** of four routes —
+rewrite cap exhausted, generation cap exhausted, operator skip, and `ReportError`
+(a coder that burned its report-format nudges was judged unable to report, not
+killed by the harness). Nothing else reaches it: an exception the orchestrator
+does not recognise is by definition not a judgement about the work, so it
+classifies Interrupted instead. Terminal by design; a human must look at it, via
+[[Retry]].
 
 **Interrupted**:
-The non-terminal outcome recorded when a group dies of an envelope failure. A
-plain `resume` re-enters interrupted groups automatically; dependents wait
+The non-terminal outcome recorded when a group dies of anything that is not one
+of the four Work Failure routes — every Envelope Failure, and every exception the
+orchestrator does not recognise. The default classification, not the exceptional
+one. A plain `resume` re-enters interrupted groups automatically; dependents wait
 rather than strand.
 _Avoid_: failed (that is the terminal, work-failure outcome)
 
@@ -78,7 +82,8 @@ _Avoid_: respawn (that is the fork-fresh path)
 
 **Resolve**:
 The orchestrator's recovery of a group that ended in a Work Failure: commit
-whatever its worktree still holds uncommitted, then merge the branch. Reachable
+whatever its worktree still holds uncommitted, then merge the branch — through
+the same [[Preflight]] and conflict ladder every other merge passes. Reachable
 autonomously (HITL off) or on operator request (HITL on). Possible only because
 the orchestrator shells git itself, outside the worker's permission sandbox — the
 same reason an operator can commit by hand where the coder was denied. Never
@@ -133,3 +138,29 @@ An orchestrator-emitted control-plane line in `run.log`: round boundaries,
 verdicts, generation forks/retirements, re-entry mode, merges, escalations.
 Explicitly excludes coder activity — that is data-plane, read from session
 transcripts by the Observatory, never pushed by the orchestrator.
+
+**Preflight**:
+The mechanical, LLM-free gate every branch passes before it merges into the
+integration branch: the worktree is clean, and the repo's configured check
+command exits zero in it. Asks the same two questions of an approved branch and
+of a Resolve's stranded work, and is the only gate a `self_verify` group has at
+all. Distinct from a Verification Item, which is prose for the reviewer to judge
+and never executed.
+_Avoid_: pre-merge check (too generic), validation (overloaded with the
+reviewer's judgement)
+
+**Stranded Work**:
+Uncommitted changes left in a group's worktree by a process that died before the
+group reached any outcome — the orchestrator's own crash included. Never
+discarded; committed to the group's own branch under a `recover(...)` or
+`resolve(...)` subject, and merged only if it passes [[Preflight]].
+_Avoid_: WIP (says nothing about who abandoned it), lost work (it is recoverable
+by construction)
+
+**Retry**:
+The operator's deliberate re-entry of a group that reached a terminal Work
+Failure — resets it to pending, keeps its branch, worktree and warm session, and
+lets the normal path pick it up. Distinct from `resume`, which re-enters
+Interrupted groups automatically and never touches a Work Failure.
+_Avoid_: resume (that is the automatic, non-terminal path), rerun (implies
+starting the group over cold)
