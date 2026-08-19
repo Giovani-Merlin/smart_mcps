@@ -329,6 +329,16 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         default=None,
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
+    cmd.add_argument(
+        "--on-failure",
+        default=None,
+        choices=["halt", "overlap"],
+        help=(
+            "admission policy once a group ends FAILED or INTERRUPTED (plan U3/R41): "
+            "'halt' (default) admits no further group; 'overlap' keeps only the "
+            "file-overlap gate"
+        ),
+    )
     _add_auto_resume_arg(cmd)
 
 
@@ -356,6 +366,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         execution_updates["concurrency"] = args.concurrency
     if getattr(args, "permission_mode", None):
         execution_updates["permission_mode"] = args.permission_mode
+    if getattr(args, "on_failure", None) is not None:
+        execution_updates["on_group_failure"] = args.on_failure
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
@@ -971,6 +983,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}, {confinement}, "
         f"{_auto_resume_line(config.session.usage_limit)}, "
+        f"on-failure {config.execution.on_group_failure}, "
         f"cache {_cache_root(config.session)}",
         flush=True,
     )
@@ -991,6 +1004,10 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # succeeds, so a dead worker CLI never leaves a run directory behind.
     if not resume:
         snapshot_grouping(source_grouping_dir, paths.run_dir)
+    # Plan U3/R41: the resolved admission policy, recorded once — an operator
+    # reading logs/run.log after the fact must be able to tell whether a halted
+    # run was the default or an explicit --on-failure override.
+    log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
 
     merger = IntegrationMerger(repo_root, run_id)
     try:
