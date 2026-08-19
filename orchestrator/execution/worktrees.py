@@ -26,7 +26,18 @@ class WorktreeRefreshConflict(WorktreeError):
     conflict (plan U6). Distinct from ``WorktreeError`` so the scheduler can
     classify it ``INTERRUPTED`` (resumable) instead of terminal ``FAILED`` — the
     group's committed work is valid, only the merge needs a human or a later
-    resume to resolve."""
+    resume to resolve.
+
+    ``paths`` carries the conflicted file names (plan U4): merge.py's
+    ``merge_group`` re-raises this as the existing ``MergeConflict`` conflict
+    ladder, which needs the same file list ``_groups_owning`` already keys off
+    of — and by the time the exception propagates, the aborted merge has erased
+    the conflict markers this would otherwise have to be re-derived from.
+    """
+
+    def __init__(self, message: str, paths: list[str] | None = None):
+        super().__init__(message)
+        self.paths = paths or []
 
 
 # Repo-global git mutators a worker must never run (plan U5). ``refs/stash`` is
@@ -210,7 +221,8 @@ def _refresh_onto_tip(worktree: Path, *, group_id: str, branch: str, tip: str) -
         _git(worktree, "merge", "--abort")
         raise WorktreeRefreshConflict(
             f"refreshing group {group_id}'s worktree onto {tip} conflicted on: "
-            f"{', '.join(conflicted)}"
+            f"{', '.join(conflicted)}",
+            paths=conflicted,
         )
     # git refused before starting the merge — e.g. uncommitted local changes
     # would be overwritten (a reason the stranded-work commit in create_worktree
@@ -278,6 +290,31 @@ def _report_sync_failure(message: str, log: Callable[[str], None] | None) -> Non
     print(f"warning: {message}", file=sys.stderr)
     if log is not None:
         log(message)
+
+
+def ensure_excluded(worktree: Path, relative_path: str) -> None:
+    """Add ``relative_path`` to this worktree's local exclude file (plan U6),
+    never the target repo's tracked ``.gitignore``.
+
+    ``git rev-parse --git-path info/exclude`` is what "this worktree's own
+    exclude file" means to git itself: ``info/exclude`` lives under the
+    *common* gitdir every linked worktree of a repo shares (there is no
+    per-worktree exclude file at all — ``.git`` inside a linked worktree is a
+    file pointing at the common dir, not a directory of its own), so this
+    write is idempotent and safe to repeat across every group's worktree and
+    every round.
+    """
+    exclude_path = Path(_git_ok(worktree, "rev-parse", "--git-path", "info/exclude").strip())
+    if not exclude_path.is_absolute():
+        exclude_path = worktree / exclude_path
+    existing = exclude_path.read_text() if exclude_path.is_file() else ""
+    if relative_path in existing.splitlines():
+        return
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    with exclude_path.open("a") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(f"{relative_path}\n")
 
 
 def is_dirty(worktree: Path) -> bool:
