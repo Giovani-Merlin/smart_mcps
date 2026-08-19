@@ -241,6 +241,28 @@ class ExecutionConfig(BaseModel):
     # only groups whose declared files overlap the failed/interrupted group are
     # held.
     on_group_failure: Literal["halt", "overlap"] = "halt"
+    # Reviewer scratch archive cap (plan U6): files beyond this many bytes are
+    # left out of the archive (and named, with their size, in skipped.txt)
+    # rather than silently dropped or grown without bound.
+    review_scratch_cap_bytes: int = 100_000_000
+
+
+class PreflightConfig(BaseModel):
+    """The mechanical, LLM-free merge gate (plan U4).
+
+    ``check_command`` is resolved once per merge attempt: the configured value
+    if set, else detected from the worktree's own markers
+    (``preflight.detect_check_command``); ``None`` when neither applies means
+    no check command is run at all — Preflight still enforces the clean-tree
+    check alone.
+    """
+
+    check_command: list[str] | None = None
+    # A hung check command holds IntegrationMerger's lock and stalls every
+    # other group's merge — the same silent-stall class this work closes.
+    # A timeout is therefore always a failure, never a degrade to "no check
+    # applied" (plan Decisions).
+    check_timeout_s: float = 900.0
 
 
 class UsageLimitConfig(BaseModel):
@@ -389,6 +411,7 @@ class OrchestratorConfig(BaseModel):
     difficulty: DifficultyConfig = Field(default_factory=DifficultyConfig)
     breaker: BreakerConfig = Field(default_factory=BreakerConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    preflight: PreflightConfig = Field(default_factory=PreflightConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
 
