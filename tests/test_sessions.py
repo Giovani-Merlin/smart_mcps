@@ -600,7 +600,7 @@ def git_repo(tmp_path: Path) -> Path:
 
 
 def test_worktree_path_keeps_repo_dir_name_as_substring(git_repo):
-    path = worktree_path(git_repo, "g1", "Fix Auth Flow!")
+    path = worktree_path(git_repo, "run1", "g1", "Fix Auth Flow!")
     assert git_repo.name in str(path)  # analyzer allowlist substring rule
     assert path.name == "g1-fix-auth-flow"
 
@@ -608,10 +608,10 @@ def test_worktree_path_keeps_repo_dir_name_as_substring(git_repo):
 def test_create_worktree_is_idempotent_and_checks_out_the_group_branch(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     again = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert path == again and (path / "README.md").is_file()
     head = subprocess.run(
@@ -624,14 +624,14 @@ def test_create_worktree_is_idempotent_and_checks_out_the_group_branch(git_repo)
 def test_create_worktree_resumes_an_existing_branch_after_removal(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "work.txt").write_text("progress\n")
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "wip"], cwd=path, check=True, capture_output=True)
     remove_worktree(git_repo, path)
     resumed = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert (resumed / "work.txt").read_text() == "progress\n"
 
@@ -639,7 +639,7 @@ def test_create_worktree_resumes_an_existing_branch_after_removal(git_repo):
 def test_remove_worktree_refuses_dirty_without_force_and_is_idempotent(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "uncommitted.txt").write_text("precious\n")
     with pytest.raises(WorktreeError, match="dirty"):
@@ -737,14 +737,15 @@ def test_provision_env_failure_logs_an_event_and_does_not_raise(tmp_path, capsys
 
 
 def test_conflicting_directory_at_worktree_path_is_rejected(git_repo):
-    path = worktree_path(git_repo, "g1", "fix auth")
+    path = worktree_path(git_repo, "run1", "g1", "fix auth")
     path.mkdir(parents=True)
     with pytest.raises(WorktreeError, match="not a worktree"):
         create_worktree(
             git_repo,
+            run_id="run1",
             group_id="g1",
             name="fix auth",
-            branch=group_branch("r", "g1"),
+            branch=group_branch("run1", "g1"),
             start_point="main",
         )
 
@@ -758,7 +759,7 @@ def _git_config(cwd: Path, *args: str) -> str:
 def test_worktree_reports_worktree_config_extension_and_isolates_user_email(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert _git_config(path, "extensions.worktreeConfig") == "true"
     subprocess.run(
@@ -774,17 +775,17 @@ def test_worktree_reports_worktree_config_extension_and_isolates_user_email(git_
 def test_create_worktree_idempotent_and_rejects_other_branch(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     again = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     assert path == again
 
     subprocess.run(
         ["git", "checkout", "-b", "other"], cwd=git_repo, check=True, capture_output=True
     )
-    other_path = worktree_path(git_repo, "g2", "fix auth 2")
+    other_path = worktree_path(git_repo, "run1", "g2", "fix auth 2")
     subprocess.run(
         ["git", "worktree", "add", str(other_path), "-b", "some-other-branch"],
         cwd=git_repo,
@@ -794,6 +795,7 @@ def test_create_worktree_idempotent_and_rejects_other_branch(git_repo):
     with pytest.raises(WorktreeError, match="some-other-branch"):
         create_worktree(
             git_repo,
+            run_id="run1",
             group_id="g2",
             name="fix auth 2",
             branch=group_branch("run1", "g2"),
@@ -816,7 +818,7 @@ def test_denied_git_subcommands_are_rejected_others_accepted():
 def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_aborts(git_repo):
     branch = group_branch("run1", "g1")
     path = create_worktree(
-        git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main"
+        git_repo, run_id="run1", group_id="g1", name="fix auth", branch=branch, start_point="main"
     )
     (path / "README.md").write_text("worker change\n")
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
@@ -831,7 +833,14 @@ def test_refresh_conflict_raises_worktree_refresh_conflict_names_paths_and_abort
     )
 
     with pytest.raises(WorktreeRefreshConflict, match="README.md"):
-        create_worktree(git_repo, group_id="g1", name="fix auth", branch=branch, start_point="main")
+        create_worktree(
+            git_repo,
+            run_id="run1",
+            group_id="g1",
+            name="fix auth",
+            branch=branch,
+            start_point="main",
+        )
     status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
     ).stdout

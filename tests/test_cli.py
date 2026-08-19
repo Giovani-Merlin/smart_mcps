@@ -1031,6 +1031,7 @@ class TestWorkspaceForFreshCut:
         upstream = make_group("g0")
         wt0 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g0",
             name=upstream.name,
             branch=group_branch("r1", "g0"),
@@ -1085,6 +1086,7 @@ class TestResolveDeps:
         group = make_group("g1")
         worktree = create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=group.name,
             branch=group_branch("r1", "g1"),
@@ -1116,6 +1118,7 @@ class TestResolveDeps:
         group = make_group("g1")
         create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=group.name,
             branch=group_branch("r1", "g1"),
@@ -1141,6 +1144,7 @@ class TestResolveDeps:
         g1 = make_group("g1", files=["shared.txt"])
         wt1 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=g1.name,
             branch=group_branch("r1", "g1"),
@@ -1153,6 +1157,7 @@ class TestResolveDeps:
         g2 = make_group("g2", files=["shared.txt"])
         wt2 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g2",
             name=g2.name,
             branch=group_branch("r1", "g2"),

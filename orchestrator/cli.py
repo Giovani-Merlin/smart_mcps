@@ -1211,7 +1211,12 @@ def _workspace_seams(
         branch = group_branch(run_id, group.id)
         tip = merger.tip()
         path = create_worktree(
-            repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
+            repo_root,
+            run_id=run_id,
+            group_id=group.id,
+            name=group.name,
+            branch=branch,
+            start_point=tip,
         )
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
@@ -1241,7 +1246,7 @@ def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> Re
         return group_branch(run_id, group.id)
 
     def worktree_for(group: Group) -> Path:
-        return worktree_path(repo_root, group.id, group.name)
+        return worktree_path(repo_root, run_id, group.id, group.name)
 
     def commit_stranded(group: Group) -> bool:
         return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
