@@ -34,7 +34,7 @@ from orchestrator.execution.scheduler import (
 )
 from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.execution.worktrees import WorktreeError, WorktreeRefreshConflict
-from orchestrator.grouping.llm import LlmProcessError
+from orchestrator.grouping.llm import LlmError, LlmProcessError
 from orchestrator.model import (
     EscalationRequest,
     EscalationResponse,
