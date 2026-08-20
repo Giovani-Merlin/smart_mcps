@@ -30,6 +30,7 @@ from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError
+from orchestrator.execution.worktrees import group_branch, worktree_path
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
@@ -622,7 +623,28 @@ class Scheduler:
         """Record a failure-shaped outcome plus its lifecycle line (R1, R11)."""
         self.set_state(gid, state, failure=failure)
         log_event(self.paths, f"group {gid}: {state.value} ({failure})")
+        if state == GroupState.FAILED:
+            self._log_recovery_route(gid)
         return state
+
+    def _log_recovery_route(self, gid: str) -> None:
+        """Logged the moment a group reaches terminal FAILED (plan U7/R16), from
+        the single classification choke point so every route that lands here —
+        GroupFailure, ReportError, or an executor returning a bad terminal state —
+        is covered, not just the three that happen to raise GroupFailure from
+        inside review.py. Gives an operator reading ``run.log`` the branch, the
+        worktree, and the literal `retry` command line without diffing
+        state.json or re-deriving the worktree path."""
+        repo_root = self.paths.repo_root
+        run_id = self.paths.run_id
+        branch = group_branch(run_id, gid)
+        worktree = worktree_path(repo_root, run_id, gid, self.groups[gid].name)
+        retry_cmd = f"smart-mcps-orchestrate retry --repo {repo_root} {run_id} {gid}"
+        log_event(
+            self.paths,
+            f"group {gid}: terminal failed — branch {branch}, worktree {worktree}, "
+            f"retry with: {retry_cmd}",
+        )
 
     # --------------------------------------------------------- resolve (U2)
 
