@@ -1,5 +1,5 @@
-"""Push the integration branch, open a draft PR, and tear down exactly what is
-provably merged (plan U8/U9).
+"""Push the integration branch, open a ready-for-review PR, and tear down
+exactly what is provably merged (plan U8/U9).
 
 Teardown gates on *completeness*, not worktree state: the CLAUDE.md rule
 "never clean a crashed group's uncommitted worktree progress" is about
@@ -94,8 +94,9 @@ def finish_run(
     log: Callable[[str], None] | None = None,
     announce: Callable[[str], None] | None = None,
 ) -> FinishResult:
-    """Push the integration branch, open a draft PR against the run's launch
-    branch, then tear down every group provably merged into it (plan U8/U9).
+    """Push the integration branch, open a ready-for-review PR against the
+    run's launch branch, then tear down every group provably merged into it
+    (plan U8/U9).
 
     ``log`` is the run's own event log (best-effort, silent by default in
     tests); ``announce`` is user-facing stdout (defaults to ``print``).
@@ -121,15 +122,15 @@ def finish_run(
         pr_skip_reason = "run was launched from a detached HEAD"
     else:
         body = _render_pr_body(repo_root, run_id, tip, state, manifest, paths)
-        ok, result = _open_draft_pr(repo_root, run_id, launch_branch, body)
+        ok, result = _open_pr(repo_root, run_id, launch_branch, body)
         if ok:
             pr_url = result
         else:
             pr_skip_reason = result
 
     if pr_url is not None:
-        log(f"finish {run_id}: opened draft PR {pr_url}")
-        announce(f"opened draft PR: {pr_url}")
+        log(f"finish {run_id}: opened PR {pr_url}")
+        announce(f"opened PR: {pr_url}")
     else:
         message = (
             f"integration branch {branch} is ready at {tip}; could not open a PR ({pr_skip_reason})"
@@ -253,8 +254,9 @@ def _render_pr_body(
     return "\n".join(lines) + "\n"
 
 
-def _open_draft_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) -> tuple[bool, str]:
-    """Open a draft PR for the integration branch against ``launch_branch``.
+def _open_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) -> tuple[bool, str]:
+    """Open a ready-for-review PR for the integration branch against
+    ``launch_branch``.
 
     Returns ``(True, pr_url)`` on success or ``(False, reason)`` — a missing,
     unauthenticated, or non-GitHub `gh` never raises (plan R30): the caller
@@ -276,7 +278,6 @@ def _open_draft_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) 
             "gh",
             "pr",
             "create",
-            "--draft",
             "--base",
             launch_branch,
             "--head",

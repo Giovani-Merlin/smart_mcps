@@ -1,4 +1,4 @@
-"""U8/U9 tests: push, draft PR, and teardown of exactly what is provably merged.
+"""U8/U9 tests: push, PR, and teardown of exactly what is provably merged.
 
 The push step is stubbed in every test except the two dedicated to it: this
 sandbox denies the hardlink git's local-transport push relies on to finalize
@@ -27,7 +27,12 @@ from orchestrator.execution.finish import (
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
-from orchestrator.execution.worktrees import create_worktree, group_branch, worktree_path
+from orchestrator.execution.worktrees import (
+    create_worktree,
+    group_branch,
+    integration_branch,
+    worktree_path,
+)
 from orchestrator.model import (
     Group,
     GroupingResult,
@@ -86,14 +91,23 @@ def add_origin(repo: Path, *, github_url: bool) -> None:
     git(repo, "remote", "add", "origin", url)
 
 
-def write_fake_gh(bin_dir: Path, *, body_capture: Path | None = None) -> None:
+def write_fake_gh(
+    bin_dir: Path,
+    *,
+    body_capture: Path | None = None,
+    argv_capture: Path | None = None,
+) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / "gh"
     body_line = f'cat > "{body_capture}"' if body_capture is not None else "cat > /dev/null"
+    # The fake `gh` succeeds whatever flags it is handed, so only an argv
+    # capture can pin which flags `finish` actually passes (e.g. --draft).
+    argv_line = f'printf \'%s\\n\' "$@" > "{argv_capture}"' if argv_capture is not None else ":"
     script.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "auth" ]; then exit 0; fi\n'
         'if [ "$1" = "pr" ] && [ "$2" = "create" ]; then\n'
+        f"  {argv_line}\n"
         f"  {body_line}\n"
         '  echo "https://github.com/org/repo/pull/1"\n'
         "  exit 0\n"
@@ -201,7 +215,7 @@ def test_finish_pushes_the_integration_branch(repo, tmp_path, monkeypatch):
 # ------------------------------------------------------------------- PR
 
 
-def test_finish_opens_a_draft_pr_against_the_launch_branch(repo, tmp_path, monkeypatch):
+def test_finish_opens_a_ready_for_review_pr_against_the_launch_branch(repo, tmp_path, monkeypatch):
     run_id = "r2"
     group = make_group("g1")
     paths, merger = setup_run(repo, run_id, [group], launch_branch="main")
@@ -211,12 +225,18 @@ def test_finish_opens_a_draft_pr_against_the_launch_branch(repo, tmp_path, monke
 
     bin_dir = tmp_path / "fakebin"
     body_capture = tmp_path / "pr-body.txt"
-    write_fake_gh(bin_dir, body_capture=body_capture)
+    argv_capture = tmp_path / "pr-argv.txt"
+    write_fake_gh(bin_dir, body_capture=body_capture, argv_capture=argv_capture)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
     result = finish_run(repo, run_id, announce=lambda _m: None)
     assert result.pr_url == "https://github.com/org/repo/pull/1"
     assert result.pr_skip_reason is None
+
+    argv = argv_capture.read_text().splitlines()
+    assert "--draft" not in argv
+    assert argv[argv.index("--base") + 1] == "main"
+    assert argv[argv.index("--head") + 1] == integration_branch(run_id)
 
 
 def test_pr_body_lists_groups_state_summary_sessions_and_unmerged(repo, tmp_path, monkeypatch):

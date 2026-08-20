@@ -276,7 +276,8 @@ def main(
     retry_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
     finish_cmd = subparsers.add_parser(
-        "finish", help="push the integration branch, open a draft PR, and tear down merged groups"
+        "finish",
+        help="push the integration branch, open a PR, and tear down merged groups",
     )
     finish_cmd.add_argument("run_id", help="the run to finish")
     finish_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
@@ -1717,7 +1718,7 @@ def _cmd_retry(args: argparse.Namespace) -> int:
 
 
 def _cmd_finish(args: argparse.Namespace) -> int:
-    """Push the integration branch, open a draft PR, tear down merged groups
+    """Push the integration branch, open a PR, tear down merged groups
     (plan U8/U9) — callable directly by an operator, same routine `run`
     invokes itself once every group is provably merged."""
     repo_root = args.repo.resolve()

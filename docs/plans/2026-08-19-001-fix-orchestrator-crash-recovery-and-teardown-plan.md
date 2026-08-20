@@ -26,8 +26,8 @@ scratch is archived out of the worktree instead of blocking its own cleanup
 run log and heartbeat stop lying about pauses, rounds, and transcripts
 (R21–R24); liveness is derived from the orchestrator's own process rather than
 worker pids (R25, R26); and `finish` pushes the integration branch, opens a
-draft PR, and removes exactly the worktrees and branches that are provably
-merged (R27–R35, R40).
+ready-for-review PR, and removes exactly the worktrees and branches that are
+provably merged (R27–R35, R40).
 
 **R41 is new, and did not come from the brainstorm.** It was raised during this
 planning session from an observed symptom: merges going wrong on *serial* runs
@@ -673,10 +673,10 @@ shape or a mechanism the origin brainstorm already argued through.
   - `retry` invoked while a driver process holds the run's lock exits non-zero,
     names the live run, and leaves `state.json` byte-identical. (Decisions)
 
-### U8. finish-pr — push the integration branch and open a draft PR
+### U8. finish-pr — push the integration branch and open a PR
 
 - **Goal**: `smart-mcps-orchestrate finish --repo <r> <run-id>` pushes
-  `orchestrator/run-<run_id>` and opens a draft PR against the branch the run was
+  `orchestrator/run-<run_id>` and opens a ready-for-review PR against the branch the run was
   launched from, resolved at run start and persisted in the manifest; the run
   invokes it automatically only when every group is terminal-successful and every
   branch is merged, and prints the command otherwise. A missing or unusable `gh`
@@ -695,8 +695,13 @@ shape or a mechanism the origin brainstorm already argued through.
     run start; a run launched from a detached HEAD records it as null. (R29)
   - `finish` pushes `orchestrator/run-<run_id>` to `origin` and the remote ref
     exists at the integration tip afterwards. (R27, R29)
-  - The opened PR is a draft, and its base is the recorded launch branch — not
-    `HEAD` and not a commit sha. (R29)
+  - The opened PR's base is the recorded launch branch — not `HEAD` and not a
+    commit sha. (R29)
+  - ~~The opened PR is a draft.~~ **Superseded by operator decision
+    (2026-08-20)**, after the run this plan shipped. R29's draft clause is
+    withdrawn: `finish` passes no `--draft`, so the PR opens ready for review.
+    `tests/test_finish.py` captures `gh pr create`'s argv and asserts `--draft`
+    is absent — the fake `gh` succeeds either way, so only the argv pins it.
   - The PR body lists every group with its summary, its final state, its reviewer
     verdict where one exists, and its session count, plus an explicit list of any
     group left unmerged. (R29)
@@ -1022,7 +1027,7 @@ tasks:
     implements: []
     consumes: ["worktree_path", "GroupFailure", "run-driver-lock"]
   - task_id: u8-finish-pr
-    description: A finish command that pushes the integration branch and opens a draft PR against the recorded launch branch
+    description: A finish command that pushes the integration branch and opens a ready-for-review PR against the recorded launch branch
     slice: operator-verbs
     files:
       - orchestrator/execution/finish.py
