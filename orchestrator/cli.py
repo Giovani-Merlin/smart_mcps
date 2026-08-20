@@ -60,6 +60,7 @@ from orchestrator.execution.manifest import (
     snapshot_grouping,
     validate_grouping_name,
 )
+from orchestrator.execution.calibrate import calibrate_run, format_calibration
 from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
@@ -280,6 +281,12 @@ def main(
     finish_cmd.add_argument("run_id", help="the run to finish")
     finish_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    calibrate_cmd = subparsers.add_parser(
+        "calibrate", help="compare a finished run's token estimates against what it actually cost"
+    )
+    calibrate_cmd.add_argument("run_id", help="the run to calibrate against")
+    _add_common_args(calibrate_cmd)
+
     ui_cmd = subparsers.add_parser("ui", help="serve the Observatory web UI (local, no auth)")
     ui_cmd.add_argument(
         "--registry",
@@ -314,6 +321,8 @@ def main(
         return _cmd_retry(args)
     if args.command == "finish":
         return _cmd_finish(args)
+    if args.command == "calibrate":
+        return _cmd_calibrate(args)
     if args.command == "ui":
         return _cmd_ui(args)
     parser.error(f"unknown command {args.command!r}")
@@ -1721,6 +1730,26 @@ def _cmd_finish(args: argparse.Namespace) -> int:
     except FinishError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+# -------------------------------------------------------------------- calibrate
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    """Report what a finished run predicted against what it cost, so
+    ``coder_slack_multiplier`` can be set from accumulated runs rather than a
+    hand-measured sample. Read-only: it prints, it never edits config."""
+    repo_root = args.repo.resolve()
+    paths = RunPaths(repo_root, args.run_id)
+    if not paths.state_path.is_file():
+        print(f"error: no run state at {paths.state_path}", file=sys.stderr)
+        return 1
+    config = _load_config(args, repo_root)
+    if config is None:
+        return 1
+    calibration = calibrate_run(paths, config.estimator.coder_slack_multiplier)
+    print(format_calibration(args.run_id, calibration))
     return 0
 
 

@@ -1,6 +1,7 @@
 """Tests for orchestrator/grouping/estimator.py — token budget and difficulty."""
 
-from orchestrator.config import DifficultyConfig, EstimatorConfig
+from orchestrator.config import DifficultyConfig
+from orchestrator.config import EstimatorConfig as _EstimatorConfig
 from orchestrator.grouping.estimator import (
     DifficultySignals,
     difficulty_score,
@@ -11,6 +12,21 @@ from orchestrator.grouping.estimator import (
     partition_budget_cap,
 )
 from orchestrator.model import ReviewIntensity
+
+
+def EstimatorConfig(**kwargs):  # noqa: N802 - shadows the import on purpose
+    """Read-cost config: `coder_slack_multiplier` pinned to 1.0 unless a test
+    sets it.
+
+    Everything in this file asserts the *read*-cost arithmetic with literal
+    expected values. `coder_slack_multiplier` scales that arithmetic to a
+    predicted coder peak, which is a separate concern covered in
+    test_calibrate.py — leaving it at its 2.5 default here would mean every
+    literal below silently encoded it, and a future tweak to the multiplier
+    would break arithmetic tests that have nothing to do with it.
+    """
+    kwargs.setdefault("coder_slack_multiplier", 1.0)
+    return _EstimatorConfig(**kwargs)
 
 
 class TestTokenEstimate:

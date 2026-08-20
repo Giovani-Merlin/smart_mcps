@@ -420,14 +420,19 @@ def compute_partition(
         recorder.set_config(config.model_dump())
         recorder.set_input_graph(graph.nodes, graph.affinity, graph.dependencies)
         recorder.set_node_work(_node_work_entries(graph, config.estimator))
+        # Mirrors partition_budget_cap's head, coder scaling included — a trace
+        # that reported the unscaled head would not explain the cap beside it.
         head = (
-            base_tokens + config.estimator.spec_tokens_allowance
-        ) * config.estimator.slack_multiplier
+            (base_tokens + config.estimator.spec_tokens_allowance)
+            * config.estimator.slack_multiplier
+            * config.estimator.coder_slack_multiplier
+        )
         recorder.set_budget(
             BudgetArithmetic(
                 base_tokens=base_tokens,
                 spec_tokens_allowance=config.estimator.spec_tokens_allowance,
                 slack_multiplier=config.estimator.slack_multiplier,
+                coder_slack_multiplier=config.estimator.coder_slack_multiplier,
                 token_budget=config.estimator.token_budget,
                 head=head,
                 budget_cap=budget_cap,

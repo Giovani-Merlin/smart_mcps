@@ -24,9 +24,16 @@ def estimate_group_tokens(
     config: EstimatorConfig,
 ) -> int:
     """Plan U3 formula: (base head + spec + source bytes/token ratio) × slack,
-    plus a flat per-file tool-output allowance."""
+    plus a flat per-file tool-output allowance — then scaled to a coder.
+
+    The formula above is a *read*-cost model, validated against reviewers
+    (0.90x-1.35x of estimate). A coder iterates, so its real context runs
+    1.56x-3.83x higher; ``coder_slack_multiplier`` converts read cost into the
+    predicted coder peak that ``token_budget`` is actually guarding.
+    """
     core = base_tokens + spec_tokens + source_bytes / config.bytes_per_token
-    return int(core * config.slack_multiplier + file_count * config.per_file_tool_allowance)
+    read_cost = core * config.slack_multiplier + file_count * config.per_file_tool_allowance
+    return int(read_cost * config.coder_slack_multiplier)
 
 
 def is_over_budget(estimated_tokens: int, config: EstimatorConfig) -> bool:
@@ -64,7 +71,9 @@ def node_work(metadata: Mapping[str, object], config: EstimatorConfig) -> float:
             tokens += getattr(config, _SIZE_HINT_FIELDS[hint])
         else:
             tokens += config.per_file_tool_allowance
-    return tokens
+    # Scaled to a coder for the same reason as ``estimate_group_tokens``, and by
+    # the same factor, so partition-time sizing and the final estimate agree.
+    return tokens * config.coder_slack_multiplier
 
 
 def partition_budget_cap(base_tokens: int, config: EstimatorConfig) -> float:
@@ -72,8 +81,16 @@ def partition_budget_cap(base_tokens: int, config: EstimatorConfig) -> float:
 
     The base head and spec allowance are per-group constants, so the cap the
     partitioner enforces on summed node work is the budget minus that slacked head.
+
+    The head is scaled to a coder alongside ``node_work``: both sides of the
+    comparison must be in coder tokens, or the cap would be enforced against
+    read-cost work using a coder-cost budget.
     """
-    head = (base_tokens + config.spec_tokens_allowance) * config.slack_multiplier
+    head = (
+        (base_tokens + config.spec_tokens_allowance)
+        * config.slack_multiplier
+        * config.coder_slack_multiplier
+    )
     return max(config.token_budget - head, 0.0)
 
 

@@ -1585,7 +1585,7 @@ async def test_ladder_70_percent_fires_once_and_not_again_below_90(tmp_path):
             ]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1605,7 +1605,7 @@ async def test_ladder_90_percent_sends_exactly_one_prioritised_conclusions_promp
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=181_000)]]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1623,7 +1623,7 @@ async def test_ladder_99_percent_is_not_interrupted_and_produces_a_normal_report
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=198_000)]]  # 99% of 200_000
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1640,7 +1640,7 @@ async def test_ladder_100_percent_sends_compact_report_prompt_and_ends_gracefull
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=201_000)]]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     # the round still ends by its own report being parsed — never killed mid-turn.
     assert state == GroupState.COMPLETED
@@ -1668,7 +1668,7 @@ async def test_ladder_thresholds_fire_at_most_once_per_round_even_with_many_turn
             ]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True))
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]

@@ -154,6 +154,32 @@ class EstimatorConfig(BaseModel):
     token_budget: int = 100_000
     bytes_per_token: float = 4.0
     slack_multiplier: float = 1.3
+    # Measured on run r20260819-crashrec (4 groups, 9 sessions; full write-up in
+    # docs/2026-08-20-estimator-underestimation-findings.md).
+    #
+    # Everything else in this class models READ cost — base head + spec + source
+    # bytes — and that model is accurate: reviewers, which read the group's
+    # material roughly once, landed at 0.90x-1.35x of estimate. Coders landed at
+    # 1.56x-3.83x, because their context is read cost *plus* iteration, and
+    # iteration dominates. Measured coder context tracked ~1,000 tokens per
+    # assistant turn (964-1,140 across every session), and turn count is not
+    # predictable from source bytes: g1 touched no new files at all and still
+    # overshot 3.26x, so this is not a greenfield-authoring effect.
+    #
+    # This multiplier converts the read-cost estimate into a predicted CODER
+    # peak context, which is the number that has to fit `token_budget`. Applied
+    # to the group estimate only — never to a reviewer figure, which needs no
+    # correction.
+    #
+    # Direction matters: raising this makes groups SMALLER and more numerous
+    # (at 2.5 against a 200k budget the effective read-cost cap is ~80k), which
+    # is the point — a group sized to fill 200k of *read* cost costs its coder
+    # ~500k and gets retired mid-work, losing its warm context.
+    #
+    # 2.5 is deliberately below the 3.26x median: the breaker is a quality
+    # guard, not a throughput limit (past ~200k the model degrades), so the
+    # correct response to overshoot is smaller groups, not a higher breaker.
+    coder_slack_multiplier: float = 2.5
     per_file_tool_allowance: int = 2_000
     spec_tokens_allowance: int = 3_000  # partition-time stand-in before specs exist
     # Plan U7: a prospective file with a declared size_hints class is priced here
@@ -196,9 +222,18 @@ class BreakerConfig(BaseModel):
     120k default retired healthy coders whose real occupancy was nowhere near
     it, once the RoundUsage fix (plan context-token P0) made the signal
     accurate.
+
+    Raised to 250k on 2026-08-20 to sit just above the 200k sizing budget, giving
+    a correctly sized group ~25% headroom while still catching one that is
+    genuinely misbehaving. Deliberately NOT raised further to accommodate
+    oversized groups: past roughly 200k of context the model degrades, so
+    retiring a 300k coder is the breaker defending output quality, and the fix
+    for chronic overshoot is smaller groups — see
+    ``EstimatorConfig.coder_slack_multiplier`` and
+    docs/2026-08-20-estimator-underestimation-findings.md.
     """
 
-    context_token_limit: int = 200_000
+    context_token_limit: int = 250_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
     # Bound on the envelope side (plan U1 Decisions): a group re-entered this many
