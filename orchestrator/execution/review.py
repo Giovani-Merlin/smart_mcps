@@ -70,7 +70,11 @@ from orchestrator.execution.sessions import (
     session_display_name,
 )
 from orchestrator.execution.streaming import TurnUsage
-from orchestrator.execution.worktrees import diff_stat, ensure_excluded, integration_branch
+from orchestrator.execution.worktrees import (
+    diff_stat,
+    ensure_excluded,
+    integration_branch,
+)
 from orchestrator.model import (
     CoderReport,
     EscalationContext,
@@ -796,6 +800,7 @@ class _GroupExecution:
                 want_diff=True,
             )
             if response is None:
+                self._log_recovery_route()
                 raise GroupFailure(
                     f"rewrite cap ({self.deps.execution.max_rewrites}) exhausted: {why}"
                 )
@@ -834,6 +839,7 @@ class _GroupExecution:
                 want_diff=True,
             )
             if response is None:
+                self._log_recovery_route()
                 raise GroupFailure(
                     f"generation cap ({self.deps.breaker.max_generations}) exhausted: {reason}"
                 )
@@ -974,6 +980,7 @@ class _GroupExecution:
             broker.trigger_abort()  # release every sibling waiter before we unwind
             raise RunAbort(f"operator aborted the run at group {self.gid} ({kind.value})")
         if response.action == HumanAction.SKIP:
+            self._log_recovery_route()
             raise GroupFailure(f"operator skipped group {self.gid} ({kind.value})")
         return response
 
@@ -991,6 +998,19 @@ class _GroupExecution:
         """Append to the run's always-on lifecycle log (R10): control-plane events
         land in ``run.log`` in every run mode, HITL or autonomous."""
         log_event(self.deps.store.paths, text)
+
+    def _log_recovery_route(self) -> None:
+        """Logged right before a group reaches terminal FAILED (plan U7/R16):
+        its branch, its worktree, and the literal `retry` command line — so an
+        operator reading ``run.log`` after the fact has everything needed to
+        act, without diffing state.json or re-deriving the worktree path."""
+        repo_root = self.deps.store.paths.repo_root
+        branch = group_branch(self.deps.run_id, self.gid)
+        retry_cmd = f"smart-mcps-orchestrate retry --repo {repo_root} {self.deps.run_id} {self.gid}"
+        self._log(
+            f"group {self.gid}: terminal failed — branch {branch}, worktree {self.workspace}, "
+            f"retry with: {retry_cmd}"
+        )
 
     def _round_tag(self, round_no: int) -> str:
         return f"group {self.gid} generation {self.generation} round {round_no}"

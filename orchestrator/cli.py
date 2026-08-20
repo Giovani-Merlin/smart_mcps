@@ -264,6 +264,13 @@ def main(
     answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    retry_cmd = subparsers.add_parser(
+        "retry", help="release a terminally failed or quarantined group (operator override)"
+    )
+    retry_cmd.add_argument("run_id", help="the run holding the group")
+    retry_cmd.add_argument("group_id", help="the group to retry")
+    retry_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
     ui_cmd = subparsers.add_parser("ui", help="serve the Observatory web UI (local, no auth)")
     ui_cmd.add_argument(
         "--registry",
@@ -294,6 +301,8 @@ def main(
         return _cmd_status(args)
     if args.command == "answer":
         return _cmd_answer(args)
+    if args.command == "retry":
+        return _cmd_retry(args)
     if args.command == "ui":
         return _cmd_ui(args)
     parser.error(f"unknown command {args.command!r}")
@@ -1627,6 +1636,31 @@ def _cmd_answer(args: argparse.Namespace) -> int:
         print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1
     print(f"answered {args.esc_id}: {args.action}")
+    return 0
+
+
+# --------------------------------------------------------------------- retry
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    """Release a terminally failed or quarantined group (plan U7): the
+    deliberate operator override — everything else in the system treats both
+    outcomes as something a plain `resume` must not touch on its own."""
+    repo_root = args.repo.resolve()
+    try:
+        retry_group(repo_root, args.run_id, args.group_id)
+    except RetryConflictError as exc:
+        print(
+            f"error: {exc} — conflicting file(s): {', '.join(exc.paths)}",
+            file=sys.stderr,
+        )
+        return 1
+    except RetryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"group {args.group_id} released — resume with: smart-mcps-orchestrate resume {args.run_id}"
+    )
     return 0
 
 
