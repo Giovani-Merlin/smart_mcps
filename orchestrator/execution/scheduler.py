@@ -12,6 +12,7 @@ run into a loud failure naming the blocked groups (§8 point 5).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import threading
@@ -25,19 +26,45 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from orchestrator.config import ExecutionConfig
+from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
-from orchestrator.execution.sessions import ReportError, SessionError
-from orchestrator.execution.worktrees import WorktreeRefreshConflict
-from orchestrator.grouping.llm import LlmProcessError
+from orchestrator.execution.sessions import ReportError
+from orchestrator.execution.worktrees import group_branch, worktree_path
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
     Group,
     HumanAction,
-    PermissionDenied,
 )
+
+#: Bump when RunState's shape changes in a way an older orchestrator's
+#: state.json cannot be safely re-interpreted by (plan U1, R38-adjacent):
+#: fields added with a default are forward-compatible, but silently coercing
+#: is exactly the failure mode this version check exists to turn loud.
+RUN_STATE_SCHEMA_VERSION = 1
+
+
+class RunStateVersionError(Exception):
+    """``state.json``'s schema_version is not one this orchestrator supports."""
+
+    def __init__(self, found: int, supported: int):
+        super().__init__(
+            f"state.json schema_version {found} is not supported by this orchestrator "
+            f"(supports {supported}) — do not resume with a mismatched orchestrator version"
+        )
+        self.found = found
+        self.supported = supported
+
+
+class GroupFailure(Exception):
+    """The group exhausted its bounds; surfaced to the operator, never retried.
+
+    Lives here (plan U1 Decisions) rather than in ``review.py``, which raises
+    it: ``review.py`` already imports ``scheduler.py`` for ``Executor`` and
+    friends, so the reverse import would cycle. ``review.py`` imports this
+    class from here.
+    """
 
 
 class SchedulerError(Exception):
@@ -63,6 +90,14 @@ class ResolveConflict(SchedulerError):
     left the integration branch at its pre-merge SHA by the time this reaches
     ``run()``.
     """
+
+
+class ResolvePreflightFailed(Exception):
+    """A FAILED group's resolve merge was declined by Preflight (plan U5) —
+    not a conflict, so unlike ``ResolveConflict`` this never stops the run:
+    the group's committed work stays on its own branch, unmerged, and the
+    group stays FAILED. Caught only inside ``_resolve_autonomously``, so it
+    never needs to be a ``SchedulerError``."""
 
 
 @dataclass
@@ -117,6 +152,7 @@ class HoldReason(StrEnum):
     DAG_DEPENDENCY = "dag_dependency"  # an upstream group has not completed
     FAILURE_GATE = "failure_gate"  # U2: overlaps a failed/interrupted group
     FILE_OVERLAP = "file_overlap"  # U9: overlaps a *healthy* in-flight group
+    RUN_HALTED = "run_halted"  # U3/R41: on_group_failure=halt, admission paused
 
 
 class GroupHold(BaseModel):
@@ -144,12 +180,27 @@ class GroupRunState(BaseModel):
     # ``_run_group`` on resume, so this flag is the only record that resolve
     # already ran and settled it.
     resolve_settled: bool = False
+    # plan U1 Decisions: how many times this group has been re-entered after a
+    # non-terminal (INTERRUPTED, or mid-flight-at-crash) outcome. Incremented on
+    # each `resume` that re-enters it; a group that has never been re-entered
+    # reads zero. Bounds the R1/R2 inversion — nothing counted this before.
+    reentry_count: int = 0
+    # Set once ``reentry_count`` reaches ``breaker.max_reentries`` (plan U1
+    # Decisions): a plain `resume` stops re-entering this group automatically —
+    # only the operator's `retry` clears it. Deliberately a flag, not a
+    # ``GroupState`` member: quarantine is orthogonal to lifecycle (the group
+    # stays INTERRUPTED) and every new GroupState has to be mirrored in the
+    # Observatory's own enums, which has drifted before.
+    quarantined: bool = False
 
 
 class RunState(BaseModel):
     """Crash-resumable run snapshot, persisted after every transition."""
 
     run_id: str
+    # Bumped when this model's shape changes incompatibly (plan U1, RunStateVersionError);
+    # a resume across a schema break must fail loudly rather than coerce or drop fields.
+    schema_version: int = RUN_STATE_SCHEMA_VERSION
     groups: dict[str, GroupRunState] = Field(default_factory=dict)
     live_pids: dict[int, str] = Field(default_factory=dict)  # pid → session context
     # Set when the process driving this run was interrupted, cleared when a
@@ -187,6 +238,7 @@ class Scheduler:
         paths: RunPaths,
         executor: Executor,
         config: ExecutionConfig | None = None,
+        breaker: BreakerConfig | None = None,
         resume: bool = False,
         broker: EscalationBroker | None = None,
         policy: EscalationPolicy | None = None,
@@ -200,6 +252,7 @@ class Scheduler:
         self.paths = paths
         self.executor = executor
         self.config = config or ExecutionConfig()
+        self.breaker = breaker or BreakerConfig()
         self._resume = resume
         # HITL seam (plan U2), mirroring ReviewDeps: both None ⇒ a FAILED group's
         # resolve runs autonomously with no escalation, byte-identical to a run
@@ -213,7 +266,11 @@ class Scheduler:
             for dep in group.dependencies:
                 self._dependents[dep].append(group.id)
         if resume:
-            self.state = RunState.model_validate_json(self.paths.state_path.read_text())
+            raw = json.loads(self.paths.state_path.read_text())
+            found_version = raw.get("schema_version")
+            if found_version != RUN_STATE_SCHEMA_VERSION:
+                raise RunStateVersionError(found_version, RUN_STATE_SCHEMA_VERSION)
+            self.state = RunState.model_validate(raw)
             # A driver is attached again, so the run is no longer interrupted —
             # whatever happens next writes its own marker.
             self.state.interrupted_at = None
@@ -300,16 +357,52 @@ class Scheduler:
             self.state.live_pids.clear()
             self._persist()
 
+    def _reenter_on_resume(self) -> None:
+        """Move anything the last process left mid-flight back to READY — unless
+        it has already burned through ``breaker.max_reentries`` re-entries, in
+        which case it is quarantined instead (plan U1 Decisions): a plain
+        `resume` stops picking it up automatically and `retry` is what releases
+        it. Already-quarantined groups are left untouched — the count does not
+        keep climbing every idle `resume`.
+        """
+        with self._lock:
+            for gid, entry in self.state.groups.items():
+                if entry.state in TERMINAL_STATES or entry.state == GroupState.PENDING:
+                    continue
+                if entry.quarantined:
+                    continue
+                entry.reentry_count += 1
+                if entry.reentry_count > self.breaker.max_reentries:
+                    entry.quarantined = True
+                    entry.state = GroupState.INTERRUPTED
+                    entry.failure = (
+                        entry.failure
+                        or f"quarantined after {entry.reentry_count} re-entries "
+                        f"(max_reentries={self.breaker.max_reentries}) — run `retry` to release it"
+                    )
+                else:
+                    entry.state = GroupState.READY
+            self._persist()
+
+    def _halted_by(self) -> str | None:
+        """The (lowest-sorted) group id whose FAILED/INTERRUPTED outcome halts
+        admission under ``on_group_failure = "halt"`` (plan U3/R41), or None if
+        the policy is ``"overlap"`` or every group is still healthy."""
+        if self.config.on_group_failure != "halt":
+            return None
+        unsuccessful = sorted(
+            gid
+            for gid, entry in self.state.groups.items()
+            if entry.state in (GroupState.FAILED, GroupState.INTERRUPTED)
+        )
+        return unsuccessful[0] if unsuccessful else None
+
     # ------------------------------------------------------------- run
 
     async def run(self) -> dict[str, GroupState]:
         if self._resume:
             self._reap_orphans()
-            for gid, entry in self.state.groups.items():
-                # Anything mid-flight when the last process died restarts from
-                # ready; its warm sessions live on in the manifest.
-                if entry.state not in TERMINAL_STATES and entry.state != GroupState.PENDING:
-                    self.set_state(gid, GroupState.READY)
+            self._reenter_on_resume()
 
         cap = 1 if self.config.sequential else self.config.concurrency
         in_flight: dict[asyncio.Task[GroupState], str] = {}
@@ -349,6 +442,13 @@ class Scheduler:
                         and entry.state != GroupState.INTERRUPTED
                     ]
                     if not blocked:
+                        return {gid: entry.state for gid, entry in self.state.groups.items()}
+                    if self._halted_by() is not None:
+                        # Deliberate stop (plan U3/R41), not a wedge: admission is
+                        # paused because a group ended unsuccessfully, not because
+                        # nothing can be scheduled. Un-admitted groups may lie
+                        # outside _blocked_by_failure()'s DAG/overlap reachability
+                        # entirely, so that check must not gate this return.
                         return {gid: entry.state for gid, entry in self.state.groups.items()}
                     failed_reachable = self._blocked_by_failure()
                     if all(gid in failed_reachable for gid in blocked):
@@ -391,9 +491,18 @@ class Scheduler:
         Records each held group's reasons as a side effect so ``status`` can
         report them; admission itself is always recomputed from live state.
         """
+        halted_by = self._halted_by()
         launchable: list[str] = []
         for gid in sorted(self.state.groups):
             if self.state.groups[gid].state not in (GroupState.PENDING, GroupState.READY):
+                continue
+            if halted_by is not None:
+                # plan U3/R41: a group already FAILED/INTERRUPTED halts further
+                # admission under the default policy — in-flight groups (not
+                # touched here) still finish, but nothing new joins them.
+                self._record_holds(
+                    gid, [GroupHold(reason=HoldReason.RUN_HALTED, group_id=halted_by)]
+                )
                 continue
             holds = self._holds_on(gid)
             self._record_holds(gid, holds)
@@ -479,23 +588,22 @@ class Scheduler:
             # report was judged only after the session's warm corrective nudges —
             # the harness was healthy, the agent failed.
             final = self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
-        except (SessionError, LlmProcessError, PermissionDenied, WorktreeRefreshConflict) as exc:
-            # Envelope failure (R1/R2): the claude process/API died under the
-            # group, not the work — non-terminal so `resume` re-enters it.
-            # LlmProcessError is the same outage arriving on the one-shot
-            # `claude -p` path (run-time spec rewrites) instead of the session
-            # path; observed on run r20260726-grouping, where one usage limit
-            # interrupted g5/g7 but wedged g6 in terminal FAILED, unreachable by
-            # `resume`. Only the process-died subclass qualifies — a plain
-            # LlmError is validation exhaustion, i.e. the model failing, and
-            # stays terminal below. INTERRUPTED never resolves (plan U2): it is
-            # not lost work, it is unfinished work a plain `resume` will finish.
-            # PermissionDenied (plan U3) joins this tuple for the same reason: a
-            # denial is the harness reporting a real-world block, not the coder's
-            # work being wrong — `resume` re-enters the same worktree unchanged.
-            return self._classify(gid, GroupState.INTERRUPTED, f"{type(exc).__name__}: {exc}")
-        except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
+        except GroupFailure as exc:
+            # The group exhausted its bounds (rewrite cap, generation cap,
+            # operator skip) — a judgement about the work, not the harness.
             final = self._classify(gid, GroupState.FAILED, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 — a group failure must not kill the run
+            # Envelope failure (R1/R2, inverted): an exception the orchestrator
+            # does not recognise as a work judgement is by definition not one —
+            # the harness (claude process/API, git, the filesystem) died under
+            # the group, not the work. Non-terminal, so a plain `resume`
+            # re-enters it. Only GroupFailure and ReportError above are judged
+            # failures of the work and go to terminal FAILED. This used to be a
+            # narrow allowlist (SessionError, LlmProcessError, PermissionDenied,
+            # WorktreeRefreshConflict) that silently missed anything else —
+            # WorktreeError included, which is exactly what wedged a real run in
+            # terminal FAILED, unreachable by `resume` (run r20260726-grouping).
+            return self._classify(gid, GroupState.INTERRUPTED, f"{type(exc).__name__}: {exc}")
         else:
             if final not in TERMINAL_STATES:
                 final = self._classify(
@@ -515,7 +623,28 @@ class Scheduler:
         """Record a failure-shaped outcome plus its lifecycle line (R1, R11)."""
         self.set_state(gid, state, failure=failure)
         log_event(self.paths, f"group {gid}: {state.value} ({failure})")
+        if state == GroupState.FAILED:
+            self._log_recovery_route(gid)
         return state
+
+    def _log_recovery_route(self, gid: str) -> None:
+        """Logged the moment a group reaches terminal FAILED (plan U7/R16), from
+        the single classification choke point so every route that lands here —
+        GroupFailure, ReportError, or an executor returning a bad terminal state —
+        is covered, not just the three that happen to raise GroupFailure from
+        inside review.py. Gives an operator reading ``run.log`` the branch, the
+        worktree, and the literal `retry` command line without diffing
+        state.json or re-deriving the worktree path."""
+        repo_root = self.paths.repo_root
+        run_id = self.paths.run_id
+        branch = group_branch(run_id, gid)
+        worktree = worktree_path(repo_root, run_id, gid, self.groups[gid].name)
+        retry_cmd = f"smart-mcps-orchestrate retry --repo {repo_root} {run_id} {gid}"
+        log_event(
+            self.paths,
+            f"group {gid}: terminal failed — branch {branch}, worktree {worktree}, "
+            f"retry with: {retry_cmd}",
+        )
 
     # --------------------------------------------------------- resolve (U2)
 
@@ -539,7 +668,7 @@ class Scheduler:
         if self._broker is not None and self._policy is not None:
             final = await self._resolve_via_escalation(gid)
         else:
-            final = self._resolve_autonomously(gid)
+            final = await self._resolve_autonomously(gid)
         with self._lock:
             if final == GroupState.RESOLVED:
                 self.state.groups[gid].state = GroupState.RESOLVED
@@ -547,25 +676,38 @@ class Scheduler:
             self._persist()
         return final
 
-    def _resolve_autonomously(self, gid: str) -> GroupState:
+    async def _resolve_autonomously(self, gid: str) -> GroupState:
         """Commit any stranded uncommitted work, then merge through U1's gate.
         A zero commit-count (nothing to commit and nothing already on the
         branch — including a branch already merged by hand, since its commits
-        are then reachable from the tip too) means nothing was lost."""
+        are then reachable from the tip too) means nothing was lost.
+
+        ``merge_group`` is awaited off the event loop (plan U5 Decisions): its
+        real wiring makes up to ``max_conflict_resolve_attempts`` in-place
+        conflict-resolution attempts by warm-resuming the group's coder, which
+        blocks for as long as that session takes — running it inline here
+        would freeze every other group's progress for the duration.
+        """
         group = self.groups[gid]
         assert self._resolve is not None
         self._resolve.commit_stranded(group)
         if self._resolve.commits_ahead(group) == 0:
             log_event(self.paths, f"group {gid}: resolve found nothing lost")
             return GroupState.FAILED
-        self._resolve.merge_group(group)  # raises ResolveConflict on collision
+        try:
+            # raises ResolveConflict on a real conflict (stops the run) or
+            # ResolvePreflightFailed when Preflight declined the merge (does not).
+            await asyncio.to_thread(self._resolve.merge_group, group)
+        except ResolvePreflightFailed as exc:
+            log_event(self.paths, f"group {gid}: {exc}")
+            return GroupState.FAILED
         log_event(self.paths, f"group {gid}: resolved (stranded work merged)")
         return GroupState.RESOLVED
 
     async def _resolve_via_escalation(self, gid: str) -> GroupState:
         assert self._broker is not None and self._policy is not None
         if not self._policy.should_escalate(EscalationKind.GROUP_RESOLVE):
-            return self._resolve_autonomously(gid)
+            return await self._resolve_autonomously(gid)
         request = EscalationRequest(
             id=uuid.uuid4().hex[:12],
             run_id=self.paths.run_id,
@@ -576,7 +718,7 @@ class Scheduler:
         )
         response = await asyncio.to_thread(self._broker.raise_escalation, request)
         if response is None:
-            return self._resolve_autonomously(gid)  # timeout → autonomous fallback
+            return await self._resolve_autonomously(gid)  # timeout → autonomous fallback
         if response.action == HumanAction.ABORT:
             self._broker.trigger_abort()
             raise RunAbort(f"operator aborted the run while resolving group {gid}")
@@ -590,7 +732,7 @@ class Scheduler:
         # gate U1 uses, never taking the operator's word for it. A real
         # conflict still raises ResolveConflict and stops the run rather than
         # silently releasing successors onto an unfixed branch.
-        return self._resolve_autonomously(gid)
+        return await self._resolve_autonomously(gid)
 
     def _resolve_prompt(self, gid: str) -> str:
         overlap = self._overlap_report(gid)

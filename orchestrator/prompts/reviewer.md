@@ -10,6 +10,11 @@ How to review:
 - Read the coder's report at: $report_path
 - Check every verification item below against the actual code — run the tests the
   spec calls for. Verify claims; do not trust the report.
+- If you need scratch space (notes, intermediate scripts, downloaded fixtures),
+  use exactly this directory and nowhere else in the worktree: $scratch_dir
+  It is excluded from git and archived automatically at the end of this round —
+  do not commit anything from it, and do not leave scratch files anywhere else
+  in the worktree, since the merge gate requires a clean tree.
 
 $verification
 

@@ -67,6 +67,8 @@ class BudgetArithmetic(BaseModel):
     base_tokens: int
     spec_tokens_allowance: int
     slack_multiplier: float
+    # Read cost -> predicted coder peak; see EstimatorConfig.coder_slack_multiplier.
+    coder_slack_multiplier: float = 1.0
     token_budget: int
     head: float
     budget_cap: float

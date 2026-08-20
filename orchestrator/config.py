@@ -154,6 +154,32 @@ class EstimatorConfig(BaseModel):
     token_budget: int = 100_000
     bytes_per_token: float = 4.0
     slack_multiplier: float = 1.3
+    # Measured on run r20260819-crashrec (4 groups, 9 sessions; full write-up in
+    # docs/2026-08-20-estimator-underestimation-findings.md).
+    #
+    # Everything else in this class models READ cost — base head + spec + source
+    # bytes — and that model is accurate: reviewers, which read the group's
+    # material roughly once, landed at 0.90x-1.35x of estimate. Coders landed at
+    # 1.56x-3.83x, because their context is read cost *plus* iteration, and
+    # iteration dominates. Measured coder context tracked ~1,000 tokens per
+    # assistant turn (964-1,140 across every session), and turn count is not
+    # predictable from source bytes: g1 touched no new files at all and still
+    # overshot 3.26x, so this is not a greenfield-authoring effect.
+    #
+    # This multiplier converts the read-cost estimate into a predicted CODER
+    # peak context, which is the number that has to fit `token_budget`. Applied
+    # to the group estimate only — never to a reviewer figure, which needs no
+    # correction.
+    #
+    # Direction matters: raising this makes groups SMALLER and more numerous
+    # (at 2.5 against a 200k budget the effective read-cost cap is ~80k), which
+    # is the point — a group sized to fill 200k of *read* cost costs its coder
+    # ~500k and gets retired mid-work, losing its warm context.
+    #
+    # 2.5 is deliberately below the 3.26x median: the breaker is a quality
+    # guard, not a throughput limit (past ~200k the model degrades), so the
+    # correct response to overshoot is smaller groups, not a higher breaker.
+    coder_slack_multiplier: float = 2.5
     per_file_tool_allowance: int = 2_000
     spec_tokens_allowance: int = 3_000  # partition-time stand-in before specs exist
     # Plan U7: a prospective file with a declared size_hints class is priced here
@@ -196,11 +222,26 @@ class BreakerConfig(BaseModel):
     120k default retired healthy coders whose real occupancy was nowhere near
     it, once the RoundUsage fix (plan context-token P0) made the signal
     accurate.
+
+    Raised to 250k on 2026-08-20 to sit just above the 200k sizing budget, giving
+    a correctly sized group ~25% headroom while still catching one that is
+    genuinely misbehaving. Deliberately NOT raised further to accommodate
+    oversized groups: past roughly 200k of context the model degrades, so
+    retiring a 300k coder is the breaker defending output quality, and the fix
+    for chronic overshoot is smaller groups — see
+    ``EstimatorConfig.coder_slack_multiplier`` and
+    docs/2026-08-20-estimator-underestimation-findings.md.
     """
 
-    context_token_limit: int = 200_000
+    context_token_limit: int = 250_000
     max_rounds_per_generation: int = 3
     max_generations: int = 3
+    # Bound on the envelope side (plan U1 Decisions): a group re-entered this many
+    # times after an unrecognised (INTERRUPTED) exception is quarantined rather
+    # than re-entered again on the next resume — `retry` is what releases it.
+    # Nothing bounded this before: a group could die under the harness and be
+    # silently re-entered forever with no counter anywhere recording it.
+    max_reentries: int = 3
     # Plan U3: staged in-round prompts at 70%/90%/100% of context_token_limit,
     # riding the per-turn observer the streaming channel (plan U1) provides —
     # bounds *cost* inside a round, not stuck-ness (that's R7's wall-clock
@@ -227,6 +268,36 @@ class ExecutionConfig(BaseModel):
     # attempt from the session that just built the work is the right cost/benefit
     # ahead of the proven (but expensive) rewrite path.
     max_conflict_resolve_attempts: int = 1
+    # What admission does once a group has ended unsuccessfully (plan U3/R41).
+    # "halt": no further group is admitted once any group is FAILED or
+    # INTERRUPTED — in-flight groups still run to their own terminal state, they
+    # are just never joined by a new one forking from a tip that may carry a hole
+    # or unverified resolve-merged work. "overlap" keeps the pre-U3 behaviour:
+    # only groups whose declared files overlap the failed/interrupted group are
+    # held.
+    on_group_failure: Literal["halt", "overlap"] = "halt"
+    # Reviewer scratch archive cap (plan U6): files beyond this many bytes are
+    # left out of the archive (and named, with their size, in skipped.txt)
+    # rather than silently dropped or grown without bound.
+    review_scratch_cap_bytes: int = 100_000_000
+
+
+class PreflightConfig(BaseModel):
+    """The mechanical, LLM-free merge gate (plan U4).
+
+    ``check_command`` is resolved once per merge attempt: the configured value
+    if set, else detected from the worktree's own markers
+    (``preflight.detect_check_command``); ``None`` when neither applies means
+    no check command is run at all — Preflight still enforces the clean-tree
+    check alone.
+    """
+
+    check_command: list[str] | None = None
+    # A hung check command holds IntegrationMerger's lock and stalls every
+    # other group's merge — the same silent-stall class this work closes.
+    # A timeout is therefore always a failure, never a degrade to "no check
+    # applied" (plan Decisions).
+    check_timeout_s: float = 900.0
 
 
 class UsageLimitConfig(BaseModel):
@@ -375,6 +446,7 @@ class OrchestratorConfig(BaseModel):
     difficulty: DifficultyConfig = Field(default_factory=DifficultyConfig)
     breaker: BreakerConfig = Field(default_factory=BreakerConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    preflight: PreflightConfig = Field(default_factory=PreflightConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
 

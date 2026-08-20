@@ -13,13 +13,18 @@ merge to the main branch is manual — this module never touches it.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
+from orchestrator.config import PreflightConfig
+from orchestrator.execution.preflight import run_preflight
 from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
     WorktreeError,
+    WorktreeRefreshConflict,
     _git,
     _git_ok,
+    _refresh_onto_tip,
     create_worktree,
     integration_branch,
     remove_worktree,
@@ -44,7 +49,16 @@ def commits_ahead(worktree: Path, base: str, branch: str) -> int:
 class IntegrationMerger:
     """Owns the per-run integration branch; matches the ReviewDeps.merge_group seam."""
 
-    def __init__(self, repo_root: Path, run_id: str, launch_ref: str = "HEAD"):
+    def __init__(
+        self,
+        repo_root: Path,
+        run_id: str,
+        launch_ref: str = "HEAD",
+        *,
+        preflight_config: PreflightConfig | None = None,
+        preflight_output_dir: Callable[[str], Path] | None = None,
+        log: Callable[[str], None] | None = None,
+    ):
         self.repo_root = repo_root
         self.run_id = run_id
         self.launch_ref = launch_ref
@@ -52,12 +66,22 @@ class IntegrationMerger:
         self.merged: list[Group] = []
         # Approvals of independent groups can land concurrently; merges serialize.
         self._lock = threading.Lock()
+        self._preflight_config = preflight_config or PreflightConfig()
+        # Defaults keep every existing in-process test (constructed with no
+        # RunPaths at all) byte-identical: check output lands under the repo's
+        # own `.orchestrator/` tree, keyed by run and group, same shape as
+        # RunPaths.group_dir without requiring one.
+        self._preflight_output_dir = preflight_output_dir or (
+            lambda gid: repo_root / ".orchestrator" / "runs" / run_id / "groups" / gid
+        )
+        self._log = log or (lambda _text: None)
 
     def ensure(self) -> Path:
         """Create (or reuse) the integration branch and its worktree. Idempotent."""
         return create_worktree(
             self.repo_root,
-            group_id=f"run-{self.run_id}",
+            run_id=self.run_id,
+            group_id="integration",
             name="integration",
             branch=self.branch,
             start_point=self.launch_ref,
@@ -71,18 +95,42 @@ class IntegrationMerger:
             return _git_ok(self.repo_root, "rev-parse", self.branch).strip()
 
     def merge_group(self, group: Group, worktree: Path) -> None:
-        """Merge an approved group's branch; raises MergeConflict on collision."""
+        """Merge an approved group's branch; raises MergeConflict on collision.
+
+        Refreshes the group worktree onto the current integration tip, runs
+        Preflight on that refreshed tree, and only then merges — all under one
+        acquisition of ``self._lock`` (plan U4): the tree Preflight checks is
+        the tree that ships, and a second ``merge_group`` call for another
+        group cannot interleave between the refresh and the merge. A textual
+        conflict during the refresh raises ``MergeConflict`` (the existing
+        conflict ladder), not a Preflight failure — Preflight never runs on a
+        tree the refresh itself could not produce.
+        """
         with self._lock:
             integration_wt = self.ensure()
             branch = _git_ok(worktree, "branch", "--show-current").strip()
             if not branch:
                 raise MergeError(f"worktree {worktree} is not on a branch")
+            try:
+                _refresh_onto_tip(worktree, group_id=group.id, branch=branch, tip=self.branch)
+            except WorktreeRefreshConflict as exc:
+                raise MergeConflict(
+                    f"refreshing {group.id} ({branch}) onto {self.branch} conflicted on: "
+                    f"{', '.join(exc.paths) or 'unknown files'}",
+                    affected_groups=[group.id, *self._groups_owning(exc.paths)],
+                ) from exc
             ahead = commits_ahead(integration_wt, self.branch, branch)
             if ahead == 0:
                 raise MergeError(
                     f"group {group.id} branch {branch} has no commits ahead of "
                     f"{self.branch} — refusing to merge nothing"
                 )
+            run_preflight(
+                worktree,
+                config=self._preflight_config,
+                output_dir=self._preflight_output_dir(group.id),
+                log=self._log,
+            )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
             if result.returncode != 0:

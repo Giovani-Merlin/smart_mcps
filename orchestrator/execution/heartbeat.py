@@ -102,6 +102,7 @@ class RoundHeartbeat:
         self._generation = 0
         self._round = 0
         self._round_started_at: str | None = None
+        self._round_started_mono: float | None = None
         self._phase: str | None = None
         self._phase_since = time.monotonic()
         # An externally-owned phase that temporarily shadows `_phase` — see
@@ -109,6 +110,10 @@ class RoundHeartbeat:
         # back to when the overlay lifts has to survive it.
         self._overlay: str | None = None
         self._overlay_since = time.monotonic()
+        # Paused time accumulates across every push/pop cycle within the current
+        # round, so a round with several rate-limit pauses reports their sum, not
+        # just the last one. Reset only when a new round starts.
+        self._paused_accum = 0.0
         self._last_log = time.monotonic()
 
     # ------------------------------------------------------------------ facts
@@ -119,6 +124,8 @@ class RoundHeartbeat:
             self._generation = generation
             self._round = round_no
             self._round_started_at = _now()
+            self._round_started_mono = time.monotonic()
+            self._paused_accum = 0.0
         # A round is itself a phase, so starting one ends whatever came before
         # (the fork, a rewrite) and restarts the elapsed clock. `mark_phase`
         # writes, so this needs no write of its own.
@@ -165,17 +172,34 @@ class RoundHeartbeat:
         with self._lock:
             if self._overlay is None:
                 return
+            self._paused_accum += time.monotonic() - self._overlay_since
             self._overlay = None
         self.write_once()
 
+    def _paused_seconds_locked(self, now: float) -> float:
+        """Total paused time this round: completed push/pop cycles plus, if an
+        overlay is active right now, its still-running portion. Caller holds
+        ``self._lock``."""
+        paused = self._paused_accum
+        if self._overlay is not None:
+            paused += now - self._overlay_since
+        return paused
+
     def snapshot(self) -> dict:
         with self._lock:
+            now = time.monotonic()
             if self._overlay is not None:
                 phase: str | None = self._overlay
                 phase_since = self._overlay_since
             else:
                 phase = self._phase
                 phase_since = self._phase_since
+            round_elapsed = (
+                round(now - self._round_started_mono, 1)
+                if self._round_started_mono is not None
+                else None
+            )
+            paused = round(self._paused_seconds_locked(now), 1)
             return {
                 "schema_version": SCHEMA_VERSION,
                 "group_id": self.group_id,
@@ -184,7 +208,9 @@ class RoundHeartbeat:
                 "round": self._round,
                 "round_started_at": self._round_started_at,
                 "phase": phase,
-                "phase_elapsed_s": round(time.monotonic() - phase_since, 1),
+                "phase_elapsed_s": round(now - phase_since, 1),
+                "round_elapsed_s": round_elapsed,
+                "paused_s": paused,
                 "updated_at": _now(),
             }
 
@@ -193,16 +219,33 @@ class RoundHeartbeat:
 
         Facts only, like everything else here: what it is doing and for how long.
         It does not say "stalled" — that remains the reader's call.
+
+        Honours the overlay exactly as ``snapshot`` does: without this, a group
+        paused on the rate-limit gate keeps logging its pre-pause phase, which is
+        the asymmetry that made the periodic line lie about what was actually
+        happening.
         """
         with self._lock:
             now = time.monotonic()
             if self._log is None or now - self._last_log < self.log_interval:
                 return None
             self._last_log = now
-            phase = self._phase or "working"
-            elapsed = now - self._phase_since
+            if self._overlay is not None:
+                phase = self._overlay
+                phase_since = self._overlay_since
+            else:
+                phase = self._phase or "working"
+                phase_since = self._phase_since
+            elapsed = now - phase_since
             where = f" (generation {self._generation} round {self._round})" if self._round else ""
-        return f"{self.subject}: still {phase}{where}, {_humanize(elapsed)} elapsed"
+            round_elapsed = (
+                now - self._round_started_mono if self._round_started_mono is not None else None
+            )
+            paused = self._paused_seconds_locked(now)
+        line = f"{self.subject}: still {phase}{where}, {_humanize(elapsed)} elapsed"
+        if round_elapsed is not None:
+            line += f" ({_humanize(round_elapsed)} elapsed, {_humanize(paused)} paused)"
+        return line
 
     # --------------------------------------------------------------- lifecycle
 

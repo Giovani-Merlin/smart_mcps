@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ from orchestrator.config import (
     SessionConfig,
     load_config,
 )
+from orchestrator.execution.driver import STALE_HEARTBEAT_SECONDS, DriverLock
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.scheduler import (
     GroupHold,
@@ -848,6 +850,119 @@ class TestPrintOutcomes:
         assert "g2: completed" in out
         assert "g1: completed" not in out
 
+    def test_stall_report_names_failure_holds_branch_reentry_and_resume_command(self, capsys):
+        """Plan U3: a stalled group's line carries its failure text verbatim,
+        the groups it holds and on which files, its branch, its reentry_count,
+        and the exact resume command."""
+        state = RunState(
+            run_id="rstall",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED,
+                    failure="WorktreeError: refusing to overwrite",
+                    reentry_count=2,
+                ),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[
+                        GroupHold(reason=HoldReason.FAILURE_GATE, group_id="g1", files=["a.py"])
+                    ],
+                ),
+            },
+        )
+        exit_code = _print_outcomes(state)
+        assert exit_code == 2
+        out = capsys.readouterr().out
+        assert "WorktreeError: refusing to overwrite" in out
+        assert "g2 (a.py)" in out
+        assert "orchestrator/rstall-g1" in out
+        assert "reentry_count 2" in out
+        assert "smart-mcps-orchestrate resume rstall" in out
+
+    def test_quarantined_group_points_at_retry_not_resume(self, capsys):
+        state = RunState(
+            run_id="rq",
+            groups={
+                "g1": GroupRunState(
+                    state=GroupState.INTERRUPTED,
+                    failure="RuntimeError: still broken",
+                    reentry_count=4,
+                    quarantined=True,
+                )
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "[quarantined]" in out
+        assert "smart-mcps-orchestrate retry --repo <repo> rq g1" in out
+        assert "smart-mcps-orchestrate resume rq" not in out
+
+    def test_report_is_read_only(self, capsys):
+        """Plan U3: printing the report never mutates state.json."""
+        state = RunState(
+            run_id="rro",
+            groups={
+                "g1": GroupRunState(state=GroupState.INTERRUPTED, failure="x"),
+                "g2": GroupRunState(state=GroupState.COMPLETED),
+            },
+        )
+        before = state.model_dump_json()
+        _print_outcomes(state)
+        capsys.readouterr()
+        assert state.model_dump_json() == before
+
+    def test_no_interrupted_or_failed_group_prints_no_stall_section(self, capsys):
+        state = RunState(
+            run_id="rnone",
+            groups={"g1": GroupRunState(state=GroupState.COMPLETED)},
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "holds:" not in out
+
+    def test_halted_run_names_trigger_not_admitted_and_both_ways_forward(self, capsys):
+        """Plan U3/R41: a halted run's report names the triggering group, the
+        groups it kept off admission, and both the fix-and-resume path and the
+        --on-failure overlap escape hatch."""
+        state = RunState(
+            run_id="rhalt",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: boom"),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+                "g3": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "run halted: group g1 ended failed" in out
+        assert "g2" in out and "g3" in out
+        assert "smart-mcps-orchestrate retry --repo <repo> rhalt g1" in out
+        assert "--on-failure overlap" in out
+
+    def test_resuming_a_failed_halt_says_retry_clears_it(self, capsys):
+        # A resume that re-admits nothing (the only unsuccessful group is
+        # terminally FAILED) still has a pending group carrying the RUN_HALTED
+        # hold from the scheduler's last admission pass before it returned.
+        state = RunState(
+            run_id="rretry",
+            groups={
+                "g1": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: boom"),
+                "g2": GroupRunState(
+                    state=GroupState.PENDING,
+                    holds=[GroupHold(reason=HoldReason.RUN_HALTED, group_id="g1")],
+                ),
+            },
+        )
+        _print_outcomes(state)
+        out = capsys.readouterr().out
+        assert "smart-mcps-orchestrate retry --repo <repo> rretry g1" in out
+
 
 class TestRunBanner:
     """R8: the effective execution config prints before any session spawns."""
@@ -1031,6 +1146,7 @@ class TestWorkspaceForFreshCut:
         upstream = make_group("g0")
         wt0 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g0",
             name=upstream.name,
             branch=group_branch("r1", "g0"),
@@ -1074,6 +1190,27 @@ class TestResolveDeps:
         _git(repo, "commit", "--allow-empty", "-m", "init")
         return repo
 
+    def _resolve_deps_kwargs(self, repo: Path, run_id: str) -> dict:
+        """No manifest on disk and a runner that errors if ever called: none of
+        these tests exercise the U5 in-place conflict-resolve ladder — that has
+        its own coverage in test_scheduler.py's resolve tests — so the ladder's
+        `latest_coder_session_id` must read "no session" and never touch the
+        runner."""
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+
+        class _UnreachableRunner:
+            def resume(self, *args, **kwargs):
+                raise AssertionError("runner.resume must not be called in this test")
+
+        paths = RunPaths(repo, run_id)
+        return {
+            "runner": _UnreachableRunner(),
+            "store": ManifestStore(paths),
+            "execution": ExecutionConfig(),
+            "paths": paths,
+        }
+
     def test_autonomous_resolve_commits_stranded_changes_and_merges(self, tmp_path):
         from orchestrator.cli import _resolve_deps
         from orchestrator.execution.merge import IntegrationMerger
@@ -1085,6 +1222,7 @@ class TestResolveDeps:
         group = make_group("g1")
         worktree = create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=group.name,
             branch=group_branch("r1", "g1"),
@@ -1092,7 +1230,7 @@ class TestResolveDeps:
         )
         (worktree / "stranded.txt").write_text("uncommitted work\n")  # never committed
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is True
         assert deps.commits_ahead(group) == 1
         deps.merge_group(group)  # must not raise
@@ -1116,12 +1254,13 @@ class TestResolveDeps:
         group = make_group("g1")
         create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=group.name,
             branch=group_branch("r1", "g1"),
             start_point=merger.tip(),
         )
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         assert deps.commit_stranded(group) is False
         assert deps.commits_ahead(group) == 0
 
@@ -1141,6 +1280,7 @@ class TestResolveDeps:
         g1 = make_group("g1", files=["shared.txt"])
         wt1 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g1",
             name=g1.name,
             branch=group_branch("r1", "g1"),
@@ -1153,6 +1293,7 @@ class TestResolveDeps:
         g2 = make_group("g2", files=["shared.txt"])
         wt2 = create_worktree(
             repo,
+            run_id="r1",
             group_id="g2",
             name=g2.name,
             branch=group_branch("r1", "g2"),
@@ -1164,10 +1305,235 @@ class TestResolveDeps:
         merger.merge_group(g1, wt1)
         tip_before = merger.tip()
 
-        deps = _resolve_deps(repo, "r1", merger)
+        deps = _resolve_deps(repo, "r1", merger, **self._resolve_deps_kwargs(repo, "r1"))
         with pytest.raises(ResolveConflict, match="g2"):
             deps.merge_group(g2)
         assert merger.tip() == tip_before  # U1's gate left the integration tip untouched
+
+
+class TestResolveConflictLadder:
+    """Plan U5: merge_for_resolve's in-place conflict-resolution ladder."""
+
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        (repo / "shared.txt").write_text("original\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        return repo
+
+    def _conflicting_groups(self, repo: Path, merger):
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        launch_tip = merger.tip()
+        g1 = make_group("g1", files=["shared.txt"])
+        wt1 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=launch_tip,
+        )
+        (wt1 / "shared.txt").write_text("g1 version\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-m", "g1 edits")
+
+        # g2 forks from the *same* pre-g1 tip, so once g1 merges, g2's own
+        # base no longer has g1's edit — the refresh conflicts.
+        g2 = make_group("g2", files=["shared.txt"])
+        wt2 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g2",
+            name=g2.name,
+            branch=group_branch("r1", "g2"),
+            start_point=launch_tip,
+        )
+        (wt2 / "shared.txt").write_text("g2 version\n")
+        _git(wt2, "add", "-A")
+        _git(wt2, "commit", "-m", "g2 edits")
+        merger.merge_group(g1, wt1)
+        return g2, wt2
+
+    def _manifest_with_coder(self, paths, gid: str, session_id: str) -> None:
+        from orchestrator.execution.manifest import ManifestStore
+        from orchestrator.model import GroupManifestEntry, RunManifest, SessionEntry, SessionRole
+
+        manifest = RunManifest(run_id="r1", plan_path="p.md", base_session_id="base-0")
+        manifest.groups[gid] = GroupManifestEntry(
+            group_id=gid,
+            group_name=gid,
+            summary="s",
+            sessions=[SessionEntry(session_id=session_id, role=SessionRole.CODER)],
+        )
+        ManifestStore(paths).save(manifest)
+
+    def _fake_resume_runner(self, *, resolve: bool, integration_branch: str = ""):
+        """Mirrors what conflict_resolve.md actually asks a coder to do: merge
+        the integration branch into its own worktree by hand and resolve the
+        conflict markers — not just overwrite the file, since a plain
+        overwrite (with no merge ever attempted) diverges again exactly the
+        same way on the retry's own refresh."""
+        import json as _json
+
+        from orchestrator.execution.sessions import RoundResult, RoundUsage
+
+        class FakeResumeRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+                self.calls += 1
+                if resolve:
+                    subprocess.run(
+                        ["git", "merge", integration_branch], cwd=cwd, capture_output=True
+                    )
+                    (cwd / "shared.txt").write_text("resolved version\n")
+                    _git(cwd, "add", "-A")
+                    _git(cwd, "commit", "--no-edit")
+                body = {
+                    "status": "completed",
+                    "summary": "resolved",
+                    "verification_results": [],
+                    "surprises": [],
+                }
+                text = f'<run-report status="completed">\n{_json.dumps(body)}\n</run-report>'
+                return RoundResult(
+                    session_id=session_id, text=text, usage=RoundUsage(), envelope={}
+                )
+
+        return FakeResumeRunner()
+
+    def test_warm_resume_resolves_and_the_retry_merges(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")
+        self._manifest_with_coder(paths, "g2", "coder-1")
+        runner = self._fake_resume_runner(resolve=True, integration_branch=merger.branch)
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=1),
+            paths=paths,
+        )
+        deps.merge_group(g2)  # must not raise
+        assert runner.calls == 1
+        assert deps.commits_ahead(g2) == 0
+
+    def test_attempts_never_exceed_the_configured_bound(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolveConflict
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")
+        self._manifest_with_coder(paths, "g2", "coder-1")
+        runner = self._fake_resume_runner(resolve=False)  # never actually fixes the conflict
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=1),
+            paths=paths,
+        )
+        with pytest.raises(ResolveConflict):
+            deps.merge_group(g2)
+        assert runner.calls == 1  # exactly the configured bound, never more
+
+    def test_no_reachable_session_raises_on_the_first_conflict_with_zero_attempts(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolveConflict
+
+        repo = self._repo(tmp_path)
+        merger = IntegrationMerger(repo, "r1")
+        merger.ensure()
+        g2, wt2 = self._conflicting_groups(repo, merger)
+        paths = RunPaths(repo, "r1")  # no manifest written — no session to find
+        runner = self._fake_resume_runner(resolve=True)
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=runner,
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(max_conflict_resolve_attempts=3),
+            paths=paths,
+        )
+        with pytest.raises(ResolveConflict):
+            deps.merge_group(g2)
+        assert runner.calls == 0
+
+    def test_preflight_failure_on_resolve_path_logs_branch_reason_and_retry_command(self, tmp_path):
+        from orchestrator.cli import _resolve_deps
+        from orchestrator.config import ExecutionConfig, PreflightConfig
+        from orchestrator.execution.manifest import ManifestStore, RunPaths, log_event
+        from orchestrator.execution.merge import IntegrationMerger
+        from orchestrator.execution.scheduler import ResolvePreflightFailed
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        repo = self._repo(tmp_path)
+        paths = RunPaths(repo, "r1")
+        merger = IntegrationMerger(
+            repo,
+            "r1",
+            preflight_config=PreflightConfig(check_command=["false"]),
+            preflight_output_dir=paths.group_dir,
+            log=lambda message: log_event(paths, message),
+        )
+        merger.ensure()
+        g1 = make_group("g1", files=["own.txt"])
+        wt1 = create_worktree(
+            repo,
+            run_id="r1",
+            group_id="g1",
+            name=g1.name,
+            branch=group_branch("r1", "g1"),
+            start_point=merger.tip(),
+        )
+        (wt1 / "own.txt").write_text("g1 work\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-m", "g1 work")
+
+        deps = _resolve_deps(
+            repo,
+            "r1",
+            merger,
+            runner=self._fake_resume_runner(resolve=True),
+            store=ManifestStore(paths),
+            execution=ExecutionConfig(),
+            paths=paths,
+        )
+        with pytest.raises(ResolvePreflightFailed):
+            deps.merge_group(g1)
+        log_text = paths.event_log_path.read_text()
+        assert group_branch("r1", "g1") in log_text
+        assert "retry" in log_text
+        assert "smart-mcps-orchestrate retry" in log_text
 
 
 class TestWorkspaceProvisioning:
@@ -1252,6 +1618,70 @@ class TestStatus:
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out and "r2" in out
+
+
+class TestStatusDriverLiveness:
+    """Plan U11: `status` reports whether a process is driving the run — the
+    advisory flock, not `state.json`'s worker pids — separately from whether it
+    looks like it is making progress, read from the freshest active group's
+    heartbeat file mtime."""
+
+    def _write_state(self, tmp_path, *, group_state: GroupState = GroupState.RUNNING) -> RunPaths:
+        paths = RunPaths(tmp_path, "r1")
+        atomic_write_text(
+            paths.state_path,
+            RunState(
+                run_id="r1", groups={"g1": GroupRunState(state=group_state)}
+            ).model_dump_json(),
+        )
+        return paths
+
+    def test_no_driver_record_at_all(self, tmp_path, capsys):
+        self._write_state(tmp_path)
+        exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no process is driving this run" in capsys.readouterr().out
+
+    def test_a_process_holding_the_lock_is_reported_as_driving(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+            assert exit_code == 0
+            out = capsys.readouterr().out
+            assert "a process is driving this run" in out
+        finally:
+            lock.release()
+
+    def test_none_is_driving_once_the_lock_is_released(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        lock = DriverLock(paths)
+        lock.acquire()
+        lock.release()
+        exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        assert exit_code == 0
+        assert "no process is driving this run" in capsys.readouterr().out
+
+    def test_a_stale_heartbeat_is_reported_from_the_files_mtime(self, tmp_path, capsys):
+        paths = self._write_state(tmp_path)
+        hb_path = paths.group_dir("g1") / "heartbeat.json"
+        hb_path.parent.mkdir(parents=True, exist_ok=True)
+        # Content lies and claims "just now" — only the mtime should count.
+        atomic_write_text(hb_path, '{"updated_at": "2099-01-01T00:00:00+00:00"}')
+        old = time.time() - (STALE_HEARTBEAT_SECONDS + 30)
+        os.utime(hb_path, (old, old))
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+            assert exit_code == 0
+            out = capsys.readouterr().out
+            assert "a process is driving this run" in out
+            assert "stale" in out
+        finally:
+            lock.release()
 
 
 class TestUiCommand:

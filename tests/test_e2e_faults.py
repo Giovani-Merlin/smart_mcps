@@ -79,11 +79,12 @@ def test_fault_empty_branch_is_refused_and_never_completes(repo, fake_home, caps
     """A scripted coder that writes files but never commits produces a branch
     with zero commits ahead of the integration tip. IntegrationMerger.merge_group
     refuses that direct merge attempt (plan U1) — the group can never reach
-    ``completed`` through the review loop's own merge. Because U2's autonomous
-    resolve is wired by default, the orchestrator (not the worker) then commits
-    the stranded uncommitted work itself and merges it — landing ``resolved``,
-    a state the plan explicitly keeps distinct from ``completed`` precisely
-    because it never had that direct, reviewed merge succeed."""
+    ``completed`` through the review loop's own merge, and the resulting
+    MergeError is not a work judgement (plan U1 crash-recovery inversion: only
+    GroupFailure/ReportError reach terminal FAILED), so the group lands
+    INTERRUPTED rather than being silently rescued into ``resolved`` — a plain
+    `resume` is what would pick it back up, committing the stranded file on
+    worktree re-entry (plan U2) and re-running the review loop for real."""
     run_id = "rf1"
     write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
     write_config(repo, fake_home)
@@ -107,21 +108,21 @@ def test_fault_empty_branch_is_refused_and_never_completes(repo, fake_home, caps
         ["run", "--repo", str(repo), "--run-id", run_id, "--intensity", "autonomous"],
         llm_runner=StubLlm(),
     )
-    assert exit_code == 1  # not every group completed
+    assert exit_code == 2  # interrupted, not a terminal failure
     state = state_of(repo, run_id)
-    # Never completed through the direct merge path — U1's refusal is real, even
-    # though U2's separate resolve mechanism goes on to rescue the stranded work.
-    assert state["groups"]["g1"]["state"] != "completed"
-    assert state["groups"]["g1"]["state"] == "resolved"
+    # Never completed through the direct merge path — U1's refusal is real —
+    # and the MergeError it raises is an envelope failure, not a work judgement,
+    # so it lands INTERRUPTED rather than terminal FAILED/RESOLVED.
+    assert state["groups"]["g1"]["state"] == "interrupted"
 
     out = capsys.readouterr().out
     assert "has no commits ahead of" in out and "refusing to merge nothing" in out
 
-    # the resolve routine's own merge (a distinct operation from the review
-    # loop's direct merge, which never ran to success) is what lands g1.
+    # INTERRUPTED never triggers resolve (plan U2): nothing lands on the
+    # integration branch until an operator `resume`s the group.
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
-    assert f"merge({run_id}): g1" in log
-    assert f"resolve({run_id}): g1" in log
+    assert f"merge({run_id}): g1" not in log
+    assert f"resolve({run_id}): g1" not in log
 
 
 # --------------------------------------------------------------- stale base
@@ -335,7 +336,19 @@ def test_fault_overlap_gate_escalates_with_hitl_on(repo, fake_home):  # noqa: F8
 
     def run() -> None:
         outcome["code"] = main(
-            ["run", "--repo", str(repo), "--run-id", run_id, "--hitl", "--sequential"],
+            [
+                "run",
+                "--repo",
+                str(repo),
+                "--run-id",
+                run_id,
+                "--hitl",
+                "--sequential",
+                # U2/U9's overlap-gate release under test here, not R41's default
+                # halt policy (plan U3), which would keep g2 held after g1 fails.
+                "--on-failure",
+                "overlap",
+            ],
             llm_runner=StubLlm(),
         )
 
@@ -394,6 +407,10 @@ def test_fault_overlap_gate_holds_then_releases_with_hitl_off(repo, fake_home): 
             "--sequential",
             "--intensity",
             "autonomous",
+            # U2/U9's overlap-gate release under test here, not R41's default
+            # halt policy (plan U3), which would keep g2 held after g1 fails.
+            "--on-failure",
+            "overlap",
         ],
         llm_runner=StubLlm(),
     )
@@ -459,3 +476,40 @@ def test_fault_typed_denial_interrupts_resumes_and_costs_no_rewrite(repo, fake_h
     manifest = manifest_of(repo, run_id)
     coder_sessions = [s for s in manifest["groups"]["g1"]["sessions"] if s["role"] == "coder"]
     assert len(coder_sessions) == 1  # resumed the same session, no second fork
+
+
+# ----------------------------------------------------- U3/R41: on_group_failure
+
+
+def test_on_failure_flag_overrides_config_and_is_logged_once(repo, fake_home):  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
+    """--on-failure overrides the config-file value, and the resolved policy is
+    recorded once in logs/run.log (plan U3/R41)."""
+    run_id = "rpol"
+    write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
+    write_config(repo, fake_home, '[execution]\non_group_failure = "halt"\n')
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry_completed({"g1.out": "done\n"}, "g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--intensity",
+            "autonomous",
+            "--on-failure",
+            "overlap",
+        ],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+    log = RunPaths(repo, run_id).event_log_path.read_text()
+    lines = [line for line in log.splitlines() if "on_group_failure=" in line]
+    assert len(lines) == 1  # logged exactly once
+    assert "on_group_failure=overlap" in lines[0]  # the flag won over the config file

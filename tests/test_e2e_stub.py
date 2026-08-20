@@ -256,8 +256,10 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     for gid in gids:
         assert f"merge({run_id}): {gid}" in log
-    remaining = [p.name for p in (repo / ".worktrees").iterdir()]
-    assert remaining == [f"run-{run_id}-integration"]
+    # plan U2/R19: worktrees are run-scoped under .worktrees/<run_id>/…, so only
+    # the integration worktree survives inside that run's directory.
+    remaining = [p.name for p in (repo / ".worktrees" / run_id).iterdir()]
+    assert remaining == ["integration"]
 
     # verdict artifacts of the warm loop persisted round-by-round
     group_dir = repo / ".orchestrator" / "runs" / run_id / "groups" / gids[0]

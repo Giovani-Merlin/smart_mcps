@@ -245,9 +245,11 @@ class TestConfig:
 
     def test_breaker_default_context_limit_matches_measured_reality(self):
         """Plan U7: with no config file present, the breaker's context token
-        limit is 200000 (the 120k default retired healthy coders once the
-        usage signal was fixed to read actual context occupancy)."""
-        assert load_config(None).breaker.context_token_limit == 200_000
+        limit is 250000 (the 120k default retired healthy coders once the usage
+        signal was fixed to read actual context occupancy; raised 200k -> 250k
+        on 2026-08-20 to sit just above the 200k sizing budget — see
+        docs/2026-08-20-estimator-underestimation-findings.md)."""
+        assert load_config(None).breaker.context_token_limit == 250_000
 
     def test_missing_file_falls_back_to_defaults(self, tmp_path):
         assert load_config(tmp_path / "absent.toml") == OrchestratorConfig()
@@ -261,4 +263,4 @@ class TestConfig:
         assert config.estimator.token_budget == 50_000
         assert config.difficulty.d_review == 0.2
         # untouched sections keep defaults
-        assert config.breaker.context_token_limit == 200_000
+        assert config.breaker.context_token_limit == 250_000

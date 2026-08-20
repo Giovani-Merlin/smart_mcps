@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -25,7 +26,18 @@ class WorktreeRefreshConflict(WorktreeError):
     conflict (plan U6). Distinct from ``WorktreeError`` so the scheduler can
     classify it ``INTERRUPTED`` (resumable) instead of terminal ``FAILED`` — the
     group's committed work is valid, only the merge needs a human or a later
-    resume to resolve."""
+    resume to resolve.
+
+    ``paths`` carries the conflicted file names (plan U4): merge.py's
+    ``merge_group`` re-raises this as the existing ``MergeConflict`` conflict
+    ladder, which needs the same file list ``_groups_owning`` already keys off
+    of — and by the time the exception propagates, the aborted merge has erased
+    the conflict markers this would otherwise have to be re-derived from.
+    """
+
+    def __init__(self, message: str, paths: list[str] | None = None):
+        super().__init__(message)
+        self.paths = paths or []
 
 
 # Repo-global git mutators a worker must never run (plan U5). ``refs/stash`` is
@@ -63,8 +75,44 @@ def slugify(name: str, max_len: int = 40) -> str:
     return slug[:max_len].rstrip("-") or "group"
 
 
-def worktree_path(repo_root: Path, group_id: str, name: str) -> Path:
+def worktree_path(repo_root: Path, run_id: str, group_id: str, name: str) -> Path:
+    """Run-scoped worktree path (plan U2, R19): ``<repo>/.worktrees/<run_id>/…`` —
+    nested under the repo root, so the infinity-skills ingest allowlist's
+    substring match on the encoded cwd still holds. The integration worktree
+    (``group_id == "integration"``) gets no slug suffix, so it resolves to
+    exactly ``<repo>/.worktrees/<run_id>/integration``.
+    """
+    if group_id == "integration":
+        return repo_root / ".worktrees" / run_id / "integration"
+    return repo_root / ".worktrees" / run_id / f"{group_id}-{slugify(name)}"
+
+
+def _legacy_worktree_path(repo_root: Path, group_id: str, name: str) -> Path:
+    """Pre-U2 (run-unscoped) worktree path — kept only so ``create_worktree`` can
+    adopt one left behind by an older orchestrator version (plan R20)."""
     return repo_root / ".worktrees" / f"{group_id}-{slugify(name)}"
+
+
+def existing_worktree_path(repo_root: Path, run_id: str, group_id: str, name: str) -> Path | None:
+    """Where this run's worktree actually is on disk, or ``None``.
+
+    ``worktree_path`` says where a worktree *would* go under the current
+    (run-scoped) layout. A run started before U2 landed has its worktrees at the
+    legacy run-unscoped paths, and only ``create_worktree`` adopts those — so any
+    other caller that assumes the new layout is wrong about a pre-U2 run. Readers
+    that merely need to *find* an existing worktree use this instead, which
+    prefers the run-scoped path and falls back to the legacy one.
+
+    The integration worktree's legacy name is not ``integration``: it was created
+    as ``group_id=f"run-{run_id}", name="integration"``, so it resolves to
+    ``.worktrees/run-<run_id>-integration``.
+    """
+    current = worktree_path(repo_root, run_id, group_id, name)
+    if current.is_dir():
+        return current
+    legacy_gid = f"run-{run_id}" if group_id == "integration" else group_id
+    legacy = _legacy_worktree_path(repo_root, legacy_gid, name)
+    return legacy if legacy.is_dir() else None
 
 
 def group_branch(run_id: str, group_id: str) -> str:
@@ -79,6 +127,11 @@ def integration_branch(run_id: str) -> str:
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    # A missing cwd otherwise surfaces as a bare `FileNotFoundError: [Errno 2]`
+    # naming the directory but not the git command or why it was expected —
+    # which is how a wrong-layout worktree path reads as an unrelated crash.
+    if not cwd.is_dir():
+        raise WorktreeError(f"git {' '.join(args)}: working directory does not exist: {cwd}")
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 
@@ -109,23 +162,47 @@ def _registered_branch(repo_root: Path, path: Path) -> str | None:
 
 
 def create_worktree(
-    repo_root: Path, *, group_id: str, name: str, branch: str, start_point: str
+    repo_root: Path, *, run_id: str, group_id: str, name: str, branch: str, start_point: str
 ) -> Path:
     """Create (or reuse) the group's worktree. Idempotent: an existing worktree
     already on ``branch`` is returned as-is; an existing branch without a worktree
     is checked out where it left off (the resume case).
 
-    Both re-entry paths refresh onto ``start_point`` (plan U1, amended R2) before
-    returning: a resumed group's branch is otherwise never brought up to date with
-    work merged while it was down, and worktrees are not removed on interrupt, so
-    the existing-worktree path is the *more* common resume case, not an edge one.
+    A registered legacy (run-unscoped) worktree still on ``branch`` is adopted in
+    place via ``git worktree move`` rather than duplicated (plan R20) — a plain
+    ``mv`` would desync git's own worktree registry.
+
+    Both re-entry paths commit any stranded uncommitted/untracked work (plan R3)
+    before refreshing onto ``start_point`` (plan U1, amended R2): a resumed
+    group's branch is otherwise never brought up to date with work merged while
+    it was down, and worktrees are not removed on interrupt, so the
+    existing-worktree path is the *more* common resume case, not an edge one.
     """
-    path = worktree_path(repo_root, group_id, name)
+    path = worktree_path(repo_root, run_id, group_id, name)
+    if not path.exists():
+        legacy = _legacy_worktree_path(repo_root, group_id, name)
+        if legacy.exists() and legacy != path and _registered_branch(repo_root, legacy) == branch:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            result = _git(repo_root, "worktree", "move", str(legacy), str(path))
+            if result.returncode != 0:
+                if "cross-device" not in result.stderr.lower():
+                    raise WorktreeError(
+                        f"git worktree move {legacy} {path} failed: {result.stderr.strip()[:500]}"
+                    )
+                # `git worktree move` shells out to a plain rename, which fails
+                # EXDEV when .worktrees/<run_id>/ lands on a different mount
+                # (e.g. a tmpfs /tmp) than the legacy directory it is adopting.
+                # shutil.move falls back to copy+delete across devices; `git
+                # worktree repair` then re-links both sides of the gitdir
+                # pointer that a plain move leaves stale.
+                shutil.move(str(legacy), str(path))
+                _git_ok(repo_root, "worktree", "repair", str(path))
     if path.exists():
         existing = _registered_branch(repo_root, path)
         if existing == branch:
             _ensure_worktree_config_extension(path)
-            _refresh_onto_tip(path, group_id=group_id, tip=start_point)
+            commit_all(path, f"recover({run_id}): {group_id} work stranded by an interrupted run")
+            _refresh_onto_tip(path, group_id=group_id, branch=branch, tip=start_point)
             return path
         raise WorktreeError(
             f"{path} exists but is not a worktree on {branch}"
@@ -135,7 +212,8 @@ def create_worktree(
     if _branch_exists(repo_root, branch):
         _git_ok(repo_root, "worktree", "add", str(path), branch)
         _ensure_worktree_config_extension(path)
-        _refresh_onto_tip(path, group_id=group_id, tip=start_point)
+        commit_all(path, f"recover({run_id}): {group_id} work stranded by an interrupted run")
+        _refresh_onto_tip(path, group_id=group_id, branch=branch, tip=start_point)
     else:
         _git_ok(repo_root, "worktree", "add", "-b", branch, str(path), start_point)
         _ensure_worktree_config_extension(path)
@@ -150,7 +228,7 @@ def _ensure_worktree_config_extension(path: Path) -> None:
     _git_ok(path, "config", "extensions.worktreeConfig", "true")
 
 
-def _refresh_onto_tip(worktree: Path, *, group_id: str, tip: str) -> None:
+def _refresh_onto_tip(worktree: Path, *, group_id: str, branch: str, tip: str) -> None:
     """Bring a re-entered group worktree's branch up to date with ``tip``.
 
     Plain ``git merge``, never ``--ff-only`` and never a rebase (plan U1, amended
@@ -170,13 +248,18 @@ def _refresh_onto_tip(worktree: Path, *, group_id: str, tip: str) -> None:
         _git(worktree, "merge", "--abort")
         raise WorktreeRefreshConflict(
             f"refreshing group {group_id}'s worktree onto {tip} conflicted on: "
-            f"{', '.join(conflicted)}"
+            f"{', '.join(conflicted)}",
+            paths=conflicted,
         )
     # git refused before starting the merge — e.g. uncommitted local changes
-    # would be overwritten. Nothing to abort (no MERGE_HEAD was created), and the
-    # uncommitted changes are exactly what must survive untouched.
+    # would be overwritten (a reason the stranded-work commit in create_worktree
+    # did not clear, e.g. a file git refuses to overwrite for another reason).
+    # Nothing to abort (no MERGE_HEAD was created), and the uncommitted changes
+    # are exactly what must survive untouched.
     raise WorktreeError(
-        f"refreshing group {group_id}'s worktree onto {tip} failed: {result.stderr.strip()[:500]}"
+        f"refreshing group {group_id}'s worktree (branch {branch}) onto {tip} failed: "
+        f"{result.stderr.strip()[:500]} — resolve the conflict by hand in the worktree, "
+        "then `retry` the group"
     )
 
 
@@ -234,6 +317,31 @@ def _report_sync_failure(message: str, log: Callable[[str], None] | None) -> Non
     print(f"warning: {message}", file=sys.stderr)
     if log is not None:
         log(message)
+
+
+def ensure_excluded(worktree: Path, relative_path: str) -> None:
+    """Add ``relative_path`` to this worktree's local exclude file (plan U6),
+    never the target repo's tracked ``.gitignore``.
+
+    ``git rev-parse --git-path info/exclude`` is what "this worktree's own
+    exclude file" means to git itself: ``info/exclude`` lives under the
+    *common* gitdir every linked worktree of a repo shares (there is no
+    per-worktree exclude file at all — ``.git`` inside a linked worktree is a
+    file pointing at the common dir, not a directory of its own), so this
+    write is idempotent and safe to repeat across every group's worktree and
+    every round.
+    """
+    exclude_path = Path(_git_ok(worktree, "rev-parse", "--git-path", "info/exclude").strip())
+    if not exclude_path.is_absolute():
+        exclude_path = worktree / exclude_path
+    existing = exclude_path.read_text() if exclude_path.is_file() else ""
+    if relative_path in existing.splitlines():
+        return
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    with exclude_path.open("a") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(f"{relative_path}\n")
 
 
 def is_dirty(worktree: Path) -> bool:

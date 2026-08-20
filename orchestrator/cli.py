@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from orchestrator.config import (
     EscalationConfig,
+    ExecutionConfig,
     OrchestratorConfig,
     SessionConfig,
     UsageLimitConfig,
@@ -45,6 +46,7 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
+from orchestrator.execution.driver import DriverAlreadyRunning, DriverLock, driver_status_line
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     GroupingNameError,
@@ -58,22 +60,36 @@ from orchestrator.execution.manifest import (
     snapshot_grouping,
     validate_grouping_name,
 )
+from orchestrator.execution.calibrate import calibrate_run, format_calibration
+from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
+from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
+from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
+    HoldReason,
     ResolveConflict,
     ResolveDeps,
+    ResolvePreflightFailed,
     RunAbort,
     RunState,
+    RunStateVersionError,
     Scheduler,
     SchedulerError,
 )
-from orchestrator.execution.sessions import SessionError, SessionRunner
+from orchestrator.execution.sessions import (
+    ReportError,
+    SessionError,
+    SessionRunner,
+    nudge_until_report,
+)
 from orchestrator.execution.worktrees import (
     WorktreeError,
+    _git,
     _git_ok,
     commit_all,
     create_worktree,
@@ -104,11 +120,13 @@ from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
+    CoderReport,
     Group,
     GroupingResult,
     HumanAction,
     ReviewIntensity,
     RunManifest,
+    SessionRole,
     Surprise,
 )
 
@@ -250,6 +268,25 @@ def main(
     answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    retry_cmd = subparsers.add_parser(
+        "retry", help="release a terminally failed or quarantined group (operator override)"
+    )
+    retry_cmd.add_argument("run_id", help="the run holding the group")
+    retry_cmd.add_argument("group_id", help="the group to retry")
+    retry_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
+    finish_cmd = subparsers.add_parser(
+        "finish", help="push the integration branch, open a draft PR, and tear down merged groups"
+    )
+    finish_cmd.add_argument("run_id", help="the run to finish")
+    finish_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
+    calibrate_cmd = subparsers.add_parser(
+        "calibrate", help="compare a finished run's token estimates against what it actually cost"
+    )
+    calibrate_cmd.add_argument("run_id", help="the run to calibrate against")
+    _add_common_args(calibrate_cmd)
+
     ui_cmd = subparsers.add_parser("ui", help="serve the Observatory web UI (local, no auth)")
     ui_cmd.add_argument(
         "--registry",
@@ -280,6 +317,12 @@ def main(
         return _cmd_status(args)
     if args.command == "answer":
         return _cmd_answer(args)
+    if args.command == "retry":
+        return _cmd_retry(args)
+    if args.command == "finish":
+        return _cmd_finish(args)
+    if args.command == "calibrate":
+        return _cmd_calibrate(args)
     if args.command == "ui":
         return _cmd_ui(args)
     parser.error(f"unknown command {args.command!r}")
@@ -328,6 +371,16 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         default=None,
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
+    cmd.add_argument(
+        "--on-failure",
+        default=None,
+        choices=["halt", "overlap"],
+        help=(
+            "admission policy once a group ends FAILED or INTERRUPTED (plan U3/R41): "
+            "'halt' (default) admits no further group; 'overlap' keeps only the "
+            "file-overlap gate"
+        ),
+    )
     _add_auto_resume_arg(cmd)
 
 
@@ -355,6 +408,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         execution_updates["concurrency"] = args.concurrency
     if getattr(args, "permission_mode", None):
         execution_updates["permission_mode"] = args.permission_mode
+    if getattr(args, "on_failure", None) is not None:
+        execution_updates["on_group_failure"] = args.on_failure
     estimator_updates: dict = {}
     if getattr(args, "token_budget", None) is not None:
         estimator_updates["token_budget"] = args.token_budget
@@ -970,179 +1025,238 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         f"run {run_id}: {len(groups)} group(s), {mode}, {hitl}, "
         f"permission-mode {config.execution.permission_mode}, {confinement}, "
         f"{_auto_resume_line(config.session.usage_limit)}, "
+        f"on-failure {config.execution.on_group_failure}, "
         f"cache {_cache_root(config.session)}",
         flush=True,
     )
     if intensity_override_line is not None:
         print(intensity_override_line)
 
-    gate = build_usage_limit_gate(config, paths)
-    runner = build_session_runner(config, gate)
+    driver_lock = DriverLock(paths)
     try:
-        runner.preflight()
-    except SessionError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        gate = build_usage_limit_gate(config, paths)
+        runner = build_session_runner(config, gate)
+        try:
+            runner.preflight()
+        except SessionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
-    # The run keeps its own frozen copy of the grouping it started with (plan
-    # U10): a later `group --name <same>` against a different plan must not be
-    # able to rewrite a finished run's history. Done only after preflight
-    # succeeds, so a dead worker CLI never leaves a run directory behind.
-    if not resume:
-        snapshot_grouping(source_grouping_dir, paths.run_dir)
+        # Acquired only once preflight has passed, so a dead worker CLI still
+        # never leaves a run directory behind (the lock file lives under
+        # `run_dir`, same as the frozen grouping snapshot right below it) — and
+        # held for the rest of this function (plan U11): a second `run`/`resume`
+        # over the same run id must fail here, fast, rather than after paying
+        # for a base-session fork a losing race would then have no use for.
+        try:
+            driver_lock.acquire()
+        except DriverAlreadyRunning as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
-    merger = IntegrationMerger(repo_root, run_id)
-    try:
-        merger.ensure()
-    except WorktreeError as exc:
-        print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
-        return 1
+        # The run keeps its own frozen copy of the grouping it started with (plan
+        # U10): a later `group --name <same>` against a different plan must not be
+        # able to rewrite a finished run's history. Done only after preflight
+        # succeeds, so a dead worker CLI never leaves a run directory behind.
+        if not resume:
+            snapshot_grouping(source_grouping_dir, paths.run_dir)
+        # Plan U3/R41: the resolved admission policy, recorded once — an operator
+        # reading logs/run.log after the fact must be able to tell whether a halted
+        # run was the default or an explicit --on-failure override.
+        log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
 
-    # The lifecycle log is always on (R10): the run-start line lands in every
-    # mode; only the escalation channel itself is HITL-gated. Built before the
-    # Scheduler (plan U2): a FAILED group's resolve routine needs the same
-    # broker/policy the review loop's escalations already use.
-    if config.escalation.enabled:
-        broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
-        policy: EscalationPolicy | None = EscalationPolicy(
-            config.escalation.intensity, config.escalation.source
+        merger = IntegrationMerger(
+            repo_root,
+            run_id,
+            preflight_config=config.preflight,
+            preflight_output_dir=paths.group_dir,
+            log=lambda message: log_event(paths, message),
         )
-        log_event(
-            paths,
-            f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
-            f"source={config.escalation.source}, "
-            f"timeout={config.escalation.timeout_s}",
-        )
-    else:
-        broker = None
-        policy = None
-        log_event(paths, f"run {run_id} started (autonomous)")
+        try:
+            merger.ensure()
+        except WorktreeError as exc:
+            print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
+            return 1
 
-    resolve_deps = _resolve_deps(repo_root, run_id, merger)
+        # The lifecycle log is always on (R10): the run-start line lands in every
+        # mode; only the escalation channel itself is HITL-gated. Built before the
+        # Scheduler (plan U2): a FAILED group's resolve routine needs the same
+        # broker/policy the review loop's escalations already use.
+        if config.escalation.enabled:
+            broker: EscalationBroker | None = EscalationBroker(paths, config.escalation)
+            policy: EscalationPolicy | None = EscalationPolicy(
+                config.escalation.intensity, config.escalation.source
+            )
+            log_event(
+                paths,
+                f"run {run_id} started with HITL: intensity={config.escalation.intensity}, "
+                f"source={config.escalation.source}, "
+                f"timeout={config.escalation.timeout_s}",
+            )
+        else:
+            broker = None
+            policy = None
+            log_event(paths, f"run {run_id} started (autonomous)")
 
-    # Construction is circular on paper (scheduler → executor → deps → runner →
-    # scheduler.tracker); the executor closes over a slot assigned once deps exist —
-    # it is only invoked inside scheduler.run().
-    executor_slot: list[Executor] = []
-
-    async def executor(ctx):  # noqa: ANN001 — GroupContext, kept light for the closure
-        return await executor_slot[0](ctx)
-
-    try:
-        scheduler = Scheduler(
-            groups=groups,
+        resolve_deps = _resolve_deps(
+            repo_root,
+            run_id,
+            merger,
+            runner=runner,
+            store=store,
+            execution=config.execution,
             paths=paths,
-            executor=executor,
-            config=config.execution,
-            resume=resume,
+        )
+
+        # Construction is circular on paper (scheduler → executor → deps → runner →
+        # scheduler.tracker); the executor closes over a slot assigned once deps exist —
+        # it is only invoked inside scheduler.run().
+        executor_slot: list[Executor] = []
+
+        async def executor(ctx):  # noqa: ANN001 — GroupContext, kept light for the closure
+            return await executor_slot[0](ctx)
+
+        try:
+            scheduler = Scheduler(
+                groups=groups,
+                paths=paths,
+                executor=executor,
+                config=config.execution,
+                breaker=config.breaker,
+                resume=resume,
+                broker=broker,
+                policy=policy,
+                resolve=resolve_deps,
+            )
+        except (SchedulerError, RunStateVersionError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        runner.tracker = scheduler.tracker
+        # Wired after construction (plan U7): the broker is built before the
+        # scheduler exists (the scheduler's resolve routine needs it), so its
+        # stdout line naming blocked groups can only be plugged in here.
+        if broker is not None:
+            broker.pending_groups_provider = scheduler.pending_group_ids
+
+        if resume:
+            if persisted_manifest is None:
+                print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
+                return 1
+            manifest = persisted_manifest
+            if not manifest.base_session_id:
+                print("error: manifest has no base session — start a fresh run", file=sys.stderr)
+                return 1
+            base_session_id = manifest.base_session_id
+        else:
+            # Establishing the base session is the *first* long silence an operator
+            # meets — it precedes every group, so no group heartbeat exists yet and
+            # the run said nothing at all until it returned. Same machinery as a
+            # group's, run-scoped: 15s file tick, one log line a minute.
+            base_heartbeat = RoundHeartbeat(
+                paths, None, log=lambda message: log_event(paths, message)
+            )
+            base_heartbeat.mark_phase("establishing the base session")
+            base_heartbeat.start()
+            try:
+                base = runner.start_base(
+                    run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
+                )
+            except SessionError as exc:
+                print(f"error: base session failed: {exc}", file=sys.stderr)
+                return 1
+            finally:
+                base_heartbeat.stop()
+            base_session_id = base.session_id
+            manifest = RunManifest(
+                run_id=run_id,
+                plan_path=grouping.plan_path,
+                base_session_id=base_session_id,
+                grouping=grouping_name,
+                escalation=config.escalation,
+                usage_limit=config.session.usage_limit,
+                launch_branch=_resolve_launch_branch(repo_root),
+            )
+            store.save(manifest)
+            # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
+            # shared across runs and every planning cycle overwrites it, so without
+            # this a post-mortem reader renders whatever DAG is on disk today
+            # (ADR 0002). Resume keeps the snapshot its run started with.
+            atomic_write_text(paths.groups_path, groups_path.read_text())
+
+        workspace_for, base_ref_for = _workspace_seams(
+            repo_root, run_id, merger, paths, config.session
+        )
+        deps = ReviewDeps(
+            run_id=run_id,
+            runner=runner,
+            store=store,
+            manifest=manifest,
+            base_session_id=base_session_id,
+            breaker=config.breaker,
+            execution=config.execution,
+            board=SurpriseBoard(paths),
+            workspace_for=workspace_for,
+            merge_group=merger.merge_group,
+            # The rewrite path is the run's other claude call, and it is a one-shot
+            # `claude -p` rather than a session — so it needs the same gate, applied
+            # at its own boundary.
+            rewrite_spec=_rewrite_provider(
+                plan_text,
+                with_usage_limit_retry(llm_runner or claude_json_runner, gate),
+                orch_dir / "failures",
+            ),
+            base_ref_for=base_ref_for,
             broker=broker,
             policy=policy,
-            resolve=resolve_deps,
         )
-    except SchedulerError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    runner.tracker = scheduler.tracker
-    # Wired after construction (plan U7): the broker is built before the
-    # scheduler exists (the scheduler's resolve routine needs it), so its
-    # stdout line naming blocked groups can only be plugged in here.
-    if broker is not None:
-        broker.pending_groups_provider = scheduler.pending_group_ids
+        executor_slot.append(make_executor(deps))
 
-    if resume:
-        if persisted_manifest is None:
-            print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
-            return 1
-        manifest = persisted_manifest
-        if not manifest.base_session_id:
-            print("error: manifest has no base session — start a fresh run", file=sys.stderr)
-            return 1
-        base_session_id = manifest.base_session_id
-    else:
-        # Establishing the base session is the *first* long silence an operator
-        # meets — it precedes every group, so no group heartbeat exists yet and
-        # the run said nothing at all until it returned. Same machinery as a
-        # group's, run-scoped: 15s file tick, one log line a minute.
-        base_heartbeat = RoundHeartbeat(paths, None, log=lambda message: log_event(paths, message))
-        base_heartbeat.mark_phase("establishing the base session")
-        base_heartbeat.start()
         try:
-            base = runner.start_base(
-                run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
-            )
-        except SessionError as exc:
-            print(f"error: base session failed: {exc}", file=sys.stderr)
+            with _interruptible_pause(gate):
+                asyncio.run(scheduler.run())
+        except RunAbort as exc:
+            # The operator stopped the run; state stays resumable (mid-flight groups
+            # restart from ready on `resume`).
+            print(f"run aborted by operator: {exc}", file=sys.stderr)
+            log_event(paths, f"run {run_id} aborted by operator: {exc}")
+            _print_outcomes(scheduler.state)
+            print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            # Ctrl-C previously left state.json indistinguishable from a live run, so
+            # the next reader had to diff mtimes against a worker transcript to find
+            # out the run was dead. Record it, say so, and point at resume.
+            scheduler.mark_interrupted()
+            log_event(paths, f"run {run_id} interrupted (SIGINT)")
+            print("\nrun interrupted", file=sys.stderr)
+            _print_outcomes(scheduler.state)
+            print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
+            return 130
+        except SchedulerError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            _print_outcomes(scheduler.state)
             return 1
-        finally:
-            base_heartbeat.stop()
-        base_session_id = base.session_id
-        manifest = RunManifest(
-            run_id=run_id,
-            plan_path=grouping.plan_path,
-            base_session_id=base_session_id,
-            grouping=grouping_name,
-            escalation=config.escalation,
-            usage_limit=config.session.usage_limit,
-        )
-        store.save(manifest)
-        # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
-        # shared across runs and every planning cycle overwrites it, so without
-        # this a post-mortem reader renders whatever DAG is on disk today
-        # (ADR 0002). Resume keeps the snapshot its run started with.
-        atomic_write_text(paths.groups_path, groups_path.read_text())
+        _maybe_auto_finish(repo_root, run_id, paths)
+        return _print_outcomes(scheduler.state)
+    finally:
+        driver_lock.release()
 
-    workspace_for, base_ref_for = _workspace_seams(repo_root, run_id, merger, paths, config.session)
-    deps = ReviewDeps(
-        run_id=run_id,
-        runner=runner,
-        store=store,
-        manifest=manifest,
-        base_session_id=base_session_id,
-        breaker=config.breaker,
-        execution=config.execution,
-        board=SurpriseBoard(paths),
-        workspace_for=workspace_for,
-        merge_group=merger.merge_group,
-        # The rewrite path is the run's other claude call, and it is a one-shot
-        # `claude -p` rather than a session — so it needs the same gate, applied
-        # at its own boundary.
-        rewrite_spec=_rewrite_provider(
-            plan_text,
-            with_usage_limit_retry(llm_runner or claude_json_runner, gate),
-            orch_dir / "failures",
-        ),
-        base_ref_for=base_ref_for,
-        broker=broker,
-        policy=policy,
-    )
-    executor_slot.append(make_executor(deps))
 
+def _maybe_auto_finish(repo_root: Path, run_id: str, paths: RunPaths) -> None:
+    """Invoke `finish` itself once every group is provably done (plan U8
+    Decisions) — completed/resolved *and* its branch an ancestor of the
+    integration tip; any other outcome just prints the command, and touches
+    no worktree or branch. Never raises: a finish failure is reported and the
+    run's own exit code still reflects the groups' outcomes."""
+    finish_cmd = f"smart-mcps-orchestrate finish --repo {repo_root} {run_id}"
+    ok, _ = run_is_finishable(repo_root, run_id)
+    if not ok:
+        print(f"finish when ready with: {finish_cmd}")
+        return
     try:
-        with _interruptible_pause(gate):
-            asyncio.run(scheduler.run())
-    except RunAbort as exc:
-        # The operator stopped the run; state stays resumable (mid-flight groups
-        # restart from ready on `resume`).
-        print(f"run aborted by operator: {exc}", file=sys.stderr)
-        log_event(paths, f"run {run_id} aborted by operator: {exc}")
-        _print_outcomes(scheduler.state)
-        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        # Ctrl-C previously left state.json indistinguishable from a live run, so
-        # the next reader had to diff mtimes against a worker transcript to find
-        # out the run was dead. Record it, say so, and point at resume.
-        scheduler.mark_interrupted()
-        log_event(paths, f"run {run_id} interrupted (SIGINT)")
-        print("\nrun interrupted", file=sys.stderr)
-        _print_outcomes(scheduler.state)
-        print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
-        return 130
-    except SchedulerError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        _print_outcomes(scheduler.state)
-        return 1
-    return _print_outcomes(scheduler.state)
+        finish_run(repo_root, run_id, log=lambda m: log_event(paths, m))
+    except FinishError as exc:
+        print(f"error: finish failed: {exc} — retry with: {finish_cmd}", file=sys.stderr)
 
 
 @contextmanager
@@ -1185,6 +1299,16 @@ def _default_run_id() -> str:
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
 
 
+def _resolve_launch_branch(repo_root: Path) -> str | None:
+    """The branch `run` was launched from (plan U8, R29), resolved once at run
+    start so `finish`'s PR base is a real branch, never `HEAD` and never a
+    commit sha. None on a detached HEAD."""
+    result = _git(repo_root, "symbolic-ref", "--short", "-q", "HEAD")
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def _workspace_seams(
     repo_root: Path,
     run_id: str,
@@ -1211,7 +1335,12 @@ def _workspace_seams(
         branch = group_branch(run_id, group.id)
         tip = merger.tip()
         path = create_worktree(
-            repo_root, group_id=group.id, name=group.name, branch=branch, start_point=tip
+            repo_root,
+            run_id=run_id,
+            group_id=group.id,
+            name=group.name,
+            branch=branch,
+            start_point=tip,
         )
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
@@ -1230,18 +1359,38 @@ def _workspace_seams(
     return workspace_for, base_ref_for
 
 
-def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> ResolveDeps:
+def _resolve_deps(
+    repo_root: Path,
+    run_id: str,
+    merger: IntegrationMerger,
+    *,
+    runner: SessionRunner,
+    store: ManifestStore,
+    execution: ExecutionConfig,
+    paths: RunPaths,
+) -> ResolveDeps:
     """Wires the scheduler's resolve routine (plan U2) to real git, translating
     ``MergeConflict`` into the scheduler's own ``ResolveConflict`` so scheduler.py
     never has to import merge/review machinery (review.py already imports
     scheduler.py — a reverse import there would cycle).
+
+    ``merge_for_resolve`` also carries U5's conflict ladder: up to
+    ``execution.max_conflict_resolve_attempts`` in-place resolution attempts,
+    warm-resuming the group's own recorded coder session, before giving up and
+    raising ``ResolveConflict`` — the same shape the approved path already
+    uses in ``_GroupExecution._resolve_conflict_in_place``, transplanted here
+    because the resolve path has no live ``_GroupExecution`` to call it on. A
+    Preflight failure is not a conflict: it raises ``ResolvePreflightFailed``,
+    which ``Scheduler._resolve_autonomously`` catches and turns into a
+    (non-run-stopping) FAILED outcome, the work committed and unmerged on the
+    group's own branch.
     """
 
     def branch_for(group: Group) -> str:
         return group_branch(run_id, group.id)
 
     def worktree_for(group: Group) -> Path:
-        return worktree_path(repo_root, group.id, group.name)
+        return worktree_path(repo_root, run_id, group.id, group.name)
 
     def commit_stranded(group: Group) -> bool:
         return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
@@ -1249,13 +1398,77 @@ def _resolve_deps(repo_root: Path, run_id: str, merger: IntegrationMerger) -> Re
     def commits_ahead_fn(group: Group) -> int:
         return commits_ahead(merger.ensure(), merger.branch, branch_for(group))
 
-    def merge_for_resolve(group: Group) -> None:
+    def latest_coder_session_id(gid: str) -> str | None:
+        """The group's own recorded coder session (plan U5): re-read from disk
+        at call time, since resolve can run long after ``_resolve_deps`` was
+        built and manifest state changes throughout the run."""
+        if not store.exists():
+            return None
+        manifest = store.load()
+        entry = manifest.groups.get(gid)
+        if entry is None:
+            return None
+        for session in reversed(entry.sessions):
+            if session.role == SessionRole.CODER:
+                return session.session_id
+        return None
+
+    def attempt_conflict_resolve(
+        group: Group, worktree: Path, session_id: str, exc: MergeConflict
+    ) -> bool:
         try:
-            merger.merge_group(group, worktree_for(group))
-        except MergeConflict as exc:
-            raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
-        except MergeError:
-            pass  # commits_ahead already gated this — defensive no-op
+            result = runner.resume(
+                session_id=session_id,
+                prompt=render_conflict_resolve_prompt(
+                    group, conflict_summary=str(exc), integration_branch=merger.branch
+                ),
+                cwd=worktree,
+            )
+            report, _ = nudge_until_report(runner, result, CoderReport, cwd=worktree)
+        except (SessionError, ReportError) as inner_exc:
+            log_event(
+                paths,
+                f"group {group.id}: resolve in-place conflict resolution attempt failed: {inner_exc}",
+            )
+            return False
+        if report.status != "completed":
+            log_event(
+                paths,
+                f"group {group.id}: resolve conflict resolution attempt ended ({report.status})",
+            )
+            return False
+        return True
+
+    def merge_for_resolve(group: Group) -> None:
+        worktree = worktree_for(group)
+        attempts_left = execution.max_conflict_resolve_attempts
+        while True:
+            try:
+                merger.merge_group(group, worktree)
+                return
+            except MergeConflict as exc:
+                session_id = latest_coder_session_id(group.id) if attempts_left > 0 else None
+                if session_id is None:
+                    raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+                attempts_left -= 1
+                log_event(
+                    paths,
+                    f"group {group.id}: resolve — attempting in-place conflict resolution "
+                    f"({attempts_left} attempt(s) left)",
+                )
+                if not attempt_conflict_resolve(group, worktree, session_id, exc):
+                    raise ResolveConflict(f"resolving group {group.id}: {exc}") from exc
+                # loop retries the merge against the resolved worktree
+            except PreflightFailure as exc:
+                retry_cmd = f"smart-mcps-orchestrate retry --repo {repo_root} {run_id} {group.id}"
+                log_event(
+                    paths,
+                    f"group {group.id}: resolve preflight failed on branch "
+                    f"{branch_for(group)}: {exc} — retry with: {retry_cmd}",
+                )
+                raise ResolvePreflightFailed(str(exc)) from exc
+            except MergeError:
+                return  # commits_ahead already gated this — defensive no-op
 
     return ResolveDeps(
         commit_stranded=commit_stranded,
@@ -1294,6 +1507,12 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
 
 
 def _print_outcomes(state: RunState) -> int:
+    """Print every group's outcome plus, for anything stalled, enough to act on
+    it without diffing state.json (plan U3/R41): its failure text, what it
+    holds and on which files, its branch, its re-entry count, and the command
+    to act on it. Read-only — it derives everything from the already-persisted
+    ``holds`` field each group carries from the scheduler's last admission
+    pass, so calling it never changes state.json."""
     print(f"\nrun {state.run_id}:")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
@@ -1302,11 +1521,66 @@ def _print_outcomes(state: RunState) -> int:
             line += f" (generation {entry.generation})"
         if entry.failure:
             line += f" — {entry.failure}"
+        if entry.quarantined:
+            line += " [quarantined]"
         print(line)
     completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
     if completed:
         print("all groups completed; merge the integration branch when ready")
         return 0
+
+    # Invert each group's persisted holds into "who does gid hold, and on what":
+    # a FAILURE_GATE hold on gid2 naming gid1 means gid1 is holding gid2.
+    holds_by: dict[str, list[tuple[str, list[str]]]] = {}
+    halted_by: str | None = None
+    not_admitted: list[str] = []
+    for held_gid, entry in state.groups.items():
+        for hold in entry.holds:
+            if hold.reason == HoldReason.FAILURE_GATE:
+                holds_by.setdefault(hold.group_id, []).append((held_gid, hold.files))
+            elif hold.reason == HoldReason.RUN_HALTED:
+                halted_by = hold.group_id
+                not_admitted.append(held_gid)
+    not_admitted.sort()
+
+    stalled = sorted(
+        gid
+        for gid, entry in state.groups.items()
+        if entry.state in (GroupState.FAILED, GroupState.INTERRUPTED)
+    )
+    for gid in stalled:
+        entry = state.groups[gid]
+        branch = group_branch(state.run_id, gid)
+        overlap = sorted(holds_by.get(gid, []))
+        held = (
+            "; ".join(f"{other} ({', '.join(files)})" for other, files in overlap)
+            if overlap
+            else "none"
+        )
+        command = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {gid}"
+            if entry.quarantined
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"  {gid} ({entry.state.value}): {entry.failure or 'no failure text recorded'} — "
+            f"holds: {held} — branch {branch} — reentry_count {entry.reentry_count} — {command}"
+        )
+
+    if halted_by is not None:
+        trigger_state = state.groups[halted_by].state.value
+        clears = (
+            f"smart-mcps-orchestrate retry --repo <repo> {state.run_id} {halted_by}"
+            if state.groups[halted_by].state == GroupState.FAILED
+            else f"smart-mcps-orchestrate resume {state.run_id}"
+        )
+        print(
+            f"\nrun halted: group {halted_by} ended {trigger_state}, so no further group "
+            f"was admitted — not admitted: {', '.join(not_admitted) if not_admitted else 'none'}. "
+            f"Fix {halted_by}, then `{clears}`; or re-run with `--on-failure overlap` "
+            "to admit as far as possible."
+        )
+
     interrupted = sorted(
         gid for gid, entry in state.groups.items() if entry.state == GroupState.INTERRUPTED
     )
@@ -1347,10 +1621,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
     manifest = store.load() if store.exists() else None
 
     print(f"run {state.run_id}")
+    # Said before the group list, because it changes how every line below
+    # reads: a RUNNING group under a run nothing is driving is not running.
+    # Two separate facts (plan U11): whether a process holds the driver lock
+    # at all, and — only if one does — whether it looks like it is still
+    # making progress, read from the freshest active group's heartbeat mtime
+    # rather than the driver record's own `updated_at` (which advances just
+    # because the process is alive, wedged or not).
+    active_group_ids = [
+        gid
+        for gid, entry in state.groups.items()
+        if entry.state in (GroupState.RUNNING, GroupState.REVIEWING, GroupState.MERGING)
+    ]
+    print(driver_status_line(paths, active_group_ids=active_group_ids))
     if state.interrupted_at is not None:
-        # Said before the group list, because it changes how every line below
-        # reads: a RUNNING group under an interrupted run is not running.
-        print(f"interrupted at {state.interrupted_at} — no process is driving this run")
+        print(f"interrupted at {state.interrupted_at}")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
         print(f"base session: {manifest.base_session_id}")
@@ -1400,6 +1685,71 @@ def _cmd_answer(args: argparse.Namespace) -> int:
         print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1
     print(f"answered {args.esc_id}: {args.action}")
+    return 0
+
+
+# --------------------------------------------------------------------- retry
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    """Release a terminally failed or quarantined group (plan U7): the
+    deliberate operator override — everything else in the system treats both
+    outcomes as something a plain `resume` must not touch on its own."""
+    repo_root = args.repo.resolve()
+    try:
+        retry_group(repo_root, args.run_id, args.group_id)
+    except RetryConflictError as exc:
+        print(
+            f"error: {exc} — conflicting file(s): {', '.join(exc.paths)}",
+            file=sys.stderr,
+        )
+        return 1
+    except RetryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"group {args.group_id} released — resume with: smart-mcps-orchestrate resume {args.run_id}"
+    )
+    return 0
+
+
+# -------------------------------------------------------------------- finish
+
+
+def _cmd_finish(args: argparse.Namespace) -> int:
+    """Push the integration branch, open a draft PR, tear down merged groups
+    (plan U8/U9) — callable directly by an operator, same routine `run`
+    invokes itself once every group is provably merged."""
+    repo_root = args.repo.resolve()
+    paths = RunPaths(repo_root, args.run_id)
+    if not paths.state_path.is_file():
+        print(f"error: no run state at {paths.state_path}", file=sys.stderr)
+        return 1
+    try:
+        finish_run(repo_root, args.run_id, log=lambda m: log_event(paths, m))
+    except FinishError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+# -------------------------------------------------------------------- calibrate
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    """Report what a finished run predicted against what it cost, so
+    ``coder_slack_multiplier`` can be set from accumulated runs rather than a
+    hand-measured sample. Read-only: it prints, it never edits config."""
+    repo_root = args.repo.resolve()
+    paths = RunPaths(repo_root, args.run_id)
+    if not paths.state_path.is_file():
+        print(f"error: no run state at {paths.state_path}", file=sys.stderr)
+        return 1
+    config = _load_config(args, repo_root)
+    if config is None:
+        return 1
+    calibration = calibrate_run(paths, config.estimator.coder_slack_multiplier)
+    print(format_calibration(args.run_id, calibration))
     return 0
 
 
