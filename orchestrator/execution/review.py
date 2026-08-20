@@ -73,6 +73,7 @@ from orchestrator.execution.streaming import TurnUsage
 from orchestrator.execution.worktrees import (
     diff_stat,
     ensure_excluded,
+    group_branch,
     integration_branch,
 )
 from orchestrator.model import (
