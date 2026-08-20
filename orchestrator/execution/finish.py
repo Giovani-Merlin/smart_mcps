@@ -33,6 +33,7 @@ from orchestrator.execution.worktrees import (
     _git,
     _git_ok,
     ensure_excluded,
+    existing_worktree_path,
     group_branch,
     integration_branch,
     is_dirty,
@@ -138,7 +139,17 @@ def finish_run(
 
     unmerged: list[str] = []
     kept_branches: list[str] = []
-    integration_wt = worktree_path(repo_root, run_id, "integration", "integration")
+    # Resolved, not constructed: a run started before U2's run-scoping has its
+    # integration worktree at the legacy path, and `git branch -d` has to run
+    # with HEAD at the integration tip for its merge check to mean anything —
+    # the repo root would check against the launch branch and refuse everything.
+    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
+    if integration_wt is None:
+        raise FinishError(
+            f"integration worktree for {run_id} not found at "
+            f"{worktree_path(repo_root, run_id, 'integration', 'integration')} "
+            "or its legacy path; branch teardown needs it to verify merges"
+        )
     for gid in sorted(state.groups):
         entry = state.groups[gid]
         if not _group_is_merged(repo_root, run_id, tip, gid, entry):
@@ -313,8 +324,11 @@ def _teardown_group(repo_root: Path, run_id: str, gid: str, paths: RunPaths) -> 
     """Archive remaining scratch, write a leftover patch for any uncommitted
     change, then force-remove the worktree (plan U9). A no-op when the
     worktree is already gone."""
-    worktree = worktree_path(repo_root, run_id, gid, _group_name(paths, gid))
-    if not worktree.is_dir():
+    # Legacy-aware for the same reason as the integration worktree above:
+    # constructing the run-scoped path would silently no-op on a pre-U2 run and
+    # leave its group worktrees behind forever.
+    worktree = existing_worktree_path(repo_root, run_id, gid, _group_name(paths, gid))
+    if worktree is None:
         return
     scratch_dir = worktree / REVIEW_SCRATCH_DIRNAME
     if scratch_dir.exists():

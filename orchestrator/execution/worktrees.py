@@ -93,6 +93,28 @@ def _legacy_worktree_path(repo_root: Path, group_id: str, name: str) -> Path:
     return repo_root / ".worktrees" / f"{group_id}-{slugify(name)}"
 
 
+def existing_worktree_path(repo_root: Path, run_id: str, group_id: str, name: str) -> Path | None:
+    """Where this run's worktree actually is on disk, or ``None``.
+
+    ``worktree_path`` says where a worktree *would* go under the current
+    (run-scoped) layout. A run started before U2 landed has its worktrees at the
+    legacy run-unscoped paths, and only ``create_worktree`` adopts those — so any
+    other caller that assumes the new layout is wrong about a pre-U2 run. Readers
+    that merely need to *find* an existing worktree use this instead, which
+    prefers the run-scoped path and falls back to the legacy one.
+
+    The integration worktree's legacy name is not ``integration``: it was created
+    as ``group_id=f"run-{run_id}", name="integration"``, so it resolves to
+    ``.worktrees/run-<run_id>-integration``.
+    """
+    current = worktree_path(repo_root, run_id, group_id, name)
+    if current.is_dir():
+        return current
+    legacy_gid = f"run-{run_id}" if group_id == "integration" else group_id
+    legacy = _legacy_worktree_path(repo_root, legacy_gid, name)
+    return legacy if legacy.is_dir() else None
+
+
 def group_branch(run_id: str, group_id: str) -> str:
     """Branch a group's worktree lives on. Deliberately not nested under the
     integration branch name (``orchestrator/run-<run_id>``): git refuses a ref that
@@ -105,6 +127,11 @@ def integration_branch(run_id: str) -> str:
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    # A missing cwd otherwise surfaces as a bare `FileNotFoundError: [Errno 2]`
+    # naming the directory but not the git command or why it was expected —
+    # which is how a wrong-layout worktree path reads as an unrelated crash.
+    if not cwd.is_dir():
+        raise WorktreeError(f"git {' '.join(args)}: working directory does not exist: {cwd}")
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 

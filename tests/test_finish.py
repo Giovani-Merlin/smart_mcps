@@ -539,3 +539,84 @@ def test_run_is_finishable_true_only_when_every_group_completed_and_merged(repo,
     ok, bad = run_is_finishable(repo, run_id)
     assert ok is True
     assert bad == []
+
+
+# -------------------------------------------- legacy (pre-U2) worktree layout
+
+
+def _demote_to_legacy(repo: Path, current: Path, legacy: Path) -> Path:
+    """Move a worktree back to the pre-U2, run-unscoped path, the way a run
+    started before U2 landed has them on disk."""
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "move", str(current), str(legacy))
+    return legacy
+
+
+def test_finish_adopts_a_legacy_integration_worktree(repo, tmp_path):
+    """A run started before U2's run-scoping must still be finishable.
+
+    Regression for the crash observed finishing r20260819-crashrec on
+    2026-08-20: `finish` constructed the run-scoped integration path, handed the
+    non-existent directory to git as cwd, and died with a bare
+    `FileNotFoundError: [Errno 2]` *after* pushing and opening the PR — so the
+    run was left half-finished with no teardown.
+    """
+    run_id = "r-legacy-int"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    legacy_integration = _demote_to_legacy(
+        repo,
+        worktree_path(repo, run_id, "integration", "integration"),
+        repo / ".worktrees" / f"run-{run_id}-integration",
+    )
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=False)
+
+    result = finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert result.unmerged == []
+    # The merged group's branch was deleted, which only works if the merge check
+    # ran with HEAD at the integration tip — i.e. in the adopted worktree.
+    assert result.kept_branches == []
+    assert group_branch(run_id, group.id) not in git(repo, "branch", "--list")
+    assert legacy_integration.is_dir()
+
+
+def test_finish_tears_down_a_legacy_group_worktree(repo, tmp_path):
+    """The same fallback on the group side: constructing the run-scoped path
+    would silently no-op and strand the worktree forever.
+
+    A clean merge already removes the group worktree (merge.py), so the case
+    that reaches teardown is one recreated afterwards — a `retry`, or an
+    operator inspecting the branch — which on a pre-U2 run lands at the legacy
+    path.
+    """
+    run_id = "r-legacy-grp"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    legacy_group = repo / ".worktrees" / f"{group.id}-group-{group.id}"
+    git(repo, "worktree", "add", str(legacy_group), group_branch(run_id, group.id))
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=False)
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert not legacy_group.exists()
+    assert str(legacy_group) not in git(repo, "worktree", "list", "--porcelain")
+
+
+def test_finish_names_the_missing_integration_worktree(repo, tmp_path):
+    """Neither layout present is an operator-legible FinishError, not Errno 2."""
+    run_id = "r-no-int"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    git(repo, "worktree", "remove", "--force", str(integration_wt))
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=False)
+
+    with pytest.raises(FinishError, match="integration worktree"):
+        finish_run(repo, run_id, announce=lambda _m: None)
