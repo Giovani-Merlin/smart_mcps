@@ -151,7 +151,16 @@ class PartitionConfig(BaseModel):
 class EstimatorConfig(BaseModel):
     """Token-budget estimator knobs (plan U3). Directional; tuned on real plans."""
 
-    token_budget: int = 100_000
+    # The coder peak context a group is sized to fit — NOT read cost. When
+    # ``coder_slack_multiplier`` landed (d0662e8) it changed what this number
+    # means, from a read-cost budget to a predicted-coder-peak budget, and left
+    # the value at 100_000. That silently halved group size a second time: work
+    # was multiplied by 2.5 while the budget it is compared against stood still,
+    # which is arithmetically the same as dividing a read-cost budget by 2.5.
+    # 200_000 is the value that commit's own reasoning assumes throughout — it
+    # raised the breaker to 250k "to sit just above the 200k sizing budget,
+    # giving a correctly sized group ~25% headroom", which is only true at 200k.
+    token_budget: int = 200_000
     bytes_per_token: float = 4.0
     slack_multiplier: float = 1.3
     # Measured on run r20260819-crashrec (4 groups, 9 sessions; full write-up in

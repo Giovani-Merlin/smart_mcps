@@ -239,7 +239,7 @@ class TestConfig:
     def test_defaults_load_without_config_file(self):
         """Plan U3 verification: config defaults load with no file present."""
         config = load_config(None)
-        assert config.estimator.token_budget == 100_000
+        assert config.estimator.token_budget == 200_000
         assert config.breaker.max_generations == 3
         assert config.execution.concurrency == 1
 
