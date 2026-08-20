@@ -9,7 +9,7 @@
       "name": "smart-mcps",
       "source": "./",
       "description": "Skills and session hooks for codegraph, NotebookLM, and Perplexity — CLI-based, no MCP context pollution",
-      "version": "0.5.0",
+      "version": "0.8.0",
       "author": {
         "name": "Giovani Merlin",
         "email": "gbm1996gbm1996@gmail.com"
