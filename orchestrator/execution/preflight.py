@@ -11,7 +11,7 @@ reviewer's contract; Preflight only runs a mechanical check command.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from orchestrator.config import PreflightConfig
@@ -59,6 +59,7 @@ def run_preflight(
     config: PreflightConfig,
     output_dir: Path,
     log: Callable[[str], None] | None = None,
+    declared_files: Sequence[str] = (),
 ) -> None:
     """Run Preflight's two checks against ``worktree``, in order.
 
@@ -72,8 +73,23 @@ def run_preflight(
        check applied".
 
     Raises ``PreflightFailure`` on either failure; returns ``None`` on success.
+
+    ``declared_files`` — the group's own declared file list — is *reported*,
+    never gated on: any entry missing from the worktree is logged as one
+    warning line and nothing else. Folding work into an existing file instead
+    of creating the declared one is often the right call (g1 of
+    r20260819-crashrec put its worktree coverage in ``test_scheduler.py``
+    rather than the declared ``tests/test_worktrees.py``), so a hard gate would
+    fail honest work. ``PreflightFailure`` stays reserved for the dirty-tree
+    and check-command failures.
     """
     _log = log or (lambda _text: None)
+    missing = [name for name in declared_files if not (worktree / name).exists()]
+    if missing:
+        _log(
+            f"preflight: {len(missing)} declared file(s) not present in the worktree "
+            f"(reported, not blocking): {', '.join(sorted(missing))}"
+        )
     dirty_paths = _dirty_paths(worktree)
     if dirty_paths:
         raise PreflightFailure(f"worktree {worktree} is not clean: {', '.join(dirty_paths)}")

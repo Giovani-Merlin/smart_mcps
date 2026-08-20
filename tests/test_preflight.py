@@ -372,3 +372,47 @@ def test_self_verify_group_is_still_gated_by_preflight(repo):
     coder_commit(wt1, "one.txt", "g1 work\n", "feat: g1")
     with pytest.raises(PreflightFailure):
         merger.merge_group(g1, wt1)
+
+
+# ------------------------------------------------- declared-file drift (F11)
+
+
+def test_missing_declared_file_is_reported_and_does_not_block(tmp_path):
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    git(worktree, "init", "-b", "main")
+    git(worktree, "config", "user.email", "t@t")
+    git(worktree, "config", "user.name", "t")
+    (worktree / "made_it.py").write_text("x = 1\n")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-m", "init")
+    logged = []
+    run_preflight(
+        worktree,
+        config=PreflightConfig(),
+        output_dir=tmp_path / "out",
+        log=logged.append,
+        declared_files=["made_it.py", "tests/never_written.py"],
+    )
+    reports = [line for line in logged if "declared file(s) not present" in line]
+    assert len(reports) == 1
+    assert "tests/never_written.py" in reports[0]
+    # Reported, never gated: the file it did create is not named as missing.
+    assert "made_it.py" not in reports[0].split(":", 1)[1]
+
+
+def test_merge_reports_the_group_s_undelivered_declared_files_and_still_merges(repo):
+    logged = []
+    merger = IntegrationMerger(repo, "r1", log=logged.append)
+    # The group declares two files and delivers only one — g1's real shape on
+    # run r20260819-crashrec, where the declared test file was never created.
+    g1 = make_group("g1", files=["one.txt", "tests/test_worktrees.py"])
+    wt1 = group_worktree(repo, merger, g1)
+    coder_commit(wt1, "one.txt", "g1 work\n", "feat: g1")
+
+    merger.merge_group(g1, wt1)
+
+    assert merger.merged == [g1]
+    reports = [line for line in logged if "declared file(s) not present" in line]
+    assert len(reports) == 1
+    assert "tests/test_worktrees.py" in reports[0]

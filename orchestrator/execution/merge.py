@@ -130,6 +130,7 @@ class IntegrationMerger:
                 config=self._preflight_config,
                 output_dir=self._preflight_output_dir(group.id),
                 log=self._log,
+                declared_files=group.files,
             )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
