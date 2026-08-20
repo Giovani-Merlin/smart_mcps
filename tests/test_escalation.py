@@ -139,8 +139,8 @@ class TestEscalationPolicy:
 class TestEscalationConfig:
     def test_defaults_load_without_a_file(self):
         config = load_config(None)
-        assert config.escalation.enabled is True  # plan U2: HITL on by default
-        assert config.escalation.intensity == "on_stuck"
+        assert config.escalation.enabled is False  # F1: HITL is opt-in
+        assert config.escalation.intensity == "autonomous"
         assert config.escalation.source == "workers_via_orchestrator"
         assert config.escalation.timeout_s is None
         assert config.escalation.on_timeout == "autonomous"

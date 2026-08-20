@@ -474,17 +474,28 @@ class TestEscalationOverrides:
         base.update(overrides)
         return argparse.Namespace(**base)
 
-    def test_default_is_enabled_on_stuck(self):
-        # plan U2: HITL is on by default so the failure-overlap gate has an
-        # operator channel without requiring an explicit --hitl flag.
+    def test_default_is_disabled_autonomous(self):
+        # F1: HITL is opt-in. The failure-overlap gate it once defended is now
+        # covered mechanically by ExecutionConfig.on_group_failure="halt", so a
+        # plain `run` is unattended and never blocks on an operator.
         merged = apply_overrides(load_config(None), self._args())
-        assert merged.escalation.enabled is True
-        assert merged.escalation.intensity == "on_stuck"
+        assert merged.escalation.enabled is False
+        assert merged.escalation.intensity == "autonomous"
 
     def test_hitl_flag_enables_with_default_tier(self):
+        # Regression guard for the no-op: with the library tier now
+        # `autonomous`, --hitl alone has to supply on_stuck too, or it would
+        # enable an escalation surface that never escalates.
         merged = apply_overrides(load_config(None), self._args(hitl=True))
         assert merged.escalation.enabled is True
         assert merged.escalation.intensity == "on_stuck"
+
+    def test_hitl_flag_does_not_clobber_a_config_file_tier(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[escalation]\nintensity = "interactive"\n')
+        merged = apply_overrides(load_config(config_file), self._args(hitl=True))
+        assert merged.escalation.enabled is True
+        assert merged.escalation.intensity == "interactive"
 
     def test_intensity_flag_implies_enabled(self):
         merged = apply_overrides(load_config(None), self._args(intensity="interactive"))
@@ -539,17 +550,22 @@ class TestLoadConfigPersistedEscalation:
 
     def test_no_persisted_value_keeps_library_default(self, tmp_path):
         config = _load_config(self._args(), tmp_path)
-        assert config.escalation.intensity == "on_stuck"
-        assert config.escalation.enabled is True
-
-    def test_persisted_value_replaces_the_default_when_no_flag_is_passed(self, tmp_path):
-        persisted = EscalationConfig(enabled=False, intensity="autonomous")
-        config = _load_config(self._args(), tmp_path, persisted_escalation=persisted)
         assert config.escalation.intensity == "autonomous"
         assert config.escalation.enabled is False
 
+    def test_persisted_value_replaces_the_default_when_no_flag_is_passed(self, tmp_path):
+        # The persisted tier must be non-default for this to mean anything —
+        # HITL now defaults off/autonomous, so a run started with --hitl is the
+        # case a bare `resume` has to restore.
+        persisted = EscalationConfig(enabled=True, intensity="on_stuck")
+        config = _load_config(self._args(), tmp_path, persisted_escalation=persisted)
+        assert config.escalation.intensity == "on_stuck"
+        assert config.escalation.enabled is True
+
     def test_explicit_flag_still_overrides_the_persisted_value(self, tmp_path):
-        persisted = EscalationConfig(enabled=False, intensity="autonomous")
+        # `interactive` is neither the flag's value nor the library default, so
+        # the result pins the flag as the winner rather than either fallback.
+        persisted = EscalationConfig(enabled=True, intensity="interactive")
         config = _load_config(
             self._args(intensity="on_stuck"), tmp_path, persisted_escalation=persisted
         )
@@ -1021,7 +1037,8 @@ class TestRunBanner:
 
     def test_banner_names_concurrency_and_disabled_hitl(self, tmp_path, capsys, monkeypatch):
         self._setup(tmp_path, monkeypatch, failures=1)
-        # plan U2: HITL defaults on, so disabling it for this assertion is explicit.
+        # HITL is off by default (F1); this run passes no --hitl, so the
+        # banner must report it disabled.
         exit_code = main(
             [
                 "run",

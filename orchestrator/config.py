@@ -417,22 +417,32 @@ class SessionConfig(BaseModel):
 class EscalationConfig(BaseModel):
     """Human-in-the-loop escalation surface (plan Phase D).
 
-    ``enabled`` is on by default (plan U2): a group ending failed or interrupted
-    must never let an overlapping successor start silently, and that gate needs
-    an operator channel to be meaningful by default. When on, the ``intensity``
-    tier decides which hard moments pause for the operator (``autonomous`` <
-    ``on_failure`` < ``on_stuck`` < ``interactive``) and ``source`` decides
-    whether a coder's ``needs_input`` question reaches the operator
-    (``workers_via_orchestrator``) or is downgraded to a blocked-style rewrite
-    (``orchestrator_only``). ``--intensity autonomous`` (or ``[escalation]
-    intensity = "autonomous"``) forces this back off for an unattended run.
+    **HITL is opt-in.** ``enabled`` is off and ``intensity`` is ``autonomous``,
+    so a plain ``run`` never pauses for an operator; ``--hitl`` (or
+    ``[escalation] enabled = true``) turns it on.
 
-    ``timeout_s = None`` blocks indefinitely (the HITL default — a live operator
-    is expected); when set, an unanswered escalation falls back per ``on_timeout``.
+    This default was once ``enabled=True, intensity="on_stuck"`` (plan U2), on
+    the grounds that a group ending failed or interrupted must never let an
+    overlapping successor start silently, and that gate needs an operator
+    channel. That rationale is stale: U3 shipped
+    ``ExecutionConfig.on_group_failure``, defaulting to ``"halt"``, which stops
+    admission on a failure mechanically, with no operator involved. The safety
+    case HITL-on was defending is now covered without blocking an unattended run.
+
+    When enabled, the ``intensity`` tier decides which hard moments pause for
+    the operator (``autonomous`` < ``on_failure`` < ``on_stuck`` <
+    ``interactive``) and ``source`` decides whether a coder's ``needs_input``
+    question reaches the operator (``workers_via_orchestrator``) or is
+    downgraded to a blocked-style rewrite (``orchestrator_only``). Note that
+    ``intensity = "autonomous"`` forces ``enabled`` off, which is why the two
+    defaults agree rather than leaving an enabled-but-never-escalating state.
+
+    ``timeout_s = None`` blocks indefinitely (a live operator is expected once
+    HITL is on); when set, an unanswered escalation falls back per ``on_timeout``.
     """
 
-    enabled: bool = True
-    intensity: Literal["autonomous", "on_failure", "on_stuck", "interactive"] = "on_stuck"
+    enabled: bool = False
+    intensity: Literal["autonomous", "on_failure", "on_stuck", "interactive"] = "autonomous"
     source: Literal["orchestrator_only", "workers_via_orchestrator"] = "workers_via_orchestrator"
     timeout_s: float | None = None
     on_timeout: Literal["autonomous", "skip", "abort"] = "autonomous"

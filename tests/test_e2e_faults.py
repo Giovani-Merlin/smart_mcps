@@ -207,11 +207,15 @@ def test_fault_stale_base_resumed_group_absorbs_a_concurrent_sibling_merge(repo,
 def test_resume_restores_the_run_s_persisted_escalation_config_without_reflag(  # noqa: F811 -- pytest fixtures imported from test_e2e_stub
     repo, fake_home, capsys
 ):
-    """plan U2 regression: `run --intensity autonomous` persists that tier onto
-    the manifest; a bare `resume` (no escalation flags at all) must restore it
-    rather than reverting to EscalationConfig()'s on_stuck/HITL-on default —
-    verified via the persisted manifest and the banner's HITL line, never by
-    re-triggering an actual escalation block."""
+    """plan U2 regression: `run --hitl` persists that tier onto the manifest; a
+    bare `resume` (no escalation flags at all) must restore it rather than
+    reverting to EscalationConfig()'s autonomous/HITL-off default — verified via
+    the persisted manifest and the banner's HITL line, never by re-triggering an
+    actual escalation block.
+
+    The persisted tier has to be the non-default one for this to discriminate:
+    since F1 flipped HITL to opt-in, `--intensity autonomous` would restore the
+    same value a broken resume falls back to."""
     run_id = "rf-esc"
     write_run_artifacts(repo, [make_group("g1", files=["g1.out"])])
     write_config(repo, fake_home)
@@ -222,12 +226,12 @@ def test_resume_restores_the_run_s_persisted_escalation_config_without_reflag(  
     )
 
     exit_code = main(
-        ["run", "--repo", str(repo), "--run-id", run_id, "--intensity", "autonomous"],
+        ["run", "--repo", str(repo), "--run-id", run_id, "--hitl"],
         llm_runner=StubLlm(),
     )
     assert exit_code == 2
     manifest = manifest_of(repo, run_id)
-    assert manifest["escalation"]["intensity"] == "autonomous"
+    assert manifest["escalation"]["intensity"] == "on_stuck"
     capsys.readouterr()
 
     script_session(
@@ -240,9 +244,9 @@ def test_resume_restores_the_run_s_persisted_escalation_config_without_reflag(  
     assert exit_code == 0
     out = capsys.readouterr().out
     banner = next(line for line in out.splitlines() if line.startswith("run "))
-    assert "HITL off" in banner
+    assert "HITL on (intensity=on_stuck" in banner
     manifest = manifest_of(repo, run_id)
-    assert manifest["escalation"]["intensity"] == "autonomous"
+    assert manifest["escalation"]["intensity"] == "on_stuck"
 
 
 def test_resume_explicit_intensity_flag_overrides_the_persisted_value(  # noqa: F811 -- pytest fixtures imported from test_e2e_stub

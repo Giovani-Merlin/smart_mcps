@@ -429,6 +429,17 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
     # autonomous forces it off (an explicit "run unattended" even over a config file).
     if getattr(args, "hitl", False) or (intensity and intensity != "autonomous"):
         escalation_updates["enabled"] = True
+    # --hitl alone has to supply a tier as well. The library default is now
+    # `autonomous`, and enabled=True beside intensity=autonomous escalates
+    # nothing — --hitl would be a silent no-op. Only fill in when the operator
+    # named no tier and the resolved tier is autonomous, so a config file's own
+    # non-autonomous tier still wins.
+    if (
+        getattr(args, "hitl", False)
+        and not intensity
+        and config.escalation.intensity == "autonomous"
+    ):
+        escalation_updates["intensity"] = "on_stuck"
     if intensity == "autonomous":
         escalation_updates["enabled"] = False
     if getattr(args, "escalation_source", None):
@@ -467,7 +478,7 @@ def _load_config(
     ``persisted_escalation`` — a resumed run's own recorded escalation tier (plan
     U2) — slots in as a fourth rung *under* the config file and *above* the
     library default, so an omitted flag on resume restores the run's original
-    tier instead of resetting to ``EscalationConfig()``'s on_stuck/HITL-on
+    tier instead of resetting to ``EscalationConfig()``'s autonomous/HITL-off
     default; an explicit flag on resume still wins via ``apply_overrides``.
 
     ``persisted_usage_limit`` slots in at the same rung for the same reason: a

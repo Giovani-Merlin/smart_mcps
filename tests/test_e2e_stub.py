@@ -449,8 +449,9 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
     # Concurrency>1 is required for the race: under the serial default the groups
     # stack (g2 branches from the tip that already has g1's conflict.txt) and no
     # conflict ever arises — which is the whole point of serial. Force parallel to
-    # exercise the conflict→rewrite path. Escalation defaults on (plan U2); this
-    # scenario tests the conflict→rewrite path itself, not HITL, so it stays headless.
+    # exercise the conflict→rewrite path. `--intensity autonomous` is redundant
+    # now that HITL is opt-in (F1), but kept as an explicit statement that this
+    # scenario tests the conflict→rewrite path itself, not HITL.
     exit_code = main(
         [
             "run",
@@ -493,8 +494,9 @@ def test_reject_forever_fails_group_and_strands_dependent(repo, fake_home, capsy
         verdict_entry("changes_required", ["never good enough"]),
     )
 
-    # Escalation defaults on (plan U2); this scenario tests the reject-forever /
-    # generation-cap path itself, not HITL, so it stays headless.
+    # `--intensity autonomous` is redundant now that HITL is opt-in (F1), but
+    # kept as an explicit statement that this scenario tests the reject-forever
+    # / generation-cap path itself, not HITL.
     exit_code = main(
         [
             "run",
