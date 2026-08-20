@@ -60,8 +60,10 @@ from orchestrator.execution.manifest import (
     snapshot_grouping,
     validate_grouping_name,
 )
+from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
@@ -86,6 +88,7 @@ from orchestrator.execution.sessions import (
 )
 from orchestrator.execution.worktrees import (
     WorktreeError,
+    _git,
     _git_ok,
     commit_all,
     create_worktree,
@@ -264,6 +267,19 @@ def main(
     answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    retry_cmd = subparsers.add_parser(
+        "retry", help="release a terminally failed or quarantined group (operator override)"
+    )
+    retry_cmd.add_argument("run_id", help="the run holding the group")
+    retry_cmd.add_argument("group_id", help="the group to retry")
+    retry_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
+    finish_cmd = subparsers.add_parser(
+        "finish", help="push the integration branch, open a draft PR, and tear down merged groups"
+    )
+    finish_cmd.add_argument("run_id", help="the run to finish")
+    finish_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
     ui_cmd = subparsers.add_parser("ui", help="serve the Observatory web UI (local, no auth)")
     ui_cmd.add_argument(
         "--registry",
@@ -294,6 +310,10 @@ def main(
         return _cmd_status(args)
     if args.command == "answer":
         return _cmd_answer(args)
+    if args.command == "retry":
+        return _cmd_retry(args)
+    if args.command == "finish":
+        return _cmd_finish(args)
     if args.command == "ui":
         return _cmd_ui(args)
     parser.error(f"unknown command {args.command!r}")
@@ -1145,6 +1165,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
                 grouping=grouping_name,
                 escalation=config.escalation,
                 usage_limit=config.session.usage_limit,
+                launch_branch=_resolve_launch_branch(repo_root),
             )
             store.save(manifest)
             # Snapshot the DAG beside the manifest: `.orchestrator/groups.json` is
@@ -1206,9 +1227,27 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             print(f"error: {exc}", file=sys.stderr)
             _print_outcomes(scheduler.state)
             return 1
+        _maybe_auto_finish(repo_root, run_id, paths)
         return _print_outcomes(scheduler.state)
     finally:
         driver_lock.release()
+
+
+def _maybe_auto_finish(repo_root: Path, run_id: str, paths: RunPaths) -> None:
+    """Invoke `finish` itself once every group is provably done (plan U8
+    Decisions) — completed/resolved *and* its branch an ancestor of the
+    integration tip; any other outcome just prints the command, and touches
+    no worktree or branch. Never raises: a finish failure is reported and the
+    run's own exit code still reflects the groups' outcomes."""
+    finish_cmd = f"smart-mcps-orchestrate finish --repo {repo_root} {run_id}"
+    ok, _ = run_is_finishable(repo_root, run_id)
+    if not ok:
+        print(f"finish when ready with: {finish_cmd}")
+        return
+    try:
+        finish_run(repo_root, run_id, log=lambda m: log_event(paths, m))
+    except FinishError as exc:
+        print(f"error: finish failed: {exc} — retry with: {finish_cmd}", file=sys.stderr)
 
 
 @contextmanager
@@ -1249,6 +1288,16 @@ def _cancelling_handler(gate: UsageLimitGate):
 def _default_run_id() -> str:
     """Short, filesystem- and ref-safe; lands in branch names and session names."""
     return datetime.now(UTC).strftime("r%Y%m%d-%H%M%S")
+
+
+def _resolve_launch_branch(repo_root: Path) -> str | None:
+    """The branch `run` was launched from (plan U8, R29), resolved once at run
+    start so `finish`'s PR base is a real branch, never `HEAD` and never a
+    commit sha. None on a detached HEAD."""
+    result = _git(repo_root, "symbolic-ref", "--short", "-q", "HEAD")
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _workspace_seams(
@@ -1627,6 +1676,51 @@ def _cmd_answer(args: argparse.Namespace) -> int:
         print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1
     print(f"answered {args.esc_id}: {args.action}")
+    return 0
+
+
+# --------------------------------------------------------------------- retry
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    """Release a terminally failed or quarantined group (plan U7): the
+    deliberate operator override — everything else in the system treats both
+    outcomes as something a plain `resume` must not touch on its own."""
+    repo_root = args.repo.resolve()
+    try:
+        retry_group(repo_root, args.run_id, args.group_id)
+    except RetryConflictError as exc:
+        print(
+            f"error: {exc} — conflicting file(s): {', '.join(exc.paths)}",
+            file=sys.stderr,
+        )
+        return 1
+    except RetryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"group {args.group_id} released — resume with: smart-mcps-orchestrate resume {args.run_id}"
+    )
+    return 0
+
+
+# -------------------------------------------------------------------- finish
+
+
+def _cmd_finish(args: argparse.Namespace) -> int:
+    """Push the integration branch, open a draft PR, tear down merged groups
+    (plan U8/U9) — callable directly by an operator, same routine `run`
+    invokes itself once every group is provably merged."""
+    repo_root = args.repo.resolve()
+    paths = RunPaths(repo_root, args.run_id)
+    if not paths.state_path.is_file():
+        print(f"error: no run state at {paths.state_path}", file=sys.stderr)
+        return 1
+    try:
+        finish_run(repo_root, args.run_id, log=lambda m: log_event(paths, m))
+    except FinishError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

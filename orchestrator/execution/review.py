@@ -70,7 +70,11 @@ from orchestrator.execution.sessions import (
     session_display_name,
 )
 from orchestrator.execution.streaming import TurnUsage
-from orchestrator.execution.worktrees import diff_stat, ensure_excluded, integration_branch
+from orchestrator.execution.worktrees import (
+    diff_stat,
+    ensure_excluded,
+    integration_branch,
+)
 from orchestrator.model import (
     CoderReport,
     EscalationContext,

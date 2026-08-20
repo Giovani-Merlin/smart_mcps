@@ -120,6 +120,12 @@ class RunManifest(BaseModel):
     # with, not silently revert to the library default. None on manifests
     # written before this field existed.
     usage_limit: UsageLimitConfig | None = None
+    # The branch `run` was launched from, resolved once at run start (plan U8,
+    # R29): `IntegrationMerger`'s `launch_ref` defaults to `HEAD`, a commit, so
+    # `finish`'s PR base has to be persisted separately rather than re-derived
+    # from a moving HEAD. None for a detached-HEAD launch — `finish` then still
+    # pushes the integration branch but skips opening a PR.
+    launch_branch: str | None = None
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 
 
