@@ -399,6 +399,52 @@ def test_leftover_patch_written_before_force_removal(repo, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_scratch_and_heartbeat_archived_under_run_dir_gone_from_worktree(repo, tmp_path):
+    from orchestrator.execution.heartbeat import heartbeat_path
+    from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME
+
+    run_id = "r9b"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+
+    wt = create_worktree(
+        repo,
+        run_id=run_id,
+        group_id=group.id,
+        name=group.name,
+        branch=group_branch(run_id, group.id),
+        start_point=merger.tip(),
+    )
+    (wt / "g1.txt").write_text("committed\n")
+    git(wt, "add", ".")
+    git(wt, "commit", "-m", "g1 work")
+
+    # merge directly so the worktree (and its scratch litter) survives to teardown
+    integration_wt = merger.ensure()
+    git(integration_wt, "merge", "--no-ff", "-m", "manual merge", group_branch(run_id, group.id))
+
+    scratch_dir = wt / REVIEW_SCRATCH_DIRNAME
+    scratch_dir.mkdir()
+    (scratch_dir / "notes.txt").write_text("reviewer scratch\n")
+
+    hb_path = heartbeat_path(paths, group.id)
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_path.write_text("{}")
+
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=False)
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    archived = paths.review_scratch_archive_dir(group.id) / "notes.txt"
+    assert archived.is_file()
+    assert archived.read_text() == "reviewer scratch\n"
+    assert not wt.exists()  # the worktree (and any scratch inside it) is gone
+
+    # the heartbeat already lived under the run dir, never in the worktree
+    assert hb_path.is_file()
+
+
 # ------------------------------------------------------------- branch delete
 
 
