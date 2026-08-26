@@ -415,6 +415,17 @@ def build_policy(
     # `probe_claude_runtime_dirs` and re-added one slug at a time; every operator
     # memory dir lives under some *other* slug and stays unwritable.
     runtime_dirs = [claude_home / name for name in probe_claude_runtime_dirs(claude_home)]
+    # `probe_claude_runtime_dirs` enumerates *directories*, so the credential file
+    # sitting directly in `~/.claude` was readable (reads are never restricted)
+    # but unwritable — and refreshing an expired OAuth token means rewriting
+    # exactly that file. A worker that crossed a token expiry therefore died with
+    # "401 OAuth access token has expired. Re-authenticate to continue." on a box
+    # where re-authentication was never the problem; an hour-long usage-limit
+    # pause makes crossing one near-certain. Granted as a single file rule rather
+    # than by opening `~/.claude` itself: everything else at that root
+    # (settings.json, history.jsonl) stays unwritable, and a worker could already
+    # read this file long before it could write it.
+    credentials = [claude_home / ".credentials.json"]
     system = system_write_paths() if system_paths is None else list(system_paths)
     # A linked worktree keeps HEAD, its index and the object store outside the
     # worktree; without these the worker can edit and test but never commit.
@@ -425,6 +436,7 @@ def build_policy(
             project_dir,
             *git_dirs,
             *runtime_dirs,
+            *credentials,
             *system,
             *(list(cache_dirs) if cache_dirs else []),
         ],

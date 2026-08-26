@@ -1776,11 +1776,16 @@ def _cmd_ui(args: argparse.Namespace) -> int:
         import uvicorn
 
         from orchestrator.observatory.app import create_app
+        from orchestrator.observatory.registry import default_registry_path
     except ImportError as exc:  # pragma: no cover - dependency smoke path
         print(f"error: the Observatory needs fastapi and uvicorn installed: {exc}", file=sys.stderr)
         return 1
 
-    registry = args.registry.expanduser() if args.registry else None
+    # An omitted --registry means the documented default path, not "no registry":
+    # passing None here made the default `~/.orchestrator-ui.yaml` unreachable and
+    # every launch fall back to --repo. load_registry still falls back when the
+    # default path does not exist, so zero-config launches are unchanged.
+    registry = args.registry.expanduser() if args.registry else default_registry_path()
     app = create_app(registry_path=registry, fallback_repo=args.repo.resolve())
     print(f"Observatory on http://{OBSERVATORY_HOST}:{args.port}")
     uvicorn.run(app, host=OBSERVATORY_HOST, port=args.port, log_level="info")

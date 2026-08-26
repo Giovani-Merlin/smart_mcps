@@ -421,6 +421,40 @@ def test_confined_subprocess_can_write_claude_runtime_scratch(confined):
 
 
 @landlock_unavailable
+def test_confined_subprocess_can_refresh_its_oauth_credentials(confined_root):
+    """`~/.claude/.credentials.json` is a *file* at a root whose probe enumerates
+    only directories, so it was readable (reads are unrestricted) and unwritable —
+    while refreshing an expired OAuth token rewrites exactly that file. A worker
+    that crossed a token expiry died with "401 OAuth access token has expired.
+    Re-authenticate to continue." on a box whose credentials were fine, and an
+    hour-long usage-limit pause makes crossing one near-certain.
+
+    The grant is one file, not the directory: everything else at that root stays
+    unwritable, which is what this asserts second.
+    """
+    worktree = confined_root / "worktree"
+    worktree.mkdir()
+    claude_home = confined_root / "claude"
+    claude_home.mkdir()
+    credentials = claude_home / ".credentials.json"
+    credentials.write_text('{"claudeAiOauth": {"accessToken": "expired"}}')
+    settings = claude_home / "settings.json"
+    settings.write_text("{}\n")
+
+    policy = build_policy(worktree=worktree, claude_home=claude_home, system_paths=[])
+    preexec_fn, result = landlock_preexec(policy)
+    assert result.applied
+
+    refreshed = _run(preexec_fn, f"echo refreshed > {credentials}")
+    assert refreshed.returncode == 0, refreshed.stderr
+    assert credentials.read_text() == "refreshed\n"
+
+    denied = _run(preexec_fn, f"echo tampered > {settings}")
+    assert denied.returncode != 0
+    assert settings.read_text() == "{}\n"
+
+
+@landlock_unavailable
 def test_confined_subprocess_cannot_write_outside_its_worktree(confined, tmp_path):
     """The operator's own checkout is outside the boundary too, not just memory."""
     outside = tmp_path / "operator-checkout"
