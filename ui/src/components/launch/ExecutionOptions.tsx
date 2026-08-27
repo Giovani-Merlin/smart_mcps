@@ -13,7 +13,7 @@
 // does. That is why the selects carry an explicit "(from config)" option rather
 // than defaulting to a value this form invented.
 
-import type { ExecutionOptions as Options } from "../../types";
+import type { ExecutionOptions as Options, ResolvedOptions } from "../../types";
 import { ESCALATION_INTENSITIES } from "../../types";
 import "./ExecutionOptions.css";
 
@@ -24,6 +24,17 @@ export interface ExecutionOptionsProps {
    * own controls when both forms are on the page. */
   idPrefix: string;
   disabled?: boolean;
+  /** What every unspecified field on this form would actually resolve to
+   * (plan U18/F14) — absent while the fetch is still in flight, in which case
+   * the fields fall back to the same generic "(from config)" text they always
+   * had. */
+  resolved?: ResolvedOptions | null;
+}
+
+/** "(from config)" with the real value appended once it is known, so a field
+ * left unspecified no longer hides what that actually means. */
+function fromConfig(resolved: string | number | undefined): string {
+  return resolved === undefined ? "(from config)" : `(from config: ${resolved})`;
 }
 
 const PERMISSION_MODES = ["acceptEdits", "plan", "default", "bypassPermissions"];
@@ -40,6 +51,7 @@ export function ExecutionOptionsForm({
   onChange,
   idPrefix,
   disabled = false,
+  resolved,
 }: ExecutionOptionsProps) {
   const set = (patch: Partial<Options>) => onChange({ ...value, ...patch });
   const id = (name: string) => `${idPrefix}-${name}`;
@@ -58,7 +70,7 @@ export function ExecutionOptionsForm({
               set({ intensity: (pick(e.target.value) as Options["intensity"]) ?? null })
             }
           >
-            <option value="">(from config)</option>
+            <option value="">{fromConfig(resolved?.escalation_intensity)}</option>
             {ESCALATION_INTENSITIES.map((tier) => (
               <option key={tier} value={tier}>
                 {tier}
@@ -80,7 +92,7 @@ export function ExecutionOptionsForm({
               })
             }
           >
-            <option value="">(from config)</option>
+            <option value="">{fromConfig(resolved?.escalation_source)}</option>
             {SOURCES.map((source) => (
               <option key={source} value={source}>
                 {source}
@@ -96,7 +108,7 @@ export function ExecutionOptionsForm({
             value={value.permission_mode ?? ""}
             onChange={(e) => set({ permission_mode: pick(e.target.value) })}
           >
-            <option value="">(from config)</option>
+            <option value="">{fromConfig(resolved?.permission_mode)}</option>
             {PERMISSION_MODES.map((mode) => (
               <option key={mode} value={mode}>
                 {mode}
@@ -128,7 +140,11 @@ export function ExecutionOptionsForm({
             type="number"
             min={1}
             value={value.concurrency ?? ""}
-            placeholder="from config"
+            // A blank number input reads as "no idea what this does" — the
+            // library default of 1 ran a thirteen-group, three-wide DAG
+            // serially with nothing on the form suggesting that. The
+            // placeholder names the actual resolved value instead (F14).
+            placeholder={String(resolved?.concurrency ?? 1)}
             onChange={(e) =>
               set({ concurrency: e.target.value === "" ? null : Number(e.target.value) })
             }
@@ -142,9 +158,48 @@ export function ExecutionOptionsForm({
             type="number"
             min={0}
             value={value.escalation_timeout ?? ""}
-            placeholder="block forever"
+            placeholder={
+              resolved?.escalation_timeout != null
+                ? String(resolved.escalation_timeout)
+                : "block forever"
+            }
             onChange={(e) =>
               set({ escalation_timeout: e.target.value === "" ? null : Number(e.target.value) })
+            }
+          />
+        </label>
+
+        <label htmlFor={id("model-worker")}>
+          Worker model
+          <input
+            id={id("model-worker")}
+            type="text"
+            value={value.model_worker ?? ""}
+            placeholder={resolved?.model_worker ?? "(from config)"}
+            onChange={(e) => set({ model_worker: e.target.value === "" ? null : e.target.value })}
+          />
+        </label>
+
+        <label htmlFor={id("model-base")}>
+          Orchestrator (base) model
+          <input
+            id={id("model-base")}
+            type="text"
+            value={value.model_base ?? ""}
+            placeholder={resolved?.model_base ?? "(from config)"}
+            onChange={(e) => set({ model_base: e.target.value === "" ? null : e.target.value })}
+          />
+        </label>
+
+        <label htmlFor={id("model-speccer")}>
+          Speccer model
+          <input
+            id={id("model-speccer")}
+            type="text"
+            value={value.model_speccer ?? ""}
+            placeholder={resolved?.model_speccer ?? "(from config)"}
+            onChange={(e) =>
+              set({ model_speccer: e.target.value === "" ? null : e.target.value })
             }
           />
         </label>

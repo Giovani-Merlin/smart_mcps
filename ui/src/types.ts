@@ -442,6 +442,27 @@ export interface ExecutionOptions {
   escalation_source?: EscalationSource | null;
   escalation_timeout?: number | null;
   auto_resume?: boolean | null;
+  // Plan U18: the three model knobs (U17/U36). `null`/undefined means "not
+  // specified", same as every other field here.
+  model_worker?: string | null;
+  model_base?: string | null;
+  model_speccer?: string | null;
+}
+
+// ResolvedOptions (launch.py) — every execution option's effective default,
+// resolved exactly as the CLI would with no flags at all: config file, then
+// the library default. What the form shows next to a field left unspecified
+// (plan U18/F14), and what the run header shows for a running run.
+export interface ResolvedOptions {
+  concurrency: number;
+  permission_mode: string;
+  escalation_intensity: EscalationIntensity;
+  escalation_source: EscalationSource;
+  escalation_timeout?: number | null;
+  auto_resume: boolean;
+  model_worker: string;
+  model_base: string;
+  model_speccer: string;
 }
 
 export interface PlanDoc {

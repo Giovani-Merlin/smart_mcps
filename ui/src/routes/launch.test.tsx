@@ -18,8 +18,21 @@ const listGroupings = vi.fn();
 const getGroupingPreview = vi.fn();
 const getJob = vi.fn();
 const listJobs = vi.fn();
+const getResolvedOptions = vi.fn();
 
 const ONE_GROUPING = [{ name: "mine", plan_path: "docs/plans/one.md", group_count: 4 }];
+
+const DEFAULT_RESOLVED = {
+  concurrency: 1,
+  permission_mode: "acceptEdits",
+  escalation_intensity: "autonomous",
+  escalation_source: "workers_via_orchestrator",
+  escalation_timeout: null,
+  auto_resume: true,
+  model_worker: "claude-sonnet-5",
+  model_base: "claude-opus-5",
+  model_speccer: "claude-opus-5",
+};
 
 vi.mock("../api", () => ({
   listProjects: () => Promise.resolve([]),
@@ -30,6 +43,7 @@ vi.mock("../api", () => ({
     ]),
   listGroupings: (...args: unknown[]) => listGroupings(...args),
   getGroupingPreview: (...args: unknown[]) => getGroupingPreview(...args),
+  getResolvedOptions: (...args: unknown[]) => getResolvedOptions(...args),
   listJobs: (...args: unknown[]) => listJobs(...args),
   getJob: (...args: unknown[]) => getJob(...args),
   startGroupJob: (...args: unknown[]) => startGroupJob(...args),
@@ -105,6 +119,7 @@ beforeEach(() => {
   });
   getJob.mockReset().mockResolvedValue(job);
   listJobs.mockReset().mockResolvedValue([]);
+  getResolvedOptions.mockReset().mockResolvedValue(DEFAULT_RESOLVED);
 });
 
 afterEach(cleanup);
@@ -411,5 +426,71 @@ describe("the launch route", () => {
     const region = screen.getByRole("region", { name: "Start a run" });
     const buttons = Array.from(region.querySelectorAll("button")).map((b) => b.textContent);
     expect(buttons).toEqual(["Start run"]);
+  });
+
+  // -------------------------------------------------------- U18: resolved options
+
+  it("renders three model inputs, defaulted to the values the CLI would resolve", async () => {
+    mount();
+    const worker = (await screen.findAllByLabelText("Worker model"))[0] as HTMLInputElement;
+    const base = screen.getAllByLabelText("Orchestrator (base) model")[0] as HTMLInputElement;
+    const speccer = screen.getAllByLabelText("Speccer model")[0] as HTMLInputElement;
+    await waitFor(() => expect(worker.placeholder).toBe("claude-sonnet-5"));
+    expect(base.placeholder).toBe("claude-opus-5");
+    expect(speccer.placeholder).toBe("claude-opus-5");
+  });
+
+  it("shows concurrency's resolved default of 1 rather than an empty input", async () => {
+    mount();
+    const concurrency = (await screen.findAllByLabelText("Concurrency"))[0] as HTMLInputElement;
+    await waitFor(() => expect(concurrency.placeholder).toBe("1"));
+    expect(concurrency.value).toBe("");
+  });
+
+  it("shows an unspecified option's resolved default next to the field", async () => {
+    getResolvedOptions.mockResolvedValue({ ...DEFAULT_RESOLVED, concurrency: 4 });
+    mount();
+    const concurrency = (await screen.findAllByLabelText("Concurrency"))[0] as HTMLInputElement;
+    await waitFor(() => expect(concurrency.placeholder).toBe("4"));
+    const tier = screen.getAllByLabelText("Escalation tier")[0] as HTMLSelectElement;
+    expect(tier.options[0].textContent).toBe("(from config: autonomous)");
+  });
+
+  it("sends a worker model chosen on the run form through to argv", async () => {
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    fireEvent.change(screen.getAllByLabelText("Worker model")[0], {
+      target: { value: "claude-opus-5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await waitFor(() => expect(startRunJob).toHaveBeenCalled());
+    expect(startRunJob.mock.calls[0][1].options.model_worker).toBe("claude-opus-5");
+  });
+
+  it("still starts a run when every option, including the models, is left at its default", async () => {
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await waitFor(() => expect(startRunJob).toHaveBeenCalled());
+    expect(startRunJob.mock.calls[0][1].options).toEqual({});
+    expect(await screen.findByRole("region", { name: "Job log" })).toBeTruthy();
+  });
+
+  it("shows the resolved concurrency and the three model ids in the run header once a run is going", async () => {
+    startRunJob.mockResolvedValue({
+      ...job,
+      kind: "run",
+      options: { options: { concurrency: 3 } },
+    });
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    const header = await screen.findByText(/Resolved for this run/);
+    // concurrency came from the job's own submitted options; the three models
+    // fell back to the project's resolved defaults because none were set.
+    expect(header.textContent).toContain("concurrency 3");
+    expect(header.textContent).toContain("worker model claude-sonnet-5");
+    expect(header.textContent).toContain("base model claude-opus-5");
+    expect(header.textContent).toContain("speccer model claude-opus-5");
   });
 });

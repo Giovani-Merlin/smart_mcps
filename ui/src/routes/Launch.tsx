@@ -17,6 +17,7 @@ import { Link, useParams } from "react-router-dom";
 
 import {
   errorMessage,
+  getResolvedOptions,
   listGroupings,
   listPlans,
   listRuns,
@@ -33,6 +34,7 @@ import type {
   GroupJobBody,
   JobInfo,
   PlanDoc,
+  ResolvedOptions,
   RunInfo,
 } from "../types";
 import "./Launch.css";
@@ -54,6 +56,7 @@ export function Launch() {
   const [plans, setPlans] = useState<PlanDoc[]>([]);
   const [groupings, setGroupings] = useState<GroupingSummary[]>([]);
   const [runs, setRuns] = useState<RunInfo[]>([]);
+  const [resolved, setResolved] = useState<ResolvedOptions | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [job, setJob] = useState<JobInfo | null>(null);
 
@@ -62,15 +65,17 @@ export function Launch() {
 
     async function refresh(): Promise<void> {
       try {
-        const [nextPlans, nextGroupings, nextRuns] = await Promise.all([
+        const [nextPlans, nextGroupings, nextRuns, nextResolved] = await Promise.all([
           listPlans(project),
           listGroupings(project),
           listRuns(project),
+          getResolvedOptions(project),
         ]);
         if (cancelled) return;
         setPlans(nextPlans);
         setGroupings(nextGroupings);
         setRuns(nextRuns);
+        setResolved(nextResolved);
         // A refetch that succeeds after a prior one failed clears the error —
         // but a *failed* refetch below never touches `plans`/`groupings`/
         // `runs`, so the last known-good data stays on screen instead of the
@@ -108,8 +113,8 @@ export function Launch() {
 
       <div className="launch__cards">
         <GroupCard project={project} plans={plans} onLaunched={setJob} />
-        <RunCard project={project} groupings={groupings} onLaunched={setJob} />
-        <ResumeCard project={project} runs={runs} onLaunched={setJob} />
+        <RunCard project={project} groupings={groupings} resolved={resolved} onLaunched={setJob} />
+        <ResumeCard project={project} runs={runs} resolved={resolved} onLaunched={setJob} />
       </div>
 
       {job && (
@@ -119,6 +124,7 @@ export function Launch() {
           </Link>
         </p>
       )}
+      <RunHeader job={job} resolved={resolved} />
       <JobLog project={project} job={job} />
     </div>
   );
@@ -272,13 +278,41 @@ function GroupCard({
   );
 }
 
+/** The resolved concurrency and three model ids a run or resume job actually
+ * used — the job's own submitted options where set, falling back to the
+ * project's resolved defaults for whatever was left unspecified. This is what
+ * makes a running job's effective settings legible on the page that launched
+ * it, rather than only visible as a raw argv (F14/U18). */
+function RunHeader({
+  job,
+  resolved,
+}: {
+  job: JobInfo | null;
+  resolved: ResolvedOptions | null;
+}) {
+  if (!job || !resolved || job.kind === "group") return null;
+  const submitted = (job.options as { options?: ExecutionOptions } | undefined)?.options ?? {};
+  const concurrency = submitted.concurrency ?? resolved.concurrency;
+  const modelWorker = submitted.model_worker ?? resolved.model_worker;
+  const modelBase = submitted.model_base ?? resolved.model_base;
+  const modelSpeccer = submitted.model_speccer ?? resolved.model_speccer;
+  return (
+    <p className="launch__run-header">
+      Resolved for this run: concurrency {concurrency} · worker model {modelWorker} · base model{" "}
+      {modelBase} · speccer model {modelSpeccer}
+    </p>
+  );
+}
+
 function RunCard({
   project,
   groupings,
+  resolved,
   onLaunched,
 }: {
   project: string;
   groupings: GroupingSummary[];
+  resolved: ResolvedOptions | null;
   onLaunched: (job: JobInfo) => void;
 }) {
   const [grouping, setGrouping] = useState("");
@@ -322,6 +356,7 @@ function RunCard({
         value={options}
         onChange={setOptions}
         disabled={busy}
+        resolved={resolved}
       />
       {error && <p className="app__error">{error}</p>}
       <button
@@ -346,10 +381,12 @@ function RunCard({
 function ResumeCard({
   project,
   runs,
+  resolved,
   onLaunched,
 }: {
   project: string;
   runs: RunInfo[];
+  resolved: ResolvedOptions | null;
   onLaunched: (job: JobInfo) => void;
 }) {
   const [runId, setRunId] = useState("");
@@ -380,6 +417,7 @@ function ResumeCard({
         value={options}
         onChange={setOptions}
         disabled={busy}
+        resolved={resolved}
       />
       {error && <p className="app__error">{error}</p>}
       <button
