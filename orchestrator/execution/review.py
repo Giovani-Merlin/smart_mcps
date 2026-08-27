@@ -1012,11 +1012,17 @@ class _GroupExecution:
                 )
             extra.append(_operator_surprise(self.gid, response.answer))
         surprises = self.deps.board.consume(self.gid) + extra
+        self._log(
+            f"group {self.gid} generation {self.generation}: rewriting spec ({why}); "
+            f"surprises consumed: {len(surprises)} "
+            f"[{', '.join(surprise.kind for surprise in surprises) or 'none'}]"
+        )
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
         self.rewrites += 1
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
         if self.sessions_spawned:
             self._advance_generation()
+        self._persist_rewritten_spec()
 
     def _breaker_reason(self, rounds: int) -> str | None:
         if rounds >= self.deps.breaker.max_rounds_per_generation:
@@ -1202,6 +1208,13 @@ class _GroupExecution:
         """Append to the run's always-on lifecycle log (R10): control-plane events
         land in ``run.log`` in every run mode, HITL or autonomous."""
         log_event(self.deps.store.paths, text)
+
+    def _persist_rewritten_spec(self) -> None:
+        """Save the rewritten spec beside the group so a post-mortem can
+        reconstruct what the coder was actually told (plan U14) — the group's
+        entry in ``groups.json`` only ever reflects the original spec."""
+        path = self.deps.store.paths.group_dir(self.gid) / f"spec-gen{self.generation}.json"
+        atomic_write_text(path, self.group.model_dump_json(indent=2) + "\n")
 
     def _round_tag(self, round_no: int) -> str:
         return f"group {self.gid} generation {self.generation} round {round_no}"

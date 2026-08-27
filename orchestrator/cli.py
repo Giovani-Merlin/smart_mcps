@@ -1459,6 +1459,7 @@ def _cmd_run(
                 plan_text,
                 with_usage_limit_retry(llm_runner or claude_json_runner, gate),
                 orch_dir / "failures",
+                recorder=JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
             ),
             base_ref_for=base_ref_for,
             broker=broker,
@@ -1744,10 +1745,19 @@ def _resolve_deps(
     )
 
 
-def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path):
+def _rewrite_provider(
+    plan_text: str,
+    llm_runner: JsonRunner,
+    failure_dir: Path,
+    recorder: JsonlCallRecorder | None = None,
+):
     """rewrite_spec seam: one-group skeleton through the Phase A speccer, with the
     surprises folded in as rewrite context (they are never empty on escalation
-    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.)."""
+    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.).
+
+    ``recorder``, when given, appends each rewrite speccer call to the run's own
+    ``llm/calls.json`` (plan U14) — the same record shape grouping-time speccer
+    calls already get, so a rewrite's cost, prompt and response survive."""
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
         skeleton = {
@@ -1760,7 +1770,9 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
                 ],
             }
         }
-        spec = write_specs(plan_text, skeleton, llm_runner, failure_dir=failure_dir)[group.id]
+        spec = write_specs(
+            plan_text, skeleton, llm_runner, failure_dir=failure_dir, recorder=recorder
+        )[group.id]
         return group.model_copy(
             update={
                 "name": spec.name,
