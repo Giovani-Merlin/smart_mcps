@@ -393,6 +393,97 @@ def _stub_codegraph_runner(args):
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 
+class TestGroupStageProgressUnbuffered:
+    """Plan U24: the whole failure mode being fixed is that a `group` job shows
+    nothing for minutes. Verified against a real, separate OS process writing to
+    a real log file — a captured `capsys` run proves the lines exist, not that
+    they arrived while the command was still running."""
+
+    def test_progress_lines_land_in_the_log_while_the_process_is_still_running(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "server.py").write_bytes(b"def real_fn():\n    pass\n" * 20)
+        (repo / "test_server.py").write_bytes(b"def test_real_fn():\n    pass\n" * 10)
+        plan = repo / "plan.md"
+        plan.write_text(
+            "# feat: toy plan\n\n## Tasks\n\n"
+            "- T1: extend the proxy server tool list\n"
+            "- T2: cover the proxy with tests\n"
+        )
+        script = tmp_path / "run_group.py"
+        script.write_text(
+            "import json, sys, time\n"
+            "from pathlib import Path\n"
+            "from orchestrator.cli import main\n"
+            "from orchestrator.grouping.graphing import CodegraphClient\n"
+            "\n"
+            "def codegraph_response(args):\n"
+            "    command = args[0]\n"
+            "    if command == 'sync':\n"
+            "        return ''\n"
+            "    if command == 'files':\n"
+            "        return 'repo files: server.py, test_server.py'\n"
+            "    if command == 'status':\n"
+            "        return json.dumps({'initialized': True, 'fileCount': 2, 'nodeCount': 4,\n"
+            "            'edgeCount': 1,\n"
+            "            'pendingChanges': {'added': 0, 'modified': 0, 'removed': 0}})\n"
+            "    symbol = args[1]\n"
+            "    if command == 'query':\n"
+            "        if symbol in ('real_fn', 'test_real_fn'):\n"
+            "            return json.dumps([{'node': {'name': symbol, 'filePath': 'server.py'}}])\n"
+            "        return json.dumps([])\n"
+            "    if command == 'callers' and symbol == 'real_fn':\n"
+            "        return json.dumps({'symbol': symbol, 'callers': [\n"
+            "            {'name': 'test_real_fn', 'kind': 'function', 'filePath': 'test_server.py'}]})\n"
+            "    key = {'callers': 'callers', 'callees': 'callees', 'impact': 'affected'}[command]\n"
+            "    return json.dumps({'symbol': symbol, key: []})\n"
+            "\n"
+            "def llm_runner(prompt, schema):\n"
+            "    # Deliberately slow, so the parent test can observe the first\n"
+            "    # progress line while this child process is still alive.\n"
+            "    time.sleep(1.5)\n"
+            "    return json.dumps({'tasks': [\n"
+            "        {'task_id': 't1', 'description': 'd1', 'files': ['server.py'],\n"
+            "         'symbols': ['real_fn']},\n"
+            "        {'task_id': 't2', 'description': 'd2', 'files': ['test_server.py'],\n"
+            "         'symbols': ['test_real_fn']}]})\n"
+            "\n"
+            "repo, plan = Path(sys.argv[1]), sys.argv[2]\n"
+            "exit_code = main(\n"
+            "    ['group', plan, '--repo', str(repo), '--no-spec'],\n"
+            "    llm_runner=llm_runner,\n"
+            "    client=CodegraphClient(repo_root=repo, runner=codegraph_response),\n"
+            ")\n"
+            "sys.exit(exit_code)\n"
+        )
+        log_path = tmp_path / "job.log"
+        with log_path.open("wb") as log:
+            proc = subprocess.Popen(
+                [sys.executable, str(script), str(repo), str(plan)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        try:
+            deadline = time.monotonic() + 5
+            observed_while_running = False
+            while time.monotonic() < deadline:
+                if "progress: stage: mapper" in log_path.read_text():
+                    observed_while_running = proc.poll() is None
+                    break
+                time.sleep(0.05)
+            assert observed_while_running, (
+                "first progress line did not land in the log within 5s of "
+                "process start, or only appeared after the process had exited"
+            )
+        finally:
+            proc.wait(timeout=10)
+        assert proc.returncode == 0
+        text = log_path.read_text()
+        assert "progress: stage: mapper" in text
+        assert "progress: stage: graph" in text
+        assert "progress: stage: partition" in text
+
+
 OVERSIZED_SLICE_PLAN = """# feat: oversized slice
 
 ## Task Map

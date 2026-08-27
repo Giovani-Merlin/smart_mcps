@@ -1131,3 +1131,52 @@ class TestTaskMapStripping:
         )
         assert exit_code == 0
         assert plan.read_bytes() == before
+
+
+class TestStageProgress:
+    """Plan U24: a `group` invocation streams stage/spec lines through the
+    ``progress`` seam instead of staying silent for the length of the run."""
+
+    def test_no_spec_path_emits_mapper_graph_partition_stages_in_order(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        lines: list[str] = []
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            progress=lines.append,
+        )
+        assert lines == ["stage: mapper", "stage: graph", "stage: partition"]
+
+    def test_full_pipeline_emits_one_spec_line_per_group(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        lines: list[str] = []
+        result, _ = run_grouping(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            progress=lines.append,
+        )
+        total = len(result.groups)
+        assert total >= 2  # otherwise "spec i/N" is not actually exercised
+        stage_lines = [line for line in lines if line.startswith("stage:")]
+        spec_lines = [line for line in lines if line.startswith("spec ")]
+        assert stage_lines == [
+            "stage: mapper",
+            "stage: graph",
+            "stage: partition",
+            f"stage: specs total={total}",
+        ]
+        assert spec_lines == [f"spec {i}/{total}" for i in range(1, total + 1)]
+        # Every progress line was emitted before the pipeline returned — the
+        # unbuffered-in-the-CLI half of the fix is exercised by the CLI-level
+        # test below; this half proves the seam actually fires per spec.
+        assert lines.index(f"stage: specs total={total}") < lines.index(f"spec 1/{total}")
+
+    def test_no_recorder_and_no_progress_still_works(self, tmp_path):
+        """The seam is optional — omitting ``progress`` must not raise."""
+        result, _ = grouping(tmp_path)
+        assert result.groups

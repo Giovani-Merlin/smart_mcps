@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,6 +112,17 @@ def _node_work_entries(graph: TaskGraph, config) -> list[NodeWorkEntry]:
 
 class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
+
+
+# Stage/spec progress lines (plan U24): a `group` invocation is otherwise silent
+# for as long as the mapper and speccer LLM calls take, so this is the seam the
+# CLI hangs an unbuffered `print(..., flush=True)` off of.
+ProgressFn = Callable[[str], None]
+
+
+def _emit(progress: ProgressFn | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def _assert_slice_integrity(atoms: dict[str, list[str]], partition: Partition) -> None:
@@ -362,6 +374,7 @@ def compute_partition(
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
     provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
     does before handing off to the speccer, callable on its own.
@@ -369,6 +382,10 @@ def compute_partition(
     ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
     fills a ``GroupingTrace`` alongside the computation without changing it —
     every fixture partitions identically with or without one attached.
+
+    ``progress``, if given, is called with one short stage-name string as each
+    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
+    and a half minutes of silence into a streamable job log.
     """
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
@@ -377,6 +394,7 @@ def compute_partition(
     client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
+    _emit(progress, "stage: mapper")
     plan_text = plan_path.read_text()
     client.sync()
     codegraph_files = client.files_overview()
@@ -402,6 +420,7 @@ def compute_partition(
         raise GrouperError("mapper produced no tasks from the plan document")
     _flag_self_modification(mapper_out)
 
+    _emit(progress, "stage: graph")
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
     graph = build_task_graph(mapper_out.mappings, client, weights, flags=mapper_out.flags)
     graph = _with_prose_fallback(graph, mapper_out, config.edge_weights.prose_neighbor)
@@ -447,6 +466,7 @@ def compute_partition(
         granularity=config.partition.granularity,
         recorder=recorder,
     )
+    _emit(progress, "stage: partition")
     partition = strategy.partition(graph)
     # Before _check_slice_overflow appends to the same list: at this point
     # strategy.flags carries only the repair-overshoot messages, which is exactly
@@ -531,6 +551,7 @@ def run_grouping(
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
     provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
@@ -548,6 +569,7 @@ def run_grouping(
         recorder=recorder,
         llm_recorder=llm_recorder,
         provenance_recorder=provenance_recorder,
+        progress=progress,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -565,6 +587,8 @@ def run_grouping(
         }
         for gid, members in sorted(members_by_gid.items())
     }
+    total_specs = len(skeletons)
+    _emit(progress, f"stage: specs total={total_specs}")
     specs = write_specs(
         strip_task_map(outcome.plan_text),
         skeletons,
@@ -581,7 +605,7 @@ def run_grouping(
     roles = outcome.hub_roles
     flags = list(mapper_out.flags) + list(outcome.flags)
     groups: list[Group] = []
-    for gid, members in sorted(members_by_gid.items()):
+    for spec_index, (gid, members) in enumerate(sorted(members_by_gid.items()), start=1):
         gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
@@ -644,6 +668,7 @@ def run_grouping(
                 estimated_tokens=estimated,
             )
         )
+        _emit(progress, f"spec {spec_index}/{total_specs}")
 
     result = GroupingResult(
         plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags

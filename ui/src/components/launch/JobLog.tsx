@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getJob, openJobStream } from "../../api";
 import type { JobInfo } from "../../types";
+import { JobProgress } from "./JobProgress";
 import "../EventLog.css";
 
 export interface JobLogProps {
@@ -104,6 +105,7 @@ export function JobLog({ project, job }: JobLogProps) {
           <pre>{JSON.stringify(job.options, null, 2)}</pre>
         </details>
       )}
+      <JobProgress lines={lines} running={running} startedAt={job.started_at} />
       <div className="event-log__pane" ref={paneRef}>
         {lines.length === 0 ? (
           <p className="event-log__empty">Waiting for output…</p>
