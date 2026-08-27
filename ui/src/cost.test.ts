@@ -138,13 +138,42 @@ describe("the run-level calibration rollup", () => {
     const view = buildCostView(COST_NEW_FORMAT);
     const cal = view.calibration;
 
-    expect(cal.rows.map((r) => r.groupId)).toEqual(["g1", "g2", "g3"]);
+    // g5 is comparable too (four coder generations), but it is multi-generation
+    // so it stays in `rows` — visible, never hidden — while being excluded from
+    // the single-generation sums and median below.
+    expect(cal.rows.map((r) => r.groupId)).toEqual(["g1", "g2", "g3", "g5"]);
     expect(cal.skipped).toEqual(["g4"]);
+    expect(cal.singleGenerationCount).toBe(3);
+    expect(cal.multiGenerationCount).toBe(1);
     expect(cal.estimatedTotal).toBe(83_215 + 89_932 + 40_000);
     expect(cal.observedTotal).toBe(96_400 + 71_000 + 52_000);
     expect(cal.medianRatio).toBeCloseTo(96_400 / 83_215, 6);
     // Every input is an occupancy; no cumulative spend reached this figure.
     expect(cal.observedTotal).toBeLessThan(view.total);
+  });
+
+  it("reports a multi-generation group's last and peak ratios and excludes it from the median", () => {
+    const view = buildCostView(COST_NEW_FORMAT);
+    const row = view.calibration.rows.find((r) => r.groupId === "g5");
+    expect(row).toBeDefined();
+    expect(row?.multiGeneration).toBe(true);
+    expect(row?.generations).toBe(4);
+    expect(row?.observedLast).toBe(45_000);
+    expect(row?.observedPeak).toBe(80_000);
+    expect(row?.ratioLast).toBeCloseTo(45_000 / 50_000, 6);
+    expect(row?.ratioPeak).toBeCloseTo(80_000 / 50_000, 6);
+    expect(row?.retirementReasons).toEqual([
+      "breaker retired: context 80000 exceeded limit 78000",
+      "merge conflict: preflight regression",
+      "re-entry fallback: session unreachable",
+    ]);
+  });
+
+  it("reports no median rather than a median over zero rows when every group is multi-generation", () => {
+    const cal = runCalibration(buildCostView(COST_NEW_FORMAT).groups.filter((g) => g.groupId === "g5"));
+    expect(cal.singleGenerationCount).toBe(0);
+    expect(cal.medianRatio).toBeNull();
+    expect(cal.aggregateRatio).toBeNull();
   });
 
   it("returns an empty rollup rather than inventing one for a legacy run", () => {

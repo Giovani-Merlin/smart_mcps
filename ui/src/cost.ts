@@ -138,7 +138,12 @@ export interface SessionCost {
   roundsCompleted: number;
   /** Latest round's context occupancy. Never added into a cumulative figure. */
   lastContextTokens: number;
+  /** Sum of every round's turn-1 inherited cache read (plan U9) — context this
+   * session did not create and cannot shrink. Its own figure, distinct from
+   * `classes.cache_read`, which is every turn's cache read summed. */
+  inheritedCacheReadTokens: number;
   model: string | null;
+  retirementReason: string | null;
 }
 
 function roleOf(session: SnapshotSession): CostRole {
@@ -207,7 +212,9 @@ export function sessionCost(session: SnapshotSession): SessionCost {
     ),
     roundsCompleted: session.rounds_completed,
     lastContextTokens: session.last_context_tokens,
+    inheritedCacheReadTokens: session.total_inherited_cache_read_tokens ?? 0,
     model: session.model ?? null,
+    retirementReason: session.retirement_reason ?? null,
   };
 }
 
@@ -302,6 +309,20 @@ export interface GroupPrediction {
   observedGeneration: number | null;
   /** observed / estimated. Null unless both sides are present and non-zero. */
   ratio: number | null;
+  /** Peak context occupancy across every coder generation, not just the last. A
+   * multi-generation group can have burned its worst occupancy on a generation
+   * that was later retired — the last-generation ratio alone would flatter it. */
+  peak: number | null;
+  peakSessionId: string | null;
+  peakGeneration: number | null;
+  peakRatio: number | null;
+  /** Number of coder generations with a recorded occupancy. */
+  generations: number;
+  /** True once a group has burned more than one coder generation — its median
+   * is computed over single-generation rows only, so this flags exclusion. */
+  multiGeneration: boolean;
+  /** Why each earlier (non-latest) generation was retired, oldest first. */
+  retirementReasons: string[];
   comparable: boolean;
   note: string;
 }
@@ -311,13 +332,30 @@ function groupPrediction(group: SnapshotGroup, sessions: SessionCost[]): GroupPr
   const coders = sessions.filter((s) => s.role === "coder" && s.lastContextTokens > 0);
   const latest = coders.length > 0 ? coders[coders.length - 1] : null;
   const observed = latest?.lastContextTokens ?? null;
+  const peakSession = coders.reduce<SessionCost | null>(
+    (best, s) => (best == null || s.lastContextTokens > best.lastContextTokens ? s : best),
+    null,
+  );
+  const peak = peakSession?.lastContextTokens ?? null;
   const comparable = estimated != null && estimated > 0 && observed != null && observed > 0;
+  const peakComparable = estimated != null && estimated > 0 && peak != null && peak > 0;
+  const generations = coders.length;
+  const retirementReasons = coders
+    .filter((s) => s !== latest && s.retirementReason)
+    .map((s) => s.retirementReason as string);
   return {
     estimated,
     observed,
     observedSessionId: latest?.sessionId ?? null,
     observedGeneration: latest?.generation ?? null,
     ratio: comparable ? (observed as number) / (estimated as number) : null,
+    peak,
+    peakSessionId: peakSession?.sessionId ?? null,
+    peakGeneration: peakSession?.generation ?? null,
+    peakRatio: peakComparable ? (peak as number) / (estimated as number) : null,
+    generations,
+    multiGeneration: generations > 1,
+    retirementReasons,
     comparable,
     note: comparable
       ? "predicted vs observed context occupancy of one coder session — the same quantity on both sides"
@@ -389,47 +427,78 @@ export interface CalibrationRow {
   groupId: string;
   name: string;
   estimated: number;
-  observed: number;
-  ratio: number;
+  /** Last-generation occupancy — what the group's final coder generation saw. */
+  observedLast: number;
+  /** Peak occupancy across every coder generation. Equal to `observedLast` for
+   * a single-generation row. */
+  observedPeak: number;
+  ratioLast: number;
+  ratioPeak: number;
+  /** Number of coder generations with a recorded occupancy. */
+  generations: number;
+  /** True once this row has more than one generation — excluded from the
+   * median and the aggregate, which are meaningless over a mixed population. */
+  multiGeneration: boolean;
+  /** Why each earlier generation was retired, oldest first; empty for a
+   * single-generation row. */
+  retirementReasons: string[];
 }
 
 export interface RunCalibration {
+  /** Every comparable group, including multi-generation ones — hiding a row is
+   * worse than labelling it, since this panel exists for manual reading. */
   rows: CalibrationRow[];
+  /** Groups with no estimate or no recorded coder occupancy at all. */
   skipped: string[];
+  /** Sums are over single-generation rows only. */
   estimatedTotal: number;
   observedTotal: number;
-  /** Median of the per-group ratios; robust to the one runaway session. */
+  /** Median of the single-generation rows' last-generation ratios; robust to
+   * the one runaway session. Null when there are none to compute it from. */
   medianRatio: number | null;
-  /** Ratio of the summed occupancies — both sides the same quantity. */
+  /** Ratio of the summed occupancies — both sides the same quantity, over
+   * single-generation rows only. */
   aggregateRatio: number | null;
+  /** How many of `rows` were single-generation vs excluded as multi-generation
+   * — the population the summary states it was computed over. */
+  singleGenerationCount: number;
+  multiGenerationCount: number;
 }
 
 export function runCalibration(groups: GroupCost[]): RunCalibration {
   const rows: CalibrationRow[] = [];
   const skipped: string[] = [];
   for (const group of groups) {
-    const { estimated, observed, comparable } = group.prediction;
-    if (!comparable || estimated == null || observed == null) {
+    const p = group.prediction;
+    if (!p.comparable || p.estimated == null || p.observed == null || p.ratio == null) {
       skipped.push(group.groupId);
       continue;
     }
     rows.push({
       groupId: group.groupId,
       name: group.name,
-      estimated,
-      observed,
-      ratio: observed / estimated,
+      estimated: p.estimated,
+      observedLast: p.observed,
+      observedPeak: p.peak ?? p.observed,
+      ratioLast: p.ratio,
+      ratioPeak: p.peakRatio ?? p.ratio,
+      generations: p.generations,
+      multiGeneration: p.multiGeneration,
+      retirementReasons: p.retirementReasons,
     });
   }
-  const estimatedTotal = rows.reduce((a, r) => a + r.estimated, 0);
-  const observedTotal = rows.reduce((a, r) => a + r.observed, 0);
+  const singleGen = rows.filter((r) => !r.multiGeneration);
+  const estimatedTotal = singleGen.reduce((a, r) => a + r.estimated, 0);
+  const observedTotal = singleGen.reduce((a, r) => a + r.observedLast, 0);
   return {
     rows,
     skipped,
     estimatedTotal,
     observedTotal,
-    medianRatio: median(rows.map((r) => r.ratio)),
+    medianRatio: median(singleGen.map((r) => r.ratioLast)),
     aggregateRatio: estimatedTotal > 0 ? observedTotal / estimatedTotal : null,
+    singleGenerationCount: singleGen.length,
+    multiGenerationCount: rows.length - singleGen.length,
   };
 }
 

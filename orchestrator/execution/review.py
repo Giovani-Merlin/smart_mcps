@@ -523,6 +523,7 @@ class _GroupExecution:
         entry.total_output_tokens = usage.total_output_tokens
         entry.total_cache_read_tokens = usage.total_cache_read_tokens
         entry.total_cache_creation_tokens = usage.total_cache_creation_tokens
+        entry.total_inherited_cache_read_tokens = usage.total_inherited_cache_read_tokens
 
     def _persist_coder_usage(self) -> None:
         """Record the active coder's latest context size on its manifest entry

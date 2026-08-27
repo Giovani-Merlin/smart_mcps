@@ -149,6 +149,28 @@ No deviation needed — every pinned mechanic works as designed:
   (answer=proceed, skip, abort) and are kept minimal; the `on_stuck` default is the
   primary path.
 
+## U9 spend/occupancy split (2026-08-27)
+
+- **Spend and occupancy are now two quantities.** `RoundUsage.from_envelope`
+  (occupancy, reads `iterations[-1]`) is unchanged; a new `RoundSpend.from_envelope`
+  (`orchestrator/execution/sessions.py`) reads the envelope's *top-level* `usage`,
+  which already is the all-turns sum, and feeds `SessionUsage`'s cumulative
+  counters. Per-request billing is independent per turn, so summing across
+  turns is correct and is not double counting.
+- **Per-TTL cache-creation split probe: present.** Per the U5 spike above (CLI
+  2.1.211, real envelope), the top-level `usage.cache_creation_input_tokens` is
+  accompanied by a nested split — `cache_creation.ephemeral_1h_input_tokens` /
+  `cache_creation.ephemeral_5m_input_tokens` — on the same envelope. This unit
+  does not consume it (no dollar figures are computed here, and the two TTLs
+  price differently), but a future cost-in-dollars unit has the field name and
+  its nesting recorded rather than having to re-derive it from a fresh spike.
+- **Turn 1's inherited cache read is reported separately.** `RoundSpend` carries
+  `inherited_cache_read_tokens` (the first iteration's own `cache_read_input_tokens`,
+  or the top-level figure when there is only one turn) — context the round
+  resumed into rather than created, and cannot shrink. Persisted as
+  `SessionEntry.total_inherited_cache_read_tokens` and rendered by `CostPanel`
+  distinct from the total cache-read segment.
+
 ## Future improvements parked here
 
 - **InfoMap / Leiden partition strategies** behind the strategy interface, if real-world

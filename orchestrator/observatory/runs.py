@@ -76,6 +76,9 @@ class SnapshotSession(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Sum of every round's turn-1 inherited cache read (plan U9) — its own
+    # figure, distinct from total_cache_read_tokens.
+    total_inherited_cache_read_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -412,6 +415,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                         total_output_tokens=session.total_output_tokens,
                         total_cache_read_tokens=session.total_cache_read_tokens,
                         total_cache_creation_tokens=session.total_cache_creation_tokens,
+                        total_inherited_cache_read_tokens=session.total_inherited_cache_read_tokens,
                         model=session.model,
                         started_at=session.started_at,
                         ended_at=session.ended_at,

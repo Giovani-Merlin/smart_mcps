@@ -91,6 +91,10 @@ class SessionEntry(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Sum of every round's turn-1 inherited cache read (plan U9) — context this
+    # session did not create and cannot shrink, reported apart from
+    # total_cache_read_tokens so the two are never conflated.
+    total_inherited_cache_read_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None

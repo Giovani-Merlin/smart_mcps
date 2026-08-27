@@ -88,6 +88,7 @@ export interface ManifestSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  total_inherited_cache_read_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
@@ -278,6 +279,10 @@ export interface SnapshotSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  // Sum of every round's turn-1 inherited cache read (plan U9) — its own
+  // figure, distinct from total_cache_read_tokens: context this session did
+  // not create and cannot shrink.
+  total_inherited_cache_read_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;

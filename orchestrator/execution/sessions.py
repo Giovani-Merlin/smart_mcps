@@ -169,6 +169,46 @@ class RoundUsage:
         )
 
 
+@dataclass(frozen=True)
+class RoundSpend:
+    """What one round actually cost, summed across every turn (plan U9).
+
+    Unlike ``RoundUsage.context_tokens`` — which deliberately reads only the
+    last turn, because occupancy is what the next round resumes into — spend is
+    what every turn billed, and the envelope's *top-level* ``usage`` already is
+    that all-turns sum (see ``RoundUsage.from_envelope``'s docstring). No
+    iteration walk is needed, and this degrades correctly on older CLIs that
+    emit no ``iterations`` at all, where the top level is the whole round.
+
+    Per-request billing is independent, and ``cache_read_input_tokens`` on turn
+    *n* reports the whole re-read prefix — including what turn *n-1* wrote —
+    billed at 0.1x. Summing across turns is therefore correct and is not double
+    counting.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    #: Turn 1's own cache read: context this round inherited rather than
+    #: created, and cannot shrink. Reported separately from the round's total
+    #: cache read so the two are never conflated.
+    inherited_cache_read_tokens: int = 0
+
+    @classmethod
+    def from_envelope(cls, envelope: dict) -> RoundSpend:
+        usage = envelope.get("usage") or {}
+        iterations = usage.get("iterations") or []
+        first_turn = iterations[0] if isinstance(iterations, list) and iterations else usage
+        return cls(
+            input_tokens=int(usage.get("input_tokens", 0) or 0),
+            output_tokens=int(usage.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            inherited_cache_read_tokens=int(first_turn.get("cache_read_input_tokens", 0) or 0),
+        )
+
+
 @dataclass
 class SessionUsage:
     """Cumulative usage for one session across rounds (breaker input, plan U5).
@@ -178,6 +218,12 @@ class SessionUsage:
     collapsing it into ``total_input_tokens`` (as this did originally) makes an
     efficient run and an expensive one indistinguishable. ``last_context_tokens``
     is unchanged — the circuit breaker reads it and must not shift behaviour.
+
+    Spend and occupancy are two quantities (plan U9): the cumulative counters
+    below are built from ``RoundSpend`` (every turn of every round), while
+    ``last_context_tokens`` is built from ``RoundUsage`` (the latest turn only).
+    A 190-turn round must contribute all 190 turns' worth of spend but only its
+    last turn's occupancy.
     """
 
     rounds: int = 0
@@ -185,14 +231,19 @@ class SessionUsage:
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    #: Sum of every round's turn-1 inherited cache read — its own figure,
+    #: distinct from total_cache_read_tokens, because it is context the session
+    #: did not create and cannot shrink.
+    total_inherited_cache_read_tokens: int = 0
     last_context_tokens: int = 0
 
-    def add(self, usage: RoundUsage) -> None:
+    def add(self, usage: RoundUsage, spend: RoundSpend) -> None:
         self.rounds += 1
-        self.total_input_tokens += usage.input_tokens
-        self.total_output_tokens += usage.output_tokens
-        self.total_cache_read_tokens += usage.cache_read_input_tokens
-        self.total_cache_creation_tokens += usage.cache_creation_input_tokens
+        self.total_input_tokens += spend.input_tokens
+        self.total_output_tokens += spend.output_tokens
+        self.total_cache_read_tokens += spend.cache_read_input_tokens
+        self.total_cache_creation_tokens += spend.cache_creation_input_tokens
+        self.total_inherited_cache_read_tokens += spend.inherited_cache_read_tokens
         self.last_context_tokens = usage.context_tokens
 
 
@@ -562,7 +613,8 @@ class SessionRunner:
             raise SessionError(f"claude reported an error result: {str(envelope['result'])[:500]}")
         session_id = str(envelope.get("session_id", ""))
         usage = RoundUsage.from_envelope(envelope)
-        self._usage.setdefault(session_id, SessionUsage()).add(usage)
+        spend = RoundSpend.from_envelope(envelope)
+        self._usage.setdefault(session_id, SessionUsage()).add(usage, spend)
         return RoundResult(
             session_id=session_id,
             text=str(envelope["result"]),
