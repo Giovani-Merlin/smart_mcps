@@ -321,7 +321,9 @@ class TestScorecardAndMetricsLogCli:
         )
         assert exit_code == 0
         out = capsys.readouterr().out
-        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        trace_path = (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        )
         trace = GroupingTrace.model_validate_json(trace_path.read_text())
         sc = trace.scorecard
         assert sc is not None

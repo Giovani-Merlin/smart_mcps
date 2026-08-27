@@ -527,8 +527,12 @@ class TestDryRunCli:
         assert "g1" in out
         assert "tokens" in out.lower()
         # Plan U9: dry-run still writes the trace — it's the only artifact a
-        # dry run leaves — but not groups.json or base-context.md.
-        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
+        # dry run leaves — but not groups.json or base-context.md. Plan U8: it
+        # lands in the preview subdirectory, never beside a (possibly
+        # different) real grouping's groups.json.
+        assert (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        ).is_file()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
 
@@ -707,7 +711,10 @@ class TestNoSpecCli:
         assert not (repo / ".orchestrator" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
-        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
+        # Plan U8: --no-spec's trace lives in the preview subdirectory.
+        assert (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        ).is_file()
 
     def test_no_spec_completes_in_under_a_second(self, tmp_path):
         import time
@@ -757,7 +764,9 @@ class TestGroupingTraceArtifact:
 
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
-        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        trace_path = (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        )
 
         exit_code = main(
             ["group", str(plan), "--repo", str(repo), "--no-spec"],
