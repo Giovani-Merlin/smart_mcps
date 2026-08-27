@@ -212,7 +212,7 @@ export interface ReviewerVerdict {
   notes: string;
 }
 
-// EscalationKind — the ten-member enum (model.py:185). The prototype's
+// EscalationKind — the eleven-member enum (model.py:185). The prototype's
 // four-value invention had no overlap with these and is gone.
 export type EscalationKind =
   | "coder_question"
@@ -220,6 +220,7 @@ export type EscalationKind =
   | "reviewer_too_hard"
   | "reviewer_structural"
   | "merge_conflict"
+  | "preflight_failed"
   | "caps_exhausted"
   | "group_resolve"
   | "group_start"

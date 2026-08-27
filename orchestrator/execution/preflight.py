@@ -201,6 +201,19 @@ def _dirty_paths(worktree: Path) -> list[str]:
     return [line[3:] for line in result.stdout.splitlines() if line.strip()]
 
 
+def failing_tests_from_junit(xml_path: Path) -> frozenset[str]:
+    """Failing/error test ids from a JUnit XML report (plan U3), for the merge
+    gate to compare a group's own preflight run against the launch-branch
+    baseline. Empty when ``xml_path`` was never written — a collection-phase
+    failure never reaches the point of emitting one."""
+    if not xml_path.is_file():
+        return frozenset()
+    results = _parse_junit_results(xml_path)
+    return frozenset(
+        test_id for test_id, outcome in results.items() if outcome in ("failed", "error")
+    )
+
+
 def _parse_junit_results(xml_path: Path) -> dict[str, str]:
     """Map ``classname::name`` -> outcome (``passed``/``failed``/``error``/
     ``skipped``) from a JUnit XML report written by ``--junitxml`` (plan U2)."""

@@ -44,6 +44,7 @@ _ON_STUCK: frozenset[EscalationKind] = _ON_FAILURE | {
     EscalationKind.REVIEWER_TOO_HARD,
     EscalationKind.REVIEWER_STRUCTURAL,
     EscalationKind.MERGE_CONFLICT,
+    EscalationKind.PREFLIGHT_FAILED,
 }
 _INTERACTIVE: frozenset[EscalationKind] = _ON_STUCK | {
     EscalationKind.GROUP_START,

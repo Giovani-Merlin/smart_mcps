@@ -66,6 +66,7 @@ from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_
 from orchestrator.execution.preflight import (
     PreflightFailure,
     capture_preflight_baseline,
+    load_baseline,
     save_baseline,
 )
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
@@ -1253,6 +1254,9 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             base_ref_for=base_ref_for,
             broker=broker,
             policy=policy,
+            # plan U3: read back regardless of resume, so a resumed run's merge
+            # gate still knows what was already red on the launch branch.
+            preflight_baseline=load_baseline(paths.preflight_baseline_path),
         )
         executor_slot.append(make_executor(deps))
 
