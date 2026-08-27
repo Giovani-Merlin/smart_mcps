@@ -18,6 +18,7 @@ register routes without touching ``app.py``.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -233,6 +234,10 @@ class RunSnapshot(BaseModel):
     run_id: str
     plan_path: str = ""
     base_session_id: str | None = None
+    # The base session as a session, not just an id (plan U30): role
+    # "orchestrator", so the run's own work is legible alongside the coder and
+    # reviewer sessions it drives. None wherever base_session_id is None.
+    base_session: SnapshotSession | None = None
     created_at: datetime | None = None
     groups: list[SnapshotGroup] = Field(default_factory=list)
     edges: list[DagEdge] = Field(default_factory=list)
@@ -375,6 +380,88 @@ def _transcript_mtime(transcript_path: str | None) -> datetime | None:
     return datetime.fromtimestamp(stat.st_mtime, UTC)
 
 
+_SPEC_GEN_RE = re.compile(r"^spec-gen(\d+)\.json$")
+
+
+def _rewrite_sessions(paths: RunPaths, run_id: str, group_id: str) -> list[SnapshotSession]:
+    """The orchestrator's own rewrite-spec calls for this group, synthesized from
+    ``spec-gen<N>.json`` (plan U14/U30).
+
+    A rewrite is a one-shot ``claude -p`` call, not a tracked ``SessionEntry`` —
+    ``_rewrite`` never calls ``record_session`` — so there is nothing in the
+    manifest to join here. What is on disk is the rewritten spec itself, one file
+    per generation it produced, and that is attribution enough: a group whose
+    directory holds no ``spec-gen*.json`` was never re-specced and gets no
+    orchestrator row beyond the run's base session.
+    """
+    group_dir = paths.group_dir(group_id)
+    if not group_dir.is_dir():
+        return []
+    rows: list[SnapshotSession] = []
+    for path in sorted(group_dir.glob("spec-gen*.json")):
+        match = _SPEC_GEN_RE.match(path.name)
+        if not match:
+            continue
+        generation = int(match.group(1))
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+        rows.append(
+            SnapshotSession(
+                session_id=f"{run_id}-{group_id}-rewrite-g{generation}",
+                role="orchestrator",
+                generation=generation,
+                name=f"{run_id}-{group_id}-orchestrator-g{generation}",
+                started_at=mtime.isoformat() if mtime else None,
+                ended_at=mtime.isoformat() if mtime else None,
+                transcript_mtime=mtime,
+            )
+        )
+    return rows
+
+
+def _merge_orchestrator_rows(
+    manifest_sessions: list[SnapshotSession], orchestrator_sessions: list[SnapshotSession]
+) -> list[SnapshotSession]:
+    """Interleave the orchestrator's own rows — the base session, every rewrite —
+    with the manifest's coder/reviewer sessions so each sorts immediately before
+    the generation it produced. The base session sits at generation 1: every
+    group's first coder is a fork of it, so it is what "produced" generation 1,
+    the same relationship a rewrite has to the generation that follows it. A
+    stable sort keyed only on "is this an orchestrator row" preserves the
+    manifest's own append order, and ``orchestrator_sessions``' own order,
+    among everything else.
+    """
+    combined = orchestrator_sessions + manifest_sessions
+    return sorted(
+        combined, key=lambda session: (session.generation, session.role != "orchestrator")
+    )
+
+
+def _base_session(
+    run_id: str, manifest: RunManifest | None, *, generation: int = 0
+) -> SnapshotSession | None:
+    """The run's base session, exposed as an orchestrator-role session (plan
+    U30). Nothing on disk records its model or token usage today — only
+    ``SessionRunner.start_base`` ever touches it, and it is never passed through
+    ``record_session`` — so this is a best-effort read of what the manifest does
+    carry, not a full ``SessionEntry``. ``generation`` is 0 for the run-level
+    exposure (``RunSnapshot.base_session``, which names no group) and 1 when
+    attached to a specific group's attempt history, where it sorts ahead of
+    that group's first generation.
+    """
+    if manifest is None or not manifest.base_session_id:
+        return None
+    return SnapshotSession(
+        session_id=manifest.base_session_id,
+        role="orchestrator",
+        generation=generation,
+        name=f"{run_id}-base",
+        started_at=manifest.created_at.isoformat() if manifest.created_at else None,
+    )
+
+
 def _group_heartbeat(paths: RunPaths, group_id: str) -> GroupHeartbeat | None:
     """Pass the group's heartbeat facts through, dropping anything malformed.
 
@@ -500,6 +587,11 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     ordering += sorted(extra - set(ordering))
 
     pending_by_bucket = _pending_surprises_by_group(paths, state)
+    # Every group's first generation is a fork of this one session, so it is
+    # attached to each group's own attempt history too, at generation 1 —
+    # ahead of that group's first coder, the same relationship a rewrite has to
+    # the generation it produces (plan U30).
+    base_row = _base_session(paths.run_id, manifest, generation=1)
     groups: list[SnapshotGroup] = []
     for gid in ordering:
         run_state = state.groups.get(gid) if state else None
@@ -515,28 +607,31 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                 failure=run_state.failure if run_state else None,
                 stale_failure=_is_stale_failure(run_state),
                 depends_on=list(group.dependencies) if group else [],
-                sessions=[
-                    SnapshotSession(
-                        session_id=session.session_id,
-                        role=session.role.value,
-                        generation=session.generation,
-                        name=session.name,
-                        retirement_reason=session.retirement_reason,
-                        transcript_path=session.transcript_path,
-                        last_context_tokens=session.last_context_tokens,
-                        rounds_completed=session.rounds_completed,
-                        total_input_tokens=session.total_input_tokens,
-                        total_output_tokens=session.total_output_tokens,
-                        total_cache_read_tokens=session.total_cache_read_tokens,
-                        total_cache_creation_tokens=session.total_cache_creation_tokens,
-                        total_inherited_cache_read_tokens=session.total_inherited_cache_read_tokens,
-                        model=session.model,
-                        started_at=session.started_at,
-                        ended_at=session.ended_at,
-                        transcript_mtime=_transcript_mtime(session.transcript_path),
-                    )
-                    for session in (entry.sessions if entry else [])
-                ],
+                sessions=_merge_orchestrator_rows(
+                    [
+                        SnapshotSession(
+                            session_id=session.session_id,
+                            role=session.role.value,
+                            generation=session.generation,
+                            name=session.name,
+                            retirement_reason=session.retirement_reason,
+                            transcript_path=session.transcript_path,
+                            last_context_tokens=session.last_context_tokens,
+                            rounds_completed=session.rounds_completed,
+                            total_input_tokens=session.total_input_tokens,
+                            total_output_tokens=session.total_output_tokens,
+                            total_cache_read_tokens=session.total_cache_read_tokens,
+                            total_cache_creation_tokens=session.total_cache_creation_tokens,
+                            total_inherited_cache_read_tokens=session.total_inherited_cache_read_tokens,
+                            model=session.model,
+                            started_at=session.started_at,
+                            ended_at=session.ended_at,
+                            transcript_mtime=_transcript_mtime(session.transcript_path),
+                        )
+                        for session in (entry.sessions if entry else [])
+                    ],
+                    ([base_row] if base_row else []) + _rewrite_sessions(paths, paths.run_id, gid),
+                ),
                 difficulty=group.difficulty if group else None,
                 intensity=group.intensity.value if group else None,
                 estimated_tokens=group.estimated_tokens if group else None,
@@ -561,6 +656,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
         plan_path=(manifest.plan_path if manifest else "")
         or (grouping.plan_path if grouping else ""),
         base_session_id=manifest.base_session_id if manifest else None,
+        base_session=_base_session(paths.run_id, manifest),
         created_at=manifest.created_at if manifest else None,
         groups=groups,
         edges=edges,

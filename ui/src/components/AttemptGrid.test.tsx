@@ -360,6 +360,125 @@ describe("the seven special cases, rendered", () => {
   });
 });
 
+describe("orchestrator sessions on the board (U30)", () => {
+  function baseSession(overrides: Partial<import("../types").SnapshotSession> = {}) {
+    return {
+      session_id: "base-1",
+      role: "orchestrator",
+      generation: 1,
+      name: "r-test-base",
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+      ...overrides,
+    };
+  }
+
+  function coderSession(generation: number) {
+    return {
+      session_id: `s-g${generation}`,
+      role: "coder",
+      generation,
+      name: `r-test-g1-coder-g${generation}`,
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+    };
+  }
+
+  function rewriteSession(generation: number) {
+    return {
+      session_id: `rewrite-g${generation}`,
+      role: "orchestrator",
+      generation,
+      name: `r-test-g1-orchestrator-g${generation}`,
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+    };
+  }
+
+  function snapshotWithSessions(sessions: unknown[], run = "r-test"): RunSnapshot {
+    return {
+      project: "smart-mcps",
+      run_id: run,
+      plan_path: "p.md",
+      base_session: baseSession(),
+      groups: [
+        {
+          group_id: "g1",
+          name: "a-group",
+          summary: "",
+          state: "completed",
+          generation: sessions.length ? Math.max(...sessions.map((s: any) => s.generation)) : 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions,
+        },
+      ],
+      edges: [],
+      stale_dag: false,
+      live_pids: {},
+    } as unknown as RunSnapshot;
+  }
+
+  it("[g19-base-session-exposed] exposes the run's base session with an orchestrator role", () => {
+    const snapshot = snapshotWithSessions([coderSession(1)]);
+    expect(snapshot.base_session?.role).toBe("orchestrator");
+  });
+
+  it("[g19-rewrite-before-generation] positions a rewrite before the generation it produced", async () => {
+    // gen 1 (base + coder), then a rewrite that produced gen 2, then gen 2's coder.
+    renderGrid(
+      snapshotWithSessions([baseSession(), coderSession(1), rewriteSession(2), coderSession(2)]),
+    );
+    const detail = await openCell("g1", 2);
+    const rows = within(detail)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    const orchestratorRowIndex = rows.findIndex((text) => text.includes("orchestrator"));
+    const coderRowIndex = rows.findIndex((text) => text.includes("coder"));
+    expect(orchestratorRowIndex).toBeGreaterThanOrEqual(0);
+    expect(coderRowIndex).toBeGreaterThan(orchestratorRowIndex);
+  });
+
+  it("[g19-visually-distinct] gives orchestrator sessions their own role class, distinct from coder/reviewer", async () => {
+    renderGrid(snapshotWithSessions([baseSession(), coderSession(1)]));
+    const detail = await openCell("g1", 1);
+    const orchestratorRole = within(detail).getByText("orchestrator");
+    const coderRole = within(detail).getByText("coder");
+    expect(orchestratorRole.className).toBe("attempt-session__role attempt-session__role--orchestrator");
+    expect(coderRole.className).toBe("attempt-session__role attempt-session__role--coder");
+    expect(orchestratorRole.className).not.toBe(coderRole.className);
+  });
+
+  it("[g19-no-spurious-rows] a group never re-specced shows no orchestrator rows beyond the base session", async () => {
+    renderGrid(snapshotWithSessions([baseSession(), coderSession(1)]));
+    const detail = await openCell("g1", 1);
+    const orchestratorRows = within(detail)
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.includes("orchestrator"));
+    expect(orchestratorRows).toHaveLength(1);
+    expect(orchestratorRows[0].textContent).toContain("r-test-base");
+  });
+});
+
 describe("panel contract", () => {
   it("carries exactly one PathChip, pointing at the manifest it reads", async () => {
     const { container } = renderGrid(R20260726_GROUPING);
