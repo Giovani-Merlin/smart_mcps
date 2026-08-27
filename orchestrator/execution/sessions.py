@@ -42,6 +42,7 @@ from orchestrator.execution.confinement import (
     worker_cache_env,
 )
 from orchestrator.execution.worktrees import denied_git_tool_patterns
+from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 
@@ -95,6 +96,20 @@ class UsageLimit(SessionError):
     prefix — because that is what ``ratelimit.parse_reset_at`` reads the reset
     time out of, and re-extracting it from a formatted message would be a second
     parser of the same string.
+    """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail or message
+
+
+class AuthExpired(SessionError):
+    """The account's OAuth token was rejected — the round never ran (plan U4).
+
+    A distinct type for the same reason ``UsageLimit`` is: the response is not
+    "fork a fresh generation", it is "fix the credential, then replay this
+    exact call". ``detail`` carries the wire text unwrapped, same convention as
+    ``UsageLimit.detail``.
     """
 
     def __init__(self, message: str, detail: str = ""):
@@ -295,6 +310,8 @@ class SessionRunner:
         cache_root: Path | None = None,
         extra_write_paths: Sequence[Path] | None = None,
         gate: UsageLimitGate | None = None,
+        auth_ladder: AuthLadder | None = None,
+        auth_gate: UsageLimitGate | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         self.model = model
@@ -329,6 +346,14 @@ class SessionRunner:
         # ``None`` restores the pre-auto-resume behaviour exactly: a usage limit
         # raises straight out of the call.
         self.gate = gate
+        # Plan U4: rungs (a)+(b) — read expiry, refresh in place — and rung (c)
+        # — arm-and-poll — of the auth ladder. Both default to ``None``, which
+        # restores exactly today's behaviour: a 401 raises ``AuthExpired``
+        # straight out of ``_call_with_retry`` (still a ``SessionError``, so the
+        # group lands INTERRUPTED and is resumable, same as an unconfigured
+        # usage-limit gate).
+        self.auth_ladder = auth_ladder
+        self.auth_gate = auth_gate
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
         self._confinement_warned = False
@@ -565,22 +590,56 @@ class SessionRunner:
 
         Exhausting ``max_attempts`` re-raises ``UsageLimit``, so today's
         INTERRUPTED path applies unchanged when the mechanism gives up.
+
+        A 401 (``AuthExpired``) is handled here too, on its own budget,
+        independent of the usage-limit one above (plan U4). The ladder's
+        rungs (a)+(b) run first and unconditionally — a stale token gets one
+        no-pause refresh attempt before anything is armed — and only a
+        refresh that fails or cannot be attempted (the refresh token has also
+        expired) falls to rung (c): ``auth_gate.pause`` arms a pause whose
+        ``probe`` is the same ``recover`` call, so the pause self-releases the
+        moment the credential is healthy again rather than on a fixed
+        deadline. Either way the call is replayed under a fresh session id,
+        same as a usage-limit retry — a 401 also lands after the CLI has
+        registered the id.
         """
         gate = self.gate
-        attempts = gate.max_attempts if gate is not None and gate.enabled else 1
-        for attempt in range(1, attempts + 1):
+        usage_budget = gate.max_attempts if gate is not None and gate.enabled else 1
+        auth_gate = self.auth_gate
+        auth_budget = auth_gate.max_attempts if auth_gate is not None and auth_gate.enabled else 1
+        usage_attempt = 0
+        auth_attempt = 0
+        while True:
             try:
                 return self._invoke(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
             except UsageLimit as exc:
-                if gate is None or not gate.enabled or attempt == attempts:
+                usage_attempt += 1
+                if gate is None or not gate.enabled or usage_attempt >= usage_budget:
                     raise
                 # A cancelled pause means the operator stopped the run: re-raise
                 # rather than retry into a limit that is still active.
                 if not gate.pause(exc.detail):
                     raise
+                # Plan U4 rung (a): a long pause is exactly the moment a token
+                # can have gone stale underneath the run. Best-effort — a
+                # refresh here just means the next 401, if any, never happens.
+                if self.auth_ladder is not None:
+                    self.auth_ladder.recover()
                 argv = _with_fresh_session_id(argv)
                 context = _argv_context(argv)
-        raise AssertionError("unreachable")
+            except AuthExpired as exc:
+                if self.auth_ladder is not None and self.auth_ladder.recover():
+                    # Rungs (a)+(b) fixed it — no pause needed.
+                    argv = _with_fresh_session_id(argv)
+                    context = _argv_context(argv)
+                    continue
+                auth_attempt += 1
+                if auth_gate is None or not auth_gate.enabled or auth_attempt >= auth_budget:
+                    raise
+                if not auth_gate.pause(exc.detail):
+                    raise
+                argv = _with_fresh_session_id(argv)
+                context = _argv_context(argv)
 
     def _invoke(
         self,
@@ -602,6 +661,8 @@ class SessionRunner:
             # forking changes nothing".
             if is_usage_limit(detail):
                 raise UsageLimit(message, detail)
+            if is_auth_error(detail):
+                raise AuthExpired(message, detail)
             raise SessionError(message)
         try:
             envelope = json.loads(stdout)
