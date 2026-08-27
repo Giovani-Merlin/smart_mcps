@@ -297,6 +297,7 @@ class SessionRunner:
         *,
         claude_bin: str | Sequence[str] = "claude",
         model: str | None = None,
+        base_model: str | None = None,
         permission_mode: str | None = "acceptEdits",
         allowed_tools: Sequence[str] | None = None,
         transcript_root: Path | None = None,
@@ -315,7 +316,11 @@ class SessionRunner:
         auth_gate: UsageLimitGate | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
+        # Plan U17: the fork/resume (worker) model. ``base_model`` is applied only
+        # to `start_base`'s call — independently settable, so a run can pin
+        # workers to one model and the base session to another.
         self.model = model
+        self.base_model = base_model
         self.max_thinking_tokens = max_thinking_tokens
         self.thinking = thinking
         self.permission_mode = permission_mode
@@ -390,6 +395,7 @@ class SessionRunner:
             cwd=cwd,
             extra=["--session-id", session_id, "--name", f"{run_id}-base"],
             on_turn=on_turn,
+            model=self.base_model,
         )
 
     def start_fork(
@@ -510,6 +516,7 @@ class SessionRunner:
         extra: list[str],
         json_schema: dict | None = None,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+        model: str | None = None,
     ) -> RoundResult:
         argv = [
             *self._bin,
@@ -539,8 +546,12 @@ class SessionRunner:
             argv += ["--disallowedTools", ",".join(denied)]
         if self.settings:
             argv += ["--settings", self.settings]
-        if self.model:
-            argv += ["--model", self.model]
+        # ``model`` overrides ``self.model`` — used by `start_base` to pass its
+        # own ``base_model``, independent of the worker model every other call
+        # uses (plan U17).
+        effective_model = model if model is not None else self.model
+        if effective_model:
+            argv += ["--model", effective_model]
         if self.max_thinking_tokens is not None:
             argv += ["--max-thinking-tokens", str(self.max_thinking_tokens)]
         if self.thinking:
