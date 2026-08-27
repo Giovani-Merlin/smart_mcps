@@ -308,6 +308,12 @@ export interface GroupHeartbeat {
   // written before the phase shipped.
   phase?: string | null;
   phase_elapsed_s?: number | null;
+  // Total paused time within the current round (rate-limit gate overlays,
+  // summed) and how long the current round has been open. Absent means "not
+  // recorded" — a heartbeat from before these fields shipped — never "zero",
+  // so the UI must not render an absent value as "no pause happened".
+  paused_s?: number | null;
+  round_elapsed_s?: number | null;
 }
 
 export interface SnapshotGroup {

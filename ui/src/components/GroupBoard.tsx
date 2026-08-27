@@ -7,7 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from "react";
 
 import { summariseAttempts } from "../attempts";
-import { failureIsCurrent, statusOf } from "../status";
+import { failureIsCurrent, formatDuration, statusOf } from "../status";
 import type { GroupState, RunSnapshot, SnapshotGroup } from "../types";
 import "./GroupBoard.css";
 
@@ -62,6 +62,24 @@ function laneLayout(groups: SnapshotGroup[]): SnapshotGroup[][] {
     (lanes[lane] ??= []).push(group);
   }
   return lanes.filter((lane) => lane !== undefined);
+}
+
+/**
+ * What the phase line says: the phase name, how long it has run, and — when
+ * recorded — how much of that was a deliberate pause. `paused_s` is absent for
+ * any heartbeat written before this field shipped, and absent must read as
+ * "not recorded", never as "zero" — a card must not claim a phase had no pause
+ * when the truth is that nobody counted.
+ */
+function phaseLine(group: SnapshotGroup): { phase: string; elapsed: string; paused: string | null } | null {
+  const heartbeat = group.heartbeat;
+  if (!heartbeat?.phase || heartbeat.phase_elapsed_s == null) return null;
+  const elapsed = formatDuration(heartbeat.phase_elapsed_s * 1000);
+  const paused =
+    heartbeat.paused_s != null && heartbeat.paused_s > 0
+      ? formatDuration(heartbeat.paused_s * 1000)
+      : null;
+  return { phase: heartbeat.phase, elapsed, paused };
 }
 
 function curveOf(line: EdgeLine): string {
@@ -210,6 +228,21 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                         );
                       })()}
                     </div>
+                    {(() => {
+                      const phase = phaseLine(group);
+                      if (!phase) return null;
+                      return (
+                        <div className="group-card__phase">
+                          {phase.phase} — {phase.elapsed}
+                          {phase.paused && (
+                            <span className="group-card__paused" title="Time spent paused for a usage limit">
+                              {" "}
+                              ({phase.paused} paused)
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {group.depends_on.length > 0 && (
                       <div className="group-card__deps">after {group.depends_on.join(", ")}</div>
                     )}

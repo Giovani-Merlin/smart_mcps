@@ -318,15 +318,49 @@ class TestStallEvidence:
             "round": 3,
             "round_started_at": "2026-08-09T10:31:00.000+00:00",
             "updated_at": "2026-08-09T10:54:00.000+00:00",
-            # Written before the phase shipped, so both read null rather than
-            # erroring — every run already on disk looks like this.
+            # Written before the phase (and paused/round-elapsed) fields shipped,
+            # so all four read null rather than erroring — every run already on
+            # disk looks like this.
             "phase": None,
             "phase_elapsed_s": None,
+            "paused_s": None,
+            "round_elapsed_s": None,
         }
         # 23 minutes of silence is for the client to interpret; the server never
         # says so, and there is no field here in which it could.
         assert "stalled" not in json.dumps(groups["g1"])
         assert groups["g2"]["heartbeat"] is None
+
+    def test_paused_s_and_round_elapsed_s_are_served_when_present(self, tmp_path, repo):
+        """Plan U26: both are already on disk in heartbeat.json, so a card reading
+        'forking the base session — 58m' can show that 57 of those minutes were a
+        deliberate usage-limit pause."""
+        run_dir = install_run(repo, "paused")
+        heartbeat = {
+            "schema_version": 1,
+            "group_id": "g1",
+            "started_at": "2026-08-09T10:00:00.000+00:00",
+            "generation": 2,
+            "round": 3,
+            "round_started_at": "2026-08-09T10:31:00.000+00:00",
+            "updated_at": "2026-08-09T10:54:00.000+00:00",
+            "phase": "forking the base session",
+            "phase_elapsed_s": 3529.0,
+            "paused_s": 3472.0,
+            "round_elapsed_s": 1380.0,
+        }
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "heartbeat.json").write_text(json.dumps(heartbeat))
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/paused/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["heartbeat"]["paused_s"] == 3472.0
+        assert groups["g1"]["heartbeat"]["round_elapsed_s"] == 1380.0
 
     def test_a_torn_heartbeat_reads_as_absent_rather_than_500(self, tmp_path, repo):
         run_dir = install_run(repo, "torn")
