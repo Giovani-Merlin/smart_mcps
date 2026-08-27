@@ -113,18 +113,18 @@ naming this dev recipe rather than a 404.
 Every view is a URL, so a view can be linked, bookmarked and refreshed. Path
 segments identify **objects**; query params identify **view state**.
 
-| URL                                          | View                                     |
-| -------------------------------------------- | ---------------------------------------- |
-| `/`                                          | Project picker                           |
-| `/p/:project`                                | Run index — every run, newest first      |
-| `/p/:project/launch`                         | Group a plan, start a run, resume a run  |
-| `/p/:project/r/:run/board`                   | Board                                    |
-| `/p/:project/r/:run/history`                 | Attempt history grid                     |
-| `/p/:project/r/:run/grouping`                | How this plan became groups              |
-| `/p/:project/r/:run/escalations`             | Pending escalations — answer them        |
-| `/p/:project/r/:run/log`                     | `run.log`, full height                   |
-| `/p/:project/r/:run/cost`                    | Estimate vs actual                       |
-| `/p/:project/r/:run/session/:group/:session` | Session viewer — addressable, not a tab  |
+| URL                                          | View                                    |
+| -------------------------------------------- | --------------------------------------- |
+| `/`                                          | Project picker                          |
+| `/p/:project`                                | Run index — every run, newest first     |
+| `/p/:project/launch`                         | Group a plan, start a run, resume a run |
+| `/p/:project/r/:run/board`                   | Board                                   |
+| `/p/:project/r/:run/history`                 | Attempt history grid                    |
+| `/p/:project/r/:run/grouping`                | How this plan became groups             |
+| `/p/:project/r/:run/escalations`             | Pending escalations — answer them       |
+| `/p/:project/r/:run/log`                     | `run.log`, full height                  |
+| `/p/:project/r/:run/cost`                    | Estimate vs actual                      |
+| `/p/:project/r/:run/session/:group/:session` | Session viewer — addressable, not a tab |
 
 View state rides in `?group=`, `?stage=`, `?edge=`, `?seq=` and survives
 navigation between tabs.
@@ -136,7 +136,33 @@ and silently redirected shared deep links. It does not redirect.
 Deep links depend on the backend's SPA catch-all (`_mount_spa` in
 `observatory/app.py`), which serves `index.html` for any path outside a route
 prefix the server owns. Without it a refresh on `/p/proj/r/run/grouping` would
-404.
+404\.
+
+## Spend accounting
+
+`CostPanel` (`/p/:project/r/:run/cost`) renders two distinct quantities that used
+to be conflated: **occupancy** (a coder's *last-round* context usage — what the
+200,000-token breaker limit trips on, read from the envelope's final
+`iterations` entry) and **spend** (cumulative tokens across every turn of a
+round, read from the envelope's *top-level* `usage`, which already is the
+all-turns sum). Before plan U9, `SessionUsage`'s cumulative counters were fed
+from the same last-turn figures occupancy uses, so a 190-turn round contributed
+only its final turn's tokens to the displayed spend. Per-request billing is
+independent per turn, so summing across turns for spend is correct and is not
+double counting; occupancy still reads `iterations[-1]` exactly as before —
+changing that would re-open the P0 where a summed signal read ~50x-inflated and
+retired healthy coders. The panel also reports the turn-1 inherited cache read
+(context a round resumed into rather than created) as its own figure, distinct
+from total cache read.
+
+A probe against one real envelope (CLI 2.1.211) found that the top-level
+`usage.cache_creation_input_tokens` is accompanied by a nested per-TTL split —
+`cache_creation.ephemeral_1h_input_tokens` / `cache_creation.ephemeral_5m_input_tokens`
+— present on the same envelope. Neither figure is priced into a dollar cost
+today (the two TTLs bill differently and no price table exists yet); the field
+names and their nesting are recorded so a future cost-in-dollars unit does not
+have to re-derive them from a fresh spike. Full detail:
+`docs/research/design-deviations.md` (U9 section).
 
 ## HTTP API
 
@@ -207,14 +233,14 @@ background job — `[sys.executable, "-u", "-m", "orchestrator.cli", ...]` in it
 own session — so a run outlives the UI process that started it, and restarting
 the server does not kill a four-hour run.
 
-| Method & path                                    | Body / returns                                                                       |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `GET  /api/projects/{project}/plans`             | Plan documents under `docs/plans/*.md` and `docs/*plan*.md`: `[{path, title, modified_at}]`, newest first, paths relative to the repo. |
-| `GET  /api/projects/{project}/groupings`         | `[{name, plan_path, group_count}]` — the same `describe_groupings()` the `groupings` CLI command prints. |
-| `POST /api/projects/{project}/jobs/group`        | `{plan, name?, granularity?, token_budget?, dry_run?, auto_resume?}` → the job.       |
-| `POST /api/projects/{project}/jobs/run`          | `{grouping?, run_id?, options}` → the job.                                            |
-| `POST /api/projects/{project}/jobs/resume`       | `{run_id, options}` → the job.                                                        |
-| `GET  /api/projects/{project}/jobs[/{job_id}]`   | Job list (newest first) or one job. Unknown job → `404`.                              |
+| Method & path                                  | Body / returns                                                                                                                         |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET  /api/projects/{project}/plans`           | Plan documents under `docs/plans/*.md` and `docs/*plan*.md`: `[{path, title, modified_at}]`, newest first, paths relative to the repo. |
+| `GET  /api/projects/{project}/groupings`       | `[{name, plan_path, group_count}]` — the same `describe_groupings()` the `groupings` CLI command prints.                               |
+| `POST /api/projects/{project}/jobs/group`      | `{plan, name?, granularity?, token_budget?, dry_run?, auto_resume?}` → the job.                                                        |
+| `POST /api/projects/{project}/jobs/run`        | `{grouping?, run_id?, options}` → the job.                                                                                             |
+| `POST /api/projects/{project}/jobs/resume`     | `{run_id, options}` → the job.                                                                                                         |
+| `GET  /api/projects/{project}/jobs[/{job_id}]` | Job list (newest first) or one job. Unknown job → `404`.                                                                               |
 
 `options` mirrors `_add_execution_args` one-for-one: `sequential`, `concurrency`,
 `permission_mode`, `review_intensity`, `hitl`, `intensity`, `escalation_source`,
@@ -233,12 +259,12 @@ the parent. A recycled pid after a reboot can therefore read as alive — weigh
 
 Error mapping:
 
-| Condition                                                        | Status |
-| ---------------------------------------------------------------- | ------ |
-| Unknown project                                                   | `404`  |
-| Unknown job id                                                    | `404`  |
-| Run already live (recorded pids, no `interrupted_at`)             | `409`  |
-| Body fails validation (e.g. an unknown `intensity`)               | `422`  |
+| Condition                                             | Status |
+| ----------------------------------------------------- | ------ |
+| Unknown project                                       | `404`  |
+| Unknown job id                                        | `404`  |
+| Run already live (recorded pids, no `interrupted_at`) | `409`  |
+| Body fails validation (e.g. an unknown `intensity`)   | `422`  |
 
 The `409` is the double-launch guard, and it is a refusal rather than a
 de-duplication: two schedulers over one set of worktrees would interleave commits
@@ -305,10 +331,10 @@ schema is still readable. A group directory that does not exist yet → `[]`.
 
 Both take `project` and `run` as **query parameters** (not path segments):
 
-| Method & path                     | Emits                                                                                                                                                                       |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /events/log?project=P&run=R` | Unnamed SSE messages, one per `run.log` line: the existing backlog first, then each newly appended line, never re-emitting one already sent.                                |
-| `GET /events/run?project=P&run=R` | Named `changed` events (data = run id) when `state.json`, `manifest.json`, `usage-limit.json`, `escalations/` or `groups/` mutate — **debounced**, so a burst of writes collapses to one event. |
+| Method & path                     | Emits                                                                                                                                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /events/log?project=P&run=R` | Unnamed SSE messages, one per `run.log` line: the existing backlog first, then each newly appended line, never re-emitting one already sent.                                                                      |
+| `GET /events/run?project=P&run=R` | Named `changed` events (data = run id) when `state.json`, `manifest.json`, `usage-limit.json`, `escalations/` or `groups/` mutate — **debounced**, so a burst of writes collapses to one event.                   |
 | `GET /events/job?project=P&job=J` | Unnamed SSE messages, one per line of a launched job's log. Same tail as `/events/log`, keyed by job rather than run — which is what makes a *grouping* watchable while it runs, before any run directory exists. |
 
 All three open successfully for artifacts that do not exist yet (a client that connects
