@@ -197,6 +197,11 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
 # ----------------------------------------------------------------------- PR
 
 
+# Deliberately does not match `verdict-g<N>-r<M>-extra.json` — the mandatory
+# second pass a `paired_plus` group earns above `d_hard` (plan U28). A group
+# with such a pass therefore reports its first-pass verdict here; benign today
+# (the Observatory drill-in labels the `-extra` file so an operator can find it),
+# left unchanged rather than widened.
 _VERDICT_RE = re.compile(r"^verdict-g(\d+)-r(\d+)\.json$")
 
 

@@ -289,6 +289,21 @@ class TestArtifactsEndpoint:
         assert response.status_code == 200
         assert response.json() == []
 
+    def test_extra_verdict_is_flagged_is_extra(self, client, repo):
+        """Plan U28: `verdict-g<N>-r<M>-extra.json` is the mandatory second
+        verification pass a `paired_plus` group earns above `d_hard`. `finish.py`'s
+        `_VERDICT_RE` deliberately does not match this filename, so `is_extra` is
+        derived here rather than relying on that regex."""
+        directory = RunPaths(repo, "smoke1").group_dir("g1")
+        verdict = ReviewerVerdict(status="approved", notes="second look, still good")
+        (directory / "verdict-g1-r1-extra.json").write_text(verdict.model_dump_json(indent=2))
+
+        body = {item["name"]: item for item in client.get(f"{RUN}/groups/g1/artifacts").json()}
+        assert body["verdict-g1-r1-extra.json"]["is_extra"] is True
+        assert body["verdict-g1-r1-extra.json"]["kind"] == "verdict"
+        # The ordinary first-pass verdict is unaffected.
+        assert body["verdict-g1-r1.json"]["is_extra"] is False
+
     def test_a_malformed_artifact_is_named_rather_than_failing_the_list(self, client, repo):
         directory = RunPaths(repo, "smoke1").group_dir("g1")
         (directory / "report-g3-r1.json").write_text("{not json")
