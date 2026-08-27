@@ -27,8 +27,22 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
+from orchestrator.execution.worktrees import read_provisioning_record
 from orchestrator.model import GroupingResult, RunManifest
 from orchestrator.observatory.registry import Project, find_project, load_registry
+
+
+def _load_worktree_provisioning(group_dir: Path) -> "WorktreeProvisioning | None":
+    """Pass a group's ``provisioning.json`` through, dropping anything malformed
+    (plan U32) — the same tolerant-read contract as ``_group_heartbeat``, so a
+    file written mid-tick or from an older run never 500s the snapshot."""
+    payload = read_provisioning_record(group_dir)
+    if payload is None:
+        return None
+    try:
+        return WorktreeProvisioning.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 # Every run-scoped endpoint hangs off this prefix, so the SPA's client can build
@@ -117,6 +131,21 @@ class GroupHeartbeat(BaseModel):
     round_elapsed_s: float | None = None
 
 
+class WorktreeProvisioning(BaseModel):
+    """A worktree's provisioning outcome, read straight off ``provisioning.json``
+    (plan U32). Written beside the group's other run artifacts, never inside the
+    worktree itself, so this still reads correctly once a clean merge has torn
+    the worktree down — the state a reader most wants once the worktree itself
+    is gone.
+    """
+
+    worktree: str = ""
+    command: list[str] = Field(default_factory=list)
+    state: str = ""
+    detail: str = ""
+    at: datetime | None = None
+
+
 class SnapshotGroup(BaseModel):
     """One board card: scheduler state joined to the manifest's group entry."""
 
@@ -142,6 +171,9 @@ class SnapshotGroup(BaseModel):
     # that never started a round. Absence is normal, so it is a null field and
     # never an error.
     heartbeat: GroupHeartbeat | None = None
+    # None when no provisioning was ever recorded for this group (a run
+    # predating this feature, or a group that never reached worktree creation).
+    provisioning: WorktreeProvisioning | None = None
 
 
 class DagEdge(BaseModel):
@@ -427,6 +459,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                 intensity=group.intensity.value if group else None,
                 estimated_tokens=group.estimated_tokens if group else None,
                 heartbeat=_group_heartbeat(paths, gid),
+                provisioning=_load_worktree_provisioning(paths.group_dir(gid)),
             )
         )
 

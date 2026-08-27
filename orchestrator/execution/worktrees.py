@@ -8,13 +8,66 @@ under the repo root guarantees this by construction.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+
+from orchestrator.execution.manifest import atomic_write_text
+
+#: Where a worktree's provisioning outcome is recorded (plan U32): a plain JSON
+#: file under the group's run directory, never inside the worktree itself, so
+#: it survives ``remove_worktree`` and is still readable long after the
+#: worktree it describes is gone.
+PROVISIONING_RECORD_NAME = "provisioning.json"
+
+
+def provisioning_record_path(group_dir: Path) -> Path:
+    """Where a worktree's provisioning record lives for ``group_dir`` — the same
+    ``group_dir(gid)`` a run already keys reports and verdicts off of. The
+    integration worktree uses ``group_dir("integration")``."""
+    return group_dir / PROVISIONING_RECORD_NAME
+
+
+def write_provisioning_record(
+    group_dir: Path,
+    *,
+    worktree: Path,
+    command: Sequence[str],
+    state: str,
+    detail: str = "",
+) -> None:
+    """Persist what provisioning did to ``worktree`` (plan U32).
+
+    Written beside the group's other run artifacts, never inside the worktree
+    itself, so a group whose worktree was later torn down (``remove_worktree``,
+    on a clean merge) still has a record of how it was provisioned — the
+    drill-in reads this file, not the worktree.
+    """
+    payload = {
+        "worktree": str(worktree),
+        "command": list(command),
+        "state": state,
+        "detail": detail,
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    atomic_write_text(provisioning_record_path(group_dir), json.dumps(payload, indent=2) + "\n")
+
+
+def read_provisioning_record(group_dir: Path) -> dict | None:
+    """The last-recorded provisioning outcome for ``group_dir``, or ``None`` if
+    none was ever written (a run predating this feature, or a group that never
+    reached worktree creation)."""
+    try:
+        payload = json.loads(provisioning_record_path(group_dir).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 class WorktreeError(Exception):
@@ -270,8 +323,9 @@ def provision_env(
     log: Callable[[str], None] | None = None,
     env: dict[str, str] | None = None,
     extra_args: Sequence[str] | None = None,
+    on_state: Callable[[str, list[str]], None] | None = None,
 ) -> bool:
-    """Provision the worktree's own venv via ``uv sync`` (plan U6, R16).
+    """Provision the worktree's own venv via ``uv sync`` (plan U6, R16, U32).
 
     Runs only when the worktree root carries ``pyproject.toml`` or ``uv.lock``
     (a uv-managed checkout); anything else is skipped silently. A failing sync
@@ -291,8 +345,16 @@ def provision_env(
     production): a group's venv should mirror the environment its work is
     verified against, or its reviewer cannot tell a missing extra from a
     regression.
+
+    ``on_state`` (plan U32), if given, is called exactly once with
+    ``("skipped" | "provisioned" | "failed", argv)`` — the exact ``uv sync``
+    invocation this call would run (empty on ``"skipped"``) — so a caller can
+    persist the outcome (``write_provisioning_record``) without duplicating the
+    uv-managed-checkout test above.
     """
     if not (worktree / "pyproject.toml").is_file() and not (worktree / "uv.lock").is_file():
+        if on_state is not None:
+            on_state("skipped", [])
         return False
     run = runner or subprocess.run
     argv = ["uv", "sync", *(extra_args or [])]
@@ -306,10 +368,22 @@ def provision_env(
         )
     except OSError as exc:  # uv missing entirely — same non-fatal contract
         _report_sync_failure(f"uv sync failed in {worktree}: {exc}", log)
+        if on_state is not None:
+            on_state("failed", argv)
         return False
     if result.returncode != 0:
         _report_sync_failure(f"uv sync failed in {worktree}: {result.stderr.strip()[:500]}", log)
+        if on_state is not None:
+            on_state("failed", argv)
         return False
+    if log is not None:
+        # The line an operator needs by itself (plan U32): which worktree, the
+        # exact command, and when — no need to cross-reference a separate
+        # provisioning record just to answer "did this get set up?".
+        when = datetime.now(UTC).strftime("%H:%M")
+        log(f"worktree {worktree} was provisioned with `{' '.join(argv)}` at {when}")
+    if on_state is not None:
+        on_state("provisioned", argv)
     return True
 
 

@@ -547,6 +547,34 @@ function GroupDrillIn({
                 </button>
               </div>
 
+              {/* The worktree path and its provisioning state and time (plan
+                  U32) — recorded outside the worktree, so this still shows a
+                  group's provisioning line after a clean merge has torn the
+                  worktree itself down, rather than going blank. */}
+              {group.provisioning && (
+                <p className="drill-in__provisioning" title={group.provisioning.command.join(" ")}>
+                  <span className="drill-in__provisioning-worktree">{group.provisioning.worktree}</span>
+                  <span
+                    className={`drill-in__provisioning-state drill-in__provisioning-state--${group.provisioning.state}`}
+                  >
+                    {group.provisioning.state}
+                  </span>
+                  {group.provisioning.command.length > 0 && (
+                    <code className="drill-in__provisioning-command">
+                      {group.provisioning.command.join(" ")}
+                    </code>
+                  )}
+                  {group.provisioning.at && (
+                    <span className="drill-in__provisioning-time">
+                      {formatLocalTimestamp(group.provisioning.at)}
+                    </span>
+                  )}
+                  {group.provisioning.detail && (
+                    <span className="drill-in__provisioning-detail">{group.provisioning.detail}</span>
+                  )}
+                </p>
+              )}
+
               <div className="drill-in__pane-body">
                 <div className="drill-in__side">
                   <h4>Sessions</h4>
