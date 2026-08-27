@@ -8,6 +8,12 @@ only to the run's ``llm/calls.json`` (plan U14), never joined to a group id
 there. ``build_snapshot`` therefore synthesizes both from what U14 already
 persists on disk: ``manifest.base_session_id`` for the base session, and a
 group's ``spec-gen<N>.json`` files for its rewrite calls.
+
+The base session is attached to every group's own attempt history at
+generation 1 — the same relationship a rewrite has to the generation it
+produces, since every group's first coder is a fork of it — so a group that
+was never re-specced still carries exactly one orchestrator row: the base
+session.
 """
 
 from __future__ import annotations
@@ -69,6 +75,19 @@ def test_no_base_session_id_serves_a_null_base_session(tmp_path):
     assert snapshot.base_session is None
 
 
+def test_every_group_carries_the_base_session_at_generation_one(tmp_path):
+    paths = _seed_manifest(tmp_path)
+    snapshot = build_snapshot(paths, "proj")
+    for gid in ("g1", "g2"):
+        group = next(group for group in snapshot.groups if group.group_id == gid)
+        base_rows = [s for s in group.sessions if s.role == "orchestrator"]
+        assert len(base_rows) == 1
+        assert base_rows[0].session_id == "base-sess-1"
+        assert base_rows[0].generation == 1
+        # positioned ahead of the group's own first-generation coder session
+        assert group.sessions[0] is base_rows[0]
+
+
 def test_rewrite_call_is_positioned_before_the_generation_it_produced(tmp_path):
     paths = _seed_manifest(tmp_path)
     group_dir = paths.group_dir("g1")
@@ -84,22 +103,23 @@ def test_rewrite_call_is_positioned_before_the_generation_it_produced(tmp_path):
         i for i, (role, gen) in enumerate(roles) if role == "coder" and gen == 2
     )
     assert orchestrator_index < coder_gen2_index
-    # generation-1 sessions are untouched and still precede everything from gen 2
-    assert roles[0] == ("coder", 1)
+    # generation-1 sessions (base session, then coder) are untouched and still
+    # precede everything from generation 2.
+    assert roles[0] == ("orchestrator", 1)
+    assert roles[1] == ("coder", 1)
 
 
-def test_group_never_rewritten_shows_no_orchestrator_rows(tmp_path):
+def test_group_never_rewritten_shows_no_orchestrator_rows_beyond_the_base_session(tmp_path):
     paths = _seed_manifest(tmp_path)
     snapshot = build_snapshot(paths, "proj")
-    g2 = next(group for group in snapshot.groups if group.group_id == "g2")
-    assert all(s.role != "orchestrator" for s in g2.sessions)
-    g1 = next(group for group in snapshot.groups if group.group_id == "g1")
-    # g1 was never rewritten in this fixture either — no spec-gen file exists
-    assert all(s.role != "orchestrator" for s in g1.sessions)
+    for gid in ("g1", "g2"):
+        group = next(group for group in snapshot.groups if group.group_id == gid)
+        orchestrator_rows = [s for s in group.sessions if s.role == "orchestrator"]
+        assert [row.session_id for row in orchestrator_rows] == ["base-sess-1"]
 
 
 def test_a_group_directory_that_does_not_exist_yields_no_rewrite_rows(tmp_path):
     paths = _seed_manifest(tmp_path)
     snapshot = build_snapshot(paths, "proj")
     g1 = next(group for group in snapshot.groups if group.group_id == "g1")
-    assert [s.role for s in g1.sessions] == ["coder", "coder"]
+    assert [s.role for s in g1.sessions] == ["orchestrator", "coder", "coder"]

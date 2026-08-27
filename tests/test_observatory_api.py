@@ -202,15 +202,19 @@ class TestSnapshot:
         assert groups["g1"]["name"] == "types-sample-and-views"
         assert groups["g1"]["depends_on"] == ["g2"]
 
-        # the manifest's groups→sessions join, with the fields the drill-in needs
+        # the manifest's groups→sessions join, with the fields the drill-in needs.
+        # Index 0 is the run's base session, attached to every group at
+        # generation 1 as an orchestrator-role row (plan U30).
         roles = [session["role"] for session in groups["g1"]["sessions"]]
-        assert roles == ["coder", "reviewer"]
-        coder = groups["g1"]["sessions"][0]
+        assert roles == ["orchestrator", "coder", "reviewer"]
+        coder = groups["g1"]["sessions"][1]
         assert coder["session_id"] and coder["name"].startswith("smoke1-g1-")
         assert coder["transcript_path"].endswith(".jsonl")
 
         assert body["edges"] == [{"from": "g2", "to": "g1"}]
         assert body["base_session_id"]
+        assert body["base_session"]["role"] == "orchestrator"
+        assert body["base_session"]["session_id"] == body["base_session_id"]
         assert body["plan_path"] == "frontend-plan.md"
 
     def test_prefers_the_per_run_snapshot_over_the_shared_file(self, tmp_path, repo, client):
@@ -391,7 +395,9 @@ class TestStallEvidence:
             g["group_id"]: g
             for g in client.get("/api/projects/proj/runs/mtime/snapshot").json()["groups"]
         }
-        sessions = groups["g1"]["sessions"]
+        # Index past the synthesized base-session row (plan U30), which carries
+        # no transcript of its own.
+        sessions = [s for s in groups["g1"]["sessions"] if s["role"] != "orchestrator"]
         assert sessions[0]["transcript_mtime"] is not None
         # A transcript that has been cleaned up is missing evidence, not an error.
         assert sessions[1]["transcript_mtime"] is None

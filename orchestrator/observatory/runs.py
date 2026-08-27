@@ -422,34 +422,41 @@ def _rewrite_sessions(paths: RunPaths, run_id: str, group_id: str) -> list[Snaps
 
 
 def _merge_orchestrator_rows(
-    manifest_sessions: list[SnapshotSession], rewrite_sessions: list[SnapshotSession]
+    manifest_sessions: list[SnapshotSession], orchestrator_sessions: list[SnapshotSession]
 ) -> list[SnapshotSession]:
-    """Interleave the rewrite rows with the manifest's coder/reviewer sessions so
-    each rewrite sorts immediately before the generation it produced — the
-    ordering is the point: a generation that exists because the orchestrator
-    rewrote the spec should read as caused by it. A stable sort keyed only on
-    "is this an orchestrator row" preserves the manifest's own append order
+    """Interleave the orchestrator's own rows — the base session, every rewrite —
+    with the manifest's coder/reviewer sessions so each sorts immediately before
+    the generation it produced. The base session sits at generation 1: every
+    group's first coder is a fork of it, so it is what "produced" generation 1,
+    the same relationship a rewrite has to the generation that follows it. A
+    stable sort keyed only on "is this an orchestrator row" preserves the
+    manifest's own append order, and ``orchestrator_sessions``' own order,
     among everything else.
     """
-    combined = rewrite_sessions + manifest_sessions
+    combined = orchestrator_sessions + manifest_sessions
     return sorted(
         combined, key=lambda session: (session.generation, session.role != "orchestrator")
     )
 
 
-def _base_session(run_id: str, manifest: RunManifest | None) -> SnapshotSession | None:
+def _base_session(
+    run_id: str, manifest: RunManifest | None, *, generation: int = 0
+) -> SnapshotSession | None:
     """The run's base session, exposed as an orchestrator-role session (plan
     U30). Nothing on disk records its model or token usage today — only
     ``SessionRunner.start_base`` ever touches it, and it is never passed through
     ``record_session`` — so this is a best-effort read of what the manifest does
-    carry, not a full ``SessionEntry``.
+    carry, not a full ``SessionEntry``. ``generation`` is 0 for the run-level
+    exposure (``RunSnapshot.base_session``, which names no group) and 1 when
+    attached to a specific group's attempt history, where it sorts ahead of
+    that group's first generation.
     """
     if manifest is None or not manifest.base_session_id:
         return None
     return SnapshotSession(
         session_id=manifest.base_session_id,
         role="orchestrator",
-        generation=0,
+        generation=generation,
         name=f"{run_id}-base",
         started_at=manifest.created_at.isoformat() if manifest.created_at else None,
     )
@@ -580,6 +587,11 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     ordering += sorted(extra - set(ordering))
 
     pending_by_bucket = _pending_surprises_by_group(paths, state)
+    # Every group's first generation is a fork of this one session, so it is
+    # attached to each group's own attempt history too, at generation 1 —
+    # ahead of that group's first coder, the same relationship a rewrite has to
+    # the generation it produces (plan U30).
+    base_row = _base_session(paths.run_id, manifest, generation=1)
     groups: list[SnapshotGroup] = []
     for gid in ordering:
         run_state = state.groups.get(gid) if state else None
@@ -618,7 +630,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                         )
                         for session in (entry.sessions if entry else [])
                     ],
-                    _rewrite_sessions(paths, paths.run_id, gid),
+                    ([base_row] if base_row else []) + _rewrite_sessions(paths, paths.run_id, gid),
                 ),
                 difficulty=group.difficulty if group else None,
                 intensity=group.intensity.value if group else None,

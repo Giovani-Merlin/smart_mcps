@@ -224,6 +224,14 @@
   color: var(--fg-muted);
 }
 
+/* The orchestrator's own sessions — the base session and a rewrite's speccer
+   call — are not coder or reviewer work; a group card reading "3 sessions"
+   should not read as three attempts at the task (plan U30). */
+.attempt-session__role--orchestrator {
+  color: #7a3fa0;
+  font-weight: 600;
+}
+
 /* A rounded, coloured badge — deliberately unlike `.attempt-grid__group-id`'s
    flat monospace text, so "gen 3" cannot be mistaken for a reference to a
    group named g3 elsewhere on the same page (plan U35/F17). */

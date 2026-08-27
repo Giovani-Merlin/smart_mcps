@@ -396,6 +396,10 @@ export interface RunSnapshot {
   run_id: string;
   plan_path: string;
   base_session_id?: string | null;
+  // The base session as a session, not just an id (plan U30): role
+  // "orchestrator", so the run's own work is legible alongside the coder and
+  // reviewer sessions it drives. Null wherever base_session_id is null.
+  base_session?: SnapshotSession | null;
   created_at?: string | null;
   groups: SnapshotGroup[];
   edges: DagEdge[];
