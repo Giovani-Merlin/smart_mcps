@@ -880,12 +880,25 @@ def _verify_grouping_index_fingerprint(
         return grouping
 
     fp_client = client or CodegraphClient(repo_root=repo_root)
-    _current, matched = verify_index_fingerprint(
-        recorded_trace.provenance.index_fingerprint,
-        fp_client,
-        allow_drift=allow_drift,
-        log=lambda message: print(message, file=sys.stderr),
-    )
+    try:
+        _current, matched = verify_index_fingerprint(
+            recorded_trace.provenance.index_fingerprint,
+            fp_client,
+            allow_drift=allow_drift,
+            log=lambda message: print(message, file=sys.stderr),
+        )
+    except GraphBuildError as exc:
+        # The current index could not even be read (mirrors plan U2's
+        # no-baseline degrade): this is an environmental failure to verify,
+        # not evidence the index actually drifted, so it must not be treated
+        # as a mismatch — that would turn "codegraph isn't reachable right
+        # now" into a false "the partition is stale" verdict.
+        print(
+            f"warning: could not verify index fingerprint against the current "
+            f"index ({exc}) — proceeding without verification",
+            file=sys.stderr,
+        )
+        return grouping
     if matched:
         return grouping
 
