@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.cli import _load_config, _print_outcomes, apply_overrides, main
+from orchestrator.cli import (
+    _config_banner_source,
+    _load_config,
+    _print_outcomes,
+    apply_overrides,
+    main,
+)
 from orchestrator.config import (
     EscalationConfig,
     OrchestratorConfig,
@@ -1149,6 +1155,23 @@ class TestRunBanner:
         assert "run r10" in banner
         assert "concurrency 4" in banner
         assert "HITL off" in banner
+
+
+class TestConfigBanner:
+    """F11: the `config:` line names a path only when one was actually read —
+    naming a path that was never opened made two operators once believe a
+    `.orchestrator/config.toml` existed when it didn't."""
+
+    def test_no_config_file_reports_defaults(self, tmp_path):
+        missing = tmp_path / ".orchestrator" / "config.toml"
+        assert not missing.exists()
+        assert _config_banner_source(missing) == "defaults (no config file)"
+
+    def test_present_config_file_reports_its_path(self, tmp_path):
+        present = tmp_path / ".orchestrator" / "config.toml"
+        present.parent.mkdir(parents=True)
+        present.write_text("[session]\n")
+        assert _config_banner_source(present) == str(present)
 
 
 class TestReviewIntensityWarning:
