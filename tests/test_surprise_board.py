@@ -6,7 +6,16 @@ from __future__ import annotations
 
 import logging
 
-from orchestrator.execution.review import SurpriseBoard
+from orchestrator.execution.manifest import RunPaths
+from orchestrator.execution.review import (
+    REASON_GROUP_COMPLETED,
+    REASON_RUN_ENDED,
+    REASON_UNKNOWN_GROUP,
+    SurpriseBoard,
+    format_residue_report,
+    surprise_residue,
+)
+from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.model import Group, ReviewIntensity, Surprise
 
 
@@ -102,3 +111,90 @@ def test_no_groups_configured_preserves_legacy_unvalidated_behavior():
     board.mark(s, source_group="g1")
     assert board.pending_for("g0") == [s]
     assert board.pending_for(SurpriseBoard.RUN_LEVEL) == []
+
+
+# ------------------------------------------------------------ U12: residue report
+
+
+def test_residue_report_is_empty_when_the_board_never_persisted_anything(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    assert surprise_residue(paths, state=None) == []
+    assert "none pending" in format_residue_report([])
+
+
+def test_residue_labels_a_bucket_for_a_completed_group(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    s = surprise("late finding", ["g1"])
+    board.mark(s, source_group="g2")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+
+    entries = surprise_residue(paths, state)
+
+    assert len(entries) == 1
+    assert entries[0].bucket == "g1"
+    assert entries[0].count == 1
+    assert entries[0].reason == REASON_GROUP_COMPLETED
+    report = format_residue_report(entries)
+    assert "g1: 1 pending" in report
+    assert REASON_GROUP_COMPLETED in report
+
+
+def test_residue_labels_a_resolved_group_the_same_as_completed(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("late finding", ["g1"]), source_group="g2")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.RESOLVED)})
+
+    entries = surprise_residue(paths, state)
+
+    assert entries[0].reason == REASON_GROUP_COMPLETED
+
+
+def test_residue_labels_a_still_pending_group_as_run_ended_before_delivery(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("late finding", ["g1"]), source_group="g2")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.RUNNING)})
+
+    entries = surprise_residue(paths, state)
+
+    assert entries[0].reason == REASON_RUN_ENDED
+
+
+def test_residue_labels_the_run_level_bucket_as_unknown_group_id(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("g14 doesn't exist", ["g14"]), source_group="g1")
+    state = RunState(run_id="r1", groups={})
+
+    entries = surprise_residue(paths, state)
+
+    assert len(entries) == 1
+    assert entries[0].bucket == SurpriseBoard.RUN_LEVEL
+    assert entries[0].reason == REASON_UNKNOWN_GROUP
+
+
+def test_residue_report_lists_every_bucket_with_its_own_reason(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("finding for g1", ["g1"]), source_group="g3")
+    board.mark(surprise("finding for g2", ["g2"]), source_group="g3")
+    board.mark(surprise("unknown id", ["g14"]), source_group="g3")
+    state = RunState(
+        run_id="r1",
+        groups={
+            "g1": GroupRunState(state=GroupState.COMPLETED),
+            "g2": GroupRunState(state=GroupState.RUNNING),
+        },
+    )
+
+    entries = surprise_residue(paths, state)
+    reasons = {entry.bucket: entry.reason for entry in entries}
+
+    assert reasons["g1"] == REASON_GROUP_COMPLETED
+    assert reasons["g2"] == REASON_RUN_ENDED
+    assert reasons[SurpriseBoard.RUN_LEVEL] == REASON_UNKNOWN_GROUP
+    report = format_residue_report(entries)
+    for bucket in reasons:
+        assert bucket in report

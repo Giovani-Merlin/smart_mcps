@@ -967,6 +967,38 @@ class TestPrintOutcomes:
         assert "g2: completed" in out
         assert "g1: completed" not in out
 
+    def test_omitting_paths_skips_the_residue_section_unchanged(self, capsys):
+        # Every test above calls _print_outcomes(state) with no paths, exactly
+        # as every pre-U12 caller does — must keep behaving identically.
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state) == 0
+        assert "surprises pending" not in capsys.readouterr().out
+
+    def test_residue_section_reports_a_pending_bucket_with_its_reason(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        paths.run_dir.mkdir(parents=True)
+        atomic_write_text(
+            paths.surprises_path,
+            json.dumps(
+                {"g1": [{"kind": "other", "description": "late finding", "affected_groups": []}]}
+            ),
+        )
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state, paths) == 0
+        out = capsys.readouterr().out
+        assert "surprises pending at end of run" in out
+        assert "g1: 1 pending" in out
+        assert "already completed" in out
+
+    def test_residue_section_prints_none_pending_for_an_empty_board(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        paths.run_dir.mkdir(parents=True)
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state, paths) == 0
+        out = capsys.readouterr().out
+        assert "surprises pending at end of run" in out
+        assert "none pending" in out
+
     def test_stall_report_names_failure_holds_branch_reentry_and_resume_command(self, capsys):
         """Plan U3: a stalled group's line carries its failure text verbatim,
         the groups it holds and on which files, its branch, its reentry_count,

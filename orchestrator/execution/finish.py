@@ -27,6 +27,7 @@ from orchestrator.execution.manifest import (
     archive_review_scratch,
 )
 from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME
+from orchestrator.execution.review import format_residue_report, surprise_residue
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.execution.worktrees import (
     _branch_exists,
@@ -168,6 +169,11 @@ def finish_run(
         announce(
             f"worktree removed but branch kept (git considers unmerged): {', '.join(kept_branches)}"
         )
+
+    residue = surprise_residue(paths, state)
+    announce(format_residue_report(residue))
+    if residue:
+        log(f"finish {run_id}: {len(residue)} surprise bucket(s) never delivered")
 
     return FinishResult(
         integration_branch=branch,

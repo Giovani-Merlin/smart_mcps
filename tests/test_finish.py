@@ -10,6 +10,7 @@ path, so this is a property of the sandbox, not of `_push_integration_branch`.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -640,3 +641,44 @@ def test_finish_names_the_missing_integration_worktree(repo, tmp_path):
 
     with pytest.raises(FinishError, match="integration worktree"):
         finish_run(repo, run_id, announce=lambda _m: None)
+
+
+# --------------------------------------------------------------- residue (U12)
+
+
+def test_finish_announces_pending_surprise_residue_with_bucket_and_reason(repo, tmp_path):
+    """A surprise still marked for a group that already completed is reported
+    with the "already completed" reason (plan U12) — the group's checkpoints
+    are all behind it, so nothing will ever consume this bucket."""
+    run_id = "r-residue"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    atomic_write_text(
+        paths.surprises_path,
+        json.dumps(
+            {"g1": [{"kind": "other", "description": "late finding", "affected_groups": ["g1"]}]}
+        ),
+    )
+
+    messages: list[str] = []
+    finish_run(repo, run_id, announce=messages.append)
+
+    residue = next(m for m in messages if "surprises pending" in m)
+    assert "g1: 1 pending" in residue
+    assert "already completed" in residue
+
+
+def test_finish_reports_none_pending_for_an_empty_board(repo, tmp_path):
+    run_id = "r-no-residue"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+
+    messages: list[str] = []
+    finish_run(repo, run_id, announce=messages.append)
+
+    residue = next(m for m in messages if "surprises pending" in m)
+    assert "none pending" in residue

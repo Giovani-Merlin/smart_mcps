@@ -74,6 +74,8 @@ function snapshot(overrides: Partial<RunSnapshot["groups"][number]> = {}): RunSn
         ],
         difficulty: 0.82,
         intensity: "paired_plus",
+        pending_surprises: [],
+        emitted_surprises: [],
         ...overrides,
       },
     ],
@@ -164,5 +166,39 @@ describe("session generation naming and timestamps (U35)", () => {
       .find((part) => part.type === "timeZoneName")?.value;
     expect(zone).toBeTruthy();
     expect(screen.getByTitle("started at").textContent).toContain(zone);
+  });
+});
+
+describe("surprise board — pending vs. emitted (U12)", () => {
+  it("renders no surprise section when both directions are empty", async () => {
+    await openGroup(snapshot());
+    expect(screen.queryByText("Pending for this group")).toBeNull();
+    expect(screen.queryByText("Emitted by this group")).toBeNull();
+  });
+
+  it("shows surprises pending for the group with their reason, separately from what it emitted", async () => {
+    await openGroup(
+      snapshot({
+        pending_surprises: [
+          {
+            kind: "other",
+            description: "late finding from g3",
+            affected_groups: [],
+            reason: "run ended before delivery",
+          },
+        ],
+        emitted_surprises: [
+          { kind: "interface_mismatch", description: "g1 changed the API", affected_groups: ["g2"] },
+        ],
+      }),
+    );
+
+    expect(screen.getByText("Pending for this group")).toBeTruthy();
+    expect(screen.getByText(/late finding from g3/)).toBeTruthy();
+    expect(screen.getByText("run ended before delivery")).toBeTruthy();
+
+    expect(screen.getByText("Emitted by this group")).toBeTruthy();
+    expect(screen.getByText(/g1 changed the API/)).toBeTruthy();
+    expect(screen.getByText(/affects g2/)).toBeTruthy();
   });
 });

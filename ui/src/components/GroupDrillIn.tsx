@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { errorMessage, getArtifacts, getGenerationDiff, getGroupDiff, getTranscript } from "../api";
 import { generationsOf, sessionBaseName, sessionGeneration } from "../attempts";
 import DiffView from "./DiffView";
+import SurpriseBoard from "./SurpriseBoard";
 import type {
   Artifact,
   CoderReport,
@@ -574,6 +575,15 @@ function GroupDrillIn({
                   )}
                 </p>
               )}
+
+              {/* Two directions of the same board (plan U12): what is still
+                  pending on the board addressed to this group, separately
+                  from what this group's own rounds have reported. Renders
+                  nothing when both are empty. */}
+              <SurpriseBoard
+                pending={group.pending_surprises ?? []}
+                emitted={group.emitted_surprises ?? []}
+              />
 
               <div className="drill-in__pane-body">
                 <div className="drill-in__side">

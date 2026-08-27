@@ -66,6 +66,7 @@ from orchestrator.execution.scheduler import (
     GroupFailure,
     GroupState,
     RunAbort,
+    RunState,
 )
 from orchestrator.execution.sessions import (
     RoundResult,
@@ -96,6 +97,7 @@ from orchestrator.model import (
     SessionEntry,
     SessionRole,
     Surprise,
+    SurpriseResidueEntry,
 )
 
 
@@ -219,6 +221,73 @@ class SurpriseBoard:
             for gid, surprises in self._pending.items()
         }
         atomic_write_text(self._paths.surprises_path, json.dumps(payload, indent=2) + "\n")
+
+
+#: Reason strings for a residue entry (plan U12) — a bucket resolved to a real
+#: group whose state is terminal-completed never gets another checkpoint to
+#: consume it at; ``RUN_LEVEL`` never named a group at all; anything else was
+#: still reachable when the run stopped.
+REASON_GROUP_COMPLETED = "never delivered — group already completed"
+REASON_UNKNOWN_GROUP = "unknown group id"
+REASON_RUN_ENDED = "run ended before delivery"
+
+
+def surprise_residue(paths: RunPaths, state: RunState | None) -> list[SurpriseResidueEntry]:
+    """Every bucket still on the board when the run ended, each labelled with
+    why (plan U12). Reads ``surprises.json`` directly rather than constructing
+    a ``SurpriseBoard`` — a residue report has no group list to validate
+    against and must never mutate the file it is reporting on. Sorted by
+    bucket for a stable, readable listing.
+    """
+    if not paths.surprises_path.is_file():
+        return []
+    try:
+        raw = json.loads(paths.surprises_path.read_text())
+    except json.JSONDecodeError:
+        return []
+    entries: list[SurpriseResidueEntry] = []
+    for bucket, items in raw.items():
+        surprises = [Surprise.model_validate(item) for item in items]
+        if not surprises:
+            continue
+        entries.append(
+            SurpriseResidueEntry(
+                bucket=bucket,
+                count=len(surprises),
+                reason=_residue_reason(bucket, state),
+                surprises=surprises,
+            )
+        )
+    entries.sort(key=lambda entry: entry.bucket)
+    return entries
+
+
+def _residue_reason(bucket: str, state: RunState | None) -> str:
+    if bucket == SurpriseBoard.RUN_LEVEL:
+        return REASON_UNKNOWN_GROUP
+    group_state = state.groups.get(bucket) if state is not None else None
+    if group_state is not None and group_state.state in (
+        GroupState.COMPLETED,
+        GroupState.RESOLVED,
+    ):
+        return REASON_GROUP_COMPLETED
+    return REASON_RUN_ENDED
+
+
+def format_residue_report(entries: list[SurpriseResidueEntry]) -> str:
+    """Human-readable rendering shared by the CLI end-of-run summary and
+    `finish` (plan U12). An empty board renders an explicit "none pending"
+    rather than a bare heading — the whole point is that the operator should
+    never have to open ``surprises.json`` to learn the board is empty."""
+    lines = ["surprises pending at end of run:"]
+    if not entries:
+        lines.append("  none pending")
+        return "\n".join(lines)
+    for entry in entries:
+        lines.append(f"  {entry.bucket}: {entry.count} pending — {entry.reason}")
+        for surprise in entry.surprises:
+            lines.append(f"    - [{surprise.kind}] {surprise.description}")
+    return "\n".join(lines)
 
 
 @dataclass

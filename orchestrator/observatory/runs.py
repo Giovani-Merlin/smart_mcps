@@ -26,9 +26,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
+from orchestrator.execution.review import surprise_residue
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.execution.worktrees import read_provisioning_record
-from orchestrator.model import GroupingResult, RunManifest
+from orchestrator.model import GroupingResult, RunManifest, Surprise
 from orchestrator.observatory.registry import Project, find_project, load_registry
 
 
@@ -146,6 +147,20 @@ class WorktreeProvisioning(BaseModel):
     at: datetime | None = None
 
 
+class SnapshotSurprise(BaseModel):
+    """One ``Surprise``, flattened for the UI (plan U12).
+
+    ``reason`` is set only on a surprise still pending *for* a group — why it
+    was never delivered (see ``surprise_residue``) — and left ``None`` on a
+    surprise a group *emitted*, which carries no such fact.
+    """
+
+    kind: str
+    description: str
+    affected_groups: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class SnapshotGroup(BaseModel):
     """One board card: scheduler state joined to the manifest's group entry."""
 
@@ -174,6 +189,13 @@ class SnapshotGroup(BaseModel):
     # None when no provisioning was ever recorded for this group (a run
     # predating this feature, or a group that never reached worktree creation).
     provisioning: WorktreeProvisioning | None = None
+    # Two directions of the same board (plan U12), kept as separate lists so the
+    # UI never has to infer direction from a shared one: surprises still sitting
+    # on the board addressed to this group (from ``surprises.json``), and
+    # surprises this group's own coder/reviewer rounds reported (from its
+    # ``report-g*``/``verdict-g*`` artifacts).
+    pending_surprises: list[SnapshotSurprise] = Field(default_factory=list)
+    emitted_surprises: list[SnapshotSurprise] = Field(default_factory=list)
 
 
 class DagEdge(BaseModel):
@@ -405,6 +427,65 @@ def _is_stale_failure(run_state: GroupRunState | None) -> bool:
     return run_state.state in (GroupState.COMPLETED, GroupState.RESOLVED)
 
 
+def _emitted_surprises(group_dir: Path) -> list[SnapshotSurprise]:
+    """Every surprise this group's own coder/reviewer rounds reported (plan
+    U12), read from its ``report-g*``/``verdict-g*`` artifacts — the
+    structured final message of every round already carries a ``surprises``
+    field, so no new persistence is needed to answer "what did this group
+    emit". Deduplicated the same way the board itself dedupes: identical
+    (kind, description, affected_groups) collapses to one entry, since a
+    surprise is commonly reported again by a later round.
+    """
+    if not group_dir.is_dir():
+        return []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    surprises: list[SnapshotSurprise] = []
+    for path in sorted(group_dir.glob("report-g*.json")) + sorted(
+        group_dir.glob("verdict-g*.json")
+    ):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for raw in payload.get("surprises") or []:
+            try:
+                surprise = Surprise.model_validate(raw)
+            except ValidationError:
+                continue
+            key = (surprise.kind, surprise.description, tuple(surprise.affected_groups))
+            if key in seen:
+                continue
+            seen.add(key)
+            surprises.append(
+                SnapshotSurprise(
+                    kind=surprise.kind,
+                    description=surprise.description,
+                    affected_groups=surprise.affected_groups,
+                )
+            )
+    return surprises
+
+
+def _pending_surprises_by_group(
+    paths: RunPaths, state: RunState | None
+) -> dict[str, list[SnapshotSurprise]]:
+    """Every bucket still on the board (plan U12), keyed by bucket — a real
+    group id or ``SurpriseBoard.RUN_LEVEL`` — each carrying why it never got
+    delivered. Computed once per snapshot rather than per group."""
+    return {
+        entry.bucket: [
+            SnapshotSurprise(
+                kind=surprise.kind,
+                description=surprise.description,
+                affected_groups=surprise.affected_groups,
+                reason=entry.reason,
+            )
+            for surprise in entry.surprises
+        ]
+        for entry in surprise_residue(paths, state)
+    }
+
+
 def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     """Compose state + manifest + DAG into the one body the board renders."""
     state = _load_state(paths)
@@ -418,6 +499,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     extra = set(state.groups if state else ()) | set(manifest.groups if manifest else ())
     ordering += sorted(extra - set(ordering))
 
+    pending_by_bucket = _pending_surprises_by_group(paths, state)
     groups: list[SnapshotGroup] = []
     for gid in ordering:
         run_state = state.groups.get(gid) if state else None
@@ -460,6 +542,8 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                 estimated_tokens=group.estimated_tokens if group else None,
                 heartbeat=_group_heartbeat(paths, gid),
                 provisioning=_load_worktree_provisioning(paths.group_dir(gid)),
+                pending_surprises=pending_by_bucket.get(gid, []),
+                emitted_surprises=_emitted_surprises(paths.group_dir(gid)),
             )
         )
 

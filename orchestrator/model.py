@@ -149,6 +149,19 @@ class Surprise(BaseModel):
     affected_groups: list[str] = Field(default_factory=list)
 
 
+class SurpriseResidueEntry(BaseModel):
+    """One ``SurpriseBoard`` bucket still holding surprises when a run ended
+    (plan U12) — read straight off ``surprises.json``, never mutating it, so a
+    residue report can be produced from a finished or crashed run alike.
+    ``bucket`` is either a real group id or ``SurpriseBoard.RUN_LEVEL``.
+    """
+
+    bucket: str
+    count: int
+    reason: str
+    surprises: list[Surprise] = Field(default_factory=list)
+
+
 class VerificationResult(BaseModel):
     item_id: str
     status: Literal["pass", "fail", "skipped"]

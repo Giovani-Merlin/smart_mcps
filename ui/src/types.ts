@@ -334,6 +334,16 @@ export interface WorktreeProvisioning {
   at?: string | null;
 }
 
+// SnapshotSurprise (runs.py) — one Surprise, flattened for the UI (plan U12).
+// `reason` is set only on a surprise pending *for* a group (why it was never
+// delivered); left unset on a surprise the group *emitted*.
+export interface SnapshotSurprise {
+  kind: string;
+  description: string;
+  affected_groups: string[];
+  reason?: string | null;
+}
+
 export interface SnapshotGroup {
   group_id: string;
   name: string;
@@ -362,6 +372,14 @@ export interface SnapshotGroup {
   // Recorded outside the worktree, so it stays populated after a clean merge
   // has torn the worktree down (plan U32).
   provisioning?: WorktreeProvisioning | null;
+  // Two directions of the same board (plan U12): surprises still sitting on
+  // the board addressed to this group, and surprises this group's own
+  // coder/reviewer rounds reported. Kept as separate lists so the UI never
+  // has to infer direction from a shared one. Optional so every snapshot
+  // fixture predating this field keeps building — absence reads as empty,
+  // never as an error.
+  pending_surprises?: SnapshotSurprise[];
+  emitted_surprises?: SnapshotSurprise[];
 }
 
 export type ReviewIntensity = "self_verify" | "paired" | "paired_plus";
