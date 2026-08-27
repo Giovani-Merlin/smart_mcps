@@ -20,9 +20,11 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from orchestrator.grouping.partition import (
     Pair,
@@ -38,6 +40,12 @@ IMPACT_DEPTH = 2
 # Weight of one declared task-map depends_on edge. Ordering-only (never affinity),
 # so its magnitude matters solely for merge tie-breaking — not a config knob.
 DECLARED_DEP_WEIGHT = 1.0
+
+# Limit for the one bulk `codegraph query ""` call `logical_export` issues — large
+# enough to return every node in a real index (`query`'s `-l` is a hard cap, not a
+# page size: there is no pagination), rather than `CALL_QUERY_LIMIT`, which is sized
+# for one symbol's fan-in/out, not the whole index.
+FULL_EXPORT_LIMIT = 1_000_000
 
 # codegraph subcommands that take the project path positionally and reject `-p`
 # (`codegraph sync --help`: `Usage: codegraph sync [options] [path]`). Every other
@@ -57,17 +65,33 @@ class GraphBuildError(Exception):
     """codegraph output could not be turned into a task graph."""
 
 
-def index_fingerprint(status: dict) -> str:
-    """sha256 of ``codegraph status -j``, canonicalized (plan U5): key order and
-    JSON separators are pinned so two invocations against the same index
-    produce byte-identical input to the hash regardless of dict insertion
-    order. This is deliberately not a content hash of the index itself — the
-    ``.db`` file churns under WAL even with no real change — so it is paired
-    with the repo commit SHA (distinguishes repo content) and the digest
-    already contains ``pendingChanges`` (distinguishes a stale index from a
-    synced one at the same commit)."""
-    canonical = json.dumps(status, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def _canonical_list(items: Sequence[dict]) -> list[dict]:
+    """Sort a list of dicts by their own canonical JSON — order-independent
+    without requiring every entry to share a natural sort key."""
+    return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+
+
+def index_fingerprint(export: dict) -> str:
+    """sha256 of a canonical logical export of the index's *content* (plan U5):
+    sorted symbol ids, sorted file paths and sorted edges, not
+    ``codegraph status -j``'s operational counters (queue depth, uptime, cache
+    size). The old fingerprint hashed exactly those counters and churned three
+    times in fifteen minutes at one commit while `sync` reported "already up to
+    date" — a stale-vs-synced distinction the counters conflate with real
+    content, which the new export sidesteps entirely.
+
+    ``export`` is the shape ``CodegraphClient.logical_export`` returns:
+    ``{"symbols": [...], "files": [...], "edges": [...]}``. Each list is
+    re-sorted here (by each entry's own canonical JSON) rather than trusted to
+    already be sorted, so a caller's list order never changes the fingerprint.
+    """
+    canonical = {
+        "symbols": _canonical_list(export.get("symbols", [])),
+        "files": sorted(export.get("files", [])),
+        "edges": _canonical_list(export.get("edges", [])),
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -161,16 +185,57 @@ class CodegraphClient:
         real symbols and files that exist on disk."""
         self._run(["sync"])
 
-    def status(self) -> dict:
-        """`codegraph status -j`, parsed (plan U5): the JSON summary used to
-        fingerprint the index (see ``index_fingerprint`` below) — counts, not a
-        content hash, so a stale-vs-synced index at the same repo commit is
-        distinguished by ``pendingChanges`` inside it, not by the fingerprint
-        alone."""
-        payload = self._json(["status", "-j"])
+    def status(self, *, fresh: bool = False) -> dict:
+        """`codegraph status -j`, parsed. ``fresh`` bypasses the per-argv cache
+        (plan U6): the quiescence handshake polls this repeatedly and needs a
+        live read each time, not the first subprocess's memoized output."""
+        payload = self._json(["status", "-j"], cache=not fresh)
         if not isinstance(payload, dict):
             raise GraphBuildError("codegraph status output is not a JSON object")
         return payload
+
+    def logical_export(self) -> dict[str, list]:
+        """Canonical logical export of the index's *content* (plan U5): sorted
+        symbol ids, file paths and edges, computed from one fresh bulk
+        `codegraph query ""` call — always uncached, since every caller (the
+        quiescence handshake) needs a live read every time, not a memoized one.
+
+        No CLI command exports the whole edge graph in bulk (walking
+        callers/callees per symbol would be O(symbols) subprocess calls on
+        every poll — the opposite of "cheaply"), so import-kind nodes, the
+        only edges the bulk query surface exposes for free, stand in for the
+        edge layer; every other node kind is a symbol. This is the residual
+        this plan accepts explicitly: index-stable, not a full structural
+        content hash.
+        """
+        payload = self._json(
+            ["query", "", "-j", "-l", str(FULL_EXPORT_LIMIT)],
+            cache=False,
+        )
+        if not isinstance(payload, list):
+            raise GraphBuildError("codegraph query '' output is not a list")
+        symbols: list[dict] = []
+        edges: list[dict] = []
+        files: set[str] = set()
+        for entry in payload:
+            node = entry.get("node", {}) if isinstance(entry, dict) else {}
+            file_path = node.get("filePath", "")
+            if file_path:
+                files.add(file_path)
+            if node.get("kind") == "import":
+                edges.append({"filePath": file_path, "target": node.get("name", "")})
+            else:
+                symbols.append(
+                    {
+                        "id": node.get("id", ""),
+                        "kind": node.get("kind", ""),
+                        "name": node.get("name", ""),
+                        "qualifiedName": node.get("qualifiedName", ""),
+                        "filePath": file_path,
+                        "signature": node.get("signature", ""),
+                    }
+                )
+        return {"symbols": symbols, "files": sorted(files), "edges": edges}
 
     def _parsed(self, args: Sequence[str], expect_key: str) -> list[dict]:
         payload = self._json(args)
@@ -183,8 +248,8 @@ class CodegraphClient:
             raise GraphBuildError(f"codegraph {args[0]} {args[1]!r} {expect_key!r} is not a list")
         return entries
 
-    def _json(self, args: Sequence[str]) -> object:
-        raw = self._run(args)
+    def _json(self, args: Sequence[str], *, cache: bool = True) -> object:
+        raw = self._run(args, cache=cache)
         if not raw.strip():
             raise GraphBuildError(f"codegraph {args[0]} {args[1]!r} produced empty output")
         if _NOT_FOUND.search(raw):
@@ -214,9 +279,9 @@ class CodegraphClient:
             return ["codegraph", *args, str(self.repo_root)]
         return ["codegraph", *args, "-p", str(self.repo_root)]
 
-    def _run(self, args: Sequence[str]) -> str:
+    def _run(self, args: Sequence[str], *, cache: bool = True) -> str:
         key = tuple(args)
-        if key in self._cache:
+        if cache and key in self._cache:
             return self._cache[key]
         if self.runner is not None:
             output = self.runner(args)
@@ -231,8 +296,94 @@ class CodegraphClient:
                     f"codegraph {args[0]} failed ({result.returncode}): {result.stderr.strip()}"
                 )
             output = result.stdout
-        self._cache[key] = output
+        if cache:
+            self._cache[key] = output
         return output
+
+
+class QuiescenceRecorder(Protocol):
+    """Structural type for the optional quiescence trace hook (plan U6).
+
+    This module never imports ``orchestrator.grouping.trace`` — a caller
+    passes anything satisfying this shape, mirroring ``partition.py``'s
+    ``PartitionRecorder`` seam and keeping the dependency one-directional.
+    """
+
+    def record_index_observation(self, fingerprint: str, status: dict) -> None: ...
+
+
+# Defaults chosen so a healthy, already-settled index costs no real wall-clock
+# time in the common case (a fresh subprocess-backed client still pays three
+# real `codegraph` invocations, but a fake/injected runner in tests pays
+# ``time.sleep(0.05)`` twice, not a hand-tuned production interval) while still
+# detecting the drift this plan exists to catch: three reads that must agree,
+# a short gap between them, and a ceiling so a genuinely moving index fails
+# fast rather than hanging the whole grouping run.
+DEFAULT_QUIESCENCE_MIN_STABLE_READS = 3
+DEFAULT_QUIESCENCE_INTERVAL_S = 0.05
+DEFAULT_QUIESCENCE_TIMEOUT_S = 5.0
+
+
+@dataclass(frozen=True)
+class IndexObservation:
+    """One quiescence-poll read: the fingerprint plus the full `status -j`
+    payload behind it (plan U6), kept together so a drift is diagnosable from
+    the trace alone rather than needing a separate investigation."""
+
+    fingerprint: str
+    status: dict
+
+
+def await_index_quiescence(
+    client: CodegraphClient,
+    *,
+    min_stable_reads: int = DEFAULT_QUIESCENCE_MIN_STABLE_READS,
+    interval_s: float = DEFAULT_QUIESCENCE_INTERVAL_S,
+    timeout_s: float = DEFAULT_QUIESCENCE_TIMEOUT_S,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], float] = time.monotonic,
+    recorder: QuiescenceRecorder | None = None,
+) -> str:
+    """Poll ``index_fingerprint(client.logical_export())`` until it repeats
+    ``min_stable_reads`` times in a row (plan U6): a fingerprint that churned
+    three times in fifteen minutes at one commit while `sync` reported
+    "already up to date" is proof the index can still be moving right after a
+    `sync` call returns, so partitioning against the very next read is not
+    safe.
+
+    Every read is handed to ``recorder`` (fingerprint plus the full
+    `status -j` payload) so a drift is attributable after the fact from the
+    trace alone. Raises ``GraphBuildError`` naming every distinct fingerprint
+    observed if the index never settles before ``timeout_s`` — proceeding on
+    a moving index is exactly the failure this handshake exists to prevent.
+    """
+    if min_stable_reads < 1:
+        raise ValueError("min_stable_reads must be at least 1")
+    deadline = now() + timeout_s
+    observations: list[IndexObservation] = []
+    streak_value: str | None = None
+    streak_count = 0
+    while True:
+        status_payload = client.status(fresh=True)
+        fingerprint = index_fingerprint(client.logical_export())
+        observations.append(IndexObservation(fingerprint=fingerprint, status=status_payload))
+        if recorder is not None:
+            recorder.record_index_observation(fingerprint, status_payload)
+        if fingerprint == streak_value:
+            streak_count += 1
+        else:
+            streak_value = fingerprint
+            streak_count = 1
+        if streak_count >= min_stable_reads:
+            return fingerprint
+        if now() >= deadline:
+            distinct = sorted({o.fingerprint for o in observations})
+            raise GraphBuildError(
+                "codegraph index did not settle within "
+                f"{timeout_s}s ({len(observations)} read(s)): observed "
+                f"{len(distinct)} distinct fingerprint(s): {distinct}"
+            )
+        sleep(interval_s)
 
 
 # Cap on how many contributions one edge keeps in the provenance sidecar (plan P2).

@@ -844,7 +844,10 @@ class TestGroupingTraceArtifact:
 
 class TestSyncGate:
     """R13: `group` refuses to run against a stale index — sync() is invoked,
-    blocking, before the first index read (files_overview)."""
+    blocking, before the first index read (files_overview). Plan U6 inserts the
+    quiescence handshake (repeated `status`/`query` reads) between the two:
+    sync still comes first, and files_overview still waits for the index to be
+    read at least once, but now via the handshake rather than immediately."""
 
     def test_sync_runs_before_files_overview(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -863,7 +866,8 @@ class TestSyncGate:
             client=client,
         )
         assert calls[0] == ["sync"]
-        assert calls[1][0] == "files"
+        files_index = next(i for i, c in enumerate(calls) if c[0] == "files")
+        assert all(c[0] in ("status", "query") for c in calls[1:files_index])
 
     def test_run_grouping_also_syncs_first(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -877,7 +881,8 @@ class TestSyncGate:
         client = CodegraphClient(repo_root=repo, runner=recording_runner)
         run_grouping(plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=client)
         assert calls[0] == ["sync"]
-        assert calls[1][0] == "files"
+        files_index = next(i for i, c in enumerate(calls) if c[0] == "files")
+        assert all(c[0] in ("status", "query") for c in calls[1:files_index])
 
 
 UNKNOWN_SYMBOL_PLAN = """# feat: proxy task naming an unknown symbol
@@ -1147,7 +1152,7 @@ class TestStageProgress:
             client=make_client(repo),
             progress=lines.append,
         )
-        assert lines == ["stage: mapper", "stage: graph", "stage: partition"]
+        assert lines == ["stage: mapper", "stage: quiescence", "stage: graph", "stage: partition"]
 
     def test_full_pipeline_emits_one_spec_line_per_group(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -1166,6 +1171,7 @@ class TestStageProgress:
         spec_lines = [line for line in lines if line.startswith("spec ")]
         assert stage_lines == [
             "stage: mapper",
+            "stage: quiescence",
             "stage: graph",
             "stage: partition",
             f"stage: specs total={total}",

@@ -195,11 +195,12 @@ class ScorecardEntry(BaseModel):
 
 class ProvenanceEntry(BaseModel):
     """Plan U5: what a partition can be attributed to. ``index_fingerprint`` is
-    a sha256 of canonical ``codegraph status -j`` — counts, not a content hash
-    of the index itself (see ``graphing.index_fingerprint``); the residual is
-    covered by ``worktree_dirty`` and the fingerprint's own embedded
-    ``pendingChanges``, which distinguish a stale index from a synced one at
-    the same repo commit."""
+    a sha256 of a canonical logical export of the index's content (sorted
+    symbols, files and edges — see ``graphing.index_fingerprint`` and
+    ``CodegraphClient.logical_export``), not `codegraph status -j`'s
+    operational counters. ``louvain_seed``/``louvain_resolution`` complete the
+    recorded partition key: the fingerprint says what index produced this
+    partition, these two say with what Louvain parameters."""
 
     timestamp: str
     plan_path: str
@@ -207,6 +208,17 @@ class ProvenanceEntry(BaseModel):
     repo_commit_sha: str
     worktree_dirty: bool
     index_fingerprint: str
+    louvain_seed: int
+    louvain_resolution: float
+
+
+class IndexObservationEntry(BaseModel):
+    """One quiescence-poll read (plan U6): the fingerprint plus the full
+    `status -j` payload behind it, so a drift is attributable after the fact
+    from the trace alone rather than needing a separate investigation."""
+
+    fingerprint: str
+    status: dict = Field(default_factory=dict)
 
 
 class GroupingTrace(BaseModel):
@@ -238,6 +250,7 @@ class GroupingTrace(BaseModel):
     failure: FailureEntry | None = None
     scorecard: ScorecardEntry | None = None
     provenance: ProvenanceEntry | None = None
+    quiescence: list[IndexObservationEntry] = Field(default_factory=list)
 
 
 def serialize_trace(trace: GroupingTrace) -> str:
@@ -321,6 +334,8 @@ class TraceRecorder:
         repo_commit_sha: str,
         worktree_dirty: bool,
         index_fingerprint: str,
+        louvain_seed: int,
+        louvain_resolution: float,
     ) -> None:
         self.trace.provenance = ProvenanceEntry(
             timestamp=timestamp,
@@ -329,7 +344,14 @@ class TraceRecorder:
             repo_commit_sha=repo_commit_sha,
             worktree_dirty=worktree_dirty,
             index_fingerprint=index_fingerprint,
+            louvain_seed=louvain_seed,
+            louvain_resolution=louvain_resolution,
         )
+
+    def record_index_observation(self, fingerprint: str, status: dict) -> None:
+        """Plan U6: satisfies ``graphing.QuiescenceRecorder`` structurally —
+        this module is never imported by ``graphing.py``."""
+        self.trace.quiescence.append(IndexObservationEntry(fingerprint=fingerprint, status=status))
 
     # -------------------------------------------------------------- partition-level
     # (structurally satisfy partition.py's PartitionRecorder protocol)
