@@ -1,0 +1,104 @@
+"""U11 tests: SurpriseBoard validates affected_groups ids at mark time instead
+of silently accumulating dead buckets under ids nothing will ever read.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from orchestrator.execution.review import SurpriseBoard
+from orchestrator.model import Group, ReviewIntensity, Surprise
+
+
+def make_group(gid: str, tasks: list[str] | None = None) -> Group:
+    return Group(
+        id=gid,
+        name=f"group {gid}",
+        summary=f"summary {gid}",
+        spec=f"spec {gid}",
+        difficulty=0.5,
+        intensity=ReviewIntensity.PAIRED,
+        tasks=tasks or [],
+    )
+
+
+def thirteen_groups() -> list[Group]:
+    groups = [make_group(f"g{i}") for i in range(1, 14)]
+    groups[4] = make_group("g5", tasks=["u16-play-route"])  # g5 owns this task
+    return groups
+
+
+def surprise(description: str = "x", affected_groups: list[str] | None = None) -> Surprise:
+    return Surprise(kind="other", description=description, affected_groups=affected_groups or [])
+
+
+def test_unknown_group_id_lands_in_run_level_list_and_is_logged(caplog):
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("g14 doesn't exist", ["g14"])
+    with caplog.at_level(logging.WARNING):
+        board.mark(s, source_group="g1")
+    assert board.pending_for("g14") == []
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [s]
+    assert any("g14" in rec.message and "g1" in rec.message for rec in caplog.records)
+
+
+def test_task_id_is_resolved_to_its_owning_group_with_no_dead_bucket(caplog):
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("play route changed", ["u16-play-route"])
+    board.mark(s, source_group="g1")
+    assert board.pending_for("g5") == [s]
+    assert board.pending_for("u16-play-route") == []
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == []
+
+
+def test_orphan_task_id_lands_in_run_level_list_and_is_logged(caplog):
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("no owner for this task", ["u10-calibration-passes"])
+    with caplog.at_level(logging.WARNING):
+        board.mark(s, source_group="g2")
+    assert board.pending_for("u10-calibration-passes") == []
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [s]
+    assert any(
+        "u10-calibration-passes" in rec.message and "g2" in rec.message for rec in caplog.records
+    )
+
+
+def test_wide_fanout_delivers_to_every_existing_group_and_warns_naming_the_count(caplog):
+    board = SurpriseBoard(groups=thirteen_groups())
+    real = [f"g{i}" for i in range(1, 14)]  # 13 real groups
+    fake = ["g14", "g15", "g16"]  # 3 unknown ids
+    named = real + fake  # 16 named total — comfortably above the fan-out threshold
+    s = surprise("broad interface change", named)
+    with caplog.at_level(logging.WARNING):
+        board.mark(s, source_group="g0")  # source not among the 16 named ids
+    for gid in real:
+        assert board.pending_for(gid) == [s]
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [s]  # the 3 fake ids fell through
+    fanout_lines = [rec.message for rec in caplog.records if "wide fan-out" in rec.message]
+    assert len(fanout_lines) == 1
+    assert "16" in fanout_lines[0]
+
+
+def test_same_surprise_marked_five_times_is_delivered_once():
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("repeated finding", ["g2"])
+    for _ in range(5):
+        board.mark(s, source_group="g1")
+    assert board.pending_for("g2") == [s]
+
+
+def test_valid_still_running_group_is_delivered_unchanged():
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("normal finding", ["g7"])
+    board.mark(s, source_group="g1")
+    assert board.pending_for("g7") == [s]
+
+
+def test_no_groups_configured_preserves_legacy_unvalidated_behavior():
+    # Every caller before this unit constructs SurpriseBoard() bare — an id like
+    # "g0" that names no real group must keep working exactly as before.
+    board = SurpriseBoard()
+    s = surprise("legacy", ["g0"])
+    board.mark(s, source_group="g1")
+    assert board.pending_for("g0") == [s]
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == []
