@@ -76,6 +76,11 @@ class Artifact(BaseModel):
     #: report already on disk gains attribution retroactively, and there is exactly
     #: one classifier to keep correct.
     denial_kind: str | None = None
+    #: True for `verdict-g<N>-r<M>-extra.json` — the mandatory second
+    #: verification pass a `paired_plus` group earns above `d_hard` (plan U28).
+    #: `finish.py`'s `_VERDICT_RE` deliberately does not match this filename, so
+    #: it is derived here on read rather than in the PR-body verdict lookup.
+    is_extra: bool = False
 
 
 @router.get("/groups/{group_id}/artifacts", response_model=list[Artifact])
@@ -91,7 +96,11 @@ def get_artifacts(request: Request, project: str, run_id: str, group_id: str) ->
 
 def _read(path: Path) -> Artifact:
     kind = path.name.split("-", 1)[0]
-    artifact = Artifact(name=path.name, kind=kind if kind in ("report", "verdict") else "other")
+    artifact = Artifact(
+        name=path.name,
+        kind=kind if kind in ("report", "verdict") else "other",
+        is_extra=path.stem.endswith("-extra"),
+    )
     content, error = load_json(path)
     # Half-written or unreadable: name it rather than failing the whole list.
     return artifact.model_copy(
