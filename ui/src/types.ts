@@ -322,6 +322,18 @@ export interface GroupHeartbeat {
   round_elapsed_s?: number | null;
 }
 
+// WorktreeProvisioning (runs.py) — `provisioning.json` passed through
+// unchanged. Written beside the group's other run artifacts, never inside the
+// worktree itself, so it still reads correctly once a clean merge has torn
+// the worktree down (plan U32).
+export interface WorktreeProvisioning {
+  worktree: string;
+  command: string[];
+  state: string;
+  detail: string;
+  at?: string | null;
+}
+
 export interface SnapshotGroup {
   group_id: string;
   name: string;
@@ -345,6 +357,11 @@ export interface SnapshotGroup {
   // Null for every run written before the heartbeat shipped, and for any group
   // that never started a round. Absence is normal, never an error.
   heartbeat?: GroupHeartbeat | null;
+  // Null when no provisioning was ever recorded for this group (a run
+  // predating this feature, or a group that never reached worktree creation).
+  // Recorded outside the worktree, so it stays populated after a clean merge
+  // has torn the worktree down (plan U32).
+  provisioning?: WorktreeProvisioning | null;
 }
 
 export type ReviewIntensity = "self_verify" | "paired" | "paired_plus";

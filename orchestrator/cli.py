@@ -101,6 +101,7 @@ from orchestrator.execution.worktrees import (
     group_branch,
     provision_env,
     worktree_path,
+    write_provisioning_record,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
@@ -1117,6 +1118,12 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             preflight_config=config.preflight,
             preflight_output_dir=paths.group_dir,
             log=lambda message: log_event(paths, message),
+            # The integration worktree is the tree that represents this run's
+            # output (plan U32) — provisioned the same way a group worktree is,
+            # with the same cache locality (worker_cache_env avoids warming the
+            # operator's own `~/.cache/uv`, see `_workspace_seams`).
+            provision_args=config.session.provision_args,
+            provision_env_vars=worker_cache_env(_cache_root(config.session), base=dict(os.environ)),
         )
         try:
             merger.ensure()
@@ -1391,6 +1398,14 @@ def _workspace_seams(
             branch=branch,
             start_point=tip,
         )
+
+        def _record(state: str, argv: list[str]) -> None:
+            # U32: kept beside the group's other run artifacts, not inside the
+            # worktree, so it outlives a clean-merge teardown (remove_worktree).
+            write_provisioning_record(
+                paths.group_dir(group.id), worktree=path, command=argv, state=state
+            )
+
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
         provision_env(
@@ -1398,6 +1413,7 @@ def _workspace_seams(
             log=lambda message: log_event(paths, message),
             env=cache_env,
             extra_args=session.provision_args,
+            on_state=_record,
         )
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
