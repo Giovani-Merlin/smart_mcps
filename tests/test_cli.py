@@ -1210,6 +1210,92 @@ class TestConfigBanner:
         assert _config_banner_source(present) == str(present)
 
 
+class TestModelFlags:
+    """Plan U36: --model-worker/--model-base/--model-speccer, flag > config-file
+    > built-in default (same precedence as every other override in this file),
+    and the resolved trio printed on the run banner."""
+
+    def test_run_help_lists_the_three_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["run", "--help"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--model-worker" in out
+        assert "--model-base" in out
+        assert "--model-speccer" in out
+
+    def test_flags_beat_config_file(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[session]\nmodel = "config-worker"\nbase_model = "config-base"\n'
+            'speccer_model = "config-speccer"\n'
+        )
+        args = argparse.Namespace(
+            model_worker="flag-worker", model_base="flag-base", model_speccer="flag-speccer"
+        )
+        merged = apply_overrides(load_config(config_file), args)
+        assert merged.session.model == "flag-worker"
+        assert merged.session.base_model == "flag-base"
+        assert merged.session.speccer_model == "flag-speccer"
+
+    def test_absent_flags_keep_config_file_values(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[session]\nmodel = "config-worker"\nbase_model = "config-base"\n'
+            'speccer_model = "config-speccer"\n'
+        )
+        args = argparse.Namespace(model_worker=None, model_base=None, model_speccer=None)
+        merged = apply_overrides(load_config(config_file), args)
+        assert merged.session.model == "config-worker"
+        assert merged.session.base_model == "config-base"
+        assert merged.session.speccer_model == "config-speccer"
+
+    def test_no_flags_and_no_config_leaves_the_built_in_defaults(self):
+        args = argparse.Namespace(model_worker=None, model_base=None, model_speccer=None)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.session.model == "claude-sonnet-5"
+        assert merged.session.base_model == "claude-opus-5"
+        assert merged.session.speccer_model == "claude-opus-5"
+
+    def test_banner_prints_the_three_resolved_model_ids(self, tmp_path, capsys, monkeypatch):
+        write_run_artifacts(tmp_path, [make_group("g1")])
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "init"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+        fake_home = tmp_path / "fake-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
+        monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+        (fake_home / "script.jsonl").write_text(
+            json.dumps({"exit_code": 1, "stderr": "spawn died"}) + "\n"
+        )
+        exit_code = main(
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r11",
+                "--model-worker",
+                "custom-worker-model",
+            ]
+        )
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        models_line = next(line for line in out.splitlines() if line.startswith("models:"))
+        assert "worker=custom-worker-model" in models_line
+        assert "base=claude-opus-5" in models_line
+        assert "speccer=claude-opus-5" in models_line
+
+
 class TestReviewIntensityWarning:
     """Plan U8: --review-intensity gets a warning on the effective-config line,
     naming how many groups it changes and the reviewer sessions that implies;

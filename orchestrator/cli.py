@@ -413,6 +413,29 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         ),
     )
     _add_auto_resume_arg(cmd)
+    _add_model_args(cmd)
+
+
+def _add_model_args(cmd: argparse.ArgumentParser) -> None:
+    """Plan U36: the three independently settable model knobs (U17), exposed on
+    the command line. CLI flag overrides the config file, which overrides the
+    built-in default (``DEFAULT_WORKER_MODEL``/``DEFAULT_BASE_MODEL``/
+    ``DEFAULT_SPECCER_MODEL``)."""
+    cmd.add_argument(
+        "--model-worker",
+        default=None,
+        help="model for coder/reviewer worker forks (default: config, else claude-sonnet-5)",
+    )
+    cmd.add_argument(
+        "--model-base",
+        default=None,
+        help="model for the run's own base session (default: config, else claude-opus-5)",
+    )
+    cmd.add_argument(
+        "--model-speccer",
+        default=None,
+        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+    )
 
 
 def _add_auto_resume_arg(cmd: argparse.ArgumentParser) -> None:
@@ -482,6 +505,12 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         session_updates["usage_limit"] = config.session.usage_limit.model_copy(
             update={"auto_resume": auto_resume}
         )
+    if getattr(args, "model_worker", None):
+        session_updates["model"] = args.model_worker
+    if getattr(args, "model_base", None):
+        session_updates["base_model"] = args.model_base
+    if getattr(args, "model_speccer", None):
+        session_updates["speccer_model"] = args.model_speccer
     updates: dict = {}
     if session_updates:
         updates["session"] = config.session.model_copy(update=session_updates)
@@ -1234,6 +1263,14 @@ def _cmd_run(
         f"config: {_config_banner_source(config_path)} (token_budget={config.estimator.token_budget}, "
         f"context_token_limit={config.breaker.context_token_limit}, "
         f"permission_mode={config.execution.permission_mode})"
+    )
+
+    # Plan U36: the three resolved model ids, printed before anything spawns —
+    # the alternative is inferring, after the fact, which model actually ran
+    # from a transcript (exactly what this plan's own measurement had to do).
+    print(
+        f"models: worker={config.session.model}, base={config.session.base_model}, "
+        f"speccer={config.session.speccer_model}"
     )
 
     # R8: the effective execution config prints before any session spawns —
