@@ -89,8 +89,9 @@ def test_dirty_worktree_fails_and_names_the_dirty_paths(tmp_path):
     git(worktree, "config", "user.name", "t")
     git(worktree, "commit", "--allow-empty", "-m", "init")
     (worktree / "litter.txt").write_text("uncommitted\n")
-    with pytest.raises(PreflightFailure, match="litter.txt"):
+    with pytest.raises(PreflightFailure, match="litter.txt") as excinfo:
         run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out", log=None)
+    assert excinfo.value.kind == "env"
 
 
 def test_clean_worktree_with_no_check_command_passes(tmp_path):
@@ -230,8 +231,86 @@ def test_check_timeout_is_killed_and_named_as_the_failure(tmp_path):
     config = PreflightConfig(
         check_command=["python3", "-c", "import time; time.sleep(5)"], check_timeout_s=0.2
     )
-    with pytest.raises(PreflightFailure, match="timed out"):
+    with pytest.raises(PreflightFailure, match="timed out") as excinfo:
         run_preflight(worktree, config=config, output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "timeout"
+
+
+# --------------------------------------------------------- failure kind (U1)
+
+
+def _init_repo(worktree: Path) -> None:
+    worktree.mkdir()
+    git(worktree, "init", "-b", "main")
+    git(worktree, "config", "user.email", "t@t")
+    git(worktree, "config", "user.name", "t")
+    git(worktree, "commit", "--allow-empty", "-m", "init")
+
+
+def test_exit_code_2_classifies_as_env(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    config = PreflightConfig(check_command=["python3", "-c", "import sys; sys.exit(2)"])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=config, output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "env"
+
+
+@pytest.mark.parametrize("exit_code", [3, 4, 5])
+def test_other_nonzero_exit_codes_classify_as_env(tmp_path, exit_code):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    config = PreflightConfig(check_command=["python3", "-c", f"import sys; sys.exit({exit_code})"])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=config, output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "env"
+
+
+def test_exit_1_with_collection_error_classifies_as_env(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    script = "import sys\nprint('ImportError while loading conftest.py')\nsys.exit(1)\n"
+    config = PreflightConfig(check_command=["python3", "-c", script])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=config, output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "env"
+
+
+def test_exit_1_with_ordinary_failure_classifies_as_regression(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    script = "import sys\nprint('AssertionError: 1 != 2')\nsys.exit(1)\n"
+    config = PreflightConfig(check_command=["python3", "-c", script])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=config, output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "regression"
+
+
+def test_check_run_leaves_worktree_clean_and_writes_junit_outside(tmp_path):
+    """A real, auto-detected pytest check leaves no .pytest_cache or JUnit XML
+    inside the worktree (plan U1) — everything lands in output_dir instead."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    (worktree / "pyproject.toml").write_text(
+        "[project]\nname = 'sample'\nversion = '0'\nrequires-python = '>=3.11'\n"
+        "[tool.pytest.ini_options]\n"
+    )
+    (worktree / "test_sample.py").write_text("def test_ok():\n    assert True\n")
+    (worktree / ".gitignore").write_text("__pycache__/\n")
+    subprocess.run(["uv", "lock"], cwd=worktree, capture_output=True, text=True, check=True)
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-m", "add sample project")
+
+    out_dir = tmp_path / "out"
+    run_preflight(worktree, config=PreflightConfig(), output_dir=out_dir)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True
+    )
+    assert status.stdout.strip() == ""
+    assert not (worktree / ".pytest_cache").exists()
+    junit_path = out_dir / "preflight-junit.xml"
+    assert junit_path.is_file()
 
 
 # --------------------------------------------------- wired into merge_group

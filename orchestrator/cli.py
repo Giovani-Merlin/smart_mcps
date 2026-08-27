@@ -63,7 +63,11 @@ from orchestrator.execution.manifest import (
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
 from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
-from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.preflight import (
+    PreflightFailure,
+    capture_preflight_baseline,
+    save_baseline,
+)
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
@@ -1072,6 +1076,18 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         # succeeds, so a dead worker CLI never leaves a run directory behind.
         if not resume:
             snapshot_grouping(source_grouping_dir, paths.run_dir)
+            # Plan U2: what was already red on the launch branch, captured once
+            # before any group worktree exists — a resumed run reuses it rather
+            # than recapturing against a launch branch it no longer sits on.
+            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
+            baseline = capture_preflight_baseline(
+                repo_root,
+                config=config.preflight,
+                output_dir=paths.run_dir,
+                commit_sha=launch_commit_sha,
+                log=lambda message: log_event(paths, message),
+            )
+            save_baseline(paths.preflight_baseline_path, baseline)
         # Plan U3/R41: the resolved admission policy, recorded once — an operator
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.

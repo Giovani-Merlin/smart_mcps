@@ -216,6 +216,13 @@ class RunPaths:
         has not yet run when the run restarts."""
         return self.run_dir / "surprises.json"
 
+    @property
+    def preflight_baseline_path(self) -> Path:
+        """What was already red on the launch branch before the run started
+        (plan U2) — captured once, on a fresh run, and read back by the merge
+        gate to tell a new failure from a pre-existing one."""
+        return self.run_dir / "preflight-baseline.json"
+
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
 
