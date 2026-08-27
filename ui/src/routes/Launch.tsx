@@ -19,6 +19,7 @@ import {
   errorMessage,
   getResolvedOptions,
   listGroupings,
+  listJobs,
   listPlans,
   listRuns,
   startGroupJob,
@@ -28,6 +29,7 @@ import {
 import ExecutionOptionsForm from "../components/launch/ExecutionOptions";
 import GroupingPreview from "../components/launch/GroupingPreview";
 import JobLog from "../components/launch/JobLog";
+import { useQueryParams } from "../useQueryParams";
 import type {
   ExecutionOptions,
   GroupingSummary,
@@ -53,9 +55,15 @@ const LAUNCH_REFRESH_MS = 5000;
 
 export function Launch() {
   const { project = "" } = useParams();
+  const [params] = useQueryParams();
+  // `?resume=<run_id>` is what "Resume this run" (RunLayout) links here with —
+  // the run being viewed should already be the one selected on the card, not
+  // something the operator has to find again in a dropdown (U20).
+  const preselectRunId = params.get("resume");
   const [plans, setPlans] = useState<PlanDoc[]>([]);
   const [groupings, setGroupings] = useState<GroupingSummary[]>([]);
   const [runs, setRuns] = useState<RunInfo[]>([]);
+  const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [resolved, setResolved] = useState<ResolvedOptions | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [job, setJob] = useState<JobInfo | null>(null);
@@ -65,17 +73,19 @@ export function Launch() {
 
     async function refresh(): Promise<void> {
       try {
-        const [nextPlans, nextGroupings, nextRuns, nextResolved] = await Promise.all([
+        const [nextPlans, nextGroupings, nextRuns, nextResolved, nextJobs] = await Promise.all([
           listPlans(project),
           listGroupings(project),
           listRuns(project),
           getResolvedOptions(project),
+          listJobs(project),
         ]);
         if (cancelled) return;
         setPlans(nextPlans);
         setGroupings(nextGroupings);
         setRuns(nextRuns);
         setResolved(nextResolved);
+        setJobs(nextJobs);
         // A refetch that succeeds after a prior one failed clears the error —
         // but a *failed* refetch below never touches `plans`/`groupings`/
         // `runs`, so the last known-good data stays on screen instead of the
@@ -114,7 +124,14 @@ export function Launch() {
       <div className="launch__cards">
         <GroupCard project={project} plans={plans} onLaunched={setJob} />
         <RunCard project={project} groupings={groupings} resolved={resolved} onLaunched={setJob} />
-        <ResumeCard project={project} runs={runs} resolved={resolved} onLaunched={setJob} />
+        <ResumeCard
+          project={project}
+          runs={runs}
+          resolved={resolved}
+          jobs={jobs}
+          preselectRunId={preselectRunId}
+          onLaunched={setJob}
+        />
       </div>
 
       {job && (
@@ -378,27 +395,86 @@ function RunCard({
   );
 }
 
+/** The most recent `run` or `resume` job that targeted `runId`, if any —
+ * `jobs` is already newest-first (`list_jobs`), so the first match is the
+ * run's last-used launch. A `group` job never carries a `run_id` and is
+ * skipped by construction. */
+function lastJobFor(jobs: JobInfo[], runId: string): JobInfo | null {
+  return (
+    jobs.find(
+      (j) =>
+        (j.kind === "run" || j.kind === "resume") &&
+        (j.options as { run_id?: string | null } | undefined)?.run_id === runId,
+    ) ?? null
+  );
+}
+
 function ResumeCard({
   project,
   runs,
   resolved,
+  jobs,
+  preselectRunId,
   onLaunched,
 }: {
   project: string;
   runs: RunInfo[];
   resolved: ResolvedOptions | null;
+  jobs: JobInfo[];
+  preselectRunId: string | null;
   onLaunched: (job: JobInfo) => void;
 }) {
-  const [runId, setRunId] = useState("");
+  const [runId, setRunId] = useState(preselectRunId ?? "");
   const [options, setOptions] = useState<ExecutionOptions>({});
+  const [prefillMissing, setPrefillMissing] = useState(false);
+  // Set the moment the operator (or a form reset from choosing a different
+  // run) edits a field — after that, a job list that refreshes every five
+  // seconds must never overwrite what they typed (U20).
+  const [touched, setTouched] = useState(false);
   const { busy, error, launch } = useLaunch(onLaunched);
+
+  // Pre-select the run being viewed (U20/g10-preselects-run). `runs` can
+  // arrive after the query param does, but the id is already known, so there
+  // is nothing to wait for.
+  useEffect(() => {
+    if (preselectRunId) setRunId(preselectRunId);
+  }, [preselectRunId]);
+
+  // Pre-fill the options that run last used, from the job record's own
+  // `options` block (U20/g10-fields-populated). A run with no matching job
+  // record — the process that launched it predates jobs, or the record was
+  // lost — renders defaults plus a note rather than a blank that reads
+  // identically to "this run used the defaults" (g10-missing-record-note).
+  useEffect(() => {
+    if (touched) return;
+    if (!runId) {
+      setOptions({});
+      setPrefillMissing(false);
+      return;
+    }
+    const found = lastJobFor(jobs, runId);
+    if (found) {
+      setOptions((found.options as { options?: ExecutionOptions }).options ?? {});
+      setPrefillMissing(false);
+    } else {
+      setOptions({});
+      setPrefillMissing(true);
+    }
+  }, [runId, jobs, touched]);
 
   return (
     <section className="launch__card" aria-label="Resume a run">
       <h2>Resume a run</h2>
       <label htmlFor="launch-resume-run">
         Run
-        <select id="launch-resume-run" value={runId} onChange={(e) => setRunId(e.target.value)}>
+        <select
+          id="launch-resume-run"
+          value={runId}
+          onChange={(e) => {
+            setRunId(e.target.value);
+            setTouched(false);
+          }}
+        >
           <option value="">(choose a run)</option>
           {runs.map((run) => (
             <option key={run.run_id} value={run.run_id}>
@@ -412,10 +488,19 @@ function ResumeCard({
         set here overrides them — which is the whole reason these controls are on the form
         rather than left to a remembered flag.
       </p>
+      {runId && prefillMissing && (
+        <p className="launch__hint launch__hint--warning">
+          No previous launch record was found for this run — the fields below are defaults, not
+          what it last used.
+        </p>
+      )}
       <ExecutionOptionsForm
         idPrefix="resume"
         value={options}
-        onChange={setOptions}
+        onChange={(next) => {
+          setOptions(next);
+          setTouched(true);
+        }}
         disabled={busy}
         resolved={resolved}
       />

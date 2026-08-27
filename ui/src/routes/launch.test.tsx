@@ -476,6 +476,76 @@ describe("the launch route", () => {
     expect(await screen.findByRole("region", { name: "Job log" })).toBeTruthy();
   });
 
+  // ------------------------------------------------------ U20: resume prefill
+
+  it("pre-selects the run being viewed when opened from its 'Resume this run' link", async () => {
+    mount("/p/proj/launch?resume=r1");
+    const picker = (await screen.findByLabelText("Run")) as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe("r1"));
+  });
+
+  it("populates the resume form's fields from the run's last-used options", async () => {
+    listJobs.mockResolvedValue([
+      {
+        job_id: "j9",
+        kind: "resume",
+        argv: [],
+        running: false,
+        log_path: "/tmp/j9",
+        options: {
+          run_id: "r1",
+          options: { intensity: "on_stuck", model_worker: "claude-opus-5" },
+        },
+      },
+    ]);
+    mount();
+    fireEvent.change(await screen.findByLabelText("Run"), { target: { value: "r1" } });
+    const tier = (await screen.findAllByLabelText("Escalation tier"))[1] as HTMLSelectElement;
+    await waitFor(() => expect(tier.value).toBe("on_stuck"));
+    const worker = screen.getAllByLabelText("Worker model")[1] as HTMLInputElement;
+    expect(worker.value).toBe("claude-opus-5");
+  });
+
+  it("notes that previous options could not be recovered when no job record matches the run", async () => {
+    listJobs.mockResolvedValue([]);
+    mount();
+    fireEvent.change(await screen.findByLabelText("Run"), { target: { value: "r1" } });
+    expect(
+      await screen.findByText(/No previous launch record was found for this run/),
+    ).toBeTruthy();
+    const tier = screen.getAllByLabelText("Escalation tier")[1] as HTMLSelectElement;
+    expect(tier.value).toBe("");
+  });
+
+  it("submits the pre-filled resume form unedited as the run's last-used options", async () => {
+    listJobs.mockResolvedValue([
+      {
+        job_id: "j9",
+        kind: "resume",
+        argv: [],
+        running: false,
+        log_path: "/tmp/j9",
+        options: {
+          run_id: "r1",
+          options: { intensity: "on_stuck", model_worker: "claude-opus-5" },
+        },
+      },
+    ]);
+    mount();
+    fireEvent.change(await screen.findByLabelText("Run"), { target: { value: "r1" } });
+    await waitFor(() =>
+      expect(
+        (screen.getAllByLabelText("Escalation tier")[1] as HTMLSelectElement).value,
+      ).toBe("on_stuck"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(startResumeJob).toHaveBeenCalled());
+    expect(startResumeJob.mock.calls[0][1]).toEqual({
+      run_id: "r1",
+      options: { intensity: "on_stuck", model_worker: "claude-opus-5" },
+    });
+  });
+
   it("shows the resolved concurrency and the three model ids in the run header once a run is going", async () => {
     startRunJob.mockResolvedValue({
       ...job,
