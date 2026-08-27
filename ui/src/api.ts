@@ -13,6 +13,8 @@
 //   POST /api/projects/{project}/runs/{run}/escalations/{esc}/answer
 //   GET  /api/projects/{project}/runs/{run}/sessions/{session}/transcript
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
+//   GET  /api/projects/{project}/runs/{run}/groups/{group}/diff
+//   GET  /api/projects/{project}/runs/{run}/groups/{group}/generations/{gen}/diff
 //   GET  /api/projects/{project}/runs/{run}/paths
 //   GET  /api/projects/{project}/plans
 //   GET  /api/projects/{project}/groupings
@@ -26,6 +28,7 @@ import type {
   AnswerBody,
   AnswerResult,
   Artifact,
+  DiffResult,
   EscalationRequest,
   GroupJobBody,
   GroupingPreview,
@@ -160,6 +163,26 @@ export function getArtifacts(
   groupId: string,
 ): Promise<Artifact[]> {
   return request<Artifact[]>(`${runPath(project, run)}/groups/${enc(groupId)}/artifacts`);
+}
+
+/** A completed group's whole diff against the integration tip it branched
+ * from (plan U29, R4). Never 404s — a torn-down branch or an unmerged group
+ * comes back `available: false` with a `reason`. */
+export function getGroupDiff(project: string, run: string, groupId: string): Promise<DiffResult> {
+  return request<DiffResult>(`${runPath(project, run)}/groups/${enc(groupId)}/diff`);
+}
+
+/** A generation's final diff (plan U29, R3) — the commits its coder session
+ * made, not a running feed. Same never-404s contract as `getGroupDiff`. */
+export function getGenerationDiff(
+  project: string,
+  run: string,
+  groupId: string,
+  generation: number,
+): Promise<DiffResult> {
+  return request<DiffResult>(
+    `${runPath(project, run)}/groups/${enc(groupId)}/generations/${generation}/diff`,
+  );
 }
 
 // -------------------------------------------------------------------- launch

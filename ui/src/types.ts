@@ -569,6 +569,20 @@ export interface Artifact {
   is_extra: boolean;
 }
 
+// DiffResult (artifacts.py) — a best-effort `git diff` between two refs (plan
+// U29). `available: false` covers every degrade path (a torn-down branch, an
+// absent manifest, missing session timing) with a human-readable `reason`
+// rather than an HTTP error, so the drill-in always has something to render.
+export interface DiffResult {
+  available: boolean;
+  reason?: string | null;
+  from_ref?: string | null;
+  to_ref?: string | null;
+  diff: string;
+  truncated: boolean;
+  total_bytes?: number | null;
+}
+
 // ------------------------------------------------------------- grouping tab
 
 // Mirrors `orchestrator/observatory/grouping.py`. Everything except

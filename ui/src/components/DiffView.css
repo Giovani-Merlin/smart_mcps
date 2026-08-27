@@ -1,0 +1,105 @@
+.diff-view {
+  margin-top: 1.5rem;
+}
+
+.diff-view h4 {
+  margin: 0 0 0.5rem;
+}
+
+.diff-view__generation-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.diff-view__generation-head h4 {
+  margin: 0;
+}
+
+.diff-view__generation-select {
+  font: inherit;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #d3d5da;
+  background-color: #ffffff;
+}
+
+.diff-view__truncated {
+  font-size: 0.8rem;
+  color: #6b3e00;
+  background-color: #fff3e0;
+  border: 1px solid #ffd8a8;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  margin: 0 0 0.5rem;
+}
+
+/* The vertical scroll boundary — a diff can be arbitrarily long, but it must
+ * never grow the page. Each file's own horizontal scroll (below) is what
+ * keeps a long line from doing the same thing sideways. */
+.diff-view__scroll {
+  max-height: 28rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border: 1px solid #d3d5da;
+  border-radius: 8px;
+  padding: 0.5rem;
+  background-color: #f7f7f8;
+}
+
+.diff-view__file {
+  border: 1px solid #d3d5da;
+  border-radius: 6px;
+  background-color: #ffffff;
+  overflow: hidden;
+}
+
+.diff-view__file-header {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.6rem;
+  background-color: #eef0f3;
+  border-bottom: 1px solid #d3d5da;
+  word-break: break-all;
+}
+
+/* The one axis allowed to scroll sideways, and only within this box — a diff
+ * hunk can be far wider than the pane without ever moving the page itself. */
+.diff-view__body {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.diff-view__line {
+  display: block;
+  white-space: pre;
+}
+
+.diff-view__line--add {
+  background-color: #eaffea;
+  color: #114a20;
+}
+
+.diff-view__line--del {
+  background-color: #ffecec;
+  color: #5c0c0c;
+}
+
+.diff-view__line--hunk {
+  color: #12316b;
+  background-color: #eef2ff;
+}
+
+.diff-view__line--meta {
+  color: #55565c;
+  font-weight: 600;
+}

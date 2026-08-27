@@ -4,15 +4,25 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Artifact, RunSnapshot, TranscriptEvent } from "../types";
+import type { Artifact, DiffResult, RunSnapshot, TranscriptEvent } from "../types";
 import GroupDrillIn from "./GroupDrillIn";
 
 const getArtifacts = vi.fn<() => Promise<Artifact[]>>();
 const getTranscript = vi.fn<() => Promise<TranscriptEvent[]>>();
+const getGroupDiff = vi.fn<() => Promise<DiffResult>>();
+const getGenerationDiff = vi.fn<() => Promise<DiffResult>>();
+
+const emptyDiff: DiffResult = {
+  available: true,
+  diff: "",
+  truncated: false,
+};
 
 vi.mock("../api", () => ({
   getArtifacts: (...args: unknown[]) => getArtifacts(...(args as [])),
   getTranscript: (...args: unknown[]) => getTranscript(...(args as [])),
+  getGroupDiff: (...args: unknown[]) => getGroupDiff(...(args as [])),
+  getGenerationDiff: (...args: unknown[]) => getGenerationDiff(...(args as [])),
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
 }));
 
@@ -87,6 +97,8 @@ function verdictArtifact(name: string, isExtra: boolean): Artifact {
 beforeEach(() => {
   getArtifacts.mockResolvedValue([]);
   getTranscript.mockResolvedValue([]);
+  getGroupDiff.mockResolvedValue(emptyDiff);
+  getGenerationDiff.mockResolvedValue(emptyDiff);
 });
 
 afterEach(() => {
