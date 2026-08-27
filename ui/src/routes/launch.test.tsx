@@ -132,7 +132,9 @@ describe("the launch route", () => {
   it("unticking 'wait out usage limits' sends the opt-out, ticking sends nothing", async () => {
     mount();
     fireEvent.change(await screen.findByLabelText("Run"), { target: { value: "r1" } });
-    const check = screen.getAllByLabelText("Wait out usage limits")[1];
+    // Three cards now carry this label — group, run, resume — so the resume
+    // form's is the third.
+    const check = screen.getAllByLabelText("Wait out usage limits")[2];
     fireEvent.click(check); // untick → --no-auto-resume
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(startResumeJob).toHaveBeenCalled());
