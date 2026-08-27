@@ -75,7 +75,14 @@ from orchestrator.execution.preflight import (
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
-from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
+from orchestrator.execution.review import (
+    MergeConflict,
+    ReviewDeps,
+    SurpriseBoard,
+    format_residue_report,
+    make_executor,
+    surprise_residue,
+)
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
@@ -1470,7 +1477,7 @@ def _cmd_run(
             # restart from ready on `resume`).
             print(f"run aborted by operator: {exc}", file=sys.stderr)
             log_event(paths, f"run {run_id} aborted by operator: {exc}")
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
             return 2
         except KeyboardInterrupt:
@@ -1480,15 +1487,15 @@ def _cmd_run(
             scheduler.mark_interrupted()
             log_event(paths, f"run {run_id} interrupted (SIGINT)")
             print("\nrun interrupted", file=sys.stderr)
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
             return 130
         except SchedulerError as exc:
             print(f"error: {exc}", file=sys.stderr)
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             return 1
         _maybe_auto_finish(repo_root, run_id, paths)
-        return _print_outcomes(scheduler.state)
+        return _print_outcomes(scheduler.state, paths)
     finally:
         driver_lock.release()
 
@@ -1766,13 +1773,19 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
     return rewrite_spec
 
 
-def _print_outcomes(state: RunState) -> int:
+def _print_outcomes(state: RunState, paths: RunPaths | None = None) -> int:
     """Print every group's outcome plus, for anything stalled, enough to act on
     it without diffing state.json (plan U3/R41): its failure text, what it
     holds and on which files, its branch, its re-entry count, and the command
     to act on it. Read-only — it derives everything from the already-persisted
     ``holds`` field each group carries from the scheduler's last admission
-    pass, so calling it never changes state.json."""
+    pass, so calling it never changes state.json.
+
+    ``paths`` is optional so every existing caller/test naming only ``state``
+    keeps working unchanged; when given, the surprise-board residue (plan U12)
+    is printed too, so an operator learns what never got delivered without a
+    hand read of ``surprises.json``.
+    """
     print(f"\nrun {state.run_id}:")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
@@ -1784,6 +1797,8 @@ def _print_outcomes(state: RunState) -> int:
         if entry.quarantined:
             line += " [quarantined]"
         print(line)
+    if paths is not None:
+        print(format_residue_report(surprise_residue(paths, state)))
     completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
     if completed:
         print("all groups completed; merge the integration branch when ready")
