@@ -1028,6 +1028,27 @@ def build_usage_limit_gate(
     )
 
 
+def _release_stale_usage_limit(paths: RunPaths) -> None:
+    """Stamp ``released_at`` on an armed ``usage-limit.json`` inherited from a
+    process that died while paused (plan U19, F21).
+
+    A missing file, a released record, or one that fails to parse are all left
+    alone — this only clears the one state (armed, no ``released_at``) that a
+    dead process can leave behind.
+    """
+    path = paths.usage_limit_path
+    if not path.is_file():
+        return
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if payload.get("released_at") is not None:
+        return
+    payload["released_at"] = datetime.now(UTC).astimezone().isoformat()
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+
+
 def build_auth_ladder(auth: AuthConfig, *, log: Callable[[str], None] | None = None) -> AuthLadder:
     """Rungs (a)+(b) of the auth ladder (plan U4): read expiry, refresh in
     place. Constructed unconditionally — ``auth_gate`` is what actually opts
@@ -1339,6 +1360,16 @@ def _cmd_run(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        if resume:
+            # Plan U19 (F21): `released_at` is written only by the process that
+            # armed the pause (`UsageLimitGate._release_locked`), and that process
+            # is gone — the driver lock above just proved no other one is running.
+            # An armed-forever record makes `UsageLimitBanner` show this live
+            # resumed run as paused. By definition the pause a resume inherits is
+            # over, so it is stamped released before any group starts; a fresh
+            # limit hit during this run arms its own new record exactly as today.
+            _release_stale_usage_limit(paths)
+
         # The run keeps its own frozen copy of the grouping it started with (plan
         # U10): a later `group --name <same>` against a different plan must not be
         # able to rewrite a finished run's history. Done only after preflight
@@ -1450,6 +1481,20 @@ def _cmd_run(
                 print("error: manifest has no base session — start a fresh run", file=sys.stderr)
                 return 1
             base_session_id = manifest.base_session_id
+            # Plan U19 (F20): a resume reuses the existing base session and used to
+            # skip the manifest write entirely, so `/snapshot` kept serving the
+            # *first* launch's escalation/usage-limit config forever — a `resume
+            # --hitl` that visibly changed `run.log`'s own start-up line never
+            # showed up in the manifest a second later. The effective config for
+            # *this* process is written back every time, so the manifest always
+            # describes the run actually executing.
+            manifest = manifest.model_copy(
+                update={
+                    "escalation": config.escalation,
+                    "usage_limit": config.session.usage_limit,
+                }
+            )
+            store.save(manifest)
         else:
             # Establishing the base session is the *first* long silence an operator
             # meets — it precedes every group, so no group heartbeat exists yet and
