@@ -35,6 +35,7 @@ from orchestrator.grouping.graphing import (
     TaskGraph,
     await_index_quiescence,
     build_task_graph,
+    index_fingerprint,
     source_bytes_of,
 )
 from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, claude_json_runner

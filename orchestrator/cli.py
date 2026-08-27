@@ -117,9 +117,11 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
     GrouperError,
+    IndexFingerprintMismatch,
     compute_partition,
     group_label,
     run_grouping,
+    verify_index_fingerprint,
     EdgeProvenanceRecorder,
     serialize_edge_provenance,
     serialize_grouping,
