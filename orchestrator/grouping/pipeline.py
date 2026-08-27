@@ -35,6 +35,7 @@ from orchestrator.grouping.graphing import (
     TaskGraph,
     await_index_quiescence,
     build_task_graph,
+    index_fingerprint,
     source_bytes_of,
 )
 from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, claude_json_runner
@@ -113,6 +114,72 @@ def _node_work_entries(graph: TaskGraph, config) -> list[NodeWorkEntry]:
 
 class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
+
+
+# The residual plan U7 accepts explicitly: the mapper is an LLM shelled with no
+# temperature or seed control, so a matching index fingerprint proves the
+# partition's *input* is unchanged, not that re-running the mapper would
+# reproduce the same task→file mapping. Every mismatch message repeats this so
+# an operator reading `--allow-index-drift`'s warning never mistakes
+# index-stability for full reproducibility.
+INDEX_DRIFT_RESIDUAL_NOTE = (
+    "note: this makes grouping index-stable, not reproducible — the mapper is "
+    "an unseeded LLM call and can still choose a different task→file mapping "
+    "against a byte-identical index"
+)
+
+
+class IndexFingerprintMismatch(GrouperError):
+    """Plan U7: a recorded grouping's index fingerprint no longer matches the
+    current codegraph index — the partition on disk was built against a
+    different index than the one the run would execute against now."""
+
+    def __init__(self, recorded: str, current: str) -> None:
+        self.recorded = recorded
+        self.current = current
+        super().__init__(
+            "index fingerprint mismatch: this grouping was built against index "
+            f"{recorded}, the current index is {current} — re-group with "
+            "`smart-mcps-orchestrate group <plan> --name <name>` to pick up the "
+            "new index, or pass --allow-index-drift to force a re-partition now "
+            f"({INDEX_DRIFT_RESIDUAL_NOTE})"
+        )
+
+
+def verify_index_fingerprint(
+    recorded: str,
+    client: CodegraphClient,
+    *,
+    allow_drift: bool,
+    log: Callable[[str], None] | None = None,
+) -> tuple[str, bool]:
+    """Plan U7: compare a grouping's recorded ``index_fingerprint`` (written
+    once at grouping time into ``ProvenanceEntry`` — see
+    ``pipeline.run_grouping``/``compute_partition`` — but until now never read
+    back) against the current index.
+
+    Returns ``(current_fingerprint, matched)``. A mismatch raises
+    ``IndexFingerprintMismatch`` unless ``allow_drift`` is set, in which case
+    the mismatch is logged as a loud warning instead and reported back via
+    ``matched=False`` — the caller is responsible for treating that as a
+    signal to re-partition rather than silently reusing the stale result;
+    this function never partitions anything itself.
+    """
+    current = index_fingerprint(client.logical_export())
+    if current == recorded:
+        return current, True
+    message = (
+        f"warning: index drift — this grouping was built against index {recorded}, "
+        f"the current index is {current}; forcing a re-partition "
+        f"(--allow-index-drift). {INDEX_DRIFT_RESIDUAL_NOTE}"
+    )
+    if not allow_drift:
+        raise IndexFingerprintMismatch(recorded, current)
+    if log is not None:
+        log(message)
+    else:
+        print(message)
+    return current, False
 
 
 # Stage/spec progress lines (plan U24): a `group` invocation is otherwise silent

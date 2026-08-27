@@ -117,9 +117,11 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
     GrouperError,
+    IndexFingerprintMismatch,
     compute_partition,
     group_label,
     run_grouping,
+    verify_index_fingerprint,
     EdgeProvenanceRecorder,
     serialize_edge_provenance,
     serialize_grouping,
@@ -318,9 +320,9 @@ def main(
     if args.command == "group":
         return _cmd_group(args, llm_runner, client)
     if args.command == "run":
-        return _cmd_run(args, llm_runner, resume=False)
+        return _cmd_run(args, llm_runner, client, resume=False)
     if args.command == "resume":
-        return _cmd_run(args, llm_runner, resume=True)
+        return _cmd_run(args, llm_runner, client, resume=True)
     if args.command == "groupings":
         return _cmd_groupings(args)
     if args.command == "status":
@@ -389,6 +391,17 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
             "admission policy once a group ends FAILED or INTERRUPTED (plan U3/R41): "
             "'halt' (default) admits no further group; 'overlap' keeps only the "
             "file-overlap gate"
+        ),
+    )
+    cmd.add_argument(
+        "--allow-index-drift",
+        action="store_true",
+        help=(
+            "when the grouping being run was built against a codegraph index that "
+            "no longer matches the current one (plan U7), warn and force a "
+            "re-partition instead of failing (default: hard error naming both "
+            "fingerprints); the re-partition is index-stable, not reproducible — "
+            "the mapper is an unseeded LLM call"
         ),
     )
     _add_auto_resume_arg(cmd)
@@ -835,6 +848,86 @@ def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
     )
 
 
+def _verify_grouping_index_fingerprint(
+    *,
+    repo_root: Path,
+    groups_path: Path,
+    base_context_path: Path,
+    grouping: GroupingResult,
+    plan_path: Path,
+    config: OrchestratorConfig,
+    llm_runner: JsonRunner | None,
+    client: CodegraphClient | None,
+    allow_drift: bool,
+) -> GroupingResult:
+    """Plan U7: the `run`/`resume` reuse path for a grouping that already
+    exists on disk. A grouping directory with no `grouping-trace.json` or no
+    recorded provenance (older artifact, or `--no-spec`/`--dry-run` preview)
+    has nothing to compare against and is used as-is — silently, exactly like
+    a match.
+
+    On mismatch: hard failure unless ``allow_drift``, in which case a full
+    re-partition (`run_grouping`, the same pipeline `group` runs) replaces
+    `groups_path`/`base_context_path` and the sibling trace in place, and the
+    freshly computed result is returned for the caller to execute against —
+    never the stale one on disk.
+    """
+    trace_path = groups_path.parent / "grouping-trace.json"
+    if not trace_path.is_file():
+        return grouping
+    recorded_trace = GroupingTrace.model_validate_json(trace_path.read_text())
+    if recorded_trace.provenance is None:
+        return grouping
+
+    fp_client = client or CodegraphClient(repo_root=repo_root)
+    try:
+        _current, matched = verify_index_fingerprint(
+            recorded_trace.provenance.index_fingerprint,
+            fp_client,
+            allow_drift=allow_drift,
+            log=lambda message: print(message, file=sys.stderr),
+        )
+    except GraphBuildError as exc:
+        # The current index could not even be read (mirrors plan U2's
+        # no-baseline degrade): this is an environmental failure to verify,
+        # not evidence the index actually drifted, so it must not be treated
+        # as a mismatch — that would turn "codegraph isn't reachable right
+        # now" into a false "the partition is stale" verdict.
+        print(
+            f"warning: could not verify index fingerprint against the current "
+            f"index ({exc}) — proceeding without verification",
+            file=sys.stderr,
+        )
+        return grouping
+    if matched:
+        return grouping
+
+    # allow_drift and mismatched: force a full re-partition rather than
+    # silently reusing the recorded groups.json (the plan's explicit
+    # requirement — "never a silent reuse").
+    recorder = TraceRecorder()
+    llm_recorder = JsonlCallRecorder(groups_path.parent, grouping_run_id=uuid.uuid4().hex)
+    provenance_recorder = EdgeProvenanceRecorder()
+    result, base_context = run_grouping(
+        plan_path=plan_path,
+        repo_root=repo_root,
+        config=config,
+        llm_runner=llm_runner or claude_json_runner,
+        client=fp_client,
+        recorder=recorder,
+        llm_recorder=llm_recorder,
+        provenance_recorder=provenance_recorder,
+    )
+    groups_path.write_text(serialize_grouping(result))
+    base_context_path.write_text(base_context)
+    (groups_path.parent / "grouping-trace.json").write_text(serialize_trace(recorder.trace))
+    if provenance_recorder.document is not None:
+        (groups_path.parent / "edge-provenance.json").write_text(
+            serialize_edge_provenance(provenance_recorder.document)
+        )
+    return result
+
+
 def _cmd_groupings(args: argparse.Namespace) -> int:
     repo_root = args.repo.resolve()
     infos = describe_groupings(repo_root)
@@ -974,7 +1067,13 @@ def _cache_root(session: SessionConfig) -> Path:
     return default_cache_root()
 
 
-def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
+def _cmd_run(
+    args: argparse.Namespace,
+    llm_runner: JsonRunner | None,
+    client: CodegraphClient | None = None,
+    *,
+    resume: bool,
+) -> int:
     repo_root = args.repo.resolve()
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)
@@ -1039,19 +1138,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         return 1
     grouping = GroupingResult.model_validate_json(groups_path.read_text())
-    groups = grouping.groups
-    intensity_override_line: str | None = None
-    if getattr(args, "review_intensity", None):
-        intensity = ReviewIntensity(args.review_intensity)
-        changed = sum(1 for group in groups if group.intensity != intensity)
-        groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
-        if changed:
-            sessions = changed * _REVIEWER_SESSIONS[intensity]
-            intensity_override_line = (
-                f"warning: --review-intensity {intensity.value} overrides {changed} "
-                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
-                "for those groups (omit the flag to keep each group's recorded intensity)"
-            )
 
     plan_path = Path(grouping.plan_path)
     if not plan_path.is_absolute():
@@ -1066,6 +1152,42 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # Stripped before it ever reaches an LLM context (R27) — the rewrite provider
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
+
+    # Plan U7: the grouping's own recorded index fingerprint, read back and
+    # compared against the current codegraph index (never done before this
+    # unit — the fingerprint was written into `ProvenanceEntry` and never read
+    # back). A mismatch here means `groups_path` was built against an index
+    # that no longer describes the repo `run`/`resume` is about to execute
+    # against.
+    try:
+        grouping = _verify_grouping_index_fingerprint(
+            repo_root=repo_root,
+            groups_path=groups_path,
+            base_context_path=base_context_path,
+            grouping=grouping,
+            plan_path=plan_path,
+            config=config,
+            llm_runner=llm_runner,
+            client=client,
+            allow_drift=getattr(args, "allow_index_drift", False),
+        )
+    except IndexFingerprintMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    groups = grouping.groups
+    intensity_override_line: str | None = None
+    if getattr(args, "review_intensity", None):
+        intensity = ReviewIntensity(args.review_intensity)
+        changed = sum(1 for group in groups if group.intensity != intensity)
+        groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
+        if changed:
+            sessions = changed * _REVIEWER_SESSIONS[intensity]
+            intensity_override_line = (
+                f"warning: --review-intensity {intensity.value} overrides {changed} "
+                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
+                "for those groups (omit the flag to keep each group's recorded intensity)"
+            )
 
     # Plan U7: the config file actually loaded, echoed with its own path before
     # anything spawns — two `.orchestrator/config.toml` files were once found
