@@ -134,9 +134,17 @@ class RunManifest(BaseModel):
 
 
 class Surprise(BaseModel):
-    """A finding that may invalidate other groups' specs (origin R12)."""
+    """A finding that may invalidate other groups' specs (origin R12).
 
-    kind: Literal["interface_mismatch", "missing_dependency", "merge_conflict", "other"]
+    ``informational`` (plan U13) is a broadcast fact — a changed test baseline,
+    a pre-existing red suite — that briefs the next generation but is not
+    evidence a spec needs rewriting: it is folded into the next prompt without
+    spending a rewrite or calling the speccer, unlike every other kind.
+    """
+
+    kind: Literal[
+        "interface_mismatch", "missing_dependency", "merge_conflict", "other", "informational"
+    ]
     description: str
     affected_groups: list[str] = Field(default_factory=list)
 

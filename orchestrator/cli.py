@@ -1438,7 +1438,11 @@ def _cmd_run(
             base_session_id=base_session_id,
             breaker=config.breaker,
             execution=config.execution,
-            board=SurpriseBoard(paths),
+            # groups=grouping.groups (plan U11): validates every affected_groups
+            # id against the run's real group and task ids at mark time, instead
+            # of silently accumulating dead buckets under ids nothing will ever
+            # read.
+            board=SurpriseBoard(paths, groups=grouping.groups),
             workspace_for=workspace_for,
             merge_group=merger.merge_group,
             # The rewrite path is the run's other claude call, and it is a one-shot
