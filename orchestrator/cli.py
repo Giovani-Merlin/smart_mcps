@@ -582,6 +582,14 @@ def _cmd_group(
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
     out_dir = grouping_dir(repo_root, name)
     trace_path = out_dir / "grouping-trace.json"
+    # Plan U8: --no-spec and --dry-run never describe the partition committed to
+    # groups.json, so their trace/edge-provenance go in a preview subdirectory
+    # rather than beside (and possibly overwriting) a real grouping's sibling
+    # trace. A directory holding only a preview never gets a groups.json, so it
+    # stays invisible to describe_groupings and shows up in the launch-page
+    # preview as exactly that — a preview, never a failed grouping.
+    preview_dir = out_dir / "preview"
+    preview_trace_path = preview_dir / "grouping-trace.json"
     recorder = TraceRecorder()
     # Written on every mode including --no-spec and --dry-run: --no-spec is the
     # debugging mode, so it is exactly when the mapper's reasoning is wanted most.
@@ -612,11 +620,11 @@ def _cmd_group(
                 progress=_progress,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-            _write_failure_trace(out_dir, recorder, exc, trace_path)
-            _write_edge_provenance(out_dir, provenance_recorder)
+            _write_failure_trace(preview_dir, recorder, exc, preview_trace_path)
+            _write_edge_provenance(preview_dir, provenance_recorder)
             return 1
-        _write_trace(out_dir, recorder)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        _write_trace(preview_dir, recorder)
+        _write_edge_provenance(preview_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(recorder.trace)
@@ -636,8 +644,12 @@ def _cmd_group(
             progress=_progress,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-        _write_failure_trace(out_dir, recorder, exc, trace_path)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        # A dry run that fails never intended to write groups.json either, so
+        # its partial trace belongs in the preview location too.
+        failure_dir = preview_dir if args.dry_run else out_dir
+        failure_trace_path = preview_trace_path if args.dry_run else trace_path
+        _write_failure_trace(failure_dir, recorder, exc, failure_trace_path)
+        _write_edge_provenance(failure_dir, provenance_recorder)
         return 1
     _warn_self_modification(result.flags)
     llm_recorder.link_outputs(
@@ -646,8 +658,8 @@ def _cmd_group(
     )
 
     if args.dry_run:
-        _write_trace(out_dir, recorder)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        _write_trace(preview_dir, recorder)
+        _write_edge_provenance(preview_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _print_report(result)
         return 0
