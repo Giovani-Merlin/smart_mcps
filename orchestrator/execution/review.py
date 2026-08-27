@@ -37,7 +37,12 @@ from orchestrator.execution.manifest import (
     log_event,
     record_session,
 )
-from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.preflight import (
+    PreflightBaseline,
+    PreflightFailure,
+    compare_to_baseline,
+    failing_tests_from_junit,
+)
 from orchestrator.execution.prompting import (
     REVIEW_SCRATCH_DIRNAME,
     render_coder_answer_prompt,
@@ -172,6 +177,12 @@ class ReviewDeps:
     # lifecycle log stays on regardless (R10).
     broker: EscalationBroker | None = None
     policy: EscalationPolicy | None = None
+    # What was already red on the launch branch (plan U2/U3), read back by the
+    # merge gate to tell a new failure from a pre-existing one. ``None`` (no
+    # baseline captured, or a resumed run with no run directory to read it
+    # from) degrades to "no_baseline", which never attributes a failure as
+    # new — the same conservative default `compare_to_baseline` documents.
+    preflight_baseline: PreflightBaseline | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -732,23 +743,79 @@ class _GroupExecution:
                 # Not a git conflict — no coder resume is attempted in place
                 # (plan U4 Decisions: only a concrete git/test failure ever
                 # warrants an LLM call, and the in-place resume is specific to
-                # resolving conflict markers). Escalate then rewrite, same as
-                # a merge conflict past its resolve attempts.
+                # resolving conflict markers).
                 self._log(f"group {self.gid}: preflight failed ({exc})")
-                surprise = Surprise(kind="other", description=str(exc), affected_groups=[self.gid])
+                diagnosis, attributable = self._classify_preflight(exc)
+                surprise = Surprise(kind="other", description=diagnosis, affected_groups=[self.gid])
                 self._spread([surprise])
+                if attributable:
+                    # A new, real regression — keep today's escalate-then-rewrite
+                    # behaviour (plan U3): the failure is evidence about the diff
+                    # and a rewritten spec can act on it.
+                    response = await self._escalate(
+                        EscalationKind.PREFLIGHT_FAILED,
+                        prompt=f"preflight failed for {self.gid}: {exc}",
+                        surprises=[surprise],
+                    )
+                    extra = [surprise]
+                    if response is not None:
+                        extra.append(_operator_surprise(self.gid, response.answer))
+                    await self._rewrite(f"preflight failed: {exc}", extra=extra)
+                    return False
+                # env/timeout, or every failing test was already red on the
+                # launch branch: not evidence about the diff, so no rewrite is
+                # spent on it (plan U3 Decisions) — escalate for visibility only,
+                # the group fails fast either way.
                 response = await self._escalate(
-                    EscalationKind.MERGE_CONFLICT,
-                    prompt=f"preflight failed for {self.gid}: {exc}",
+                    EscalationKind.PREFLIGHT_FAILED,
+                    prompt=f"preflight failed for {self.gid} (not attributable to this diff): {exc}",
                     surprises=[surprise],
                 )
-                extra = [surprise]
                 if response is not None:
-                    extra.append(_operator_surprise(self.gid, response.answer))
-                await self._rewrite(f"preflight failed: {exc}", extra=extra)
-                return False
+                    diagnosis += f"\n[operator] {response.answer}"
+                raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             return True
+
+    def _classify_preflight(self, exc: PreflightFailure) -> tuple[str, bool]:
+        """Route a preflight failure by cause (plan U3): ``env``/``timeout``
+        never ran a real test, and a ``regression`` whose failing tests are all
+        already red on the launch branch is not evidence about this diff
+        either — neither is attributable, and the caller must not spend a
+        rewrite on it. Only a genuinely new, run failure is attributable.
+
+        Returns the diagnosis text handed to the next generation (or the
+        operator) — carrying the check output's own "short test summary info"
+        tail, not just a path to the log — and whether the failure is
+        attributable.
+        """
+        summary_tail = ""
+        if exc.output_path is not None and exc.output_path.is_file():
+            summary_tail = _short_test_summary(exc.output_path.read_text())
+        if exc.kind in ("env", "timeout"):
+            diagnosis = f"preflight failed ({exc.kind}): {exc.reason}"
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, False
+        # kind == "regression": tests actually ran and something actually
+        # failed — the only question left is whether it is new.
+        junit_path = (
+            exc.output_path.parent / "preflight-junit.xml" if exc.output_path is not None else None
+        )
+        failing = failing_tests_from_junit(junit_path) if junit_path is not None else frozenset()
+        comparison = compare_to_baseline(self.deps.preflight_baseline, failing)
+        if comparison.verdict == "pre_existing":
+            diagnosis = (
+                f"preflight failed (pre-existing): {exc.reason} — every failing test was "
+                "already failing on the launch branch"
+            )
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, False
+        diagnosis = f"preflight failed (regression): {exc.reason}"
+        if summary_tail:
+            diagnosis += f"\n{summary_tail}"
+        return diagnosis, True
 
     async def _resolve_conflict_in_place(self, exc: MergeConflict) -> bool:
         """One warm-resume attempt at the group's own coder session (plan U1),
@@ -1039,6 +1106,21 @@ class _GroupExecution:
 def _transcript_str(runner: SessionRunner, session_id: str) -> str | None:
     path = runner.transcript_path(session_id)
     return str(path) if path is not None else None
+
+
+def _short_test_summary(output: str) -> str:
+    """The "short test summary info" tail of a pytest run's captured output
+    (plan U3/F18) — the FAILED/ERROR lines and the final result line, not the
+    full scrollback. Empty when the marker never appears, e.g. an env/timeout
+    failure that produced no pytest output at all."""
+    marker = "short test summary info"
+    idx = output.find(marker)
+    if idx == -1:
+        return ""
+    line_end = output.find("\n", idx)
+    if line_end == -1:
+        return ""
+    return output[line_end + 1 :].strip()
 
 
 def _context_surprise(group_id: str, description: str) -> Surprise:

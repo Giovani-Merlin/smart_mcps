@@ -244,6 +244,7 @@ class EscalationKind(StrEnum):
     REVIEWER_TOO_HARD = "reviewer_too_hard"
     REVIEWER_STRUCTURAL = "reviewer_structural"
     MERGE_CONFLICT = "merge_conflict"
+    PREFLIGHT_FAILED = "preflight_failed"  # merge-gate check command failed (plan U3)
     CAPS_EXHAUSTED = "caps_exhausted"  # generation/rewrite cap about to FAIL the group
     GROUP_RESOLVE = "group_resolve"  # FAILED group's stranded work needs resolving (plan U2)
     GROUP_START = "group_start"  # interactive: approve before launch
