@@ -63,7 +63,11 @@ from orchestrator.execution.manifest import (
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
 from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
-from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.preflight import (
+    PreflightFailure,
+    capture_preflight_baseline,
+    save_baseline,
+)
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
