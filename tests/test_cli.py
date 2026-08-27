@@ -396,6 +396,8 @@ def _stub_codegraph_runner(args):
                 "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
             }
         )
+    if args[0] == "query":
+        return "[]"
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 

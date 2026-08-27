@@ -291,7 +291,13 @@ class TestProvenanceAndIndexFingerprint:
             == recorder_b.trace.provenance.index_fingerprint
         )
 
-    def test_resyncing_the_index_after_a_source_change_changes_the_fingerprint(self, tmp_path):
+    def test_changing_only_operational_counters_leaves_the_fingerprint_unchanged(self, tmp_path):
+        """Plan U5: the fingerprint is a content hash of the logical export, not
+        of `status -j`'s operational counters — changing only ``nodeCount``/
+        ``edgeCount`` (queue depth, uptime, cache size in the real CLI) with the
+        query results held fixed must not move the fingerprint. This replaces
+        the old status-counter-driven expectation this test used to encode,
+        which was exactly the bug plan U5 fixes."""
         from orchestrator.grouping.graphing import CodegraphClient
         from tests.test_grouping_fixtures import (
             STATUS_JSON,
@@ -320,6 +326,57 @@ class TestProvenanceAndIndexFingerprint:
             llm_runner=_llm_must_not_be_called,
             client=CodegraphClient(
                 repo_root=repo, runner=lambda a: stub_codegraph_runner(a, STATUS_JSON_RESYNCED)
+            ),
+            recorder=recorder_after,
+        )
+
+        assert (
+            recorder_before.trace.provenance.index_fingerprint
+            == recorder_after.trace.provenance.index_fingerprint
+        )
+
+    def test_changing_the_query_result_changes_the_fingerprint(self, tmp_path):
+        """The mirror of the test above: real content — a symbol appearing in
+        the bulk `query ""` result — must move the fingerprint even though
+        `status -j` is held fixed."""
+        from orchestrator.grouping.graphing import CodegraphClient
+        from tests.test_grouping_fixtures import STATUS_JSON, stub_codegraph_runner
+        from tests.test_grouping_fixtures import make_repo as make_stub_repo
+
+        repo, plan = make_stub_repo(tmp_path, "pure-backend")
+        new_symbol = [
+            {
+                "node": {
+                    "id": "function:abc123",
+                    "kind": "function",
+                    "name": "new_fn",
+                    "qualifiedName": "new_fn",
+                    "filePath": "server.py",
+                    "signature": "def new_fn(): ...",
+                }
+            }
+        ]
+
+        recorder_before = TraceRecorder()
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=CodegraphClient(
+                repo_root=repo,
+                runner=lambda a: stub_codegraph_runner(a, STATUS_JSON, query_result=[]),
+            ),
+            recorder=recorder_before,
+        )
+
+        recorder_after = TraceRecorder()
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=CodegraphClient(
+                repo_root=repo,
+                runner=lambda a: stub_codegraph_runner(a, STATUS_JSON, query_result=new_symbol),
             ),
             recorder=recorder_after,
         )

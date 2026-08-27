@@ -23,11 +23,12 @@ def _llm_must_not_be_called(prompt, schema):
     raise AssertionError("fixture tests must stay zero-token")
 
 
-# Plan U5: a fixed `codegraph status -j` payload so fixture tests can attach a
-# TraceRecorder (which now always calls client.status() for the index
-# fingerprint) without needing a real index. STATUS_JSON_VARIANTS lets a test
-# simulate "re-syncing after a source change" by asking for a variant whose
-# fingerprint differs.
+# Plan U5/U6: a fixed `codegraph status -j` payload so fixture tests can attach
+# a TraceRecorder (the quiescence handshake always reads status() for the
+# recorded observation payload) without needing a real index.
+# STATUS_JSON_RESYNCED varies only the operational counters — it must NOT
+# change the (content-based) fingerprint; see
+# test_grouping_trace.py::TestProvenanceAndIndexFingerprint.
 STATUS_JSON = {
     "initialized": True,
     "projectPath": "/stub",
@@ -44,18 +45,22 @@ STATUS_JSON = {
 STATUS_JSON_RESYNCED = {**STATUS_JSON, "nodeCount": 11, "edgeCount": 6}
 
 
-def stub_codegraph_runner(args, status=STATUS_JSON):
+def stub_codegraph_runner(args, status=STATUS_JSON, query_result=None):
     """Zero real codegraph for the no-symbols fixtures: the only calls the
     pipeline issues are `codegraph sync` (R13), `codegraph files` for the base
-    context, and `codegraph status` for the trace's index fingerprint (plan
-    U5). Anything else means a fixture accidentally started using symbols
-    without switching to the cassette runner below."""
+    context, `codegraph status` for the quiescence handshake's recorded
+    payload, and the bulk `codegraph query ""` the same handshake reads for
+    the plan U5 content fingerprint (``CodegraphClient.logical_export``).
+    Anything else means a fixture accidentally started using symbols without
+    switching to the cassette runner below."""
     if args[0] == "sync":
         return ""
     if args[0] == "files":
         return "stub repo (fixture test — no queries expected)\n"
     if args[0] == "status":
         return json.dumps(status)
+    if args[0] == "query":
+        return json.dumps(query_result if query_result is not None else [])
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
 
 
