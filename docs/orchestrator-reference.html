@@ -204,10 +204,11 @@ footer.page{margin-top:5rem; padding-top:1.5rem; border-top:1px solid var(--line
       <a href="#hitl"><span class="n">07</span>Escalation / HITL</a>
       <a href="#permissions"><span class="n">08</span>Tool &amp; permission gating</a>
       <a href="#merge"><span class="n">09</span>Merge strategy</a>
+      <a href="#recovery"><span class="n">10</span>Preflight &amp; auth recovery</a>
       <div class="sep"></div>
       <span class="grp-label">Reference</span>
-      <a href="#cli"><span class="n">10</span>CLI reference</a>
-      <a href="#config"><span class="n">11</span>Config reference</a>
+      <a href="#cli"><span class="n">11</span>CLI reference</a>
+      <a href="#config"><span class="n">12</span>Config reference</a>
     </nav>
   </aside>
 
@@ -319,28 +320,39 @@ cap  = max(token_budget - head, 0)</code></pre>
         </tbody>
       </table></div>
       <p><code>run --review-intensity &lt;tier&gt;</code> overrides the computed tier for <b>every</b> group in the run — a blunt instrument for "review everything" or "trust everything."</p>
+
+      <h3>The index fingerprint: content hash, not operational counters</h3>
+      <p><code>index_fingerprint()</code> (<code>orchestrator/grouping/graphing.py</code>) is a sha256 over a <b>canonical logical export</b> — sorted symbol ids, sorted file paths, sorted edges, canonically serialised — not over <code>codegraph status -j</code>'s operational counters (queue depth, uptime, cache size), which used to churn the fingerprint even when the index's actual content hadn't changed. Before partitioning, <code>await_index_quiescence()</code> polls the fingerprint until it reads identical across several consecutive reads; a fingerprint that keeps changing fails the grouping loudly, naming every distinct value observed, rather than partitioning against a moving index.</p>
+      <div class="callout warn"><span class="label">Index-stable, not reproducible</span><p>Pinning the index makes a partition <b>index-stable</b> — the deterministic core (Louvain seed <code>42</code>, sorted iteration) reproduces byte-identically given the same content — but the <b>mapper</b> that turns tasks into files/symbols is an LLM call with no temperature or seed control, so a task→region mapping can still differ against a byte-identical index. Do not read "index-stable" as "reproducible": the mapper's output is the one remaining source of run-to-run drift, and it is not content-addressed today.</p></div>
+      <p>The recorded <code>ProvenanceEntry</code> (grouping trace) carries the fingerprint alongside the Louvain seed and resolution used, so a partition's exact key is reconstructable after the fact. On <code>resume</code>/<code>reuse</code>, the recorded fingerprint is compared against the current index; a mismatch is a hard failure naming both fingerprints unless <code>--allow-index-drift</code> downgrades it to a loud warning and forces a re-partition. A <b>fresh</b> <code>group</code> invocation never fails on mismatch — only reuse of a stale partition does.</p>
     </section>
 
     <section id="base-context">
       <h2><span class="num">03</span>The shared base context</h2>
       <p class="section-dek">Every worker session in a run — the base session itself, and every coder/reviewer forked from it — shares one compiled document so the same repo conventions and architecture summary don't have to be re-derived per group.</p>
-      <p><code>compile_base_context()</code> concatenates three sections into <code>base-context.md</code>, written once at <code>group</code> time and snapshotted again into the run directory at <code>run</code> time:</p>
+      <p><code>compile_base_context()</code> concatenates four sections into <code>base-context.md</code>, written once at <code>group</code> time and snapshotted again into the run directory at <code>run</code> time:</p>
       <ol>
+        <li><b>Worker ground rules</b> (<code>orchestrator/prompts/worker_ground_rules.md</code>, plan U15) — worktree confinement, commit-early-and-often, the permission-denial retry protocol, and the report-block rules for both coder and reviewer, written to refer <i>forward</i> ("the spec you will be given below", "the plan document that follows it").</li>
         <li><b>Repo conventions</b> — the full text of <code>CLAUDE.md</code> and <code>AGENTS.md</code>, if present.</li>
         <li><b>Codebase architecture</b> — a codegraph summary of the repo.</li>
         <li><b>The plan document</b> — the plan's own text, with its embedded task-map block stripped (that block is grouper input, not worker context).</li>
       </ol>
+      <p>Ground rules come first specifically so every forked worker reads its behavioural invariants once, from the cached prefix, before the plan-specific and repo-specific material that follows — paid once per run instead of resent per fork. The per-fork coder/reviewer prompt (§06) then keeps only a compact tail restatement of the report contract's exact tag and permitted status values, not the full prose.</p>
       <p>Compilation is <b>byte-stable</b>: identical repo state + plan + codegraph summary always produce identical bytes, because the document feeds a prompt-cache-sensitive session head — the <code>run</code> command forks every coder and reviewer session from one shared base session rather than re-sending this context per group.</p>
 
       <details class="excerpt">
         <summary>compile_base_context() <span class="tag">orchestrator/grouping/base_context.py</span></summary>
         <div class="body"><pre><code>def compile_base_context(repo_root: Path, plan_path: Path, codegraph_summary: str) -> str:
-    """Repo conventions + codegraph architecture summary + the plan document.
+    """Worker ground rules + repo conventions + codegraph architecture summary +
+    the plan document.
 
-    The task-map block is grouper parser input, not worker context (R27): it is
-    stripped from the plan text before embedding, never from the plan file itself.
+    The ground rules come first (plan U15) so every forked worker session reads
+    its behavioural invariants once, from the cached prefix, before the
+    plan-specific and repo-specific material that follows. The task-map block is
+    grouper parser input, not worker context (R27): it is stripped from the plan
+    text before embedding, never from the plan file itself.
     """
-    sections = ["# Base context\n"]
+    sections = ["# Base context\n", load_template("worker_ground_rules").strip() + "\n"]
 
     for name in CONVENTION_FILES:  # ("CLAUDE.md", "AGENTS.md")
         path = repo_root / name
@@ -473,6 +485,7 @@ sequenceDiagram
 
       <h3>Rewrite cap</h3>
       <p><code>max_rewrites</code> (default <code>2</code>) bounds how many times one group's spec can be rewritten in response to a surprise, a stuck coder, a hard reviewer verdict, or a merge conflict, before the group fails outright — escalated as <code>CAPS_EXHAUSTED</code> first; an operator answer grants one more guided rewrite instead of failing.</p>
+      <p>Not every surprise counts against that cap. <code>Surprise.kind == "informational"</code> (plan U13) is a broadcast fact — a changed test baseline, a pre-existing red suite — that gets folded into the next generation's briefing without incrementing <code>rewrites</code> and without triggering a speccer call. Only a surprise of any other kind actually calls <code>_rewrite()</code>; a group that consumed sixteen informational surprises still has its full rewrite budget for a genuine merge conflict or a genuine hard reviewer verdict.</p>
 
       <h3>Re-entry after a crash</h3>
       <p>On <code>resume</code>, the executor looks for a live coder session entry (no <code>retirement_reason</code>) at the group's persisted generation in the manifest and warm-resumes it with <code>reentry.md</code> — re-orienting from <code>git status</code>/<code>git log</code> rather than restarting. If the persisted context already exceeds the breaker limit, or the warm resume itself fails, it falls back to a fresh fork from base instead.</p>
@@ -492,33 +505,21 @@ $spec
 &lt;/spec&gt;</code></pre>
 
       <h3>Coder prompt <span class="src" style="display:inline">orchestrator/prompts/coder.md</span></h3>
+      <div class="callout info"><span class="label">Ground rules moved (plan U15)</span><p>The worker ground rules — worktree confinement, commit-early-and-often, the permission-denial retry protocol, and the report contract's behavioural prose — now live in <code>orchestrator/prompts/worker_ground_rules.md</code>, hoisted into the <b>compiled base context</b> (§03) ahead of the plan document and the codegraph summary. Every fork reads them once from the cached prefix instead of paying for them fresh per group; the per-fork message below keeps only a compact tail restatement.</p></div>
       <details class="excerpt" open>
         <summary>Full coder prompt template <span class="tag">what varies: $group_name, $verification — everything else is fixed</span></summary>
         <div class="body"><pre><code>$identity_block
 
 You are the coder for group "$group_name". The &lt;spec&gt; block above is your complete
-assignment; the &lt;summary&gt; is its one-line form.
+assignment; the &lt;summary&gt; is its one-line form. Follow the worker ground rules
+in the base context above.
 
-Ground rules:
+This worktree owns its own environment: dependency changes require `uv sync`
+run inside the worktree, and any verification item that imports a new
+dependency must pass here, in this worktree — never against the parent
+checkout's environment.
 
-- Work only inside this worktree (your current working directory); never touch
-  paths outside it.
-- This worktree owns its own environment: dependency changes require `uv sync`
-  run inside the worktree, and any verification item that imports a new
-  dependency must pass here, in this worktree — never against the parent
-  checkout's environment.
-- Implement the spec fully — code and tests — following the conventions the shared
-  context established.
-- Commit early and often: after each self-contained step that leaves the worktree
-  in a consistent state (a finished file, a passing unit of work), make a git
-  commit with a clear conventional message. [...]
-- If a command is denied for permissions, retry the *identical* command up to
-  three times total, then stop and report status `permission_denied` with the
-  denied command verbatim in `denied_command`. Re-sending the identical command
-  is not a workaround; alternate quoting, alternate spellings, shelling through
-  another interpreter, and `subprocess.run` substitution for the same command
-  are all banned — they route around the sandbox instead of reporting the block.
-- Verify your work before reporting. These are your verification items:
+These are your verification items:
 
 $verification
 
@@ -695,10 +696,54 @@ Rules for the block:
 
       <h3>Worktree cleanup</h3>
       <p>A clean merge removes the group's worktree. A merge that fails leaves the worktree in place, uncommitted leftovers and all, for inspection — cleanup is never forced on a dirty tree.</p>
+
+      <h3>Provisioning: group and integration worktrees alike</h3>
+      <p>Every group worktree is provisioned with the run's <code>provision_args</code> (typically <code>uv sync --all-extras</code>) right after creation. <code>IntegrationMerger.ensure()</code> provisions the <b>integration worktree</b> the same way, once, the first time it is created — it is the tree that represents the run's actual output, so an operator going there to run what was just built finds a working environment rather than a bare checkout. Each worktree's provisioning is logged with the exact command used.</p>
+    </section>
+
+    <section id="recovery">
+      <h2><span class="num">10</span>Preflight failure classification, the baseline, and auth recovery</h2>
+      <p class="section-dek">Two mechanisms that stop a run from spending its whole rewrite/generation budget on causes no coder can fix: a preflight failure is typed before anyone is blamed for it, and an expired credential tries to heal itself before it pages an operator.</p>
+
+      <h3>Preflight failure kinds</h3>
+      <p><code>run_preflight</code> (<code>orchestrator/execution/preflight.py</code>) classifies every failure into a <code>PreflightFailureKind</code> before raising <code>PreflightFailure</code>, instead of handing the merge gate a bare exit code:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Kind</th><th>When</th><th>What it means</th><th>Where it routes</th></tr></thead>
+        <tbody>
+          <tr><td><code>env</code></td><td>Exit codes 2/3/4/5, or exit 1 whose output shows a collection-phase error (<code>ImportError while loading conftest.py</code>, <code>ModuleNotFoundError</code>, a bare <code>ImportError</code>).</td><td>Zero tests ran — not evidence about the diff.</td><td>Fails the group fast with the diagnosis attached; <b>does not</b> call <code>_rewrite</code> and does not advance the generation counter.</td></tr>
+          <tr><td><code>timeout</code></td><td>The check command hangs past <code>check_timeout_s</code> (default 900s).</td><td>A hung check command, not a diff problem.</td><td>Same fast-fail path as <code>env</code> — no rewrite spent chasing a hang.</td></tr>
+          <tr><td><code>regression</code></td><td>Exit 1 with tests that actually ran and actually failed, and the failing set is not entirely pre-existing per the baseline (below).</td><td>A real regression attributable to this diff.</td><td>Keeps today's rewrite-and-respawn behaviour — escalated as <code>preflight_failed</code> (<code>EscalationKind.PREFLIGHT_FAILED</code>), distinguishable from a git <code>merge_conflict</code> escalation.</td></tr>
+        </tbody>
+      </table></div>
+      <p>The check command itself gains <code>-p no:cacheprovider</code> and a <code>--junitxml=&lt;path outside the worktree&gt;</code> when pytest is detected, so the clean-tree requirement holds <i>after</i> the run, not just before it — no <code>.pytest_cache</code> or JUnit XML ever lands inside the worktree.</p>
+
+      <h3>The launch-branch baseline</h3>
+      <p>At run start, the check command runs once on the launch branch and its per-test outcome set is persisted to the run directory as <code>preflight-baseline.json</code> (test ids, outcomes, exit code, command, commit sha). Every subsequent preflight failure's failing-test set is compared against it:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Verdict</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>new_failures</code></td><td>At least one failing test on the group's head was not failing on the baseline — attributable, keeps the rewrite path.</td></tr>
+          <tr><td><code>pre_existing</code></td><td>Every failing test on head was already failing on the baseline — explicit "not attributable," routed the same as an <code>env</code> failure rather than spending a rewrite.</td></tr>
+          <tr><td><code>no_baseline</code></td><td>No baseline could be captured (e.g. the launch branch itself doesn't run cleanly) — degrades to "cannot attribute," never to a false attribution.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Beyond the deterministic ladder above, when a failure still needs judgement, the classification is performed by the <b>orchestrator's own session</b> — not a separate cheap model — because it already holds the plan, the codegraph summary, and the group's spec, and its written diagnosis is what the next generation is told, together with the check output's <code>short test summary info</code> tail (not just a path to <code>preflight-check.log</code>).</p>
+
+      <h3>The auth-refresh ladder</h3>
+      <p>A <code>401 … re-authenticate</code> used to be a bare <code>SessionError</code> that, under <code>on_group_failure=halt</code>, set <code>RUN_HALTED</code> for every group in the run. <code>orchestrator/execution/auth.py</code> replaces that with three rungs, each cheaper than the next, implemented as <code>AuthLadder.recover()</code> for (a)/(b) and the existing <code>UsageLimitGate</code> machinery (constructed with <code>probe=ladder.recover</code>) for (c):</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rung</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td><b>(a) Local expiry check</b></td><td>After any long pause, and before the first retry, read <code>expiresAt</code> from <code>~/.claude/.credentials.json</code> — no network call, both fields are epoch milliseconds.</td></tr>
+          <tr><td><b>(b) Orchestrator-side refresh</b></td><td>If stale, the <b>unconfined orchestrator process</b> (confinement is per-worker-session; see §08) triggers a refresh itself and re-reads the file to confirm <code>expiresAt</code> advanced.</td></tr>
+          <tr><td><b>(c) Pause-and-notify, self-releasing</b></td><td>If <code>refreshTokenExpiresAt</code> has also passed, or the refresh doesn't advance <code>expiresAt</code>, or a live call still 401s: arm a pause and notify, re-probing periodically via the same "arm, poll, self-release" gate usage limits already use, clearing itself once <code>recover()</code> reports healthy again.</td></tr>
+        </tbody>
+      </table></div>
+      <p>The two incidents that motivated this were a refreshed token that could not be <i>written</i> — already fixed separately, since <code>confinement.py:428</code> grants <code>~/.claude/.credentials.json</code> a single-file read-write rule — not a login that had actually lapsed. That is why rung (b) tries to self-heal before rung (c) ever asks an operator for something they mostly cannot supply.</p>
     </section>
 
     <section id="cli">
-      <h2><span class="num">10</span>CLI reference</h2>
+      <h2><span class="num">11</span>CLI reference</h2>
       <p class="section-dek">Six subcommands, captured from <code>smart-mcps-orchestrate &lt;cmd&gt; --help</code> on this branch.</p>
 
       <h3><code>group &lt;plan.md&gt;</code> — compute groups from a plan</h3>
@@ -732,9 +777,13 @@ Rules for the block:
           <tr><td><code>--intensity {autonomous,on_failure,on_stuck,interactive}</code></td><td>Escalation tier; any non-<code>autonomous</code> value implies <code>--hitl</code>.</td></tr>
           <tr><td><code>--escalation-source {orchestrator_only,workers_via_orchestrator}</code></td><td>Who may request escalation (default <code>workers_via_orchestrator</code>).</td></tr>
           <tr><td><code>--escalation-timeout S</code></td><td>Seconds to wait for an answer before <code>on_timeout</code> fires (default: block).</td></tr>
+          <tr><td><code>--model-worker MODEL</code></td><td>Overrides the coder/reviewer fork model (default: Sonnet). Overrides the config file.</td></tr>
+          <tr><td><code>--model-base MODEL</code></td><td>Overrides the run's own base session model (default: Opus). Overrides the config file.</td></tr>
+          <tr><td><code>--model-speccer MODEL</code></td><td>Overrides the mapper/speccer model (default: Opus). Overrides the config file.</td></tr>
           <tr><td><code>--repo DIR</code> / <code>--config PATH</code></td><td>Target repo root / config TOML path.</td></tr>
         </tbody>
       </table></div>
+      <p>Precedence for all three model flags is <b>CLI &gt; config file &gt; built-in default</b>. The run banner prints all three resolved model ids, so an operator never has to infer from a transcript which model actually ran: <code>models: worker=..., base=..., speccer=...</code>.</p>
 
       <h3>The rest</h3>
       <div class="table-wrap"><table>
@@ -748,7 +797,7 @@ Rules for the block:
     </section>
 
     <section id="config">
-      <h2><span class="num">11</span>Config reference</h2>
+      <h2><span class="num">12</span>Config reference</h2>
       <p class="section-dek"><code>.orchestrator/config.toml</code> in the target repo, or <code>--config PATH</code>. Resolution is <b>CLI flags &gt; config file &gt; built-in defaults</b>; every field has a working default, so the file is always optional. This table is generated directly from <code>orchestrator/config.py</code> — the source of truth — not from the narrative docs, which (see the report accompanying this page) have drifted from it in a few places.</p>
 
       <h3><code>[edge_weights]</code></h3>
@@ -838,7 +887,9 @@ Rules for the block:
         <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
         <tbody>
           <tr><td><code>claude_bin</code></td><td class="num">"claude"</td><td>—</td></tr>
-          <tr><td><code>model</code></td><td class="num">null</td><td>—</td></tr>
+          <tr><td><code>model</code></td><td class="num">"claude-sonnet-5"</td><td><code>--model-worker</code></td></tr>
+          <tr><td><code>base_model</code></td><td class="num">"claude-opus-5"</td><td><code>--model-base</code></td></tr>
+          <tr><td><code>speccer_model</code></td><td class="num">"claude-opus-5"</td><td><code>--model-speccer</code></td></tr>
           <tr><td><code>allowed_tools</code></td><td class="num">[]</td><td>—</td></tr>
           <tr><td><code>transcript_root</code></td><td class="num">null</td><td>—</td></tr>
           <tr><td><code>max_thinking_tokens</code></td><td class="num">4,000</td><td>—</td></tr>
@@ -846,6 +897,7 @@ Rules for the block:
         </tbody>
       </table></div>
       <p>The thinking pair is a real cost lever, not a cosmetic one: thinking tokens count as <i>output</i> tokens. <code>adaptive</code> (model decides whether to think) measured cheapest and correct against <code>enabled</code>/<code>disabled</code> on one probe; paired with the <code>medium</code> (4,000) budget it reads as "think only when it helps, never more than medium." <code>--max-thinking-tokens</code> is hidden from <code>claude --help</code>, so it's deliberately excluded from preflight's required-flags check.</p>
+      <p><code>model</code>, <code>base_model</code> and <code>speccer_model</code> are three independently settable knobs (plan U17): workers (coder and reviewer forks) default to the cheaper Sonnet model since their work is mostly mechanical; the run's own base session and the mapper/speccer default to Opus, since a bad base context or a bad spec rewrite costs every worker downstream. Measured on an earlier live run before this defaulting existed: Opus everywhere, which is what the session limits were paying for.</p>
 
       <h3><code>[escalation]</code></h3>
       <div class="table-wrap"><table>
@@ -884,7 +936,7 @@ Rules for the block:
     </section>
 
     <footer class="page">
-      Synthesized from <code>orchestrator/README.md</code>, <code>docs/orchestrator-grouping-config.md</code>, <code>orchestrator/config.py</code>, <code>orchestrator/cli.py</code>, <code>orchestrator/execution/{scheduler,review,merge,escalation,sessions}.py</code>, <code>orchestrator/model.py</code>, <code>orchestrator/grouping/base_context.py</code>, <code>orchestrator/prompts/*.md</code>, and <code>docs/adr/0005-hitl-permission-routing-transport.md</code>, on branch <code>feat/multiagent-orchestrator</code>.
+      Synthesized from <code>orchestrator/README.md</code>, <code>docs/orchestrator-grouping-config.md</code>, <code>orchestrator/config.py</code>, <code>orchestrator/cli.py</code>, <code>orchestrator/execution/{scheduler,review,merge,escalation,sessions,preflight,auth,ratelimit}.py</code>, <code>orchestrator/grouping/graphing.py</code>, <code>orchestrator/model.py</code>, <code>orchestrator/grouping/base_context.py</code>, <code>orchestrator/prompts/*.md</code>, and <code>docs/adr/0005-hitl-permission-routing-transport.md</code>, on branch <code>feat/multiagent-orchestrator</code>.
     </footer>
   </main>
 </div>

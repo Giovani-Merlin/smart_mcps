@@ -102,6 +102,33 @@ A malformed task map raises `GrouperError` **before any LLM call** — never a s
 fallback, which would hide drift between the plan prose and the map. An absent map
 keeps foreign plans on the mapper path unchanged.
 
+### Index fingerprint: content hash, plus a quiescence handshake
+
+Before any of the above runs, `client.sync()` refreshes the codegraph index, then
+[`await_index_quiescence()`](../orchestrator/grouping/graphing.py) polls
+[`index_fingerprint()`](../orchestrator/grouping/graphing.py) (`graphing.py:74`)
+until it reads identical across several consecutive reads. The fingerprint itself
+is a sha256 over a **canonical logical export** — sorted symbol ids, sorted file
+paths, sorted edges — not over `codegraph status -j`'s operational counters (queue
+depth, uptime, cache size), which is what used to churn it several times in
+fifteen minutes at one unchanged commit while `sync` reported "already up to
+date." A fingerprint that keeps changing across the poll fails the grouping
+loudly, naming every distinct value observed, rather than partitioning against a
+moving index. The recorded `ProvenanceEntry` carries the settled fingerprint
+alongside the Louvain seed and resolution, so a partition's exact key is
+reconstructable later.
+
+> ⚠️ **Index-stable is not reproducible.** Pinning the index makes the
+> deterministic core (Louvain seed `42`, sorted iteration) reproduce
+> byte-identically given the same content — but the **mapper** is an LLM call
+> with no temperature or seed control, so a task→region mapping can still differ
+> against a byte-identical index. On `resume`/reuse of a named grouping, the
+> recorded fingerprint is compared against the current index and a mismatch is a
+> hard failure (`--allow-index-drift` downgrades it to a loud warning and forces
+> a re-partition); a **fresh** `group` invocation never fails on mismatch. The
+> mapper's output is not content-addressed today — that remains the honest
+> residual gap, not something this fingerprint work closes.
+
 ______________________________________________________________________
 
 ## Stage 1 — plan → code regions
@@ -395,9 +422,11 @@ A grouping is a **named, self-contained directory**, not an overwritable slot
 - **`groups.json`** — the canonical `GroupingResult`: each `Group` with id, name,
   summary, spec, difficulty, intensity, dependencies, verification, tasks, files,
   estimated_tokens, plus `flags`. This is what `run` consumes.
-- **`base-context.md`** — repo conventions (`CLAUDE.md`/`AGENTS.md`) + codegraph
-  architecture summary + the plan, compiled once
-  ([`base_context.py:18`](../orchestrator/grouping/base_context.py)).
+- **`base-context.md`** — worker ground rules (`orchestrator/prompts/worker_ground_rules.md`,
+  hoisted here so every forked coder/reviewer session pays for them once, from the
+  cached prefix, instead of per group) + repo conventions (`CLAUDE.md`/`AGENTS.md`)
+  - codegraph architecture summary + the plan, compiled once
+    ([`base_context.py:18`](../orchestrator/grouping/base_context.py)).
 - **`grouping-trace.json`** — every stage's output and every decision: hub scores
   vs. threshold, slice atoms, Louvain communities, each cut/merge/repair with its
   reason and quantitative context. *"Why is this task in this group"* answered from
