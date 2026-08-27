@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 
 import { errorMessage, getArtifacts, getTranscript } from "../api";
+import { sessionBaseName, sessionGeneration } from "../attempts";
 import type {
   Artifact,
   CoderReport,
@@ -26,6 +27,22 @@ import "./GroupDrillIn.css";
 /** How often an open transcript re-fetches. The backend re-reads the file per
  * call, so this is what makes a live session's pane advance. */
 const TRANSCRIPT_POLL_MS = 3000;
+
+/**
+ * A timestamp in the operator's own local zone, with that zone named —
+ * matching what the run log now does (plan U27/U35, F22). `toLocaleString()`
+ * alone already renders in the local zone but never says which one, so a
+ * reader comparing it against a UTC-stamped artifact elsewhere has to guess.
+ */
+function formatLocalTimestamp(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return null;
+  const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+    .formatToParts(when)
+    .find((part) => part.type === "timeZoneName")?.value;
+  return zone ? `${when.toLocaleString()} ${zone}` : when.toLocaleString();
+}
 
 function formatJson(value: unknown): string {
   try {
@@ -220,6 +237,17 @@ function ArtifactCard({ artifact }: { artifact: Artifact }) {
           {artifact.kind}
         </span>
         <span className="artifact-card__name">{artifact.name}</span>
+        {artifact.is_extra && (
+          // The mandatory second verification pass a `paired_plus` group
+          // earns above `d_hard` (plan U28) — opens in the same verdict
+          // viewer as the first pass, distinguished only by this label.
+          <span
+            className="artifact-card__extra-label"
+            title="mandatory second verification pass for a paired_plus group"
+          >
+            extra pass
+          </span>
+        )}
       </div>
       {artifact.error ? (
         <p className="drill-in__error">{artifact.error}</p>
@@ -425,6 +453,24 @@ function GroupDrillIn({
                   {group.group_id}
                   {group.name ? ` — ${group.name}` : ""}
                 </h3>
+                {/* Why this group and no other earned a second reviewer pass
+                    (plan U28): the difficulty score and the intensity tier it
+                    crossed into. `paired_plus` is the tier `intensity_for`
+                    assigns once `difficulty` exceeds `d_hard`. */}
+                {(group.difficulty != null || group.intensity) && (
+                  <span className="drill-in__difficulty" title="review intensity, from the difficulty score">
+                    {group.difficulty != null && (
+                      <span className="drill-in__difficulty-score">
+                        difficulty {group.difficulty.toFixed(2)}
+                      </span>
+                    )}
+                    {group.intensity && (
+                      <span className={`drill-in__intensity drill-in__intensity--${group.intensity}`}>
+                        {group.intensity}
+                      </span>
+                    )}
+                  </span>
+                )}
                 <button type="button" className="drill-in__close" onClick={closePane}>
                   Close
                 </button>
@@ -439,31 +485,50 @@ function GroupDrillIn({
                     </p>
                   ) : (
                     <ul className="drill-in__sessions">
-                      {group.sessions.map((session) => (
-                        <li key={session.session_id}>
-                          <button
-                            type="button"
-                            className={`drill-in__session${
-                              session.session_id === sessionId ? " drill-in__session--active" : ""
-                            }`}
-                            aria-pressed={session.session_id === sessionId}
-                            onClick={() => selectSession(session.session_id)}
-                          >
-                            <span
-                              className={`drill-in__session-role drill-in__session-role--${session.role}`}
+                      {group.sessions.map((session) => {
+                        // The name's trailing `-g<N>` reads as a group
+                        // reference, not a generation (plan U35/F17) — pulled
+                        // into its own badge, and only shown when the name
+                        // actually carries one, so a base session (no
+                        // `-g<N>` suffix) renders no label at all rather than
+                        // a fabricated `gen 0`.
+                        const generation = sessionGeneration(session.name);
+                        const started = formatLocalTimestamp(session.started_at);
+                        return (
+                          <li key={session.session_id}>
+                            <button
+                              type="button"
+                              className={`drill-in__session${
+                                session.session_id === sessionId ? " drill-in__session--active" : ""
+                              }`}
+                              aria-pressed={session.session_id === sessionId}
+                              onClick={() => selectSession(session.session_id)}
                             >
-                              {session.role}
-                            </span>
-                            <span className="drill-in__session-gen">gen {session.generation}</span>
-                            <span className="drill-in__session-name">{session.name}</span>
-                            {session.retirement_reason && (
-                              <span className="drill-in__session-retired">
-                                retired: {session.retirement_reason}
+                              <span
+                                className={`drill-in__session-role drill-in__session-role--${session.role}`}
+                              >
+                                {session.role}
                               </span>
-                            )}
-                          </button>
-                        </li>
-                      ))}
+                              {generation !== null && (
+                                <span className="drill-in__session-gen">gen {generation}</span>
+                              )}
+                              <span className="drill-in__session-name">
+                                {sessionBaseName(session.name)}
+                              </span>
+                              {started && (
+                                <span className="drill-in__session-started" title="started at">
+                                  {started}
+                                </span>
+                              )}
+                              {session.retirement_reason && (
+                                <span className="drill-in__session-retired">
+                                  retired: {session.retirement_reason}
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
 

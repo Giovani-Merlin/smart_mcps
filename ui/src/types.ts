@@ -564,6 +564,9 @@ export interface Artifact {
   // Set only for a `permission_denied` report. Server-derived on read, so the
   // UI never re-implements the classification.
   denial_kind?: DenialKind | null;
+  // True for `verdict-g<N>-r<M>-extra.json` — the mandatory second
+  // verification pass a `paired_plus` group earns above `d_hard` (plan U28).
+  is_extra: boolean;
 }
 
 // ------------------------------------------------------------- grouping tab

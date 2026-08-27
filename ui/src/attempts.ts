@@ -433,3 +433,27 @@ export function summariseAttempts(group: SnapshotGroup): AttemptSummary {
     label: parts.join(" · "),
   };
 }
+
+/**
+ * A session's display name — `session_display_name` in `sessions.py` — is
+ * `{run_id}-{group_id}-{role}-g{generation}`, e.g.
+ * `r20260820-213134-g1-coder-g3`. Read literally, that trailing `-g3` reads as
+ * though it names a group, not a generation (plan U35/F17) — the same digits
+ * as `g1` earlier in the string, easy to mistake for "this session touches
+ * group g3". `sessionGeneration` pulls the number back out so callers can
+ * render it as its own labelled badge instead, and `sessionBaseName` gives the
+ * name with that suffix removed so it is not printed twice.
+ *
+ * The base session (`{run_id}-base`, no trailing `-g<N>`) has no generation to
+ * extract, and that must render as "no label" — never `gen 0`.
+ */
+const SESSION_GENERATION_RE = /-g(\d+)$/;
+
+export function sessionGeneration(name: string): number | null {
+  const match = SESSION_GENERATION_RE.exec(name);
+  return match ? Number(match[1]) : null;
+}
+
+export function sessionBaseName(name: string): string {
+  return name.replace(SESSION_GENERATION_RE, "");
+}

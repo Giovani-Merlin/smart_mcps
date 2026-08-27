@@ -224,6 +224,19 @@
   color: var(--fg-muted);
 }
 
+/* A rounded, coloured badge — deliberately unlike `.attempt-grid__group-id`'s
+   flat monospace text, so "gen 3" cannot be mistaken for a reference to a
+   group named g3 elsewhere on the same page (plan U35/F17). */
+.attempt-session__gen {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: #d7e6ff;
+  color: #12316b;
+  white-space: nowrap;
+}
+
 .attempt-session__retired {
   color: #7a4a14;
 }

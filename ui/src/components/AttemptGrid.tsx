@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { errorMessage, getRunPaths, listEscalations } from "../api";
-import { buildAttemptGrid } from "../attempts";
+import { buildAttemptGrid, sessionBaseName, sessionGeneration } from "../attempts";
 import type { AttemptCell, AttemptNote } from "../attempts";
 import { ATTENTION_COLOUR } from "../status";
 import type { EscalationRequest, RunSnapshot, SnapshotSession } from "../types";
@@ -120,6 +120,11 @@ function SessionRow({
   session: SnapshotSession;
   onOpen?: () => void;
 }) {
+  // The name's trailing `-g<N>` reads as a group reference, not a generation
+  // (plan U35/F17) — pulled out into its own badge, and only rendered when the
+  // name actually carries one, so a base session gets no label at all rather
+  // than a fabricated `gen 0`.
+  const generation = sessionGeneration(session.name);
   return (
     <li className="attempt-session">
       <button
@@ -132,7 +137,10 @@ function SessionRow({
         <span className={`attempt-session__role attempt-session__role--${session.role}`}>
           {session.role}
         </span>
-        <span className="attempt-session__name">{session.name}</span>
+        {generation !== null && (
+          <span className="attempt-session__gen">gen {generation}</span>
+        )}
+        <span className="attempt-session__name">{sessionBaseName(session.name)}</span>
       </button>
       {session.retirement_reason && (
         <span className="attempt-session__retired">retired: {session.retirement_reason}</span>
