@@ -124,6 +124,20 @@
   margin-top: 0.25rem;
 }
 
+/* The phase line — "forking the base session — 58m" — with the paused portion
+ * called out separately so a long phase that was mostly a usage-limit pause
+ * does not read as 58 minutes of stuck work. */
+.group-card__phase {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  margin-top: 0.25rem;
+}
+
+.group-card__paused {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
 .group-card__deps {
   font-size: 0.75rem;
   color: var(--fg-muted);

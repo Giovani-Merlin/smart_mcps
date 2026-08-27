@@ -106,6 +106,12 @@ class GroupHeartbeat(BaseModel):
     # Still a fact, not a verdict: it says what, not whether it is too long.
     phase: str | None = None
     phase_elapsed_s: float | None = None
+    # Total paused time within the current round (rate-limit gate overlays,
+    # summed) and how long the current round has been open. Both already live in
+    # ``heartbeat.json``; absence means "not recorded", never "zero" — a heartbeat
+    # from before these fields shipped must not be read as "no pause happened".
+    paused_s: float | None = None
+    round_elapsed_s: float | None = None
 
 
 class SnapshotGroup(BaseModel):
