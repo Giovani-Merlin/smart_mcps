@@ -20,6 +20,7 @@ import signal
 import sys
 import tomllib
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from orchestrator.config import (
+    AuthConfig,
     EscalationConfig,
     ExecutionConfig,
     OrchestratorConfig,
@@ -34,6 +36,7 @@ from orchestrator.config import (
     UsageLimitConfig,
     load_config,
 )
+from orchestrator.execution.auth import AuthLadder
 from orchestrator.execution.confinement import (
     default_cache_root,
     landlock_abi_version,
@@ -870,8 +873,56 @@ def build_usage_limit_gate(
     )
 
 
+def build_auth_ladder(auth: AuthConfig, *, log: Callable[[str], None] | None = None) -> AuthLadder:
+    """Rungs (a)+(b) of the auth ladder (plan U4): read expiry, refresh in
+    place. Constructed unconditionally — ``auth_gate`` is what actually opts
+    the run in (see ``build_auth_gate``), so a ``recover()`` call against a
+    disabled ladder is simply never made."""
+    path = Path(auth.credentials_path).expanduser() if auth.credentials_path else None
+    return AuthLadder(credentials_path=path, log=log)
+
+
+def build_auth_gate(
+    config: OrchestratorConfig, ladder: AuthLadder, paths: RunPaths | None = None
+) -> UsageLimitGate | None:
+    """The run's auth-pause gate (plan U4 rung c), mirroring
+    ``build_usage_limit_gate``: same log/publish sinks, its own
+    ``auth-pause.json`` file, and ``probe=ladder.recover`` so the pause
+    self-releases the moment the credential is healthy rather than on a fixed
+    deadline. ``None`` when the ladder is disabled — ``SessionRunner`` treats a
+    ``None`` auth gate exactly like a ``None`` usage-limit gate: a 401 raises
+    straight out of the call.
+    """
+    if not config.session.auth.enabled:
+        return None
+    auth_config = UsageLimitConfig(
+        auto_resume=True,
+        max_wait_s=config.session.auth.max_wait_s,
+        max_attempts=config.session.auth.max_attempts,
+        skew_s=0.0,
+        fallback_poll_s=config.session.auth.poll_s,
+    )
+    if paths is None:
+        return UsageLimitGate(auth_config, log=print, probe=ladder.recover, label="credential")
+
+    def publish(state: UsageLimitState) -> None:
+        atomic_write_text(paths.auth_pause_path, json.dumps(state.to_dict(), indent=2) + "\n")
+
+    return UsageLimitGate(
+        auth_config,
+        log=lambda message: log_event(paths, message),
+        on_change=publish,
+        probe=ladder.recover,
+        label="credential",
+    )
+
+
 def build_session_runner(
-    config: OrchestratorConfig, gate: UsageLimitGate | None = None
+    config: OrchestratorConfig,
+    gate: UsageLimitGate | None = None,
+    *,
+    auth_ladder: AuthLadder | None = None,
+    auth_gate: UsageLimitGate | None = None,
 ) -> SessionRunner:
     """The one place a production ``SessionRunner`` is built.
 
@@ -898,6 +949,8 @@ def build_session_runner(
         cache_root=_cache_root(session),
         extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
         gate=gate,
+        auth_ladder=auth_ladder,
+        auth_gate=auth_gate,
     )
 
 
@@ -1070,7 +1123,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     driver_lock = DriverLock(paths)
     try:
         gate = build_usage_limit_gate(config, paths)
-        runner = build_session_runner(config, gate)
+        auth_ladder = build_auth_ladder(
+            config.session.auth, log=lambda message: log_event(paths, message)
+        )
+        auth_gate = build_auth_gate(config, auth_ladder, paths)
+        runner = build_session_runner(config, gate, auth_ladder=auth_ladder, auth_gate=auth_gate)
         try:
             runner.preflight()
         except SessionError as exc:

@@ -210,6 +210,14 @@ class RunPaths:
         return self.run_dir / "usage-limit.json"
 
     @property
+    def auth_pause_path(self) -> Path:
+        """The auth ladder's current pause, mirroring ``usage_limit_path`` (plan
+        U4): the gate fires from a worker thread, so this is its own
+        write-then-rename file rather than a field the scheduler's event loop
+        would have to lock around."""
+        return self.run_dir / "auth-pause.json"
+
+    @property
     def surprises_path(self) -> Path:
         """Persisted SurpriseBoard state (plan U7): an in-memory-only board dies
         with the process, silently dropping a surprise marked for a group that

@@ -335,6 +335,27 @@ class UsageLimitConfig(BaseModel):
     fallback_poll_s: float = 900.0
 
 
+class AuthConfig(BaseModel):
+    """The auth-refresh ladder's rung-(c) pause (plan U4).
+
+    Rungs (a) and (b) — reading ``expiresAt``, refreshing — need no timing
+    config: they run once, synchronously, the moment a 401 is seen. This
+    class covers only what happens when both rungs fail: how long to poll for
+    (``poll_s``), for how long total (``max_wait_s``), and whether the ladder
+    is wired in at all (``enabled``). Deliberately its own model rather than
+    reusing ``UsageLimitConfig`` wholesale — an auth pause has no reset-time
+    prose to parse (there is never a deadline, only "healthy again"), so
+    ``skew_s``/``fallback_poll_s`` would be dead fields here.
+    """
+
+    enabled: bool = True
+    # Overrides ``~/.claude/.credentials.json`` — chiefly for tests.
+    credentials_path: str | None = None
+    poll_s: float = 60.0
+    max_wait_s: float = 0.0
+    max_attempts: int = 6
+
+
 class SessionConfig(BaseModel):
     """How the run command shells the claude CLI (plan U9).
 
@@ -421,6 +442,10 @@ class SessionConfig(BaseModel):
     # What to do when the account's usage limit is reached mid-run: by default,
     # pause in place and retry the identical call once the limit releases.
     usage_limit: UsageLimitConfig = Field(default_factory=UsageLimitConfig)
+    # Plan U4: what to do when a 401 is reached mid-run — try to refresh the
+    # credential in place, and only pause (rather than halt the run) if that
+    # fails.
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 class EscalationConfig(BaseModel):
