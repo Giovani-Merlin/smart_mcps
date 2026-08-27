@@ -147,6 +147,15 @@ function SessionRow({ session, scale }: { session: SessionCost; scale: number })
       </span>
       <ClassBar classes={session.classes} scale={scale} testId={`cost-bar-${session.sessionId}`} />
       <span className="cost-session__total">{formatTokens(session.total)}</span>
+      {session.inheritedCacheReadTokens > 0 && (
+        <span
+          className="cost-session__inherited"
+          data-testid={`cost-inherited-cache-${session.sessionId}`}
+          title="Turn 1's cache read: context this round inherited rather than created, and cannot shrink. Distinct from the total cache-read segment above."
+        >
+          {formatTokens(session.inheritedCacheReadTokens)} inherited
+        </span>
+      )}
       <RoundSparkline rounds={session.roundTotals} />
     </li>
   );
@@ -214,14 +223,20 @@ function PredictionPanel({ view, manifestPath }: { view: CostView; manifestPath:
           <>
             <p className="cost-calibration__summary">
               <strong data-testid="cost-calibration-median">
-                {describeRatio(calibration.medianRatio)}
+                {calibration.singleGenerationCount === 0
+                  ? "no median — no single-generation groups to compute one from"
+                  : describeRatio(calibration.medianRatio)}
               </strong>{" "}
-              (median across {calibration.rows.length}{" "}
-              {calibration.rows.length === 1 ? "group" : "groups"}); summed{" "}
-              {formatTokens(calibration.observedTotal)} observed against{" "}
-              {formatTokens(calibration.estimatedTotal)} predicted. Above 1 means the estimator is
-              under-predicting — the lever is <code>bytes_per_token</code> and{" "}
-              <code>slack_multiplier</code>.
+              (median across {calibration.singleGenerationCount} single-generation{" "}
+              {calibration.singleGenerationCount === 1 ? "group" : "groups"}
+              {calibration.multiGenerationCount > 0 &&
+                `; ${calibration.multiGenerationCount} multi-generation ${
+                  calibration.multiGenerationCount === 1 ? "row" : "rows"
+                } excluded`}
+              ); summed {formatTokens(calibration.observedTotal)} observed against{" "}
+              {formatTokens(calibration.estimatedTotal)} predicted, over that same
+              single-generation population. Above 1 means the estimator is under-predicting — the
+              lever is <code>bytes_per_token</code> and <code>slack_multiplier</code>.
             </p>
             {calibration.skipped.length > 0 && (
               <p className="cost-panel__note" data-testid="cost-calibration-skipped">
@@ -230,6 +245,45 @@ function PredictionPanel({ view, manifestPath }: { view: CostView; manifestPath:
                 number gets reported for an untuned estimator.
               </p>
             )}
+            <table className="cost-table" data-testid="cost-calibration-rows">
+              <thead>
+                <tr>
+                  <th scope="col">group</th>
+                  <th scope="col">generations</th>
+                  <th scope="col">last-generation</th>
+                  <th scope="col">peak</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calibration.rows.map((row) => (
+                  <tr
+                    key={row.groupId}
+                    data-testid={`cost-calibration-row-${row.groupId}`}
+                    data-multi-generation={row.multiGeneration}
+                  >
+                    <th scope="row">
+                      <span className="cost-table__id">{row.groupId}</span> {row.name}
+                    </th>
+                    <td data-testid={`cost-calibration-generations-${row.groupId}`}>
+                      {row.generations}
+                      {row.multiGeneration && (
+                        <span
+                          className="cost-calibration__label"
+                          data-testid={`cost-calibration-label-${row.groupId}`}
+                          title={row.retirementReasons.join("; ")}
+                        >
+                          {" "}
+                          multi-generation — excluded from median; retired:{" "}
+                          {row.retirementReasons.join("; ") || "reason not recorded"}
+                        </span>
+                      )}
+                    </td>
+                    <td>{describeRatio(row.ratioLast)}</td>
+                    <td>{describeRatio(row.ratioPeak)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </>
         )}
       </div>
