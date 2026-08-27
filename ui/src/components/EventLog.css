@@ -19,6 +19,20 @@
   font-size: 0.85rem;
 }
 
+.event-log__options {
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+.event-log__options pre {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .event-log__pane {
   background-color: var(--terminal-bg);
   color: var(--terminal-fg);

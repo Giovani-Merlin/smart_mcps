@@ -29,11 +29,24 @@ import JobLog from "../components/launch/JobLog";
 import type {
   ExecutionOptions,
   GroupingSummary,
+  GroupJobBody,
   JobInfo,
   PlanDoc,
   RunInfo,
 } from "../types";
 import "./Launch.css";
+
+const GRANULARITIES: NonNullable<GroupJobBody["granularity"]>[] = [
+  "independent",
+  "balanced",
+  "monolithic",
+];
+
+// How often the three launch-form lists are refetched while the page stays
+// open. A grouping finishing, or a job started elsewhere, should become
+// visible without a reload — this is what makes that true without a push
+// channel for any of the three (F3, F6).
+const LAUNCH_REFRESH_MS = 5000;
 
 export function Launch() {
   const { project = "" } = useParams();
@@ -45,7 +58,8 @@ export function Launch() {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+
+    async function refresh(): Promise<void> {
       try {
         const [nextPlans, nextGroupings, nextRuns] = await Promise.all([
           listPlans(project),
@@ -56,12 +70,21 @@ export function Launch() {
         setPlans(nextPlans);
         setGroupings(nextGroupings);
         setRuns(nextRuns);
+        // A refetch that succeeds after a prior one failed clears the error —
+        // but a *failed* refetch below never touches `plans`/`groupings`/
+        // `runs`, so the last known-good data stays on screen instead of the
+        // form blanking out from under the operator.
+        setLoadError(null);
       } catch (err) {
         if (!cancelled) setLoadError(errorMessage(err));
       }
-    })();
+    }
+
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), LAUNCH_REFRESH_MS);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [project]);
 
@@ -88,6 +111,13 @@ export function Launch() {
         <ResumeCard project={project} runs={runs} onLaunched={setJob} />
       </div>
 
+      {job && (
+        <p className="launch__job-link">
+          <Link to={`/p/${encodeURIComponent(project)}/jobs/${encodeURIComponent(job.job_id)}`}>
+            Open this job's own page
+          </Link>
+        </p>
+      )}
       <JobLog project={project} job={job} />
     </div>
   );
@@ -127,6 +157,11 @@ function GroupCard({
   const [plan, setPlan] = useState("");
   const [name, setName] = useState("");
   const [dryRun, setDryRun] = useState(false);
+  const [granularity, setGranularity] = useState<GroupJobBody["granularity"]>(null);
+  const [tokenBudget, setTokenBudget] = useState("");
+  // Three-state, matching `auto_resume` on the run/resume forms: unset (null)
+  // lets the CLI's own default stand, unticking sends the explicit opt-out.
+  const [autoResume, setAutoResume] = useState<boolean | null>(null);
   const { busy, error, launch } = useLaunch(onLaunched);
 
   return (
@@ -167,6 +202,34 @@ function GroupCard({
           onChange={(e) => setName(e.target.value)}
         />
       </label>
+      <label htmlFor="launch-granularity">
+        Granularity
+        <select
+          id="launch-granularity"
+          value={granularity ?? ""}
+          onChange={(e) =>
+            setGranularity((e.target.value || null) as GroupJobBody["granularity"])
+          }
+        >
+          <option value="">(from config)</option>
+          {GRANULARITIES.map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label htmlFor="launch-token-budget">
+        Token budget
+        <input
+          id="launch-token-budget"
+          type="number"
+          min={0}
+          value={tokenBudget}
+          placeholder="(from config)"
+          onChange={(e) => setTokenBudget(e.target.value)}
+        />
+      </label>
       <label className="launch__check" htmlFor="launch-dry-run">
         <input
           id="launch-dry-run"
@@ -175,6 +238,15 @@ function GroupCard({
           onChange={(e) => setDryRun(e.target.checked)}
         />
         Dry run (print the groups, write nothing)
+      </label>
+      <label className="launch__check" htmlFor="launch-group-auto-resume">
+        <input
+          id="launch-group-auto-resume"
+          type="checkbox"
+          checked={autoResume !== false}
+          onChange={(e) => setAutoResume(e.target.checked ? null : false)}
+        />
+        Wait out usage limits
       </label>
       {error && <p className="app__error">{error}</p>}
       <button
@@ -185,7 +257,10 @@ function GroupCard({
             startGroupJob(project, {
               plan: plan.trim(),
               name: name.trim() || null,
+              granularity: granularity || null,
+              token_budget: tokenBudget.trim() === "" ? null : Number(tokenBudget),
               dry_run: dryRun,
+              auto_resume: autoResume,
             }),
           )
         }

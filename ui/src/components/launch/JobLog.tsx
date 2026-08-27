@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { openJobStream } from "../../api";
+import { getJob, openJobStream } from "../../api";
 import type { JobInfo } from "../../types";
 import "../EventLog.css";
 
@@ -18,11 +18,41 @@ export interface JobLogProps {
   job: JobInfo | null;
 }
 
+// How often a still-running job's status is re-checked. `job.running` is
+// frozen at whatever it was when the caller last handed this component a
+// `JobInfo` — a job POSTed once and never refetched reads as "running"
+// forever, even after it exits (F6). Polling stops once the job is no longer
+// running, so a finished job costs nothing further.
+const JOB_STATUS_POLL_MS = 3000;
+
 export function JobLog({ project, job }: JobLogProps) {
   const [lines, setLines] = useState<string[]>([]);
   const [stalled, setStalled] = useState(false);
+  const [running, setRunning] = useState(job?.running ?? false);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const jobId = job?.job_id ?? "";
+
+  useEffect(() => {
+    setRunning(job?.running ?? false);
+  }, [jobId, job?.running]);
+
+  useEffect(() => {
+    if (!jobId || !running) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await getJob(project, jobId);
+        if (!cancelled) setRunning(next.running);
+      } catch {
+        // A failed poll leaves the last known status on screen rather than
+        // flipping the badge on a transient network error.
+      }
+    }, JOB_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [project, jobId, running]);
 
   useEffect(() => {
     setLines([]);
@@ -62,9 +92,18 @@ export function JobLog({ project, job }: JobLogProps) {
           {job.kind} · {job.job_id}
         </h3>
         <span className="event-log__stalled" role="status">
-          {stalled ? "stream interrupted — reconnecting…" : job.running ? "running" : "exited"}
+          {stalled ? "stream interrupted — reconnecting…" : running ? "running" : "exited"}
         </span>
       </div>
+      {job.options && Object.keys(job.options).length > 0 && (
+        // Echoes the backend's own record of what this job resolved to — the
+        // only place a group job's granularity/token-budget/auto-resume
+        // choice is visible again after the form that set it is gone.
+        <details className="event-log__options">
+          <summary>Resolved options</summary>
+          <pre>{JSON.stringify(job.options, null, 2)}</pre>
+        </details>
+      )}
       <div className="event-log__pane" ref={paneRef}>
         {lines.length === 0 ? (
           <p className="event-log__empty">Waiting for output…</p>
