@@ -11,11 +11,13 @@
 
 import { useEffect, useState } from "react";
 
-import { errorMessage, getArtifacts, getTranscript } from "../api";
-import { sessionBaseName, sessionGeneration } from "../attempts";
+import { errorMessage, getArtifacts, getGenerationDiff, getGroupDiff, getTranscript } from "../api";
+import { generationsOf, sessionBaseName, sessionGeneration } from "../attempts";
+import DiffView from "./DiffView";
 import type {
   Artifact,
   CoderReport,
+  DiffResult,
   ReviewerVerdict,
   RunSnapshot,
   SnapshotGroup,
@@ -293,6 +295,14 @@ function GroupDrillIn({
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
+  const [groupDiff, setGroupDiff] = useState<DiffResult | null>(null);
+  const [groupDiffError, setGroupDiffError] = useState<string | null>(null);
+  const [diffGeneration, setDiffGeneration] = useState<number | null>(null);
+  const [generationDiff, setGenerationDiff] = useState<DiffResult | null>(null);
+  const [generationDiffError, setGenerationDiffError] = useState<string | null>(null);
+
+  const group: SnapshotGroup | null =
+    (groupId && snapshot?.groups.find((g) => g.group_id === groupId)) || null;
 
   // Run switch: the previous run's selection must not linger (its group and
   // session ids mean nothing in the new run).
@@ -339,6 +349,70 @@ function GroupDrillIn({
       cancelled = true;
     };
   }, [project, runId, groupId, revision]);
+
+  // Group diff refresh: same contract as artifacts — off the run-change
+  // `revision`, not a fixed interval. Fetched for any selected group, not
+  // gated on state === "completed": the backend already gives the honest
+  // answer for a group that hasn't merged yet ("no commits ahead of its fork
+  // point"), so a second not-yet-completed check here would only duplicate
+  // that logic and risk disagreeing with it.
+  useEffect(() => {
+    setGroupDiff(null);
+    setGroupDiffError(null);
+    if (!groupId) return;
+    const activeGroup = groupId;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await getGroupDiff(project, runId, activeGroup);
+        if (cancelled) return;
+        setGroupDiff(next);
+      } catch (err) {
+        if (cancelled) return;
+        setGroupDiffError(errorMessage(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project, runId, groupId, revision]);
+
+  // Default the generation picker to the group's latest known generation.
+  // Deliberately keyed on primitives (session count, current generation), not
+  // on `group` itself — `group` is a fresh object every render (derived via
+  // `.find()`), so depending on it directly would snap a manual pick of an
+  // earlier generation back to latest on every unrelated re-render.
+  useEffect(() => {
+    if (!group) {
+      setDiffGeneration(null);
+      return;
+    }
+    const gens = generationsOf(group);
+    setDiffGeneration(gens.length > 0 ? gens[gens.length - 1] : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, runId, groupId, group?.sessions.length, group?.generation]);
+
+  useEffect(() => {
+    setGenerationDiff(null);
+    setGenerationDiffError(null);
+    if (!groupId || diffGeneration === null) return;
+    const activeGroup = groupId;
+    const activeGeneration = diffGeneration;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await getGenerationDiff(project, runId, activeGroup, activeGeneration);
+        if (cancelled) return;
+        setGenerationDiff(next);
+      } catch (err) {
+        if (cancelled) return;
+        setGenerationDiffError(errorMessage(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project, runId, groupId, diffGeneration, revision]);
 
   // The poll-while-open contract: this interval exists only while a session is
   // selected. The cleanup runs when the pane closes, the selected session
@@ -406,9 +480,6 @@ function GroupDrillIn({
     setGroupId(null);
     setSessionId(null);
   }
-
-  const group: SnapshotGroup | null =
-    (groupId && snapshot?.groups.find((g) => g.group_id === groupId)) || null;
 
   return (
     <section className="drill-in" aria-label="Group drill-in">
@@ -582,6 +653,33 @@ function GroupDrillIn({
                     </>
                   )}
                 </div>
+              </div>
+
+              <div className="drill-in__diffs">
+                <DiffView title="Group diff (vs. the tip it branched from)" result={groupDiff} error={groupDiffError} />
+
+                <div className="diff-view__generation-head">
+                  <h4>Generation diff</h4>
+                  {group && generationsOf(group).length > 0 && (
+                    <select
+                      aria-label="Select a generation"
+                      className="diff-view__generation-select"
+                      value={diffGeneration ?? ""}
+                      onChange={(event) => setDiffGeneration(Number(event.target.value))}
+                    >
+                      {generationsOf(group).map((gen) => (
+                        <option key={gen} value={gen}>
+                          Generation {gen}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {diffGeneration === null ? (
+                  <p className="drill-in__empty">No generation to show a diff for yet.</p>
+                ) : (
+                  <DiffView result={generationDiff} error={generationDiffError} />
+                )}
               </div>
             </div>
           )}
