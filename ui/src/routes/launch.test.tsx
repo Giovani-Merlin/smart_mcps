@@ -15,6 +15,7 @@ const startGroupJob = vi.fn();
 const startRunJob = vi.fn();
 const startResumeJob = vi.fn();
 const listGroupings = vi.fn();
+const getGroupingPreview = vi.fn();
 const getJob = vi.fn();
 const listJobs = vi.fn();
 
@@ -28,6 +29,7 @@ vi.mock("../api", () => ({
       { path: "docs/plans/one.md", title: "The First Plan", modified_at: "2026-08-13T09:00:00Z" },
     ]),
   listGroupings: (...args: unknown[]) => listGroupings(...args),
+  getGroupingPreview: (...args: unknown[]) => getGroupingPreview(...args),
   listJobs: (...args: unknown[]) => listJobs(...args),
   getJob: (...args: unknown[]) => getJob(...args),
   startGroupJob: (...args: unknown[]) => startGroupJob(...args),
@@ -68,6 +70,39 @@ beforeEach(() => {
   startRunJob.mockReset().mockResolvedValue(job);
   startResumeJob.mockReset().mockResolvedValue(job);
   listGroupings.mockReset().mockResolvedValue(ONE_GROUPING);
+  getGroupingPreview.mockReset().mockResolvedValue({
+    name: "mine",
+    groups_path: "/repo/.orchestrator/groupings/mine/groups.json",
+    present: true,
+    plan_path: "docs/plans/one.md",
+    flags: [],
+    groups: [
+      {
+        id: "g1",
+        name: "first",
+        summary: "does the first thing",
+        tasks: ["u1-a", "u2-b"],
+        files: ["a.py", "b.py"],
+        estimated_tokens: 1234,
+        difficulty: 0.4,
+        intensity: "self_verify",
+        dependencies: [],
+        verification_count: 1,
+      },
+      {
+        id: "g2",
+        name: "second",
+        summary: "does the second thing",
+        tasks: ["u3-c"],
+        files: [],
+        estimated_tokens: 5678,
+        difficulty: 0.9,
+        intensity: "paired_plus",
+        dependencies: ["g1"],
+        verification_count: 0,
+      },
+    ],
+  });
   getJob.mockReset().mockResolvedValue(job);
   listJobs.mockReset().mockResolvedValue([]);
 });
@@ -334,5 +369,47 @@ describe("the launch route", () => {
       name: "Open this job's own page",
     })) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/p/proj/jobs/j1");
+  });
+
+  // ------------------------------------------------------- U25: grouping preview
+
+  it("renders a selected grouping's groups with tasks, files, estimates and dependencies", async () => {
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    await waitFor(() => expect(getGroupingPreview).toHaveBeenCalledWith("proj", "mine"));
+
+    expect(await screen.findByText("g1: first")).toBeTruthy();
+    expect(screen.getByText("u1-a, u2-b")).toBeTruthy();
+    expect(screen.getByText("a.py, b.py")).toBeTruthy();
+    expect(screen.getByText("1234")).toBeTruthy();
+    expect(screen.getByText(/0.40 → self_verify/)).toBeTruthy();
+
+    expect(screen.getByText("g2: second")).toBeTruthy();
+    expect(screen.getAllByText("none", { selector: "dd" }).length).toBeGreaterThan(0);
+  });
+
+  it("shows an explanatory empty state for a grouping with no groups.json, not an error", async () => {
+    getGroupingPreview.mockResolvedValue({
+      name: "specless",
+      groups_path: "/repo/.orchestrator/groupings/specless/groups.json",
+      present: false,
+      missing: "no groups.json at .../groups.json — this grouping has not been produced yet",
+      plan_path: "",
+      flags: [],
+      groups: [],
+    });
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    expect(await screen.findByText(/has not been produced yet/)).toBeTruthy();
+  });
+
+  it("does not launch anything from the preview — it renders no button of its own", async () => {
+    mount();
+    fireEvent.change(await screen.findByLabelText("Grouping"), { target: { value: "mine" } });
+    await screen.findByText("g1: first");
+    // The only buttons on the card remain the section's own launch actions.
+    const region = screen.getByRole("region", { name: "Start a run" });
+    const buttons = Array.from(region.querySelectorAll("button")).map((b) => b.textContent);
+    expect(buttons).toEqual(["Start run"]);
   });
 });

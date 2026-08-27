@@ -405,6 +405,32 @@ export interface GroupingSummary {
   group_count: number;
 }
 
+// GroupingPreview (grouping.py) — the launch page's read-only listing of a
+// named grouping's own groups.json, before any run exists. Field-for-field
+// what `group --dry-run`'s `_print_report` prints per group.
+export interface GroupingPreviewGroup {
+  id: string;
+  name: string;
+  summary: string;
+  tasks: string[];
+  files: string[];
+  estimated_tokens: number;
+  difficulty: number;
+  intensity: string;
+  dependencies: string[];
+  verification_count: number;
+}
+
+export interface GroupingPreview {
+  name: string;
+  groups_path: string;
+  present: boolean;
+  missing?: string | null;
+  plan_path: string;
+  flags: string[];
+  groups: GroupingPreviewGroup[];
+}
+
 export type JobKind = "group" | "run" | "resume";
 
 // `running` is derived from the recorded pid at read time, not from a wait —

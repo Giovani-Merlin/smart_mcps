@@ -28,6 +28,7 @@ import type {
   Artifact,
   EscalationRequest,
   GroupJobBody,
+  GroupingPreview,
   GroupingSummary,
   GroupingView,
   JobInfo,
@@ -183,6 +184,13 @@ export function listPlans(project: string): Promise<PlanDoc[]> {
 
 export function listGroupings(project: string): Promise<GroupingSummary[]> {
   return request<GroupingSummary[]>(`${projectPath(project)}/groupings`);
+}
+
+/** A named grouping's own groups.json, read-only — what the launch page shows
+ * without a throwaway `group --dry-run`. Never errors on an absent
+ * groups.json; `present: false` carries the explanation instead. */
+export function getGroupingPreview(project: string, name: string): Promise<GroupingPreview> {
+  return request<GroupingPreview>(`${projectPath(project)}/groupings/${enc(name)}/preview`);
 }
 
 export function listJobs(project: string): Promise<JobInfo[]> {
