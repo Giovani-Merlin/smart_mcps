@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import signal
@@ -562,6 +563,19 @@ def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
     return anchored if anchored.is_file() else plan
 
 
+def _speccer_json_runner(llm_runner: JsonRunner | None, config: OrchestratorConfig) -> JsonRunner:
+    """The default one-shot runner for the mapper/speccer path, bound to the
+    speccer model (plan U17).
+
+    A caller-supplied ``llm_runner`` (tests, mainly) is returned untouched —
+    only the production default gets the model bound, via ``functools.partial``
+    so ``claude_json_runner`` itself stays a plain two-arg ``JsonRunner``.
+    """
+    if llm_runner is not None:
+        return llm_runner
+    return functools.partial(claude_json_runner, model=config.session.speccer_model)
+
+
 def _cmd_group(
     args: argparse.Namespace,
     llm_runner: JsonRunner | None,
@@ -584,7 +598,7 @@ def _cmd_group(
     # handful of expensive calls; losing the last one to a reset that clears in
     # twenty minutes is the same waste here as mid-run.
     llm_runner = with_usage_limit_retry(
-        llm_runner or claude_json_runner, build_usage_limit_gate(config)
+        _speccer_json_runner(llm_runner, config), build_usage_limit_gate(config)
     )
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
     out_dir = grouping_dir(repo_root, name)
@@ -931,7 +945,7 @@ def _verify_grouping_index_fingerprint(
         plan_path=plan_path,
         repo_root=repo_root,
         config=config,
-        llm_runner=llm_runner or claude_json_runner,
+        llm_runner=_speccer_json_runner(llm_runner, config),
         client=fp_client,
         recorder=recorder,
         llm_recorder=llm_recorder,
@@ -1048,6 +1062,7 @@ def build_session_runner(
     return SessionRunner(
         claude_bin=session.claude_bin,
         model=session.model,
+        base_model=session.base_model,
         permission_mode=config.execution.permission_mode,
         allowed_tools=session.allowed_tools or None,
         transcript_root=(
@@ -1457,7 +1472,7 @@ def _cmd_run(
             # at its own boundary.
             rewrite_spec=_rewrite_provider(
                 plan_text,
-                with_usage_limit_retry(llm_runner or claude_json_runner, gate),
+                with_usage_limit_retry(_speccer_json_runner(llm_runner, config), gate),
                 orch_dir / "failures",
                 recorder=JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
             ),

@@ -7,6 +7,7 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import subprocess
@@ -458,7 +459,9 @@ def compute_partition(
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
     config = config or OrchestratorConfig()
-    llm_runner = llm_runner or claude_json_runner
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
     client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
@@ -631,7 +634,9 @@ def run_grouping(
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
-    llm_runner = llm_runner or claude_json_runner
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
     client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
