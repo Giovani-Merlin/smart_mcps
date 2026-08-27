@@ -595,3 +595,109 @@ class TestFixture:
     def test_run_paths_groups_path_points_into_the_run_dir(self, tmp_path):
         paths = RunPaths(tmp_path, "r1")
         assert paths.groups_path == paths.run_dir / "groups.json"
+
+
+class TestSurpriseDirections:
+    """Plan U12: the snapshot exposes two directions of a group's surprises —
+    what is still pending on the board addressed to it, and what its own
+    coder/reviewer rounds reported — kept as separate lists."""
+
+    def test_a_run_with_no_surprises_serves_empty_lists(self, client):
+        response = client.get("/api/projects/proj/runs/smoke1/snapshot")
+        assert response.status_code == 200
+        for group in response.json()["groups"]:
+            assert group["pending_surprises"] == []
+            assert group["emitted_surprises"] == []
+
+    def test_a_pending_surprise_for_a_completed_group_carries_its_reason(self, tmp_path, repo):
+        run_dir = install_run(repo, "residue")
+        atomic_write_text(
+            run_dir / "surprises.json",
+            json.dumps(
+                {
+                    "g1": [
+                        {
+                            "kind": "other",
+                            "description": "late finding",
+                            "affected_groups": ["g1"],
+                        }
+                    ]
+                }
+            ),
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/residue/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["pending_surprises"] == [
+            {
+                "kind": "other",
+                "description": "late finding",
+                "affected_groups": ["g1"],
+                "reason": "never delivered — group already completed",
+            }
+        ]
+        assert groups["g2"]["pending_surprises"] == []
+
+    def test_an_emitted_surprise_is_read_from_the_groups_report_artifact(self, tmp_path, repo):
+        run_dir = install_run(repo, "emitted")
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "report-g1-r1.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "summary": "did the work",
+                    "surprises": [
+                        {
+                            "kind": "interface_mismatch",
+                            "description": "g1 changed the API",
+                            "affected_groups": ["g2"],
+                        }
+                    ],
+                }
+            )
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/emitted/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["emitted_surprises"] == [
+            {
+                "kind": "interface_mismatch",
+                "description": "g1 changed the API",
+                "affected_groups": ["g2"],
+                "reason": None,
+            }
+        ]
+        assert groups["g2"]["emitted_surprises"] == []
+
+    def test_the_same_surprise_reported_by_two_rounds_is_not_duplicated(self, tmp_path, repo):
+        run_dir = install_run(repo, "dedup")
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        surprise = {
+            "kind": "other",
+            "description": "repeated finding",
+            "affected_groups": [],
+        }
+        (group_dir / "report-g1-r1.json").write_text(
+            json.dumps({"status": "completed", "surprises": [surprise]})
+        )
+        (group_dir / "report-g1-r2.json").write_text(
+            json.dumps({"status": "completed", "surprises": [surprise]})
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/dedup/snapshot").json()["groups"]
+        }
+        assert len(groups["g1"]["emitted_surprises"]) == 1
