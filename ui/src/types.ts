@@ -755,3 +755,57 @@ export interface GroupingView {
   edge_provenance?: Record<string, unknown> | null;
   paths: Record<string, string>;
 }
+
+// ---------------------------------------------------------- grouper LLM calls
+
+// One entry in `llm/calls.json` (llm_record.py), passed through unchanged —
+// dotted OpenTelemetry GenAI keys and all. `gen_ai.operation.name` is what
+// tells a mapper call from a speccer one (and, once U14 records them, a
+// rewrite speccer call from a grouping-time one); `recorded_at` is what tells
+// them apart *by when they ran*.
+export interface LlmCallRecord {
+  seq: number;
+  recorded_at: string;
+  "gen_ai.operation.name": string;
+  "gen_ai.request.model"?: string | null;
+  attempt: number;
+  status: { code: string };
+  error?: string | null;
+  "claude.session_id"?: string | null;
+  "claude.transcript_path"?: string | null;
+  "gen_ai.usage.input_tokens": number;
+  "gen_ai.usage.output_tokens": number;
+  "claude.usage.cache_read_tokens": number;
+  "claude.usage.cache_creation_tokens": number;
+  duration_ms?: number | null;
+  schema_title?: string | null;
+  request_file?: string | null;
+  raw_file?: string | null;
+}
+
+// LlmCallsView (grouping.py) — the grouper's call index, or an honest account
+// of its absence via `missing`.
+export interface LlmCallsView {
+  run_id: string;
+  directory: string;
+  index_path: string;
+  present: boolean;
+  schema_version?: number | null;
+  grouping_run_id?: string | null;
+  produced_group_ids: string[];
+  produced_task_ids: string[];
+  calls: LlmCallRecord[];
+  missing: MissingArtifact[];
+}
+
+// LlmCallDetail (grouping.py) — one attempt, with the prompt it sent and the
+// raw text it got back.
+export interface LlmCallDetail {
+  seq: number;
+  call: LlmCallRecord;
+  request_path?: string | null;
+  request_text?: string | null;
+  raw_path?: string | null;
+  raw_text?: string | null;
+  missing: MissingArtifact[];
+}

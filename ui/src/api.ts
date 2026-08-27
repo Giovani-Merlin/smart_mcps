@@ -15,6 +15,8 @@
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/diff
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/generations/{gen}/diff
+//   GET  /api/projects/{project}/runs/{run}/grouping/llm
+//   GET  /api/projects/{project}/runs/{run}/grouping/llm/calls/{seq}
 //   GET  /api/projects/{project}/runs/{run}/paths
 //   GET  /api/projects/{project}/plans
 //   GET  /api/projects/{project}/groupings
@@ -35,6 +37,8 @@ import type {
   GroupingSummary,
   GroupingView,
   JobInfo,
+  LlmCallDetail,
+  LlmCallsView,
   PlanDoc,
   Project,
   ResumeJobBody,
@@ -148,6 +152,20 @@ export function getTranscript(
  * the response says which artifact was missing and where it was looked for. */
 export function getGrouping(project: string, run: string): Promise<GroupingView> {
   return request<GroupingView>(`${runPath(project, run)}/grouping`);
+}
+
+/** The grouper's own LLM call index — mapper and speccer, grouping-time and
+ * rewrite alike. 200 with `present: false` when there is none: a run made
+ * before the call recorder shipped, or a task map read verbatim with no model
+ * call at all. */
+export function getLlmCalls(project: string, run: string): Promise<LlmCallsView> {
+  return request<LlmCallsView>(`${runPath(project, run)}/grouping/llm`);
+}
+
+/** One recorded call in full — the prompt it sent and the raw text it got
+ * back — for the session viewer to render. */
+export function getLlmCall(project: string, run: string, seq: number): Promise<LlmCallDetail> {
+  return request<LlmCallDetail>(`${runPath(project, run)}/grouping/llm/calls/${seq}`);
 }
 
 /** The run's on-disk paths, display-only. Every file-backed panel header takes

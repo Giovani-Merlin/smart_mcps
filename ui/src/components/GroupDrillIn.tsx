@@ -96,7 +96,7 @@ function firstLine(text: string): string {
 /** One normalized transcript moment. Each renderable kind — assistant text,
  * thinking, tool call (name + input), tool result — gets a distinct visual
  * treatment so a human can follow what the agent actually did. */
-function TranscriptEntryView({ event }: { event: TranscriptEvent }) {
+export function TranscriptEntryView({ event }: { event: TranscriptEvent }) {
   if (event.kind === "thinking" || event.kind === "redacted_thinking") {
     return <ThinkingCard event={event} />;
   }
