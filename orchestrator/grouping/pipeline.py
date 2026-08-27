@@ -33,13 +33,14 @@ from orchestrator.grouping.graphing import (
     EdgeProvenance,
     EdgeWeights,
     TaskGraph,
+    await_index_quiescence,
     build_task_graph,
-    index_fingerprint,
     source_bytes_of,
 )
 from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, claude_json_runner
 from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
+    LOUVAIN_SEED,
     DefaultPartitionStrategy,
     Partition,
     WorkFn,
@@ -397,6 +398,12 @@ def compute_partition(
     _emit(progress, "stage: mapper")
     plan_text = plan_path.read_text()
     client.sync()
+    _emit(progress, "stage: quiescence")
+    # Plan U6: `sync` returning is not proof the index has stopped moving — the
+    # fingerprint that motivated this handshake churned three times in fifteen
+    # minutes at one commit while `sync` reported "already up to date". Partition
+    # against the settled value, not whatever the very next read happens to be.
+    quiesced_fingerprint = await_index_quiescence(client, recorder=recorder)
     codegraph_files = client.files_overview()
     # Deterministic fast path: a plan carrying a task map already answered what
     # the mapper LLM would have to guess. Malformed maps fail hard (silent
@@ -515,7 +522,9 @@ def compute_partition(
             plan_content_sha256=hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),
             repo_commit_sha=repo_commit_sha,
             worktree_dirty=worktree_dirty,
-            index_fingerprint=index_fingerprint(client.status()),
+            index_fingerprint=quiesced_fingerprint,
+            louvain_seed=LOUVAIN_SEED,
+            louvain_resolution=config.partition.louvain_resolution,
         )
 
     # Same inert-observation contract as the trace recorder, and the same single
