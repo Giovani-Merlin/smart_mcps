@@ -564,6 +564,13 @@ def _cmd_group(
     # --no-spec included, because --no-spec is the debugging mode.
     provenance_recorder = EdgeProvenanceRecorder()
 
+    def _progress(message: str) -> None:
+        # Unbuffered by construction: `flush=True` forces the write out to the
+        # job log file immediately, regardless of stdout's default buffering
+        # mode when it is not a tty (plan U24) — this is the whole fix for a
+        # grouping job that otherwise shows nothing for three and a half minutes.
+        print(f"progress: {message}", flush=True)
+
     if getattr(args, "no_spec", False):
         try:
             outcome = compute_partition(
@@ -576,6 +583,7 @@ def _cmd_group(
                 recorder=recorder,
                 llm_recorder=llm_recorder,
                 provenance_recorder=provenance_recorder,
+                progress=_progress,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
             _write_failure_trace(out_dir, recorder, exc, trace_path)
@@ -599,6 +607,7 @@ def _cmd_group(
             recorder=recorder,
             llm_recorder=llm_recorder,
             provenance_recorder=provenance_recorder,
+            progress=_progress,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
         _write_failure_trace(out_dir, recorder, exc, trace_path)
