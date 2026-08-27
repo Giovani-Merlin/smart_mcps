@@ -401,6 +401,13 @@ each **already-decided** group. It never moves tasks or invents groups; validati
 (`speccer.py:79`) rejects an over-length summary and requires output covering
 exactly the given group ids.
 
+The mapper and speccer both run under `[session] speccer_model`, which defaults to
+Opus (`claude-opus-5`) — independent of the worker model coder/reviewer forks get
+(default Sonnet) — because a spec rewrite is one call per grouping and is the
+place the strongest model earns its cost. `--model-speccer` and
+`[session] speccer_model` in config override it; see
+[configuration reference → `[session]`](orchestrator-grouping-config.md).
+
 Both LLM stages go through one seam,
 [`call_llm_json()`](../orchestrator/grouping/llm.py) (`llm.py:67`) — the only place
 grouping talks to a model, which is why tests inject a stub runner and spend zero

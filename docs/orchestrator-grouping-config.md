@@ -307,18 +307,61 @@ merge, and the conflict→rewrite path remains the net that catches them.
 
 ______________________________________________________________________
 
+## `[preflight]` — the mechanical, LLM-free merge gate
+
+[`PreflightConfig`](../orchestrator/config.py). Runs before every merge attempt:
+worktree clean, then the resolved check command exits zero. A failure is
+classified into one of `env` / `timeout` / `regression` before it is ever routed
+(see [How grouping works → merge gate triage](orchestrator-grouping.md) and the
+reference HTML's Preflight & auth recovery section) — only `regression`, and only
+when the failing tests are not entirely pre-existing per the launch-branch
+baseline, actually spends a rewrite.
+
+| Field             | Default | Effect                                                                                                                 | CLI |
+| ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- | --- |
+| `check_command`   | `null`  | overrides auto-detection (`uv run pytest` / `npm test`); `null` and no detected markers means no check runs at all     | —   |
+| `check_timeout_s` | `900.0` | a hung check command holds the merge lock for every other group — always a `timeout`-kind failure, never a silent pass | —   |
+
+## `[auth]` — the auth-refresh ladder's pause rung
+
+[`AuthConfig`](../orchestrator/config.py). Rungs (a) and (b) of the ladder — read
+`expiresAt`, refresh in place — run once, synchronously, the moment a 401 is
+seen and need no timing config. This section covers only rung (c), what happens
+when both fail.
+
+| Field              | Default | Effect                                                                   | CLI |
+| ------------------ | ------- | ------------------------------------------------------------------------ | --- |
+| `enabled`          | `true`  | whether the ladder is wired in at all                                    | —   |
+| `credentials_path` | `null`  | overrides `~/.claude/.credentials.json` (chiefly for tests)              | —   |
+| `poll_s`           | `60.0`  | how often the armed pause re-probes `AuthLadder.recover()`               | —   |
+| `max_wait_s`       | `0.0`   | total time to wait before giving up; `0` = wait indefinitely             | —   |
+| `max_attempts`     | `6`     | retries of the same call across pauses before the pause is unrecoverable | —   |
+
+`[auth]` is deliberately its own config model rather than reusing
+`[usage_limit]` wholesale — an auth pause has no reset-time prose to parse (there
+is never a deadline, only "healthy again"), so a skew field would be dead here.
+
+______________________________________________________________________
+
 ## `[session]` — how the `claude` CLI is shelled
 
 [`SessionConfig`](../orchestrator/config.py), `config.py:137`.
 
-| Field                 | Default      | Effect                                                                                                                                                             |
-| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `claude_bin`          | `"claude"`   | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                            |
-| `model`               | `null`       | model for worker sessions; `null` = CLI default                                                                                                                    |
-| `allowed_tools`       | `[]`         | extra `--allowedTools` entries                                                                                                                                     |
-| `transcript_root`     | `null`       | override `~/.claude/projects` (tests)                                                                                                                              |
-| `max_thinking_tokens` | `4000`       | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning |
-| `thinking`            | `"adaptive"` | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                      |
+| Field                 | Default             | CLI               | Effect                                                                                                                                                             |
+| --------------------- | ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude_bin`          | `"claude"`          | —                 | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                            |
+| `model`               | `"claude-sonnet-5"` | `--model-worker`  | model for coder/reviewer worker forks — the bulk of a run's spend, and mostly mechanical work                                                                      |
+| `base_model`          | `"claude-opus-5"`   | `--model-base`    | model for the run's own base session, which every worker fork inherits context from but does not share a model with                                                |
+| `speccer_model`       | `"claude-opus-5"`   | `--model-speccer` | model for the mapper/speccer's `claude -p` calls — one call per grouping (or per spec rewrite), where the strongest model earns its cost                           |
+| `allowed_tools`       | `[]`                | —                 | extra `--allowedTools` entries                                                                                                                                     |
+| `transcript_root`     | `null`              | —                 | override `~/.claude/projects` (tests)                                                                                                                              |
+| `max_thinking_tokens` | `4000`              | —                 | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning |
+| `thinking`            | `"adaptive"`        | —                 | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                      |
+
+The three model fields are independently settable (plan U17): workers default to
+the cheaper Sonnet model, while the base session and the speccer default to Opus.
+CLI flags win over the config file, which wins over these defaults; the run
+banner prints all three resolved model ids.
 
 `[session] timeout_s` is **removed**. A config still carrying it gets an explicit
 stderr warning (`config.py:220`) instead of being silently dropped.
@@ -395,7 +438,9 @@ ______________________________________________________________________
 ## Field inventory
 
 Every field in `orchestrator/config.py`, for cross-checking that this reference
-stays complete. 8 models, 52 fields.
+stays complete. 11 models, 65 fields — `usage_limit` is a real config section
+([`UsageLimitConfig`](../orchestrator/config.py)) not yet given its own `##`
+section above; listed here so the inventory stays complete regardless.
 
 | Section        | Fields                                                                                                                                                                                                                                                            |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -405,5 +450,8 @@ stays complete. 8 models, 52 fields.
 | `difficulty`   | `weight_files_touched`, `weight_max_fan`, `weight_hub_touches`, `weight_cross_group_edges`, `weight_verification_items`, `scale_files_touched`, `scale_max_fan`, `scale_hub_touches`, `scale_cross_group_edges`, `scale_verification_items`, `d_review`, `d_hard` |
 | `breaker`      | `context_token_limit`, `max_rounds_per_generation`, `max_generations`                                                                                                                                                                                             |
 | `execution`    | `concurrency`, `sequential`, `permission_mode`, `max_rewrites`, `max_conflict_resolve_attempts`                                                                                                                                                                   |
-| `session`      | `claude_bin`, `model`, `allowed_tools`, `transcript_root`, `max_thinking_tokens`, `thinking`                                                                                                                                                                      |
+| `preflight`    | `check_command`, `check_timeout_s`                                                                                                                                                                                                                                |
+| `usage_limit`  | `auto_resume`, `max_wait_s`, `max_attempts`, `skew_s`                                                                                                                                                                                                             |
+| `auth`         | `enabled`, `credentials_path`, `poll_s`, `max_wait_s`, `max_attempts`                                                                                                                                                                                             |
+| `session`      | `claude_bin`, `model`, `base_model`, `speccer_model`, `allowed_tools`, `transcript_root`, `max_thinking_tokens`, `thinking`                                                                                                                                       |
 | `escalation`   | `enabled`, `intensity`, `source`, `timeout_s`, `on_timeout`, `poll_interval_s`                                                                                                                                                                                    |
