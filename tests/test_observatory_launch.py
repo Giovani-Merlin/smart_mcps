@@ -157,6 +157,9 @@ class TestBuildArgv:
             escalation_source="workers_via_orchestrator",
             escalation_timeout=1.0,
             auto_resume=False,
+            model_worker="claude-sonnet-5",
+            model_base="claude-opus-5",
+            model_speccer="claude-opus-5",
         )
         emitted = " ".join(every.to_argv())
         for field in ExecutionOptions.model_fields:
@@ -255,6 +258,37 @@ class TestGroupings:
 
     def test_no_groupings_is_an_empty_list(self, client):
         assert client.get("/api/projects/proj/groupings").json() == []
+
+
+class TestResolvedOptions:
+    """Plan U18/F14: what an unspecified execution option actually resolves to,
+    exactly as the CLI would with no flags at all."""
+
+    def test_defaults_with_no_config_file(self, client):
+        body = client.get("/api/projects/proj/resolved-options").json()
+        assert body == {
+            "concurrency": 1,
+            "permission_mode": "acceptEdits",
+            "escalation_intensity": "autonomous",
+            "escalation_source": "workers_via_orchestrator",
+            "escalation_timeout": None,
+            "auto_resume": True,
+            "model_worker": "claude-sonnet-5",
+            "model_base": "claude-opus-5",
+            "model_speccer": "claude-opus-5",
+        }
+
+    def test_a_config_file_overrides_the_library_defaults(self, client, repo):
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.toml").write_text(
+            "[execution]\nconcurrency = 4\n\n[session]\nmodel = 'claude-opus-5'\n"
+        )
+        body = client.get("/api/projects/proj/resolved-options").json()
+        assert body["concurrency"] == 4
+        assert body["model_worker"] == "claude-opus-5"
+        # Untouched fields still resolve to the library default.
+        assert body["model_base"] == "claude-opus-5"
 
 
 class TestGroupingPreview:

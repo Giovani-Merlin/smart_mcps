@@ -41,6 +41,7 @@ import type {
   LlmCallsView,
   PlanDoc,
   Project,
+  ResolvedOptions,
   ResumeJobBody,
   RunInfo,
   RunJobBody,
@@ -225,6 +226,14 @@ export function listPlans(project: string): Promise<PlanDoc[]> {
 
 export function listGroupings(project: string): Promise<GroupingSummary[]> {
   return request<GroupingSummary[]>(`${projectPath(project)}/groupings`);
+}
+
+/** Every execution option's effective default right now — the project's
+ * config.toml layered over the library defaults, exactly as the CLI would
+ * resolve an omitted flag. What the launch form shows beside a field left
+ * unspecified, and what the run header shows for a running run (plan U18). */
+export function getResolvedOptions(project: string): Promise<ResolvedOptions> {
+  return request<ResolvedOptions>(`${projectPath(project)}/resolved-options`);
 }
 
 /** A named grouping's own groups.json, read-only — what the launch page shows
