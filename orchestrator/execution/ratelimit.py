@@ -415,7 +415,15 @@ class UsageLimitGate:
     def _until_phrase(self, state: UsageLimitState) -> str:
         if state.reset_at is None:
             return f"and re-checking every {_humanize(int(self.config.fallback_poll_s))}"
-        return f"until {state.reset_at.isoformat(timespec='minutes')}"
+        # F22: the log line's own timestamp prefix (`log_event`) is stamped in
+        # the operator's local zone, so the quoted reset instant is converted
+        # to that same zone here — `reset_at` may otherwise carry whatever zone
+        # the provider named (`parse_reset_at`'s `_zone_of`), which would print
+        # a second, different offset on the same line. The provider's verbatim
+        # wording (``detail``) is untouched — this only re-zones our own
+        # restatement of the deadline, never the quoted prose itself.
+        local_reset_at = state.reset_at.astimezone()
+        return f"until {local_reset_at.isoformat(timespec='minutes')}"
 
     def phase_text(self) -> str | None:
         """What the heartbeat should say while this gate is armed, or ``None``."""
@@ -424,7 +432,8 @@ class UsageLimitGate:
             return None
         if state.reset_at is None:
             return "paused: usage limit (no reset time given; polling)"
-        return f"paused: usage limit until {state.reset_at.isoformat(timespec='minutes')}"
+        local_reset_at = state.reset_at.astimezone()
+        return f"paused: usage limit until {local_reset_at.isoformat(timespec='minutes')}"
 
     # --------------------------------------------------------------------- sinks
 

@@ -508,6 +508,14 @@ def _load_config(
         return None
 
 
+def _config_banner_source(config_path: Path) -> str:
+    """F11: naming a config file that was never read misleads the reader into
+    thinking one exists — only name the path when `load_config` actually
+    found and parsed a file there (mirrors `load_config`'s own is_file check).
+    """
+    return str(config_path) if config_path.is_file() else "defaults (no config file)"
+
+
 # --------------------------------------------------------------------- group
 
 
@@ -1012,7 +1020,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # to tell which file produced them.
     config_path = (args.config or repo_root / ".orchestrator" / "config.toml").resolve()
     print(
-        f"config: {config_path} (token_budget={config.estimator.token_budget}, "
+        f"config: {_config_banner_source(config_path)} (token_budget={config.estimator.token_budget}, "
         f"context_token_limit={config.breaker.context_token_limit}, "
         f"permission_mode={config.execution.permission_mode})"
     )
