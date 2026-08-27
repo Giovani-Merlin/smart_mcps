@@ -48,6 +48,72 @@ def _verification_lines(items: list[VerificationItem]) -> str:
     )
 
 
+def render_coder_nudge_contract(error: str, verification_ids: Sequence[str]) -> str:
+    """Nudge 1 (plan U16): the verbatim contract plus the ids the report must
+    carry plus the parse error — everything needed to recover, in one message,
+    since the worker cannot re-read the 200 KB of context that preceded it."""
+    ids = "\n".join(f"- {vid}" for vid in verification_ids) or "- none specified"
+    return (
+        f"Your previous message did not end with a valid report block ({error}).\n\n"
+        "Here is the report contract again, verbatim:\n\n"
+        f"{load_template('report_contract')}\n"
+        'Your "verification_results" must include one entry for each of these '
+        f"verification item ids:\n{ids}\n"
+    )
+
+
+def render_coder_nudge_skeleton(verification_ids: Sequence[str]) -> str:
+    """Nudge 2 (plan U16): strips the task away and hands back a filled-in
+    skeleton — only the values need completing, not the schema."""
+    entries = (
+        ",\n".join(
+            f'    {{"item_id": "{vid}", "status": "pass", "notes": ""}}' for vid in verification_ids
+        )
+        or '    {"item_id": "<verification item id>", "status": "pass", "notes": ""}'
+    )
+    return (
+        "Reply now with exactly this block, with the actual values filled in — "
+        "nothing before or after it:\n\n"
+        '<run-report status="completed">\n'
+        "{\n"
+        '  "status": "completed",\n'
+        '  "summary": "...",\n'
+        '  "verification_results": [\n'
+        f"{entries}\n"
+        "  ],\n"
+        '  "surprises": []\n'
+        "}\n"
+        "</run-report>\n\n"
+        'The "status" attribute is one of completed | blocked | failed | '
+        'needs_input | permission_denied and must match the JSON body\'s "status" field.'
+    )
+
+
+def render_reviewer_nudge_contract(error: str) -> str:
+    """Nudge 1 for a reviewer round: the verbatim verdict contract and the
+    parse error."""
+    return (
+        f"Your previous message did not end with a valid report block ({error}).\n\n"
+        "Reply now with EXACTLY ONE verdict block, after any prose:\n\n"
+        '<run-report status="approved">\n'
+        '{"status": "approved", "required_changes": [], "surprises": [], "notes": "..."}\n'
+        "</run-report>\n\n"
+        'The "status" attribute is one of approved | changes_required | too_hard | '
+        'structural and must match the JSON body\'s "status" field.'
+    )
+
+
+def render_reviewer_nudge_skeleton() -> str:
+    """Nudge 2 for a reviewer round: a filled-in skeleton to complete."""
+    return (
+        "Reply now with exactly this block, with the actual values filled in — "
+        "nothing before or after it:\n\n"
+        '<run-report status="approved">\n'
+        '{"status": "approved", "required_changes": [], "surprises": [], "notes": "..."}\n'
+        "</run-report>"
+    )
+
+
 def render_coder_prompt(run_id: str, group: Group) -> str:
     return Template(load_template("coder")).substitute(
         identity_block=render_identity(run_id, group),

@@ -11,17 +11,22 @@ from __future__ import annotations
 from pathlib import Path
 
 from orchestrator.grouping.plan_reader import strip_task_map
+from orchestrator.prompts import load_template
 
 CONVENTION_FILES = ("CLAUDE.md", "AGENTS.md")
 
 
 def compile_base_context(repo_root: Path, plan_path: Path, codegraph_summary: str) -> str:
-    """Repo conventions + codegraph architecture summary + the plan document.
+    """Worker ground rules + repo conventions + codegraph architecture summary +
+    the plan document.
 
-    The task-map block is grouper parser input, not worker context (R27): it is
-    stripped from the plan text before embedding, never from the plan file itself.
+    The ground rules come first (plan U15) so every forked worker session reads
+    its behavioural invariants once, from the cached prefix, before the
+    plan-specific and repo-specific material that follows. The task-map block is
+    grouper parser input, not worker context (R27): it is stripped from the plan
+    text before embedding, never from the plan file itself.
     """
-    sections = ["# Base context\n"]
+    sections = ["# Base context\n", load_template("worker_ground_rules").strip() + "\n"]
 
     for name in CONVENTION_FILES:
         path = repo_root / name
