@@ -25,6 +25,7 @@ import {
   startRunJob,
 } from "../api";
 import ExecutionOptionsForm from "../components/launch/ExecutionOptions";
+import GroupingPreview from "../components/launch/GroupingPreview";
 import JobLog from "../components/launch/JobLog";
 import type {
   ExecutionOptions,
@@ -305,6 +306,7 @@ function RunCard({
           ))}
         </select>
       </label>
+      <GroupingPreview project={project} name={grouping} />
       <label htmlFor="launch-run-id">
         Run id
         <input
