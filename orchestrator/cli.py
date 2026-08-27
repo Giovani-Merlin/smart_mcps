@@ -1692,7 +1692,13 @@ def _resolve_deps(
                 ),
                 cwd=worktree,
             )
-            report, _ = nudge_until_report(runner, result, CoderReport, cwd=worktree)
+            report, _ = nudge_until_report(
+                runner,
+                result,
+                CoderReport,
+                cwd=worktree,
+                verification_ids=[item.id for item in group.verification],
+            )
         except (SessionError, ReportError) as inner_exc:
             log_event(
                 paths,

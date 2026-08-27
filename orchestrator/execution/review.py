@@ -464,9 +464,15 @@ class _GroupExecution:
         # announces its own round before `start_fork` too, so nothing further is
         # needed here in either case.
 
+        verification_ids = [item.id for item in self.group.verification]
         while True:
             report, result = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
+                nudge_until_report,
+                self.deps.runner,
+                result,
+                CoderReport,
+                cwd=self.workspace,
+                verification_ids=verification_ids,
             )
             self._persist_coder_usage()
 
@@ -979,7 +985,12 @@ class _GroupExecution:
                 on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             report, _ = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
+                nudge_until_report,
+                self.deps.runner,
+                result,
+                CoderReport,
+                cwd=self.workspace,
+                verification_ids=[item.id for item in self.group.verification],
             )
         except SessionError as inner_exc:
             self._log(f"group {self.gid}: conflict resolve attempt failed: {inner_exc}")

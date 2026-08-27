@@ -41,10 +41,17 @@ from orchestrator.execution.confinement import (
     worker_cache_dirs,
     worker_cache_env,
 )
+from orchestrator.execution.prompting import (
+    render_coder_nudge_contract,
+    render_coder_nudge_skeleton,
+    render_reviewer_nudge_contract,
+    render_reviewer_nudge_skeleton,
+)
 from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
+from orchestrator.model import CoderReport
 
 REQUIRED_CLI_FLAGS = (
     "--print",
@@ -58,12 +65,6 @@ REQUIRED_CLI_FLAGS = (
 )
 
 DEFAULT_MAX_NUDGES = 2
-
-_NUDGE_PROMPT = (
-    "Your previous message did not end with a valid report block ({error}). "
-    'Reply now with ONLY a <run-report status="..."> block whose body is valid JSON '
-    "for the expected report schema — no other text."
-)
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -827,6 +828,24 @@ def parse_report(text: str, model_cls: type[M]) -> M:
         raise ReportError(f"report body failed validation: {exc}") from exc
 
 
+def _nudge_prompt(
+    attempt: int, exc: ReportError, model_cls: type, verification_ids: Sequence[str]
+) -> str:
+    """Nudge escalation (plan U16): nudge 1 quotes the contract verbatim plus the
+    parse error and the required ids; nudge 2 strips the task away and hands
+    back a filled-in skeleton so only the values need completing. All the
+    recovery cost sits on this bad path — a round that reports cleanly the
+    first time pays none of it."""
+    is_coder = model_cls is CoderReport
+    if attempt == 0:
+        if is_coder:
+            return render_coder_nudge_contract(str(exc), verification_ids)
+        return render_reviewer_nudge_contract(str(exc))
+    if is_coder:
+        return render_coder_nudge_skeleton(verification_ids)
+    return render_reviewer_nudge_skeleton()
+
+
 def nudge_until_report(
     runner: SessionRunner,
     first: RoundResult,
@@ -834,6 +853,7 @@ def nudge_until_report(
     *,
     cwd: Path,
     max_nudges: int = DEFAULT_MAX_NUDGES,
+    verification_ids: Sequence[str] = (),
 ) -> tuple[M, RoundResult]:
     """Parse the round's report, re-nudging the session a bounded number of times.
 
@@ -849,7 +869,7 @@ def nudge_until_report(
                 raise ReportError(f"round failed after {max_nudges} re-nudges: {exc}") from exc
             result = runner.resume(
                 session_id=result.session_id,
-                prompt=_NUDGE_PROMPT.format(error=exc),
+                prompt=_nudge_prompt(attempt, exc, model_cls, verification_ids),
                 cwd=cwd,
             )
     raise AssertionError("unreachable")
