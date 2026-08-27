@@ -282,6 +282,24 @@ def main(
     finish_cmd.add_argument("run_id", help="the run to finish")
     finish_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    export_cmd = subparsers.add_parser(
+        "export",
+        help="write a run's framework-agnostic ingest.json bundle for external analyzers",
+    )
+    export_cmd.add_argument("run_id", help="the run to export")
+    export_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+    export_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output path (default: <run_dir>/ingest.json)",
+    )
+    export_cmd.add_argument(
+        "--project",
+        default=None,
+        help="project label recorded in the bundle (default: the repo directory name)",
+    )
+
     calibrate_cmd = subparsers.add_parser(
         "calibrate", help="compare a finished run's token estimates against what it actually cost"
     )
@@ -322,6 +340,8 @@ def main(
         return _cmd_retry(args)
     if args.command == "finish":
         return _cmd_finish(args)
+    if args.command == "export":
+        return _cmd_export(args)
     if args.command == "calibrate":
         return _cmd_calibrate(args)
     if args.command == "ui":
@@ -1742,6 +1762,31 @@ def _cmd_finish(args: argparse.Namespace) -> int:
     except FinishError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+# -------------------------------------------------------------------- export
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """Write the run's ``ingest.json`` contract for external analyzers (Infinity
+    Skills first). Pure read of the run directory → one atomic write."""
+    # Local import: export pulls the Observatory's snapshot composer (fastapi)
+    # that no other CLI path needs.
+    from orchestrator.execution.export import ExportError, export_run
+
+    repo_root = args.repo.resolve()
+    try:
+        destination = export_run(
+            repo_root,
+            args.run_id,
+            project=args.project,
+            out_path=args.out,
+        )
+    except ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"wrote {destination}")
     return 0
 
 
