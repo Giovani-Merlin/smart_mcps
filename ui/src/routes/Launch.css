@@ -52,6 +52,10 @@
   color: var(--fg-faint);
 }
 
+.launch__hint--warning {
+  color: var(--danger-fg);
+}
+
 .launch__card button {
   font: inherit;
   align-self: flex-start;

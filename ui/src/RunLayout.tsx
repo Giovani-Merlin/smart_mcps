@@ -79,7 +79,10 @@ export function RunLayout() {
         {/* Offered only when there is something to resume. A Resume button on a
           * run that is running invites the 409 the backend exists to refuse. */}
         {hasInterrupted && (
-          <NavLink className="launch__entry" to={`/p/${encodeURIComponent(project)}/launch`}>
+          <NavLink
+            className="launch__entry"
+            to={`/p/${encodeURIComponent(project)}/launch?resume=${encodeURIComponent(runId)}`}
+          >
             Resume this run
           </NavLink>
         )}
