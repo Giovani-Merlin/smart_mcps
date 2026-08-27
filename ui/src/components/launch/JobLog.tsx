@@ -95,6 +95,15 @@ export function JobLog({ project, job }: JobLogProps) {
           {stalled ? "stream interrupted — reconnecting…" : running ? "running" : "exited"}
         </span>
       </div>
+      {job.options && Object.keys(job.options).length > 0 && (
+        // Echoes the backend's own record of what this job resolved to — the
+        // only place a group job's granularity/token-budget/auto-resume
+        // choice is visible again after the form that set it is gone.
+        <details className="event-log__options">
+          <summary>Resolved options</summary>
+          <pre>{JSON.stringify(job.options, null, 2)}</pre>
+        </details>
+      )}
       <div className="event-log__pane" ref={paneRef}>
         {lines.length === 0 ? (
           <p className="event-log__empty">Waiting for output…</p>
