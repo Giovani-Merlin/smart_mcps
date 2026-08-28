@@ -42,6 +42,11 @@ GRANULARITY_LEVELS: tuple[Granularity, ...] = ("independent", "balanced", "monol
 
 DEFAULT_HUB_THRESHOLD = 0.4  # CoCoder's live ROLE_THRESHOLD (partition_into_groups.py:37)
 LOUVAIN_SEED = 42
+# Plan U12 (R19b): mirrors PartitionConfig.target_fill_ratio's default — the two
+# are kept in sync deliberately (config.py carries the justification) since this
+# module must not import config.py (kept pure, see module docstring) and tests
+# call merge_small_groups/DefaultPartitionStrategy directly without a config object.
+DEFAULT_TARGET_FILL_RATIO = 0.75
 
 _Node = TypeVar("_Node")
 
@@ -340,6 +345,7 @@ class DefaultPartitionStrategy:
     hub_threshold: float = DEFAULT_HUB_THRESHOLD
     louvain_resolution: float = 1.0
     granularity: Granularity = "independent"
+    target_fill_ratio: float = DEFAULT_TARGET_FILL_RATIO
     recorder: PartitionRecorder | None = None
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
@@ -391,6 +397,7 @@ class DefaultPartitionStrategy:
             self.budget_cap,
             recorder=self.recorder,
             granularity=self.granularity,
+            target_fill_ratio=self.target_fill_ratio,
         )
         stages.append(("merge", dict(partition)))
         self._record_stage("merge", partition)
@@ -846,6 +853,7 @@ def merge_small_groups(
     budget_cap: float | None,
     recorder: PartitionRecorder | None = None,
     granularity: Granularity = "independent",
+    target_fill_ratio: float = DEFAULT_TARGET_FILL_RATIO,
 ) -> Partition:
     """CoCoder ``merge_small_groups`` (post_processing.py:295-401), always on.
 
@@ -971,11 +979,31 @@ def merge_small_groups(
                 if {partition[pair[0]], partition[pair[1]]} == {source, target}
             )
             source_wave = max(node_waves[n] for n in groups[source])
+            # Plan U12 (R19b): distance of the *resulting* group's work from a
+            # target-fill band, ranked above merged_work. merged_work alone
+            # (the old 5th-place tiebreak) is monotonic — it always prefers
+            # whichever candidate produces the smallest number, full stop — so
+            # once some group is the cheapest available sink it keeps winning
+            # every round, one small increment at a time, right up to the hard
+            # cap, while a sibling that only has a bigger (but perfectly
+            # reasonable) candidate available never gets picked at all.
+            # Distance-from-band is not monotonic: a candidate that tops a
+            # group up near the band scores well even if its merged_work is
+            # numerically larger than a rival's, and a candidate that would
+            # push a group past the band scores worse even if its merged_work
+            # is numerically smaller — so a group stops looking like the best
+            # option once it is well-filled, instead of being the greedy sink
+            # for every merge until it hits ~96% of the cap. No cap means no
+            # band to aim for, so the term is neutral (0) for every candidate.
+            fill_gap = (
+                abs(merged_work - target_fill_ratio * budget_cap) if budget_cap is not None else 0.0
+            )
             key = (
                 -source_wave,
                 candidate_makespan,
                 -removed_affinity,
                 -edge_weight,
+                fill_gap,
                 merged_work,
                 source,
                 target,

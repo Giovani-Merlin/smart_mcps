@@ -6,10 +6,12 @@ R22 strategy seam.
 """
 
 import ast
+import statistics
 from pathlib import Path
 
 import pytest
 
+from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
     GroupCycleError,
@@ -723,3 +725,125 @@ class _RecordingRecorder:
 
     def record_repair(self, *a, **k):
         pass
+
+
+class TestFillPenalty:
+    """Plan U12 (R19b): the merge key's fill/balance term.
+
+    ``target_fill_ratio=0.0`` reproduces the pre-U12 key byte-for-byte: the
+    new term becomes ``abs(merged_work - 0.0) == merged_work``, sitting right
+    next to the existing ``merged_work`` field with an identical value, so it
+    can never change the total order — that is how these tests get an "old
+    key" oracle without duplicating the merge loop.
+    """
+
+    def _pathology_graph(self):
+        """Two hubs, each independently a valid dependency for a pool of
+        eight small (0.3) and one large (2.0) shared task — modelling a
+        greedy first-fit pathology: whichever hub the loop happens to favour
+        first can keep absorbing the cheapest remaining task every round
+        (old key: plain ``merged_work`` ascending always prefers the
+        numerically smallest candidate), landing two same-sized ~2.0 lumps
+        while its sibling hub never receives a single merge. ``granularity=
+        "balanced"`` is required for more than one small task to ever join
+        the same hub (the default ``independent`` guard treats same-parent
+        siblings as parallel and refuses to merge more than one in)."""
+        nodes = ["hub_a", "hub_b"] + [f"s{i}" for i in range(1, 9)] + ["big"]
+        deps = {}
+        for n in [f"s{i}" for i in range(1, 9)] + ["big"]:
+            deps[("hub_a", n)] = 1.0
+            deps[("hub_b", n)] = 1.0
+        work = {"hub_a": 0.2, "hub_b": 0.2, "big": 2.0}
+        work.update({f"s{i}": 0.3 for i in range(1, 9)})
+        g = graph(nodes, dependencies=deps)
+        return g, work
+
+    def test_fill_term_lowers_group_size_variance_without_breaking_invariants(self):
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        cap = 2.8
+
+        def sizes_of(merged):
+            groups: dict[int, list[str]] = {}
+            for node, gid in merged.items():
+                groups.setdefault(gid, []).append(node)
+            return groups, sorted(sum(work[n] for n in members) for members in groups.values())
+
+        old = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=cap,
+            granularity="balanced",
+            target_fill_ratio=0.0,
+        )
+        new = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=cap,
+            granularity="balanced",
+            target_fill_ratio=0.75,
+        )
+        old_groups, old_sizes = sizes_of(old)
+        new_groups, new_sizes = sizes_of(new)
+
+        # Old key: greedy-cheapest-first lets hub_a's group absorb tasks one
+        # at a time until it happens to land right next to "big" in size —
+        # two ~2.0 lumps (one a single "big" task, one a pile of "small"
+        # ones) instead of one well-filled group and evenly-sized stragglers.
+        assert old_sizes == pytest.approx([0.2, 0.3, 0.3, 2.0, 2.0])
+        assert new_sizes == pytest.approx([0.2, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 2.2])
+
+        assert statistics.pvariance(new_sizes) < statistics.pvariance(old_sizes)
+        assert all(size <= cap for size in new_sizes)
+        assert build_group_dag(g, new) is not None  # raises GroupCycleError if not acyclic
+
+    def test_fill_term_is_deterministic_across_runs(self):
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        results = {
+            tuple(
+                sorted(
+                    merge_small_groups(
+                        g,
+                        dict(partition),
+                        lambda n: work[n],
+                        budget_cap=2.8,
+                        granularity="balanced",
+                        target_fill_ratio=0.75,
+                    ).items()
+                )
+            )
+            for _ in range(5)
+        }
+        assert len(results) == 1
+
+    def test_no_cap_leaves_the_term_neutral(self):
+        """No budget cap means no band to aim for (docs in partition.py): the
+        term must not change anything when the cap is absent."""
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        old = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=None,
+            granularity="balanced",
+            target_fill_ratio=0.0,
+        )
+        new = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=None,
+            granularity="balanced",
+            target_fill_ratio=0.75,
+        )
+        assert old == new
+
+    def test_target_fill_ratio_is_configurable(self):
+        assert OrchestratorConfig().partition.target_fill_ratio == pytest.approx(0.75)
+        assert OrchestratorConfig.model_validate(
+            {"partition": {"target_fill_ratio": 0.5}}
+        ).partition.target_fill_ratio == pytest.approx(0.5)

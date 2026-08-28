@@ -193,6 +193,7 @@ def build_advisory_report(
             hub_threshold=config.partition.hub_threshold,
             louvain_resolution=config.partition.louvain_resolution,
             granularity=level,
+            target_fill_ratio=config.partition.target_fill_ratio,
         )
         partition = strategy.partition(graph)
         dag = build_group_dag(graph, partition)
