@@ -78,7 +78,6 @@ class TestBuildArgv:
                 token_budget=50_000,
                 dry_run=True,
                 auto_resume=False,
-                model_speccer="claude-opus-5",
             ),
             repo=repo,
         )
@@ -88,11 +87,12 @@ class TestBuildArgv:
         assert argv[argv.index("--token-budget") + 1] == "50000"
         assert "--dry-run" in argv
         assert "--no-auto-resume" in argv
-        # F1: grouping is the moment the speccer actually runs, so its model is
-        # settable on the group job — the run form's knob only drives rewrites.
-        assert argv[argv.index("--model-speccer") + 1] == "claude-opus-5"
 
-    def test_group_speccer_model_is_omitted_when_unset(self, repo):
+    def test_group_job_body_has_no_speccer_model_field(self, repo):
+        # Plan U4/ADR 0006: the grouping-time speccer is gone, so grouping never
+        # emits --model-speccer — only the run/resume forms' rewrite-speccer
+        # knob does.
+        assert "model_speccer" not in GroupJobBody.model_fields
         argv = build_argv("group", GroupJobBody(plan="docs/plans/p.md"), repo=repo)
         assert "--model-speccer" not in argv
 
