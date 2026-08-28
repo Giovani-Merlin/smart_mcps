@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import signal
 import sys
 import tomllib
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +29,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from orchestrator.config import (
+    AuthConfig,
     EscalationConfig,
     ExecutionConfig,
     OrchestratorConfig,
@@ -34,6 +37,7 @@ from orchestrator.config import (
     UsageLimitConfig,
     load_config,
 )
+from orchestrator.execution.auth import AuthLadder
 from orchestrator.execution.confinement import (
     default_cache_root,
     landlock_abi_version,
@@ -63,11 +67,23 @@ from orchestrator.execution.manifest import (
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
 from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
-from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.preflight import (
+    PreflightFailure,
+    capture_preflight_baseline,
+    load_baseline,
+    save_baseline,
+)
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
-from orchestrator.execution.review import MergeConflict, ReviewDeps, SurpriseBoard, make_executor
+from orchestrator.execution.review import (
+    MergeConflict,
+    ReviewDeps,
+    SurpriseBoard,
+    format_residue_report,
+    make_executor,
+    surprise_residue,
+)
 from orchestrator.execution.scheduler import (
     Executor,
     GroupState,
@@ -96,6 +112,7 @@ from orchestrator.execution.worktrees import (
     group_branch,
     provision_env,
     worktree_path,
+    write_provisioning_record,
 )
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
@@ -108,9 +125,11 @@ from orchestrator.grouping.partition import GroupCycleError
 from orchestrator.grouping.pipeline import (
     SELF_MODIFICATION_FLAG,
     GrouperError,
+    IndexFingerprintMismatch,
     compute_partition,
     group_label,
     run_grouping,
+    verify_index_fingerprint,
     EdgeProvenanceRecorder,
     serialize_edge_provenance,
     serialize_grouping,
@@ -327,9 +346,9 @@ def main(
     if args.command == "group":
         return _cmd_group(args, llm_runner, client)
     if args.command == "run":
-        return _cmd_run(args, llm_runner, resume=False)
+        return _cmd_run(args, llm_runner, client, resume=False)
     if args.command == "resume":
-        return _cmd_run(args, llm_runner, resume=True)
+        return _cmd_run(args, llm_runner, client, resume=True)
     if args.command == "groupings":
         return _cmd_groupings(args)
     if args.command == "status":
@@ -402,7 +421,41 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
             "file-overlap gate"
         ),
     )
+    cmd.add_argument(
+        "--allow-index-drift",
+        action="store_true",
+        help=(
+            "when the grouping being run was built against a codegraph index that "
+            "no longer matches the current one (plan U7), warn and force a "
+            "re-partition instead of failing (default: hard error naming both "
+            "fingerprints); the re-partition is index-stable, not reproducible — "
+            "the mapper is an unseeded LLM call"
+        ),
+    )
     _add_auto_resume_arg(cmd)
+    _add_model_args(cmd)
+
+
+def _add_model_args(cmd: argparse.ArgumentParser) -> None:
+    """Plan U36: the three independently settable model knobs (U17), exposed on
+    the command line. CLI flag overrides the config file, which overrides the
+    built-in default (``DEFAULT_WORKER_MODEL``/``DEFAULT_BASE_MODEL``/
+    ``DEFAULT_SPECCER_MODEL``)."""
+    cmd.add_argument(
+        "--model-worker",
+        default=None,
+        help="model for coder/reviewer worker forks (default: config, else claude-sonnet-5)",
+    )
+    cmd.add_argument(
+        "--model-base",
+        default=None,
+        help="model for the run's own base session (default: config, else claude-opus-5)",
+    )
+    cmd.add_argument(
+        "--model-speccer",
+        default=None,
+        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+    )
 
 
 def _add_auto_resume_arg(cmd: argparse.ArgumentParser) -> None:
@@ -472,6 +525,12 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         session_updates["usage_limit"] = config.session.usage_limit.model_copy(
             update={"auto_resume": auto_resume}
         )
+    if getattr(args, "model_worker", None):
+        session_updates["model"] = args.model_worker
+    if getattr(args, "model_base", None):
+        session_updates["base_model"] = args.model_base
+    if getattr(args, "model_speccer", None):
+        session_updates["speccer_model"] = args.model_speccer
     updates: dict = {}
     if session_updates:
         updates["session"] = config.session.model_copy(update=session_updates)
@@ -524,6 +583,14 @@ def _load_config(
         return None
 
 
+def _config_banner_source(config_path: Path) -> str:
+    """F11: naming a config file that was never read misleads the reader into
+    thinking one exists — only name the path when `load_config` actually
+    found and parsed a file there (mirrors `load_config`'s own is_file check).
+    """
+    return str(config_path) if config_path.is_file() else "defaults (no config file)"
+
+
 # --------------------------------------------------------------------- group
 
 
@@ -543,6 +610,19 @@ def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
         return plan
     anchored = repo_root / plan
     return anchored if anchored.is_file() else plan
+
+
+def _speccer_json_runner(llm_runner: JsonRunner | None, config: OrchestratorConfig) -> JsonRunner:
+    """The default one-shot runner for the mapper/speccer path, bound to the
+    speccer model (plan U17).
+
+    A caller-supplied ``llm_runner`` (tests, mainly) is returned untouched —
+    only the production default gets the model bound, via ``functools.partial``
+    so ``claude_json_runner`` itself stays a plain two-arg ``JsonRunner``.
+    """
+    if llm_runner is not None:
+        return llm_runner
+    return functools.partial(claude_json_runner, model=config.session.speccer_model)
 
 
 def _cmd_group(
@@ -567,11 +647,19 @@ def _cmd_group(
     # handful of expensive calls; losing the last one to a reset that clears in
     # twenty minutes is the same waste here as mid-run.
     llm_runner = with_usage_limit_retry(
-        llm_runner or claude_json_runner, build_usage_limit_gate(config)
+        _speccer_json_runner(llm_runner, config), build_usage_limit_gate(config)
     )
     allow_unknown_symbols = getattr(args, "allow_unknown_symbols", False)
     out_dir = grouping_dir(repo_root, name)
     trace_path = out_dir / "grouping-trace.json"
+    # Plan U8: --no-spec and --dry-run never describe the partition committed to
+    # groups.json, so their trace/edge-provenance go in a preview subdirectory
+    # rather than beside (and possibly overwriting) a real grouping's sibling
+    # trace. A directory holding only a preview never gets a groups.json, so it
+    # stays invisible to describe_groupings and shows up in the launch-page
+    # preview as exactly that — a preview, never a failed grouping.
+    preview_dir = out_dir / "preview"
+    preview_trace_path = preview_dir / "grouping-trace.json"
     recorder = TraceRecorder()
     # Written on every mode including --no-spec and --dry-run: --no-spec is the
     # debugging mode, so it is exactly when the mapper's reasoning is wanted most.
@@ -579,6 +667,13 @@ def _cmd_group(
     # Same rationale as the trace and the LLM records: written on every mode,
     # --no-spec included, because --no-spec is the debugging mode.
     provenance_recorder = EdgeProvenanceRecorder()
+
+    def _progress(message: str) -> None:
+        # Unbuffered by construction: `flush=True` forces the write out to the
+        # job log file immediately, regardless of stdout's default buffering
+        # mode when it is not a tty (plan U24) — this is the whole fix for a
+        # grouping job that otherwise shows nothing for three and a half minutes.
+        print(f"progress: {message}", flush=True)
 
     if getattr(args, "no_spec", False):
         try:
@@ -592,13 +687,14 @@ def _cmd_group(
                 recorder=recorder,
                 llm_recorder=llm_recorder,
                 provenance_recorder=provenance_recorder,
+                progress=_progress,
             )
         except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-            _write_failure_trace(out_dir, recorder, exc, trace_path)
-            _write_edge_provenance(out_dir, provenance_recorder)
+            _write_failure_trace(preview_dir, recorder, exc, preview_trace_path)
+            _write_edge_provenance(preview_dir, provenance_recorder)
             return 1
-        _write_trace(out_dir, recorder)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        _write_trace(preview_dir, recorder)
+        _write_edge_provenance(preview_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(recorder.trace)
@@ -615,10 +711,15 @@ def _cmd_group(
             recorder=recorder,
             llm_recorder=llm_recorder,
             provenance_recorder=provenance_recorder,
+            progress=_progress,
         )
     except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
-        _write_failure_trace(out_dir, recorder, exc, trace_path)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        # A dry run that fails never intended to write groups.json either, so
+        # its partial trace belongs in the preview location too.
+        failure_dir = preview_dir if args.dry_run else out_dir
+        failure_trace_path = preview_trace_path if args.dry_run else trace_path
+        _write_failure_trace(failure_dir, recorder, exc, failure_trace_path)
+        _write_edge_provenance(failure_dir, provenance_recorder)
         return 1
     _warn_self_modification(result.flags)
     llm_recorder.link_outputs(
@@ -627,8 +728,8 @@ def _cmd_group(
     )
 
     if args.dry_run:
-        _write_trace(out_dir, recorder)
-        _write_edge_provenance(out_dir, provenance_recorder)
+        _write_trace(preview_dir, recorder)
+        _write_edge_provenance(preview_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _print_report(result)
         return 0
@@ -829,6 +930,86 @@ def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
     )
 
 
+def _verify_grouping_index_fingerprint(
+    *,
+    repo_root: Path,
+    groups_path: Path,
+    base_context_path: Path,
+    grouping: GroupingResult,
+    plan_path: Path,
+    config: OrchestratorConfig,
+    llm_runner: JsonRunner | None,
+    client: CodegraphClient | None,
+    allow_drift: bool,
+) -> GroupingResult:
+    """Plan U7: the `run`/`resume` reuse path for a grouping that already
+    exists on disk. A grouping directory with no `grouping-trace.json` or no
+    recorded provenance (older artifact, or `--no-spec`/`--dry-run` preview)
+    has nothing to compare against and is used as-is — silently, exactly like
+    a match.
+
+    On mismatch: hard failure unless ``allow_drift``, in which case a full
+    re-partition (`run_grouping`, the same pipeline `group` runs) replaces
+    `groups_path`/`base_context_path` and the sibling trace in place, and the
+    freshly computed result is returned for the caller to execute against —
+    never the stale one on disk.
+    """
+    trace_path = groups_path.parent / "grouping-trace.json"
+    if not trace_path.is_file():
+        return grouping
+    recorded_trace = GroupingTrace.model_validate_json(trace_path.read_text())
+    if recorded_trace.provenance is None:
+        return grouping
+
+    fp_client = client or CodegraphClient(repo_root=repo_root)
+    try:
+        _current, matched = verify_index_fingerprint(
+            recorded_trace.provenance.index_fingerprint,
+            fp_client,
+            allow_drift=allow_drift,
+            log=lambda message: print(message, file=sys.stderr),
+        )
+    except GraphBuildError as exc:
+        # The current index could not even be read (mirrors plan U2's
+        # no-baseline degrade): this is an environmental failure to verify,
+        # not evidence the index actually drifted, so it must not be treated
+        # as a mismatch — that would turn "codegraph isn't reachable right
+        # now" into a false "the partition is stale" verdict.
+        print(
+            f"warning: could not verify index fingerprint against the current "
+            f"index ({exc}) — proceeding without verification",
+            file=sys.stderr,
+        )
+        return grouping
+    if matched:
+        return grouping
+
+    # allow_drift and mismatched: force a full re-partition rather than
+    # silently reusing the recorded groups.json (the plan's explicit
+    # requirement — "never a silent reuse").
+    recorder = TraceRecorder()
+    llm_recorder = JsonlCallRecorder(groups_path.parent, grouping_run_id=uuid.uuid4().hex)
+    provenance_recorder = EdgeProvenanceRecorder()
+    result, base_context = run_grouping(
+        plan_path=plan_path,
+        repo_root=repo_root,
+        config=config,
+        llm_runner=_speccer_json_runner(llm_runner, config),
+        client=fp_client,
+        recorder=recorder,
+        llm_recorder=llm_recorder,
+        provenance_recorder=provenance_recorder,
+    )
+    groups_path.write_text(serialize_grouping(result))
+    base_context_path.write_text(base_context)
+    (groups_path.parent / "grouping-trace.json").write_text(serialize_trace(recorder.trace))
+    if provenance_recorder.document is not None:
+        (groups_path.parent / "edge-provenance.json").write_text(
+            serialize_edge_provenance(provenance_recorder.document)
+        )
+    return result
+
+
 def _cmd_groupings(args: argparse.Namespace) -> int:
     repo_root = args.repo.resolve()
     infos = describe_groupings(repo_root)
@@ -867,8 +1048,77 @@ def build_usage_limit_gate(
     )
 
 
+def _release_stale_usage_limit(paths: RunPaths) -> None:
+    """Stamp ``released_at`` on an armed ``usage-limit.json`` inherited from a
+    process that died while paused (plan U19, F21).
+
+    A missing file, a released record, or one that fails to parse are all left
+    alone — this only clears the one state (armed, no ``released_at``) that a
+    dead process can leave behind.
+    """
+    path = paths.usage_limit_path
+    if not path.is_file():
+        return
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if payload.get("released_at") is not None:
+        return
+    payload["released_at"] = datetime.now(UTC).astimezone().isoformat()
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+
+
+def build_auth_ladder(auth: AuthConfig, *, log: Callable[[str], None] | None = None) -> AuthLadder:
+    """Rungs (a)+(b) of the auth ladder (plan U4): read expiry, refresh in
+    place. Constructed unconditionally — ``auth_gate`` is what actually opts
+    the run in (see ``build_auth_gate``), so a ``recover()`` call against a
+    disabled ladder is simply never made."""
+    path = Path(auth.credentials_path).expanduser() if auth.credentials_path else None
+    return AuthLadder(credentials_path=path, log=log)
+
+
+def build_auth_gate(
+    config: OrchestratorConfig, ladder: AuthLadder, paths: RunPaths | None = None
+) -> UsageLimitGate | None:
+    """The run's auth-pause gate (plan U4 rung c), mirroring
+    ``build_usage_limit_gate``: same log/publish sinks, its own
+    ``auth-pause.json`` file, and ``probe=ladder.recover`` so the pause
+    self-releases the moment the credential is healthy rather than on a fixed
+    deadline. ``None`` when the ladder is disabled — ``SessionRunner`` treats a
+    ``None`` auth gate exactly like a ``None`` usage-limit gate: a 401 raises
+    straight out of the call.
+    """
+    if not config.session.auth.enabled:
+        return None
+    auth_config = UsageLimitConfig(
+        auto_resume=True,
+        max_wait_s=config.session.auth.max_wait_s,
+        max_attempts=config.session.auth.max_attempts,
+        skew_s=0.0,
+        fallback_poll_s=config.session.auth.poll_s,
+    )
+    if paths is None:
+        return UsageLimitGate(auth_config, log=print, probe=ladder.recover, label="credential")
+
+    def publish(state: UsageLimitState) -> None:
+        atomic_write_text(paths.auth_pause_path, json.dumps(state.to_dict(), indent=2) + "\n")
+
+    return UsageLimitGate(
+        auth_config,
+        log=lambda message: log_event(paths, message),
+        on_change=publish,
+        probe=ladder.recover,
+        label="credential",
+    )
+
+
 def build_session_runner(
-    config: OrchestratorConfig, gate: UsageLimitGate | None = None
+    config: OrchestratorConfig,
+    gate: UsageLimitGate | None = None,
+    *,
+    auth_ladder: AuthLadder | None = None,
+    auth_gate: UsageLimitGate | None = None,
 ) -> SessionRunner:
     """The one place a production ``SessionRunner`` is built.
 
@@ -882,6 +1132,7 @@ def build_session_runner(
     return SessionRunner(
         claude_bin=session.claude_bin,
         model=session.model,
+        base_model=session.base_model,
         permission_mode=config.execution.permission_mode,
         allowed_tools=session.allowed_tools or None,
         transcript_root=(
@@ -895,6 +1146,8 @@ def build_session_runner(
         cache_root=_cache_root(session),
         extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
         gate=gate,
+        auth_ladder=auth_ladder,
+        auth_gate=auth_gate,
     )
 
 
@@ -918,7 +1171,13 @@ def _cache_root(session: SessionConfig) -> Path:
     return default_cache_root()
 
 
-def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume: bool) -> int:
+def _cmd_run(
+    args: argparse.Namespace,
+    llm_runner: JsonRunner | None,
+    client: CodegraphClient | None = None,
+    *,
+    resume: bool,
+) -> int:
     repo_root = args.repo.resolve()
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)
@@ -983,19 +1242,6 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
         )
         return 1
     grouping = GroupingResult.model_validate_json(groups_path.read_text())
-    groups = grouping.groups
-    intensity_override_line: str | None = None
-    if getattr(args, "review_intensity", None):
-        intensity = ReviewIntensity(args.review_intensity)
-        changed = sum(1 for group in groups if group.intensity != intensity)
-        groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
-        if changed:
-            sessions = changed * _REVIEWER_SESSIONS[intensity]
-            intensity_override_line = (
-                f"warning: --review-intensity {intensity.value} overrides {changed} "
-                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
-                "for those groups (omit the flag to keep each group's recorded intensity)"
-            )
 
     plan_path = Path(grouping.plan_path)
     if not plan_path.is_absolute():
@@ -1011,6 +1257,42 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # is the only consumer of plan_text in this command.
     plan_text = strip_task_map(plan_path.read_text())
 
+    # Plan U7: the grouping's own recorded index fingerprint, read back and
+    # compared against the current codegraph index (never done before this
+    # unit — the fingerprint was written into `ProvenanceEntry` and never read
+    # back). A mismatch here means `groups_path` was built against an index
+    # that no longer describes the repo `run`/`resume` is about to execute
+    # against.
+    try:
+        grouping = _verify_grouping_index_fingerprint(
+            repo_root=repo_root,
+            groups_path=groups_path,
+            base_context_path=base_context_path,
+            grouping=grouping,
+            plan_path=plan_path,
+            config=config,
+            llm_runner=llm_runner,
+            client=client,
+            allow_drift=getattr(args, "allow_index_drift", False),
+        )
+    except IndexFingerprintMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    groups = grouping.groups
+    intensity_override_line: str | None = None
+    if getattr(args, "review_intensity", None):
+        intensity = ReviewIntensity(args.review_intensity)
+        changed = sum(1 for group in groups if group.intensity != intensity)
+        groups = [group.model_copy(update={"intensity": intensity}) for group in groups]
+        if changed:
+            sessions = changed * _REVIEWER_SESSIONS[intensity]
+            intensity_override_line = (
+                f"warning: --review-intensity {intensity.value} overrides {changed} "
+                f"group(s)' computed intensity — implies {sessions} reviewer session(s) "
+                "for those groups (omit the flag to keep each group's recorded intensity)"
+            )
+
     # Plan U7: the config file actually loaded, echoed with its own path before
     # anything spawns — two `.orchestrator/config.toml` files were once found
     # to disagree on `context_token_limit` (200000 vs 120000), and `.orchestrator/`
@@ -1019,9 +1301,17 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     # to tell which file produced them.
     config_path = (args.config or repo_root / ".orchestrator" / "config.toml").resolve()
     print(
-        f"config: {config_path} (token_budget={config.estimator.token_budget}, "
+        f"config: {_config_banner_source(config_path)} (token_budget={config.estimator.token_budget}, "
         f"context_token_limit={config.breaker.context_token_limit}, "
         f"permission_mode={config.execution.permission_mode})"
+    )
+
+    # Plan U36: the three resolved model ids, printed before anything spawns —
+    # the alternative is inferring, after the fact, which model actually ran
+    # from a transcript (exactly what this plan's own measurement had to do).
+    print(
+        f"models: worker={config.session.model}, base={config.session.base_model}, "
+        f"speccer={config.session.speccer_model}"
     )
 
     # R8: the effective execution config prints before any session spawns —
@@ -1067,7 +1357,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
     driver_lock = DriverLock(paths)
     try:
         gate = build_usage_limit_gate(config, paths)
-        runner = build_session_runner(config, gate)
+        auth_ladder = build_auth_ladder(
+            config.session.auth, log=lambda message: log_event(paths, message)
+        )
+        auth_gate = build_auth_gate(config, auth_ladder, paths)
+        runner = build_session_runner(config, gate, auth_ladder=auth_ladder, auth_gate=auth_gate)
         try:
             runner.preflight()
         except SessionError as exc:
@@ -1086,12 +1380,34 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        if resume:
+            # Plan U19 (F21): `released_at` is written only by the process that
+            # armed the pause (`UsageLimitGate._release_locked`), and that process
+            # is gone — the driver lock above just proved no other one is running.
+            # An armed-forever record makes `UsageLimitBanner` show this live
+            # resumed run as paused. By definition the pause a resume inherits is
+            # over, so it is stamped released before any group starts; a fresh
+            # limit hit during this run arms its own new record exactly as today.
+            _release_stale_usage_limit(paths)
+
         # The run keeps its own frozen copy of the grouping it started with (plan
         # U10): a later `group --name <same>` against a different plan must not be
         # able to rewrite a finished run's history. Done only after preflight
         # succeeds, so a dead worker CLI never leaves a run directory behind.
         if not resume:
             snapshot_grouping(source_grouping_dir, paths.run_dir)
+            # Plan U2: what was already red on the launch branch, captured once
+            # before any group worktree exists — a resumed run reuses it rather
+            # than recapturing against a launch branch it no longer sits on.
+            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
+            baseline = capture_preflight_baseline(
+                repo_root,
+                config=config.preflight,
+                output_dir=paths.run_dir,
+                commit_sha=launch_commit_sha,
+                log=lambda message: log_event(paths, message),
+            )
+            save_baseline(paths.preflight_baseline_path, baseline)
         # Plan U3/R41: the resolved admission policy, recorded once — an operator
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.
@@ -1103,6 +1419,12 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             preflight_config=config.preflight,
             preflight_output_dir=paths.group_dir,
             log=lambda message: log_event(paths, message),
+            # The integration worktree is the tree that represents this run's
+            # output (plan U32) — provisioned the same way a group worktree is,
+            # with the same cache locality (worker_cache_env avoids warming the
+            # operator's own `~/.cache/uv`, see `_workspace_seams`).
+            provision_args=config.session.provision_args,
+            provision_env_vars=worker_cache_env(_cache_root(config.session), base=dict(os.environ)),
         )
         try:
             merger.ensure()
@@ -1179,6 +1501,20 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
                 print("error: manifest has no base session — start a fresh run", file=sys.stderr)
                 return 1
             base_session_id = manifest.base_session_id
+            # Plan U19 (F20): a resume reuses the existing base session and used to
+            # skip the manifest write entirely, so `/snapshot` kept serving the
+            # *first* launch's escalation/usage-limit config forever — a `resume
+            # --hitl` that visibly changed `run.log`'s own start-up line never
+            # showed up in the manifest a second later. The effective config for
+            # *this* process is written back every time, so the manifest always
+            # describes the run actually executing.
+            manifest = manifest.model_copy(
+                update={
+                    "escalation": config.escalation,
+                    "usage_limit": config.session.usage_limit,
+                }
+            )
+            store.save(manifest)
         else:
             # Establishing the base session is the *first* long silence an operator
             # meets — it precedes every group, so no group heartbeat exists yet and
@@ -1226,7 +1562,11 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             base_session_id=base_session_id,
             breaker=config.breaker,
             execution=config.execution,
-            board=SurpriseBoard(paths),
+            # groups=grouping.groups (plan U11): validates every affected_groups
+            # id against the run's real group and task ids at mark time, instead
+            # of silently accumulating dead buckets under ids nothing will ever
+            # read.
+            board=SurpriseBoard(paths, groups=grouping.groups),
             workspace_for=workspace_for,
             merge_group=merger.merge_group,
             # The rewrite path is the run's other claude call, and it is a one-shot
@@ -1234,12 +1574,16 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             # at its own boundary.
             rewrite_spec=_rewrite_provider(
                 plan_text,
-                with_usage_limit_retry(llm_runner or claude_json_runner, gate),
+                with_usage_limit_retry(_speccer_json_runner(llm_runner, config), gate),
                 orch_dir / "failures",
+                recorder=JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
             ),
             base_ref_for=base_ref_for,
             broker=broker,
             policy=policy,
+            # plan U3: read back regardless of resume, so a resumed run's merge
+            # gate still knows what was already red on the launch branch.
+            preflight_baseline=load_baseline(paths.preflight_baseline_path),
         )
         executor_slot.append(make_executor(deps))
 
@@ -1251,7 +1595,7 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             # restart from ready on `resume`).
             print(f"run aborted by operator: {exc}", file=sys.stderr)
             log_event(paths, f"run {run_id} aborted by operator: {exc}")
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
             return 2
         except KeyboardInterrupt:
@@ -1261,15 +1605,15 @@ def _cmd_run(args: argparse.Namespace, llm_runner: JsonRunner | None, *, resume:
             scheduler.mark_interrupted()
             log_event(paths, f"run {run_id} interrupted (SIGINT)")
             print("\nrun interrupted", file=sys.stderr)
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             print(f"resume with: smart-mcps-orchestrate resume {run_id}", file=sys.stderr)
             return 130
         except SchedulerError as exc:
             print(f"error: {exc}", file=sys.stderr)
-            _print_outcomes(scheduler.state)
+            _print_outcomes(scheduler.state, paths)
             return 1
         _maybe_auto_finish(repo_root, run_id, paths)
-        return _print_outcomes(scheduler.state)
+        return _print_outcomes(scheduler.state, paths)
     finally:
         driver_lock.release()
 
@@ -1374,6 +1718,14 @@ def _workspace_seams(
             branch=branch,
             start_point=tip,
         )
+
+        def _record(state: str, argv: list[str]) -> None:
+            # U32: kept beside the group's other run artifacts, not inside the
+            # worktree, so it outlives a clean-merge teardown (remove_worktree).
+            write_provisioning_record(
+                paths.group_dir(group.id), worktree=path, command=argv, state=state
+            )
+
         # U6/R16: the worktree owns its environment — provision after creation,
         # non-fatally (a failed sync logs and lets the worker re-sync itself).
         provision_env(
@@ -1381,6 +1733,7 @@ def _workspace_seams(
             log=lambda message: log_event(paths, message),
             env=cache_env,
             extra_args=session.provision_args,
+            on_state=_record,
         )
         tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
@@ -1456,7 +1809,13 @@ def _resolve_deps(
                 ),
                 cwd=worktree,
             )
-            report, _ = nudge_until_report(runner, result, CoderReport, cwd=worktree)
+            report, _ = nudge_until_report(
+                runner,
+                result,
+                CoderReport,
+                cwd=worktree,
+                verification_ids=[item.id for item in group.verification],
+            )
         except (SessionError, ReportError) as inner_exc:
             log_event(
                 paths,
@@ -1509,10 +1868,19 @@ def _resolve_deps(
     )
 
 
-def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path):
+def _rewrite_provider(
+    plan_text: str,
+    llm_runner: JsonRunner,
+    failure_dir: Path,
+    recorder: JsonlCallRecorder | None = None,
+):
     """rewrite_spec seam: one-group skeleton through the Phase A speccer, with the
     surprises folded in as rewrite context (they are never empty on escalation
-    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.)."""
+    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.).
+
+    ``recorder``, when given, appends each rewrite speccer call to the run's own
+    ``llm/calls.json`` (plan U14) — the same record shape grouping-time speccer
+    calls already get, so a rewrite's cost, prompt and response survive."""
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
         skeleton = {
@@ -1525,7 +1893,9 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
                 ],
             }
         }
-        spec = write_specs(plan_text, skeleton, llm_runner, failure_dir=failure_dir)[group.id]
+        spec = write_specs(
+            plan_text, skeleton, llm_runner, failure_dir=failure_dir, recorder=recorder
+        )[group.id]
         return group.model_copy(
             update={
                 "name": spec.name,
@@ -1538,13 +1908,19 @@ def _rewrite_provider(plan_text: str, llm_runner: JsonRunner, failure_dir: Path)
     return rewrite_spec
 
 
-def _print_outcomes(state: RunState) -> int:
+def _print_outcomes(state: RunState, paths: RunPaths | None = None) -> int:
     """Print every group's outcome plus, for anything stalled, enough to act on
     it without diffing state.json (plan U3/R41): its failure text, what it
     holds and on which files, its branch, its re-entry count, and the command
     to act on it. Read-only — it derives everything from the already-persisted
     ``holds`` field each group carries from the scheduler's last admission
-    pass, so calling it never changes state.json."""
+    pass, so calling it never changes state.json.
+
+    ``paths`` is optional so every existing caller/test naming only ``state``
+    keeps working unchanged; when given, the surprise-board residue (plan U12)
+    is printed too, so an operator learns what never got delivered without a
+    hand read of ``surprises.json``.
+    """
     print(f"\nrun {state.run_id}:")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
@@ -1556,6 +1932,8 @@ def _print_outcomes(state: RunState) -> int:
         if entry.quarantined:
             line += " [quarantined]"
         print(line)
+    if paths is not None:
+        print(format_residue_report(surprise_residue(paths, state)))
     completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
     if completed:
         print("all groups completed; merge the integration branch when ready")

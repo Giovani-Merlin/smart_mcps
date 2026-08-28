@@ -9,6 +9,7 @@ dependencies = [
     "perplexityai",
     "fastmcp>=3.3",
     "fastapi>=0.115",
+    "uvicorn>=0.30",
     "networkx>=3.6.1",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",

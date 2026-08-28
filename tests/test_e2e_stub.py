@@ -597,6 +597,13 @@ def test_run_snapshots_the_named_grouping_and_records_it_in_the_manifest(repo, f
     assert (run_dir / "base-context.md").is_file()
     assert manifest_of(repo, run_id)["grouping"] == "alpha"
 
+    # Plan U2: a preflight baseline is captured against the launch branch
+    # before any group work starts.
+    baseline = json.loads((run_dir / "preflight-baseline.json").read_text())
+    assert baseline["commit_sha"] == git(repo, "rev-parse", "HEAD").strip()
+    assert baseline["captured"] is True
+    assert isinstance(baseline["command"], list)
+
 
 def test_resume_after_regroup_uses_the_run_snapshot_not_the_live_grouping(repo, fake_home):
     """Plan U10 (ADR 0002): re-running `group --name alpha` against a different

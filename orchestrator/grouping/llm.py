@@ -200,13 +200,17 @@ def _rejects_session_id(stderr: str) -> bool:
     return "session-id" in lowered and ("unknown" in lowered or "unrecognized" in lowered)
 
 
-def claude_json_runner(prompt: str, schema: dict) -> LlmCallResult:
+def claude_json_runner(prompt: str, schema: dict, *, model: str | None = None) -> LlmCallResult:
     """Production runner: one blocking `claude -p` call with a JSON schema.
 
     Grouping-stage calls are stateless one-shots (no session to *resume*), but a
     session id is still minted and passed so the call leaves a transcript jsonl
     under ``~/.claude/projects/``. Without it the orchestrator's own reasoning —
     the decisions a whole run is built on — is unrecoverable after the fact.
+
+    ``model`` (plan U17) is the speccer/grouper model — bound via
+    ``functools.partial`` by the caller (``cli.py``) rather than defaulted here,
+    so this function stays a plain two-arg ``JsonRunner`` where nothing binds it.
     """
     global _SESSION_ID_SUPPORTED
     session_id = str(uuid.uuid4())
@@ -223,6 +227,8 @@ def claude_json_runner(prompt: str, schema: dict) -> LlmCallResult:
         "--thinking",
         ORCHESTRATOR_THINKING,
     ]
+    if model:
+        base += ["--model", model]
     started = time.monotonic()
     argv = [*base, "--session-id", session_id] if _SESSION_ID_SUPPORTED else base
     result = subprocess.run(argv, capture_output=True, text=True)

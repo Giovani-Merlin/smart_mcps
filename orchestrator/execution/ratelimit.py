@@ -210,6 +210,8 @@ class UsageLimitGate:
         sleep: Callable[[float], None] | None = None,
         log: Callable[[str], None] | None = None,
         on_change: Callable[[UsageLimitState], None] | None = None,
+        probe: Callable[[], bool] | None = None,
+        label: str = "usage limit",
     ) -> None:
         self.config = config or UsageLimitConfig()
         self._now = now
@@ -220,6 +222,15 @@ class UsageLimitGate:
         self._sleep = sleep
         self._log = log
         self._on_change = on_change
+        # Plan U4 (auth-refresh-ladder): when set, the wake deadline is not
+        # itself a release condition — it is when to *ask* whether the pause
+        # should end. ``None`` restores the exact pre-U4 behaviour (a usage
+        # limit releases unconditionally once its deadline passes), which is
+        # why every usage-limit test still passes unmodified: this gate class
+        # is reused as-is for the auth pause (probe=AuthLadder.recover),
+        # rather than duplicating the arm/poll/release machinery.
+        self._probe = probe
+        self._label = label
         self._cond = threading.Condition()
         self._state: UsageLimitState | None = None
         self._wake_at: datetime | None = None
@@ -349,7 +360,7 @@ class UsageLimitGate:
             self._cond.notify_all()
 
         if first:
-            self._emit(f"usage limit: pausing this run {self._until_phrase(state)} — {detail}")
+            self._emit(f"{self._label}: pausing this run {self._until_phrase(state)} — {detail}")
         self._publish(state)
         self._overlay_all(self.phase_text())
         return self._wait(epoch)
@@ -367,14 +378,37 @@ class UsageLimitGate:
                     self._release_locked(now, bounded=True)
                     return True
                 remaining = (self._wake_at - now).total_seconds() if self._wake_at else 0.0
-                if remaining <= 0:
+                due = remaining <= 0
+                probe = self._probe if due else None
+                if due and probe is None:
                     self._release_locked(now, bounded=False)
                     return True
-                line = self._due_countdown_locked(now, remaining)
-                nap = min(remaining, COUNTDOWN_INTERVAL_S, MAX_SLEEP_SLICE_S)
+                line = None if due else self._due_countdown_locked(now, remaining)
+                nap = 0.0 if due else min(remaining, COUNTDOWN_INTERVAL_S, MAX_SLEEP_SLICE_S)
+            if probe is not None:
+                # Run outside the lock: a probe may refresh a token or hit the
+                # network, and holding the condition through that would block
+                # every other waiter and every heartbeat push for no reason.
+                healthy = self._run_probe(probe)
+                with self._cond:
+                    if self._state is None or self._epoch != epoch or self._state.released_at:
+                        return True
+                    if healthy:
+                        self._release_locked(self._now(), bounded=False)
+                        return True
+                    self._wake_at = self._now() + timedelta(seconds=self.config.fallback_poll_s)
+                    self._cond.notify_all()
+                self._emit(f"{self._label}: still paused — re-checking later")
+                continue
             if line:
                 self._emit(line)
             self._sleep(max(nap, 0.0))
+
+    def _run_probe(self, probe: Callable[[], bool]) -> bool:
+        try:
+            return bool(probe())
+        except Exception:  # noqa: BLE001 — a broken probe pauses, it never crashes the run
+            return False
 
     def _release_locked(self, now: datetime, *, bounded: bool) -> None:
         state = replace(self._state, released_at=now)  # type: ignore[arg-type]
@@ -383,7 +417,7 @@ class UsageLimitGate:
         self._cond.notify_all()
         waited = int((now - state.armed_at).total_seconds())
         why = "max_wait_s reached" if bounded else "limit should have reset"
-        self._emit(f"usage limit: resuming after {_humanize(waited)} ({why}); retrying the call")
+        self._emit(f"{self._label}: resuming after {_humanize(waited)} ({why}); retrying the call")
         self._publish(state)
         self._overlay_all(None)
 
@@ -415,7 +449,15 @@ class UsageLimitGate:
     def _until_phrase(self, state: UsageLimitState) -> str:
         if state.reset_at is None:
             return f"and re-checking every {_humanize(int(self.config.fallback_poll_s))}"
-        return f"until {state.reset_at.isoformat(timespec='minutes')}"
+        # F22: the log line's own timestamp prefix (`log_event`) is stamped in
+        # the operator's local zone, so the quoted reset instant is converted
+        # to that same zone here — `reset_at` may otherwise carry whatever zone
+        # the provider named (`parse_reset_at`'s `_zone_of`), which would print
+        # a second, different offset on the same line. The provider's verbatim
+        # wording (``detail``) is untouched — this only re-zones our own
+        # restatement of the deadline, never the quoted prose itself.
+        local_reset_at = state.reset_at.astimezone()
+        return f"until {local_reset_at.isoformat(timespec='minutes')}"
 
     def phase_text(self) -> str | None:
         """What the heartbeat should say while this gate is armed, or ``None``."""
@@ -423,8 +465,9 @@ class UsageLimitGate:
         if state is None or state.released_at is not None:
             return None
         if state.reset_at is None:
-            return "paused: usage limit (no reset time given; polling)"
-        return f"paused: usage limit until {state.reset_at.isoformat(timespec='minutes')}"
+            return f"paused: {self._label} (no reset time given; polling)"
+        local_reset_at = state.reset_at.astimezone()
+        return f"paused: {self._label} until {local_reset_at.isoformat(timespec='minutes')}"
 
     # --------------------------------------------------------------------- sinks
 

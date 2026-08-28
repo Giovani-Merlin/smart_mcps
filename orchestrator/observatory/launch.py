@@ -60,6 +60,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+from orchestrator.config import (
+    DEFAULT_BASE_MODEL,
+    DEFAULT_SPECCER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    load_config,
+)
 from orchestrator.execution.driver import is_driving, read_driver_record
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, describe_groupings
 from orchestrator.observatory.events import tail_file
@@ -107,6 +113,12 @@ class ExecutionOptions(BaseModel):
     escalation_source: Literal["orchestrator_only", "workers_via_orchestrator"] | None = None
     escalation_timeout: float | None = None
     auto_resume: bool | None = None
+    # Plan U18: the three model knobs (U17/U36), exposed on the form. `None`
+    # means "not specified" exactly as the others do — the CLI falls through to
+    # the config file, then the built-in default.
+    model_worker: str | None = None
+    model_base: str | None = None
+    model_speccer: str | None = None
 
     def to_argv(self) -> list[str]:
         argv: list[str] = []
@@ -128,7 +140,53 @@ class ExecutionOptions(BaseModel):
             argv += ["--escalation-timeout", str(self.escalation_timeout)]
         if self.auto_resume is not None:
             argv.append("--auto-resume" if self.auto_resume else "--no-auto-resume")
+        if self.model_worker:
+            argv += ["--model-worker", self.model_worker]
+        if self.model_base:
+            argv += ["--model-base", self.model_base]
+        if self.model_speccer:
+            argv += ["--model-speccer", self.model_speccer]
         return argv
+
+
+class ResolvedOptions(BaseModel):
+    """Every execution option's *effective* default, resolved exactly as the CLI
+    would resolve it for a run started with no flags at all: config file, then
+    the library default (``apply_overrides`` with an all-``None`` namespace).
+
+    This is what the launch form shows next to a field left unspecified (plan
+    U18/F14) — most importantly ``concurrency``, whose library default of 1 ran
+    thirteen groups serially on a DAG whose widest wave was three, with nothing
+    on the form suggesting that is what leaving it blank means.
+    """
+
+    concurrency: int
+    permission_mode: str
+    escalation_intensity: Literal["autonomous", "on_failure", "on_stuck", "interactive"]
+    escalation_source: Literal["orchestrator_only", "workers_via_orchestrator"]
+    escalation_timeout: float | None
+    auto_resume: bool
+    model_worker: str
+    model_base: str
+    model_speccer: str
+
+
+def resolve_options(repo: Path) -> ResolvedOptions:
+    """The values an unspecified execution option would resolve to right now —
+    the project's ``config.toml`` layered over the library defaults, with no CLI
+    flags involved. Pure read: no run, no job, is required for this to answer."""
+    config = load_config(repo / ".orchestrator" / "config.toml")
+    return ResolvedOptions(
+        concurrency=config.execution.concurrency,
+        permission_mode=config.execution.permission_mode,
+        escalation_intensity=config.escalation.intensity,
+        escalation_source=config.escalation.source,
+        escalation_timeout=config.escalation.timeout_s,
+        auto_resume=config.session.usage_limit.auto_resume,
+        model_worker=config.session.model or DEFAULT_WORKER_MODEL,
+        model_base=config.session.base_model or DEFAULT_BASE_MODEL,
+        model_speccer=config.session.speccer_model or DEFAULT_SPECCER_MODEL,
+    )
 
 
 class GroupJobBody(BaseModel):
@@ -515,6 +573,11 @@ def get_plans(request: Request, project: str) -> list[PlanDoc]:
 @router.get("/groupings", response_model=list[GroupingSummary])
 def get_groupings(request: Request, project: str) -> list[GroupingSummary]:
     return list_groupings(resolve_repo(request, project))
+
+
+@router.get("/resolved-options", response_model=ResolvedOptions)
+def get_resolved_options(request: Request, project: str) -> ResolvedOptions:
+    return resolve_options(resolve_repo(request, project))
 
 
 @router.get("/jobs", response_model=list[JobInfo])

@@ -202,15 +202,19 @@ class TestSnapshot:
         assert groups["g1"]["name"] == "types-sample-and-views"
         assert groups["g1"]["depends_on"] == ["g2"]
 
-        # the manifest's groups→sessions join, with the fields the drill-in needs
+        # the manifest's groups→sessions join, with the fields the drill-in needs.
+        # Index 0 is the run's base session, attached to every group at
+        # generation 1 as an orchestrator-role row (plan U30).
         roles = [session["role"] for session in groups["g1"]["sessions"]]
-        assert roles == ["coder", "reviewer"]
-        coder = groups["g1"]["sessions"][0]
+        assert roles == ["orchestrator", "coder", "reviewer"]
+        coder = groups["g1"]["sessions"][1]
         assert coder["session_id"] and coder["name"].startswith("smoke1-g1-")
         assert coder["transcript_path"].endswith(".jsonl")
 
         assert body["edges"] == [{"from": "g2", "to": "g1"}]
         assert body["base_session_id"]
+        assert body["base_session"]["role"] == "orchestrator"
+        assert body["base_session"]["session_id"] == body["base_session_id"]
         assert body["plan_path"] == "frontend-plan.md"
 
     def test_prefers_the_per_run_snapshot_over_the_shared_file(self, tmp_path, repo, client):
@@ -318,15 +322,49 @@ class TestStallEvidence:
             "round": 3,
             "round_started_at": "2026-08-09T10:31:00.000+00:00",
             "updated_at": "2026-08-09T10:54:00.000+00:00",
-            # Written before the phase shipped, so both read null rather than
-            # erroring — every run already on disk looks like this.
+            # Written before the phase (and paused/round-elapsed) fields shipped,
+            # so all four read null rather than erroring — every run already on
+            # disk looks like this.
             "phase": None,
             "phase_elapsed_s": None,
+            "paused_s": None,
+            "round_elapsed_s": None,
         }
         # 23 minutes of silence is for the client to interpret; the server never
         # says so, and there is no field here in which it could.
         assert "stalled" not in json.dumps(groups["g1"])
         assert groups["g2"]["heartbeat"] is None
+
+    def test_paused_s_and_round_elapsed_s_are_served_when_present(self, tmp_path, repo):
+        """Plan U26: both are already on disk in heartbeat.json, so a card reading
+        'forking the base session — 58m' can show that 57 of those minutes were a
+        deliberate usage-limit pause."""
+        run_dir = install_run(repo, "paused")
+        heartbeat = {
+            "schema_version": 1,
+            "group_id": "g1",
+            "started_at": "2026-08-09T10:00:00.000+00:00",
+            "generation": 2,
+            "round": 3,
+            "round_started_at": "2026-08-09T10:31:00.000+00:00",
+            "updated_at": "2026-08-09T10:54:00.000+00:00",
+            "phase": "forking the base session",
+            "phase_elapsed_s": 3529.0,
+            "paused_s": 3472.0,
+            "round_elapsed_s": 1380.0,
+        }
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "heartbeat.json").write_text(json.dumps(heartbeat))
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/paused/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["heartbeat"]["paused_s"] == 3472.0
+        assert groups["g1"]["heartbeat"]["round_elapsed_s"] == 1380.0
 
     def test_a_torn_heartbeat_reads_as_absent_rather_than_500(self, tmp_path, repo):
         run_dir = install_run(repo, "torn")
@@ -357,7 +395,9 @@ class TestStallEvidence:
             g["group_id"]: g
             for g in client.get("/api/projects/proj/runs/mtime/snapshot").json()["groups"]
         }
-        sessions = groups["g1"]["sessions"]
+        # Index past the synthesized base-session row (plan U30), which carries
+        # no transcript of its own.
+        sessions = [s for s in groups["g1"]["sessions"] if s["role"] != "orchestrator"]
         assert sessions[0]["transcript_mtime"] is not None
         # A transcript that has been cleaned up is missing evidence, not an error.
         assert sessions[1]["transcript_mtime"] is None
@@ -561,3 +601,109 @@ class TestFixture:
     def test_run_paths_groups_path_points_into_the_run_dir(self, tmp_path):
         paths = RunPaths(tmp_path, "r1")
         assert paths.groups_path == paths.run_dir / "groups.json"
+
+
+class TestSurpriseDirections:
+    """Plan U12: the snapshot exposes two directions of a group's surprises —
+    what is still pending on the board addressed to it, and what its own
+    coder/reviewer rounds reported — kept as separate lists."""
+
+    def test_a_run_with_no_surprises_serves_empty_lists(self, client):
+        response = client.get("/api/projects/proj/runs/smoke1/snapshot")
+        assert response.status_code == 200
+        for group in response.json()["groups"]:
+            assert group["pending_surprises"] == []
+            assert group["emitted_surprises"] == []
+
+    def test_a_pending_surprise_for_a_completed_group_carries_its_reason(self, tmp_path, repo):
+        run_dir = install_run(repo, "residue")
+        atomic_write_text(
+            run_dir / "surprises.json",
+            json.dumps(
+                {
+                    "g1": [
+                        {
+                            "kind": "other",
+                            "description": "late finding",
+                            "affected_groups": ["g1"],
+                        }
+                    ]
+                }
+            ),
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/residue/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["pending_surprises"] == [
+            {
+                "kind": "other",
+                "description": "late finding",
+                "affected_groups": ["g1"],
+                "reason": "never delivered — group already completed",
+            }
+        ]
+        assert groups["g2"]["pending_surprises"] == []
+
+    def test_an_emitted_surprise_is_read_from_the_groups_report_artifact(self, tmp_path, repo):
+        run_dir = install_run(repo, "emitted")
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "report-g1-r1.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "summary": "did the work",
+                    "surprises": [
+                        {
+                            "kind": "interface_mismatch",
+                            "description": "g1 changed the API",
+                            "affected_groups": ["g2"],
+                        }
+                    ],
+                }
+            )
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/emitted/snapshot").json()["groups"]
+        }
+        assert groups["g1"]["emitted_surprises"] == [
+            {
+                "kind": "interface_mismatch",
+                "description": "g1 changed the API",
+                "affected_groups": ["g2"],
+                "reason": None,
+            }
+        ]
+        assert groups["g2"]["emitted_surprises"] == []
+
+    def test_the_same_surprise_reported_by_two_rounds_is_not_duplicated(self, tmp_path, repo):
+        run_dir = install_run(repo, "dedup")
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        surprise = {
+            "kind": "other",
+            "description": "repeated finding",
+            "affected_groups": [],
+        }
+        (group_dir / "report-g1-r1.json").write_text(
+            json.dumps({"status": "completed", "surprises": [surprise]})
+        )
+        (group_dir / "report-g1-r2.json").write_text(
+            json.dumps({"status": "completed", "surprises": [surprise]})
+        )
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/dedup/snapshot").json()["groups"]
+        }
+        assert len(groups["g1"]["emitted_surprises"]) == 1

@@ -52,6 +52,10 @@
   color: var(--fg-faint);
 }
 
+.launch__hint--warning {
+  color: var(--danger-fg);
+}
+
 .launch__card button {
   font: inherit;
   align-self: flex-start;
@@ -66,6 +70,17 @@
 .launch__card button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+.launch__job-link {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.launch__run-header {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--fg-faint);
 }
 
 .launch__entry {

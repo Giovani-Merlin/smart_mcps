@@ -23,8 +23,15 @@
 
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 
-import { getGrouping } from "../../api";
-import type { GroupingView, MissingArtifact } from "../../types";
+import { errorMessage, getGrouping, getLlmCall, getLlmCalls } from "../../api";
+import { TranscriptEntryView } from "../GroupDrillIn";
+import type {
+  GroupingView,
+  LlmCallDetail,
+  LlmCallsView,
+  MissingArtifact,
+  TranscriptEvent,
+} from "../../types";
 import PathChip from "../PathChip";
 import {
   buildFrames,
@@ -133,6 +140,8 @@ export function GroupingTab({ project, runId, params, onParamsChange }: Grouping
           </p>
         </div>
       )}
+
+      <SpeccerCalls project={project} runId={runId} />
 
       {hasTrace ? (
         <>
@@ -662,6 +671,209 @@ function Flags({ view }: { view: GroupingView }) {
             </ul>
           </div>
         ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------- speccer sessions
+
+/** A timestamp in the operator's own local zone, with the zone named — matches
+ * what `GroupDrillIn` shows for a session's `started_at` (plan U35/F22). */
+function formatLocalTimestamp(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return null;
+  const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+    .formatToParts(when)
+    .find((part) => part.type === "timeZoneName")?.value;
+  return zone ? `${when.toLocaleString()} ${zone}` : when.toLocaleString();
+}
+
+/** The grouper's own LLM runs — mapper and speccer calls already persisted in
+ * the grouping directory's `llm/` records (plan U31). Fetched independently of
+ * `GroupingView`: the call index lives beside, not inside, the trace, and a
+ * trace-less run (or a run whose grouping predates the recorder) can still have
+ * one, or vice versa. Each row carries `recorded_at`, so a rewrite speccer call
+ * made mid-run (once U14 records one) sits alongside the grouping-time calls,
+ * distinguished by when it ran rather than by a separate list. */
+function SpeccerCalls({ project, runId }: { project: string; runId: string }) {
+  const [view, setView] = useState<LlmCallsView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+  const [detail, setDetail] = useState<LlmCallDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setView(null);
+    setError(null);
+    setSelectedSeq(null);
+    void (async () => {
+      try {
+        const next = await getLlmCalls(project, runId);
+        if (!cancelled) setView(next);
+      } catch (err) {
+        if (!cancelled) setError(errorMessage(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project, runId]);
+
+  useEffect(() => {
+    setDetail(null);
+    setDetailError(null);
+    if (selectedSeq === null) return;
+    const activeSeq = selectedSeq;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await getLlmCall(project, runId, activeSeq);
+        if (!cancelled) setDetail(next);
+      } catch (err) {
+        if (!cancelled) setDetailError(errorMessage(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project, runId, selectedSeq]);
+
+  function selectCall(seq: number): void {
+    setSelectedSeq((current) => (current === seq ? null : seq));
+  }
+
+  return (
+    <div className="grouping-panel">
+      <h3>Speccer &amp; mapper runs</h3>
+      {error ? (
+        <p className="grouping-degraded__body">{error}</p>
+      ) : !view ? (
+        <p className="grouping-muted">Reading the LLM call index…</p>
+      ) : !view.present ? (
+        <Degraded missing={view.missing[0]} />
+      ) : view.calls.length === 0 ? (
+        <p className="grouping-muted">
+          The call index is present but recorded no attempts for this grouping.
+        </p>
+      ) : (
+        <div className="grouping-split">
+          <table className="grouping-table">
+            <thead>
+              <tr>
+                <th>when</th>
+                <th>call</th>
+                <th>model</th>
+                <th>attempt</th>
+                <th>status</th>
+                <th>tokens in/out</th>
+                <th>cache read/creation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.calls.map((call) => (
+                <tr
+                  key={call.seq}
+                  className={
+                    call.seq === selectedSeq ? "grouping-table__row--accepted" : undefined
+                  }
+                >
+                  <td>
+                    <button
+                      type="button"
+                      className="grouping-panel__edge"
+                      aria-pressed={call.seq === selectedSeq}
+                      onClick={() => selectCall(call.seq)}
+                    >
+                      {formatLocalTimestamp(call.recorded_at) ?? call.recorded_at}
+                    </button>
+                  </td>
+                  <td>
+                    <code>{call["gen_ai.operation.name"]}</code>
+                  </td>
+                  <td>{call["gen_ai.request.model"] ?? "—"}</td>
+                  <td>{call.attempt}</td>
+                  <td>
+                    <code>{call.status.code}</code>
+                  </td>
+                  <td>
+                    {call["gen_ai.usage.input_tokens"]}/{call["gen_ai.usage.output_tokens"]}
+                  </td>
+                  <td>
+                    {call["claude.usage.cache_read_tokens"]}/
+                    {call["claude.usage.cache_creation_tokens"]}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <aside className="grouping-side">
+            {selectedSeq === null ? (
+              <p className="drill-in__empty">Select a call to read its prompt and response.</p>
+            ) : detailError ? (
+              <p className="drill-in__error">
+                Call {selectedSeq} unavailable: {detailError}
+              </p>
+            ) : !detail ? (
+              <p className="drill-in__empty">Loading call…</p>
+            ) : (
+              <SpeccerCallViewer detail={detail} />
+            )}
+          </aside>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One call's prompt and response, rendered in the same session viewer used
+ * for coder and reviewer transcripts (`TranscriptEntryView`) — the prompt as a
+ * user turn, the raw response as an assistant turn. A grouper call has no
+ * `.jsonl` transcript of its own (it is a single request/response, not a
+ * multi-turn session), so the two texts already on the call record are
+ * wrapped as synthetic events rather than fetched from a session file. */
+function SpeccerCallViewer({ detail }: { detail: LlmCallDetail }) {
+  const events: TranscriptEvent[] = [];
+  if (detail.request_text != null) {
+    events.push({
+      seq: 1,
+      role: "user",
+      kind: "text",
+      text: detail.request_text,
+      is_error: false,
+      thinking_withheld: false,
+    });
+  }
+  if (detail.raw_text != null) {
+    events.push({
+      seq: 2,
+      role: "assistant",
+      kind: "text",
+      text: detail.raw_text,
+      is_error: Boolean(detail.call.error),
+      model: detail.call["gen_ai.request.model"] ?? null,
+      thinking_withheld: false,
+    });
+  }
+  return (
+    <div className="drill-in__main">
+      <h4>
+        {detail.call["gen_ai.operation.name"]} · attempt {detail.call.attempt}
+      </h4>
+      {detail.missing.map((missing) => (
+        <Degraded key={missing.artifact} missing={missing} />
+      ))}
+      {events.length === 0 ? (
+        <p className="drill-in__empty">Neither the prompt nor the response could be read.</p>
+      ) : (
+        <ol className="drill-in__entries">
+          {events.map((event) => (
+            <TranscriptEntryView key={event.seq} event={event} />
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

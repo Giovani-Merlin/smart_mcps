@@ -87,6 +87,7 @@ def create_app(
     app.include_router(transcripts.router)
     app.include_router(artifacts.router)
     app.include_router(grouping.router)
+    app.include_router(grouping.preview_router)
     app.include_router(paths_api.router)
     # The launch surface: two routers because its SSE job-log stream belongs
     # under /events with the run streams, not under the project prefix.

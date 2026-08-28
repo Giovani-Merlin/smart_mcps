@@ -157,6 +157,9 @@ class TestBuildArgv:
             escalation_source="workers_via_orchestrator",
             escalation_timeout=1.0,
             auto_resume=False,
+            model_worker="claude-sonnet-5",
+            model_base="claude-opus-5",
+            model_speccer="claude-opus-5",
         )
         emitted = " ".join(every.to_argv())
         for field in ExecutionOptions.model_fields:
@@ -255,6 +258,117 @@ class TestGroupings:
 
     def test_no_groupings_is_an_empty_list(self, client):
         assert client.get("/api/projects/proj/groupings").json() == []
+
+
+class TestResolvedOptions:
+    """Plan U18/F14: what an unspecified execution option actually resolves to,
+    exactly as the CLI would with no flags at all."""
+
+    def test_defaults_with_no_config_file(self, client):
+        body = client.get("/api/projects/proj/resolved-options").json()
+        assert body == {
+            "concurrency": 1,
+            "permission_mode": "acceptEdits",
+            "escalation_intensity": "autonomous",
+            "escalation_source": "workers_via_orchestrator",
+            "escalation_timeout": None,
+            "auto_resume": True,
+            "model_worker": "claude-sonnet-5",
+            "model_base": "claude-opus-5",
+            "model_speccer": "claude-opus-5",
+        }
+
+    def test_a_config_file_overrides_the_library_defaults(self, client, repo):
+        config_dir = repo / ".orchestrator"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.toml").write_text(
+            "[execution]\nconcurrency = 4\n\n[session]\nmodel = 'claude-opus-5'\n"
+        )
+        body = client.get("/api/projects/proj/resolved-options").json()
+        assert body["concurrency"] == 4
+        assert body["model_worker"] == "claude-opus-5"
+        # Untouched fields still resolve to the library default.
+        assert body["model_base"] == "claude-opus-5"
+
+
+class TestGroupingPreview:
+    def test_renders_groups_with_names_tasks_files_estimates_and_dependencies(self, client, repo):
+        directory = repo / ".orchestrator" / "groupings" / "mine"
+        directory.mkdir(parents=True)
+        (directory / "groups.json").write_text(
+            json.dumps(
+                {
+                    "plan_path": "docs/plans/one.md",
+                    "groups": [
+                        {
+                            "id": "g1",
+                            "name": "first",
+                            "summary": "does the first thing",
+                            "spec": "spec text",
+                            "difficulty": 0.4,
+                            "intensity": "self_verify",
+                            "dependencies": [],
+                            "verification": [{"id": "v1", "description": "checks x"}],
+                            "tasks": ["u1-a", "u2-b"],
+                            "files": ["a.py", "b.py"],
+                            "estimated_tokens": 1234,
+                        },
+                        {
+                            "id": "g2",
+                            "name": "second",
+                            "summary": "does the second thing",
+                            "spec": "spec text 2",
+                            "difficulty": 0.9,
+                            "intensity": "paired_plus",
+                            "dependencies": ["g1"],
+                            "verification": [],
+                            "tasks": ["u3-c"],
+                            "files": [],
+                            "estimated_tokens": 5678,
+                        },
+                    ],
+                    "flags": ["a warning"],
+                }
+            )
+        )
+
+        body = client.get("/api/projects/proj/groupings/mine/preview").json()
+
+        assert body["present"] is True
+        assert body["plan_path"] == "docs/plans/one.md"
+        assert body["flags"] == ["a warning"]
+        assert len(body["groups"]) == 2
+
+        first, second = body["groups"]
+        assert first["id"] == "g1"
+        assert first["name"] == "first"
+        assert first["tasks"] == ["u1-a", "u2-b"]
+        assert first["files"] == ["a.py", "b.py"]
+        assert first["estimated_tokens"] == 1234
+        assert first["dependencies"] == []
+        assert first["verification_count"] == 1
+
+        assert second["id"] == "g2"
+        assert second["dependencies"] == ["g1"]
+        assert second["files"] == []
+        assert second["verification_count"] == 0
+
+    def test_a_grouping_with_no_groups_json_is_an_explanatory_empty_state(self, client, repo):
+        directory = repo / ".orchestrator" / "groupings" / "specless"
+        directory.mkdir(parents=True)
+
+        response = client.get("/api/projects/proj/groupings/specless/preview")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["present"] is False
+        assert body["groups"] == []
+        assert "groups.json" in body["missing"]
+
+    def test_an_unknown_grouping_name_is_also_an_explanatory_empty_state(self, client):
+        response = client.get("/api/projects/proj/groupings/nope/preview")
+        assert response.status_code == 200
+        assert response.json()["present"] is False
 
 
 # ----------------------------------------------------------------------- jobs

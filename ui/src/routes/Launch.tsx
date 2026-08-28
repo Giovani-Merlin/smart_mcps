@@ -17,7 +17,9 @@ import { Link, useParams } from "react-router-dom";
 
 import {
   errorMessage,
+  getResolvedOptions,
   listGroupings,
+  listJobs,
   listPlans,
   listRuns,
   startGroupJob,
@@ -25,43 +27,80 @@ import {
   startRunJob,
 } from "../api";
 import ExecutionOptionsForm from "../components/launch/ExecutionOptions";
+import GroupingPreview from "../components/launch/GroupingPreview";
 import JobLog from "../components/launch/JobLog";
+import { useQueryParams } from "../useQueryParams";
 import type {
   ExecutionOptions,
   GroupingSummary,
+  GroupJobBody,
   JobInfo,
   PlanDoc,
+  ResolvedOptions,
   RunInfo,
 } from "../types";
 import "./Launch.css";
 
+const GRANULARITIES: NonNullable<GroupJobBody["granularity"]>[] = [
+  "independent",
+  "balanced",
+  "monolithic",
+];
+
+// How often the three launch-form lists are refetched while the page stays
+// open. A grouping finishing, or a job started elsewhere, should become
+// visible without a reload — this is what makes that true without a push
+// channel for any of the three (F3, F6).
+const LAUNCH_REFRESH_MS = 5000;
+
 export function Launch() {
   const { project = "" } = useParams();
+  const [params] = useQueryParams();
+  // `?resume=<run_id>` is what "Resume this run" (RunLayout) links here with —
+  // the run being viewed should already be the one selected on the card, not
+  // something the operator has to find again in a dropdown (U20).
+  const preselectRunId = params.get("resume");
   const [plans, setPlans] = useState<PlanDoc[]>([]);
   const [groupings, setGroupings] = useState<GroupingSummary[]>([]);
   const [runs, setRuns] = useState<RunInfo[]>([]);
+  const [jobs, setJobs] = useState<JobInfo[]>([]);
+  const [resolved, setResolved] = useState<ResolvedOptions | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [job, setJob] = useState<JobInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+
+    async function refresh(): Promise<void> {
       try {
-        const [nextPlans, nextGroupings, nextRuns] = await Promise.all([
+        const [nextPlans, nextGroupings, nextRuns, nextResolved, nextJobs] = await Promise.all([
           listPlans(project),
           listGroupings(project),
           listRuns(project),
+          getResolvedOptions(project),
+          listJobs(project),
         ]);
         if (cancelled) return;
         setPlans(nextPlans);
         setGroupings(nextGroupings);
         setRuns(nextRuns);
+        setResolved(nextResolved);
+        setJobs(nextJobs);
+        // A refetch that succeeds after a prior one failed clears the error —
+        // but a *failed* refetch below never touches `plans`/`groupings`/
+        // `runs`, so the last known-good data stays on screen instead of the
+        // form blanking out from under the operator.
+        setLoadError(null);
       } catch (err) {
         if (!cancelled) setLoadError(errorMessage(err));
       }
-    })();
+    }
+
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), LAUNCH_REFRESH_MS);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [project]);
 
@@ -84,10 +123,25 @@ export function Launch() {
 
       <div className="launch__cards">
         <GroupCard project={project} plans={plans} onLaunched={setJob} />
-        <RunCard project={project} groupings={groupings} onLaunched={setJob} />
-        <ResumeCard project={project} runs={runs} onLaunched={setJob} />
+        <RunCard project={project} groupings={groupings} resolved={resolved} onLaunched={setJob} />
+        <ResumeCard
+          project={project}
+          runs={runs}
+          resolved={resolved}
+          jobs={jobs}
+          preselectRunId={preselectRunId}
+          onLaunched={setJob}
+        />
       </div>
 
+      {job && (
+        <p className="launch__job-link">
+          <Link to={`/p/${encodeURIComponent(project)}/jobs/${encodeURIComponent(job.job_id)}`}>
+            Open this job's own page
+          </Link>
+        </p>
+      )}
+      <RunHeader job={job} resolved={resolved} />
       <JobLog project={project} job={job} />
     </div>
   );
@@ -127,6 +181,11 @@ function GroupCard({
   const [plan, setPlan] = useState("");
   const [name, setName] = useState("");
   const [dryRun, setDryRun] = useState(false);
+  const [granularity, setGranularity] = useState<GroupJobBody["granularity"]>(null);
+  const [tokenBudget, setTokenBudget] = useState("");
+  // Three-state, matching `auto_resume` on the run/resume forms: unset (null)
+  // lets the CLI's own default stand, unticking sends the explicit opt-out.
+  const [autoResume, setAutoResume] = useState<boolean | null>(null);
   const { busy, error, launch } = useLaunch(onLaunched);
 
   return (
@@ -167,6 +226,34 @@ function GroupCard({
           onChange={(e) => setName(e.target.value)}
         />
       </label>
+      <label htmlFor="launch-granularity">
+        Granularity
+        <select
+          id="launch-granularity"
+          value={granularity ?? ""}
+          onChange={(e) =>
+            setGranularity((e.target.value || null) as GroupJobBody["granularity"])
+          }
+        >
+          <option value="">(from config)</option>
+          {GRANULARITIES.map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label htmlFor="launch-token-budget">
+        Token budget
+        <input
+          id="launch-token-budget"
+          type="number"
+          min={0}
+          value={tokenBudget}
+          placeholder="(from config)"
+          onChange={(e) => setTokenBudget(e.target.value)}
+        />
+      </label>
       <label className="launch__check" htmlFor="launch-dry-run">
         <input
           id="launch-dry-run"
@@ -175,6 +262,15 @@ function GroupCard({
           onChange={(e) => setDryRun(e.target.checked)}
         />
         Dry run (print the groups, write nothing)
+      </label>
+      <label className="launch__check" htmlFor="launch-group-auto-resume">
+        <input
+          id="launch-group-auto-resume"
+          type="checkbox"
+          checked={autoResume !== false}
+          onChange={(e) => setAutoResume(e.target.checked ? null : false)}
+        />
+        Wait out usage limits
       </label>
       {error && <p className="app__error">{error}</p>}
       <button
@@ -185,7 +281,10 @@ function GroupCard({
             startGroupJob(project, {
               plan: plan.trim(),
               name: name.trim() || null,
+              granularity: granularity || null,
+              token_budget: tokenBudget.trim() === "" ? null : Number(tokenBudget),
               dry_run: dryRun,
+              auto_resume: autoResume,
             }),
           )
         }
@@ -196,13 +295,41 @@ function GroupCard({
   );
 }
 
+/** The resolved concurrency and three model ids a run or resume job actually
+ * used — the job's own submitted options where set, falling back to the
+ * project's resolved defaults for whatever was left unspecified. This is what
+ * makes a running job's effective settings legible on the page that launched
+ * it, rather than only visible as a raw argv (F14/U18). */
+function RunHeader({
+  job,
+  resolved,
+}: {
+  job: JobInfo | null;
+  resolved: ResolvedOptions | null;
+}) {
+  if (!job || !resolved || job.kind === "group") return null;
+  const submitted = (job.options as { options?: ExecutionOptions } | undefined)?.options ?? {};
+  const concurrency = submitted.concurrency ?? resolved.concurrency;
+  const modelWorker = submitted.model_worker ?? resolved.model_worker;
+  const modelBase = submitted.model_base ?? resolved.model_base;
+  const modelSpeccer = submitted.model_speccer ?? resolved.model_speccer;
+  return (
+    <p className="launch__run-header">
+      Resolved for this run: concurrency {concurrency} · worker model {modelWorker} · base model{" "}
+      {modelBase} · speccer model {modelSpeccer}
+    </p>
+  );
+}
+
 function RunCard({
   project,
   groupings,
+  resolved,
   onLaunched,
 }: {
   project: string;
   groupings: GroupingSummary[];
+  resolved: ResolvedOptions | null;
   onLaunched: (job: JobInfo) => void;
 }) {
   const [grouping, setGrouping] = useState("");
@@ -230,6 +357,7 @@ function RunCard({
           ))}
         </select>
       </label>
+      <GroupingPreview project={project} name={grouping} />
       <label htmlFor="launch-run-id">
         Run id
         <input
@@ -245,6 +373,7 @@ function RunCard({
         value={options}
         onChange={setOptions}
         disabled={busy}
+        resolved={resolved}
       />
       {error && <p className="app__error">{error}</p>}
       <button
@@ -266,25 +395,86 @@ function RunCard({
   );
 }
 
+/** The most recent `run` or `resume` job that targeted `runId`, if any —
+ * `jobs` is already newest-first (`list_jobs`), so the first match is the
+ * run's last-used launch. A `group` job never carries a `run_id` and is
+ * skipped by construction. */
+function lastJobFor(jobs: JobInfo[], runId: string): JobInfo | null {
+  return (
+    jobs.find(
+      (j) =>
+        (j.kind === "run" || j.kind === "resume") &&
+        (j.options as { run_id?: string | null } | undefined)?.run_id === runId,
+    ) ?? null
+  );
+}
+
 function ResumeCard({
   project,
   runs,
+  resolved,
+  jobs,
+  preselectRunId,
   onLaunched,
 }: {
   project: string;
   runs: RunInfo[];
+  resolved: ResolvedOptions | null;
+  jobs: JobInfo[];
+  preselectRunId: string | null;
   onLaunched: (job: JobInfo) => void;
 }) {
-  const [runId, setRunId] = useState("");
+  const [runId, setRunId] = useState(preselectRunId ?? "");
   const [options, setOptions] = useState<ExecutionOptions>({});
+  const [prefillMissing, setPrefillMissing] = useState(false);
+  // Set the moment the operator (or a form reset from choosing a different
+  // run) edits a field — after that, a job list that refreshes every five
+  // seconds must never overwrite what they typed (U20).
+  const [touched, setTouched] = useState(false);
   const { busy, error, launch } = useLaunch(onLaunched);
+
+  // Pre-select the run being viewed (U20/g10-preselects-run). `runs` can
+  // arrive after the query param does, but the id is already known, so there
+  // is nothing to wait for.
+  useEffect(() => {
+    if (preselectRunId) setRunId(preselectRunId);
+  }, [preselectRunId]);
+
+  // Pre-fill the options that run last used, from the job record's own
+  // `options` block (U20/g10-fields-populated). A run with no matching job
+  // record — the process that launched it predates jobs, or the record was
+  // lost — renders defaults plus a note rather than a blank that reads
+  // identically to "this run used the defaults" (g10-missing-record-note).
+  useEffect(() => {
+    if (touched) return;
+    if (!runId) {
+      setOptions({});
+      setPrefillMissing(false);
+      return;
+    }
+    const found = lastJobFor(jobs, runId);
+    if (found) {
+      setOptions((found.options as { options?: ExecutionOptions }).options ?? {});
+      setPrefillMissing(false);
+    } else {
+      setOptions({});
+      setPrefillMissing(true);
+    }
+  }, [runId, jobs, touched]);
 
   return (
     <section className="launch__card" aria-label="Resume a run">
       <h2>Resume a run</h2>
       <label htmlFor="launch-resume-run">
         Run
-        <select id="launch-resume-run" value={runId} onChange={(e) => setRunId(e.target.value)}>
+        <select
+          id="launch-resume-run"
+          value={runId}
+          onChange={(e) => {
+            setRunId(e.target.value);
+            setTouched(false);
+          }}
+        >
           <option value="">(choose a run)</option>
           {runs.map((run) => (
             <option key={run.run_id} value={run.run_id}>
@@ -298,11 +488,21 @@ function ResumeCard({
         set here overrides them — which is the whole reason these controls are on the form
         rather than left to a remembered flag.
       </p>
+      {runId && prefillMissing && (
+        <p className="launch__hint launch__hint--warning">
+          No previous launch record was found for this run — the fields below are defaults, not
+          what it last used.
+        </p>
+      )}
       <ExecutionOptionsForm
         idPrefix="resume"
         value={options}
-        onChange={setOptions}
+        onChange={(next) => {
+          setOptions(next);
+          setTouched(true);
+        }}
         disabled={busy}
+        resolved={resolved}
       />
       {error && <p className="app__error">{error}</p>}
       <button

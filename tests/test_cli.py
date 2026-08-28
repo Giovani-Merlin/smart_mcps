@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.cli import _load_config, _print_outcomes, apply_overrides, main
+from orchestrator.cli import (
+    _config_banner_source,
+    _load_config,
+    _print_outcomes,
+    apply_overrides,
+    main,
+)
 from orchestrator.config import (
     EscalationConfig,
     OrchestratorConfig,
@@ -315,7 +321,9 @@ class TestScorecardAndMetricsLogCli:
         )
         assert exit_code == 0
         out = capsys.readouterr().out
-        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        trace_path = (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        )
         trace = GroupingTrace.model_validate_json(trace_path.read_text())
         sc = trace.scorecard
         assert sc is not None
@@ -390,7 +398,100 @@ def _stub_codegraph_runner(args):
                 "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
             }
         )
+    if args[0] == "query":
+        return "[]"
     raise AssertionError(f"unexpected codegraph call in a fixture test: {args}")
+
+
+class TestGroupStageProgressUnbuffered:
+    """Plan U24: the whole failure mode being fixed is that a `group` job shows
+    nothing for minutes. Verified against a real, separate OS process writing to
+    a real log file — a captured `capsys` run proves the lines exist, not that
+    they arrived while the command was still running."""
+
+    def test_progress_lines_land_in_the_log_while_the_process_is_still_running(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "server.py").write_bytes(b"def real_fn():\n    pass\n" * 20)
+        (repo / "test_server.py").write_bytes(b"def test_real_fn():\n    pass\n" * 10)
+        plan = repo / "plan.md"
+        plan.write_text(
+            "# feat: toy plan\n\n## Tasks\n\n"
+            "- T1: extend the proxy server tool list\n"
+            "- T2: cover the proxy with tests\n"
+        )
+        script = tmp_path / "run_group.py"
+        script.write_text(
+            "import json, sys, time\n"
+            "from pathlib import Path\n"
+            "from orchestrator.cli import main\n"
+            "from orchestrator.grouping.graphing import CodegraphClient\n"
+            "\n"
+            "def codegraph_response(args):\n"
+            "    command = args[0]\n"
+            "    if command == 'sync':\n"
+            "        return ''\n"
+            "    if command == 'files':\n"
+            "        return 'repo files: server.py, test_server.py'\n"
+            "    if command == 'status':\n"
+            "        return json.dumps({'initialized': True, 'fileCount': 2, 'nodeCount': 4,\n"
+            "            'edgeCount': 1,\n"
+            "            'pendingChanges': {'added': 0, 'modified': 0, 'removed': 0}})\n"
+            "    symbol = args[1]\n"
+            "    if command == 'query':\n"
+            "        if symbol in ('real_fn', 'test_real_fn'):\n"
+            "            return json.dumps([{'node': {'name': symbol, 'filePath': 'server.py'}}])\n"
+            "        return json.dumps([])\n"
+            "    if command == 'callers' and symbol == 'real_fn':\n"
+            "        return json.dumps({'symbol': symbol, 'callers': [\n"
+            "            {'name': 'test_real_fn', 'kind': 'function', 'filePath': 'test_server.py'}]})\n"
+            "    key = {'callers': 'callers', 'callees': 'callees', 'impact': 'affected'}[command]\n"
+            "    return json.dumps({'symbol': symbol, key: []})\n"
+            "\n"
+            "def llm_runner(prompt, schema):\n"
+            "    # Deliberately slow, so the parent test can observe the first\n"
+            "    # progress line while this child process is still alive.\n"
+            "    time.sleep(1.5)\n"
+            "    return json.dumps({'tasks': [\n"
+            "        {'task_id': 't1', 'description': 'd1', 'files': ['server.py'],\n"
+            "         'symbols': ['real_fn']},\n"
+            "        {'task_id': 't2', 'description': 'd2', 'files': ['test_server.py'],\n"
+            "         'symbols': ['test_real_fn']}]})\n"
+            "\n"
+            "repo, plan = Path(sys.argv[1]), sys.argv[2]\n"
+            "exit_code = main(\n"
+            "    ['group', plan, '--repo', str(repo), '--no-spec'],\n"
+            "    llm_runner=llm_runner,\n"
+            "    client=CodegraphClient(repo_root=repo, runner=codegraph_response),\n"
+            ")\n"
+            "sys.exit(exit_code)\n"
+        )
+        log_path = tmp_path / "job.log"
+        with log_path.open("wb") as log:
+            proc = subprocess.Popen(
+                [sys.executable, str(script), str(repo), str(plan)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        try:
+            deadline = time.monotonic() + 5
+            observed_while_running = False
+            while time.monotonic() < deadline:
+                if "progress: stage: mapper" in log_path.read_text():
+                    observed_while_running = proc.poll() is None
+                    break
+                time.sleep(0.05)
+            assert observed_while_running, (
+                "first progress line did not land in the log within 5s of "
+                "process start, or only appeared after the process had exited"
+            )
+        finally:
+            proc.wait(timeout=10)
+        assert proc.returncode == 0
+        text = log_path.read_text()
+        assert "progress: stage: mapper" in text
+        assert "progress: stage: graph" in text
+        assert "progress: stage: partition" in text
 
 
 OVERSIZED_SLICE_PLAN = """# feat: oversized slice
@@ -866,6 +967,38 @@ class TestPrintOutcomes:
         assert "g2: completed" in out
         assert "g1: completed" not in out
 
+    def test_omitting_paths_skips_the_residue_section_unchanged(self, capsys):
+        # Every test above calls _print_outcomes(state) with no paths, exactly
+        # as every pre-U12 caller does — must keep behaving identically.
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state) == 0
+        assert "surprises pending" not in capsys.readouterr().out
+
+    def test_residue_section_reports_a_pending_bucket_with_its_reason(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        paths.run_dir.mkdir(parents=True)
+        atomic_write_text(
+            paths.surprises_path,
+            json.dumps(
+                {"g1": [{"kind": "other", "description": "late finding", "affected_groups": []}]}
+            ),
+        )
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state, paths) == 0
+        out = capsys.readouterr().out
+        assert "surprises pending at end of run" in out
+        assert "g1: 1 pending" in out
+        assert "already completed" in out
+
+    def test_residue_section_prints_none_pending_for_an_empty_board(self, tmp_path, capsys):
+        paths = RunPaths(tmp_path, "r1")
+        paths.run_dir.mkdir(parents=True)
+        state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state, paths) == 0
+        out = capsys.readouterr().out
+        assert "surprises pending at end of run" in out
+        assert "none pending" in out
+
     def test_stall_report_names_failure_holds_branch_reentry_and_resume_command(self, capsys):
         """Plan U3: a stalled group's line carries its failure text verbatim,
         the groups it holds and on which files, its branch, its reentry_count,
@@ -1058,6 +1191,109 @@ class TestRunBanner:
         assert "run r10" in banner
         assert "concurrency 4" in banner
         assert "HITL off" in banner
+
+
+class TestConfigBanner:
+    """F11: the `config:` line names a path only when one was actually read —
+    naming a path that was never opened made two operators once believe a
+    `.orchestrator/config.toml` existed when it didn't."""
+
+    def test_no_config_file_reports_defaults(self, tmp_path):
+        missing = tmp_path / ".orchestrator" / "config.toml"
+        assert not missing.exists()
+        assert _config_banner_source(missing) == "defaults (no config file)"
+
+    def test_present_config_file_reports_its_path(self, tmp_path):
+        present = tmp_path / ".orchestrator" / "config.toml"
+        present.parent.mkdir(parents=True)
+        present.write_text("[session]\n")
+        assert _config_banner_source(present) == str(present)
+
+
+class TestModelFlags:
+    """Plan U36: --model-worker/--model-base/--model-speccer, flag > config-file
+    > built-in default (same precedence as every other override in this file),
+    and the resolved trio printed on the run banner."""
+
+    def test_run_help_lists_the_three_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["run", "--help"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--model-worker" in out
+        assert "--model-base" in out
+        assert "--model-speccer" in out
+
+    def test_flags_beat_config_file(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[session]\nmodel = "config-worker"\nbase_model = "config-base"\n'
+            'speccer_model = "config-speccer"\n'
+        )
+        args = argparse.Namespace(
+            model_worker="flag-worker", model_base="flag-base", model_speccer="flag-speccer"
+        )
+        merged = apply_overrides(load_config(config_file), args)
+        assert merged.session.model == "flag-worker"
+        assert merged.session.base_model == "flag-base"
+        assert merged.session.speccer_model == "flag-speccer"
+
+    def test_absent_flags_keep_config_file_values(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[session]\nmodel = "config-worker"\nbase_model = "config-base"\n'
+            'speccer_model = "config-speccer"\n'
+        )
+        args = argparse.Namespace(model_worker=None, model_base=None, model_speccer=None)
+        merged = apply_overrides(load_config(config_file), args)
+        assert merged.session.model == "config-worker"
+        assert merged.session.base_model == "config-base"
+        assert merged.session.speccer_model == "config-speccer"
+
+    def test_no_flags_and_no_config_leaves_the_built_in_defaults(self):
+        args = argparse.Namespace(model_worker=None, model_base=None, model_speccer=None)
+        merged = apply_overrides(OrchestratorConfig(), args)
+        assert merged.session.model == "claude-sonnet-5"
+        assert merged.session.base_model == "claude-opus-5"
+        assert merged.session.speccer_model == "claude-opus-5"
+
+    def test_banner_prints_the_three_resolved_model_ids(self, tmp_path, capsys, monkeypatch):
+        write_run_artifacts(tmp_path, [make_group("g1")])
+        for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "init"]):
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+        fake_home = tmp_path / "fake-home"
+        (fake_home / "sessions").mkdir(parents=True)
+        (tmp_path / ".orchestrator" / "config.toml").write_text(
+            f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
+        )
+        monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
+        monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
+        (fake_home / "script.jsonl").write_text(
+            json.dumps({"exit_code": 1, "stderr": "spawn died"}) + "\n"
+        )
+        exit_code = main(
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r11",
+                "--model-worker",
+                "custom-worker-model",
+            ]
+        )
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        models_line = next(line for line in out.splitlines() if line.startswith("models:"))
+        assert "worker=custom-worker-model" in models_line
+        assert "base=claude-opus-5" in models_line
+        assert "speccer=claude-opus-5" in models_line
 
 
 class TestReviewIntensityWarning:

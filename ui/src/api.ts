@@ -13,6 +13,10 @@
 //   POST /api/projects/{project}/runs/{run}/escalations/{esc}/answer
 //   GET  /api/projects/{project}/runs/{run}/sessions/{session}/transcript
 //   GET  /api/projects/{project}/runs/{run}/groups/{group}/artifacts
+//   GET  /api/projects/{project}/runs/{run}/groups/{group}/diff
+//   GET  /api/projects/{project}/runs/{run}/groups/{group}/generations/{gen}/diff
+//   GET  /api/projects/{project}/runs/{run}/grouping/llm
+//   GET  /api/projects/{project}/runs/{run}/grouping/llm/calls/{seq}
 //   GET  /api/projects/{project}/runs/{run}/paths
 //   GET  /api/projects/{project}/plans
 //   GET  /api/projects/{project}/groupings
@@ -26,13 +30,18 @@ import type {
   AnswerBody,
   AnswerResult,
   Artifact,
+  DiffResult,
   EscalationRequest,
   GroupJobBody,
+  GroupingPreview,
   GroupingSummary,
   GroupingView,
   JobInfo,
+  LlmCallDetail,
+  LlmCallsView,
   PlanDoc,
   Project,
+  ResolvedOptions,
   ResumeJobBody,
   RunInfo,
   RunJobBody,
@@ -146,6 +155,20 @@ export function getGrouping(project: string, run: string): Promise<GroupingView>
   return request<GroupingView>(`${runPath(project, run)}/grouping`);
 }
 
+/** The grouper's own LLM call index — mapper and speccer, grouping-time and
+ * rewrite alike. 200 with `present: false` when there is none: a run made
+ * before the call recorder shipped, or a task map read verbatim with no model
+ * call at all. */
+export function getLlmCalls(project: string, run: string): Promise<LlmCallsView> {
+  return request<LlmCallsView>(`${runPath(project, run)}/grouping/llm`);
+}
+
+/** One recorded call in full — the prompt it sent and the raw text it got
+ * back — for the session viewer to render. */
+export function getLlmCall(project: string, run: string, seq: number): Promise<LlmCallDetail> {
+  return request<LlmCallDetail>(`${runPath(project, run)}/grouping/llm/calls/${seq}`);
+}
+
 /** The run's on-disk paths, display-only. Every file-backed panel header takes
  * its `PathChip` from here rather than rebuilding a path client-side, so a
  * layout change on the server moves the chips with it. */
@@ -159,6 +182,26 @@ export function getArtifacts(
   groupId: string,
 ): Promise<Artifact[]> {
   return request<Artifact[]>(`${runPath(project, run)}/groups/${enc(groupId)}/artifacts`);
+}
+
+/** A completed group's whole diff against the integration tip it branched
+ * from (plan U29, R4). Never 404s — a torn-down branch or an unmerged group
+ * comes back `available: false` with a `reason`. */
+export function getGroupDiff(project: string, run: string, groupId: string): Promise<DiffResult> {
+  return request<DiffResult>(`${runPath(project, run)}/groups/${enc(groupId)}/diff`);
+}
+
+/** A generation's final diff (plan U29, R3) — the commits its coder session
+ * made, not a running feed. Same never-404s contract as `getGroupDiff`. */
+export function getGenerationDiff(
+  project: string,
+  run: string,
+  groupId: string,
+  generation: number,
+): Promise<DiffResult> {
+  return request<DiffResult>(
+    `${runPath(project, run)}/groups/${enc(groupId)}/generations/${generation}/diff`,
+  );
 }
 
 // -------------------------------------------------------------------- launch
@@ -183,6 +226,21 @@ export function listPlans(project: string): Promise<PlanDoc[]> {
 
 export function listGroupings(project: string): Promise<GroupingSummary[]> {
   return request<GroupingSummary[]>(`${projectPath(project)}/groupings`);
+}
+
+/** Every execution option's effective default right now — the project's
+ * config.toml layered over the library defaults, exactly as the CLI would
+ * resolve an omitted flag. What the launch form shows beside a field left
+ * unspecified, and what the run header shows for a running run (plan U18). */
+export function getResolvedOptions(project: string): Promise<ResolvedOptions> {
+  return request<ResolvedOptions>(`${projectPath(project)}/resolved-options`);
+}
+
+/** A named grouping's own groups.json, read-only — what the launch page shows
+ * without a throwaway `group --dry-run`. Never errors on an absent
+ * groups.json; `present: false` carries the explanation instead. */
+export function getGroupingPreview(project: string, name: string): Promise<GroupingPreview> {
+  return request<GroupingPreview>(`${projectPath(project)}/groupings/${enc(name)}/preview`);
 }
 
 export function listJobs(project: string): Promise<JobInfo[]> {

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -37,7 +38,12 @@ from orchestrator.execution.manifest import (
     log_event,
     record_session,
 )
-from orchestrator.execution.preflight import PreflightFailure
+from orchestrator.execution.preflight import (
+    PreflightBaseline,
+    PreflightFailure,
+    compare_to_baseline,
+    failing_tests_from_junit,
+)
 from orchestrator.execution.prompting import (
     REVIEW_SCRATCH_DIRNAME,
     render_coder_answer_prompt,
@@ -60,6 +66,7 @@ from orchestrator.execution.scheduler import (
     GroupFailure,
     GroupState,
     RunAbort,
+    RunState,
 )
 from orchestrator.execution.sessions import (
     RoundResult,
@@ -90,6 +97,7 @@ from orchestrator.model import (
     SessionEntry,
     SessionRole,
     Surprise,
+    SurpriseResidueEntry,
 )
 
 
@@ -102,6 +110,16 @@ class MergeConflict(Exception):
         self.affected_groups = affected_groups or []
 
 
+_logger = logging.getLogger(__name__)
+
+#: Above this many named groups a mark is logged as a wide fan-out warning
+#: (plan U11 Decisions) — delivered in full regardless, never truncated: the
+#: informational kind (plan U13) is the real fix for a broad note draining
+#: rewrite budgets, so capping fan-out here would only bite a genuinely
+#: rewrite-worthy broadcast.
+WIDE_FANOUT_THRESHOLD = 5
+
+
 class SurpriseBoard:
     """Cross-group surprise registry. A mark is consumed by the named group's
     executor at its next checkpoint (before launch, or before accepting an
@@ -111,12 +129,32 @@ class SurpriseBoard:
     a plain in-memory dict dies with the process, silently dropping a surprise
     marked for a group that has not yet run. ``paths=None`` keeps every
     existing in-process test byte-identical.
+
+    ``groups`` (plan U11) is the run's real group list, used to validate every
+    id in a surprise's ``affected_groups``: a task id is resolved to its owning
+    group, and an id naming neither a group nor a task falls through to the
+    run-level bucket (key ``RUN_LEVEL``) instead of a dead bucket nothing ever
+    reads. ``groups=None`` (every existing caller before this unit) skips
+    validation entirely, so ids like the tests' bare "g0"/"g3" keep working
+    unchanged.
     """
 
-    def __init__(self, paths: RunPaths | None = None) -> None:
+    #: Bucket key for a surprise whose id names neither a real group nor a task
+    #: owned by one — otherwise silently dropped, per plan U11.
+    RUN_LEVEL = "__run__"
+
+    def __init__(self, paths: RunPaths | None = None, *, groups: list[Group] | None = None) -> None:
         self._paths = paths
         self._lock = threading.Lock()
         self._pending: dict[str, list[Surprise]] = {}
+        self._group_ids: frozenset[str] | None = (
+            frozenset(g.id for g in groups) if groups is not None else None
+        )
+        self._task_owner: dict[str, str] = {}
+        if groups is not None:
+            for group in groups:
+                for task in group.tasks:
+                    self._task_owner.setdefault(task, group.id)
         if paths is not None and paths.surprises_path.is_file():
             raw = json.loads(paths.surprises_path.read_text())
             self._pending = {
@@ -125,10 +163,44 @@ class SurpriseBoard:
 
     def mark(self, surprise: Surprise, *, source_group: str | None = None) -> None:
         with self._lock:
-            for gid in surprise.affected_groups:
-                if gid != source_group:
-                    self._pending.setdefault(gid, []).append(surprise)
+            targets = [gid for gid in surprise.affected_groups if gid != source_group]
+            if len(targets) > WIDE_FANOUT_THRESHOLD:
+                _logger.warning(
+                    "surprise from %s names %d groups (wide fan-out): %s",
+                    source_group,
+                    len(targets),
+                    surprise.description,
+                )
+            for gid in targets:
+                key = self._resolve(gid, surprise, source_group)
+                self._append(key, surprise)
             self._persist()
+
+    def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> str:
+        """Map a raw ``affected_groups`` id to the bucket it should land in."""
+        if self._group_ids is None:
+            return gid  # no group list configured — legacy, unvalidated behavior
+        if gid in self._group_ids:
+            return gid
+        owner = self._task_owner.get(gid)
+        if owner is not None:
+            return owner
+        _logger.warning(
+            "surprise from %s names unknown id %s (no matching group or task): %s",
+            source_group,
+            gid,
+            surprise.description,
+        )
+        return self.RUN_LEVEL
+
+    def _append(self, key: str, surprise: Surprise) -> None:
+        """Append, deduplicating an identical surprise already pending in this
+        bucket (plan U11): successive rounds/generations re-emit the same
+        finding, and a dead-simple in-list check is enough since a bucket
+        rarely holds more than a handful of entries."""
+        bucket = self._pending.setdefault(key, [])
+        if surprise not in bucket:
+            bucket.append(surprise)
 
     def pending_for(self, group_id: str) -> list[Surprise]:
         with self._lock:
@@ -149,6 +221,73 @@ class SurpriseBoard:
             for gid, surprises in self._pending.items()
         }
         atomic_write_text(self._paths.surprises_path, json.dumps(payload, indent=2) + "\n")
+
+
+#: Reason strings for a residue entry (plan U12) — a bucket resolved to a real
+#: group whose state is terminal-completed never gets another checkpoint to
+#: consume it at; ``RUN_LEVEL`` never named a group at all; anything else was
+#: still reachable when the run stopped.
+REASON_GROUP_COMPLETED = "never delivered — group already completed"
+REASON_UNKNOWN_GROUP = "unknown group id"
+REASON_RUN_ENDED = "run ended before delivery"
+
+
+def surprise_residue(paths: RunPaths, state: RunState | None) -> list[SurpriseResidueEntry]:
+    """Every bucket still on the board when the run ended, each labelled with
+    why (plan U12). Reads ``surprises.json`` directly rather than constructing
+    a ``SurpriseBoard`` — a residue report has no group list to validate
+    against and must never mutate the file it is reporting on. Sorted by
+    bucket for a stable, readable listing.
+    """
+    if not paths.surprises_path.is_file():
+        return []
+    try:
+        raw = json.loads(paths.surprises_path.read_text())
+    except json.JSONDecodeError:
+        return []
+    entries: list[SurpriseResidueEntry] = []
+    for bucket, items in raw.items():
+        surprises = [Surprise.model_validate(item) for item in items]
+        if not surprises:
+            continue
+        entries.append(
+            SurpriseResidueEntry(
+                bucket=bucket,
+                count=len(surprises),
+                reason=_residue_reason(bucket, state),
+                surprises=surprises,
+            )
+        )
+    entries.sort(key=lambda entry: entry.bucket)
+    return entries
+
+
+def _residue_reason(bucket: str, state: RunState | None) -> str:
+    if bucket == SurpriseBoard.RUN_LEVEL:
+        return REASON_UNKNOWN_GROUP
+    group_state = state.groups.get(bucket) if state is not None else None
+    if group_state is not None and group_state.state in (
+        GroupState.COMPLETED,
+        GroupState.RESOLVED,
+    ):
+        return REASON_GROUP_COMPLETED
+    return REASON_RUN_ENDED
+
+
+def format_residue_report(entries: list[SurpriseResidueEntry]) -> str:
+    """Human-readable rendering shared by the CLI end-of-run summary and
+    `finish` (plan U12). An empty board renders an explicit "none pending"
+    rather than a bare heading — the whole point is that the operator should
+    never have to open ``surprises.json`` to learn the board is empty."""
+    lines = ["surprises pending at end of run:"]
+    if not entries:
+        lines.append("  none pending")
+        return "\n".join(lines)
+    for entry in entries:
+        lines.append(f"  {entry.bucket}: {entry.count} pending — {entry.reason}")
+        for surprise in entry.surprises:
+            lines.append(f"    - [{surprise.kind}] {surprise.description}")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -172,6 +311,12 @@ class ReviewDeps:
     # lifecycle log stays on regardless (R10).
     broker: EscalationBroker | None = None
     policy: EscalationPolicy | None = None
+    # What was already red on the launch branch (plan U2/U3), read back by the
+    # merge gate to tell a new failure from a pre-existing one. ``None`` (no
+    # baseline captured, or a resumed run with no run directory to read it
+    # from) degrades to "no_baseline", which never attributes a failure as
+    # new — the same conservative default `compare_to_baseline` documents.
+    preflight_baseline: PreflightBaseline | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -202,6 +347,10 @@ class _GroupExecution:
         self.reviewer_sid: str | None = None
         self._questions = 0  # needs_input rounds this generation (uncounted vs the breaker)
         self._grant_notes: list[str] = []  # operator guidance for an over-cap generation
+        # Informational surprises consumed at a checkpoint (plan U13): folded into
+        # the next prompt this generation builds, then cleared — never spent as a
+        # rewrite, never sent to the speccer.
+        self._briefing_notes: list[str] = []
         # Re-entry discovery (R4): a live coder entry at the persisted generation
         # can only pre-exist the executor on a resumed run — fresh runs start with
         # an empty group entry. One-shot: consumed by the first generation.
@@ -216,8 +365,7 @@ class _GroupExecution:
         await self._approve_gate(
             EscalationKind.GROUP_START, f"launch group {self.gid} ({self.group.name})?"
         )
-        if self.deps.board.pending_for(self.gid):
-            await self._rewrite("upstream surprise named this group before launch")
+        await self._handle_pending_surprises("upstream surprise named this group before launch")
         self.workspace = self.deps.workspace_for(self.group)
         self._log(f"group {self.gid}: worktree ready at {self.workspace}")
         self._heartbeat.start()
@@ -268,6 +416,7 @@ class _GroupExecution:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
+            prompt = self._apply_briefing(prompt)
             self.handoff_prompt = None
             # The session id is generated and recorded *before* the blocking fork
             # call, not after (plan U7): a crash mid-call would otherwise leave no
@@ -315,9 +464,15 @@ class _GroupExecution:
         # announces its own round before `start_fork` too, so nothing further is
         # needed here in either case.
 
+        verification_ids = [item.id for item in self.group.verification]
         while True:
             report, result = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
+                nudge_until_report,
+                self.deps.runner,
+                result,
+                CoderReport,
+                cwd=self.workspace,
+                verification_ids=verification_ids,
             )
             self._persist_coder_usage()
 
@@ -371,10 +526,11 @@ class _GroupExecution:
             if verdict is None or verdict.status == "approved":
                 outcome = "self-verified" if verdict is None else "approved"
                 self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
-                if self.deps.board.pending_for(self.gid):
-                    # A surprise named this group while it was in review: its
-                    # pending approval is not accepted (plan U7 scenario).
-                    await self._rewrite("surprise named this group during review")
+                # A surprise named this group while it was in review: a
+                # rewrite-worthy one means its pending approval is not accepted
+                # (plan U7 scenario); an informational-only one is noted and the
+                # approval proceeds (plan U13).
+                if await self._handle_pending_surprises("surprise named this group during review"):
                     return False
                 await self._approve_gate(
                     EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
@@ -512,6 +668,7 @@ class _GroupExecution:
         entry.total_output_tokens = usage.total_output_tokens
         entry.total_cache_read_tokens = usage.total_cache_read_tokens
         entry.total_cache_creation_tokens = usage.total_cache_creation_tokens
+        entry.total_inherited_cache_read_tokens = usage.total_inherited_cache_read_tokens
 
     def _persist_coder_usage(self) -> None:
         """Record the active coder's latest context size on its manifest entry
@@ -732,23 +889,79 @@ class _GroupExecution:
                 # Not a git conflict — no coder resume is attempted in place
                 # (plan U4 Decisions: only a concrete git/test failure ever
                 # warrants an LLM call, and the in-place resume is specific to
-                # resolving conflict markers). Escalate then rewrite, same as
-                # a merge conflict past its resolve attempts.
+                # resolving conflict markers).
                 self._log(f"group {self.gid}: preflight failed ({exc})")
-                surprise = Surprise(kind="other", description=str(exc), affected_groups=[self.gid])
+                diagnosis, attributable = self._classify_preflight(exc)
+                surprise = Surprise(kind="other", description=diagnosis, affected_groups=[self.gid])
                 self._spread([surprise])
+                if attributable:
+                    # A new, real regression — keep today's escalate-then-rewrite
+                    # behaviour (plan U3): the failure is evidence about the diff
+                    # and a rewritten spec can act on it.
+                    response = await self._escalate(
+                        EscalationKind.PREFLIGHT_FAILED,
+                        prompt=f"preflight failed for {self.gid}: {exc}",
+                        surprises=[surprise],
+                    )
+                    extra = [surprise]
+                    if response is not None:
+                        extra.append(_operator_surprise(self.gid, response.answer))
+                    await self._rewrite(f"preflight failed: {exc}", extra=extra)
+                    return False
+                # env/timeout, or every failing test was already red on the
+                # launch branch: not evidence about the diff, so no rewrite is
+                # spent on it (plan U3 Decisions) — escalate for visibility only,
+                # the group fails fast either way.
                 response = await self._escalate(
-                    EscalationKind.MERGE_CONFLICT,
-                    prompt=f"preflight failed for {self.gid}: {exc}",
+                    EscalationKind.PREFLIGHT_FAILED,
+                    prompt=f"preflight failed for {self.gid} (not attributable to this diff): {exc}",
                     surprises=[surprise],
                 )
-                extra = [surprise]
                 if response is not None:
-                    extra.append(_operator_surprise(self.gid, response.answer))
-                await self._rewrite(f"preflight failed: {exc}", extra=extra)
-                return False
+                    diagnosis += f"\n[operator] {response.answer}"
+                raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             return True
+
+    def _classify_preflight(self, exc: PreflightFailure) -> tuple[str, bool]:
+        """Route a preflight failure by cause (plan U3): ``env``/``timeout``
+        never ran a real test, and a ``regression`` whose failing tests are all
+        already red on the launch branch is not evidence about this diff
+        either — neither is attributable, and the caller must not spend a
+        rewrite on it. Only a genuinely new, run failure is attributable.
+
+        Returns the diagnosis text handed to the next generation (or the
+        operator) — carrying the check output's own "short test summary info"
+        tail, not just a path to the log — and whether the failure is
+        attributable.
+        """
+        summary_tail = ""
+        if exc.output_path is not None and exc.output_path.is_file():
+            summary_tail = _short_test_summary(exc.output_path.read_text())
+        if exc.kind in ("env", "timeout"):
+            diagnosis = f"preflight failed ({exc.kind}): {exc.reason}"
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, False
+        # kind == "regression": tests actually ran and something actually
+        # failed — the only question left is whether it is new.
+        junit_path = (
+            exc.output_path.parent / "preflight-junit.xml" if exc.output_path is not None else None
+        )
+        failing = failing_tests_from_junit(junit_path) if junit_path is not None else frozenset()
+        comparison = compare_to_baseline(self.deps.preflight_baseline, failing)
+        if comparison.verdict == "pre_existing":
+            diagnosis = (
+                f"preflight failed (pre-existing): {exc.reason} — every failing test was "
+                "already failing on the launch branch"
+            )
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, False
+        diagnosis = f"preflight failed (regression): {exc.reason}"
+        if summary_tail:
+            diagnosis += f"\n{summary_tail}"
+        return diagnosis, True
 
     async def _resolve_conflict_in_place(self, exc: MergeConflict) -> bool:
         """One warm-resume attempt at the group's own coder session (plan U1),
@@ -772,7 +985,12 @@ class _GroupExecution:
                 on_turn=self._make_coder_on_turn(self.coder_entry),
             )
             report, _ = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, CoderReport, cwd=self.workspace
+                nudge_until_report,
+                self.deps.runner,
+                result,
+                CoderReport,
+                cwd=self.workspace,
+                verification_ids=[item.id for item in self.group.verification],
             )
         except SessionError as inner_exc:
             self._log(f"group {self.gid}: conflict resolve attempt failed: {inner_exc}")
@@ -805,11 +1023,17 @@ class _GroupExecution:
                 )
             extra.append(_operator_surprise(self.gid, response.answer))
         surprises = self.deps.board.consume(self.gid) + extra
+        self._log(
+            f"group {self.gid} generation {self.generation}: rewriting spec ({why}); "
+            f"surprises consumed: {len(surprises)} "
+            f"[{', '.join(surprise.kind for surprise in surprises) or 'none'}]"
+        )
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
         self.rewrites += 1
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
         if self.sessions_spawned:
             self._advance_generation()
+        self._persist_rewritten_spec()
 
     def _breaker_reason(self, rounds: int) -> str | None:
         if rounds >= self.deps.breaker.max_rounds_per_generation:
@@ -996,6 +1220,13 @@ class _GroupExecution:
         land in ``run.log`` in every run mode, HITL or autonomous."""
         log_event(self.deps.store.paths, text)
 
+    def _persist_rewritten_spec(self) -> None:
+        """Save the rewritten spec beside the group so a post-mortem can
+        reconstruct what the coder was actually told (plan U14) — the group's
+        entry in ``groups.json`` only ever reflects the original spec."""
+        path = self.deps.store.paths.group_dir(self.gid) / f"spec-gen{self.generation}.json"
+        atomic_write_text(path, self.group.model_dump_json(indent=2) + "\n")
+
     def _round_tag(self, round_no: int) -> str:
         return f"group {self.gid} generation {self.generation} round {round_no}"
 
@@ -1005,6 +1236,45 @@ class _GroupExecution:
         """Fan surprises out to the groups they name — never back at the source."""
         for surprise in surprises:
             self.deps.board.mark(surprise, source_group=self.gid)
+
+    async def _handle_pending_surprises(self, reason: str) -> bool:
+        """Consume this group's pending surprises at a checkpoint (before
+        launch, or before an approval is accepted). A surprise whose kind is
+        anything but ``informational`` is rewrite-worthy: any such surprise
+        pending triggers a full rewrite (spec + speccer call, one rewrite
+        spent), which also consumes every other pending surprise including any
+        informational ones mixed in. When only informational surprises are
+        pending, they cost nothing: consumed here and folded into the next
+        prompt this generation builds (plan U13), never touching
+        ``rewrite_spec`` or the rewrite counter.
+
+        Returns True when a rewrite happened, so the caller can bail out of its
+        current path (merge/approval) the way it always has.
+        """
+        pending = self.deps.board.pending_for(self.gid)
+        if not pending:
+            return False
+        if any(surprise.kind != "informational" for surprise in pending):
+            await self._rewrite(reason)
+            return True
+        informational = self.deps.board.consume(self.gid)
+        self._briefing_notes.extend(surprise.description for surprise in informational)
+        self._log(
+            f"group {self.gid}: {len(informational)} informational surprise(s) "
+            "folded into the next briefing (no rewrite spent)"
+        )
+        return False
+
+    def _apply_briefing(self, prompt: str) -> str:
+        """Fold any consumed informational surprises into a coder prompt about
+        to be sent (plan U13), then clear them — a one-shot addition to
+        whichever prompt this generation happens to build next (a fresh
+        launch, or a breaker handoff)."""
+        if not self._briefing_notes:
+            return prompt
+        notes = "\n".join(f"- {note}" for note in self._briefing_notes)
+        self._briefing_notes = []
+        return f"{prompt}\n\n## Informational updates from other groups\n{notes}\n"
 
     def _advance_generation(self) -> None:
         self.generation += 1
@@ -1039,6 +1309,21 @@ class _GroupExecution:
 def _transcript_str(runner: SessionRunner, session_id: str) -> str | None:
     path = runner.transcript_path(session_id)
     return str(path) if path is not None else None
+
+
+def _short_test_summary(output: str) -> str:
+    """The "short test summary info" tail of a pytest run's captured output
+    (plan U3/F18) — the FAILED/ERROR lines and the final result line, not the
+    full scrollback. Empty when the marker never appears, e.g. an env/timeout
+    failure that produced no pytest output at all."""
+    marker = "short test summary info"
+    idx = output.find(marker)
+    if idx == -1:
+        return ""
+    line_end = output.find("\n", idx)
+    if line_end == -1:
+        return ""
+    return output[line_end + 1 :].strip()
 
 
 def _context_surprise(group_id: str, description: str) -> Surprise:

@@ -27,7 +27,9 @@ from orchestrator.execution.worktrees import (
     _refresh_onto_tip,
     create_worktree,
     integration_branch,
+    provision_env,
     remove_worktree,
+    write_provisioning_record,
 )
 from orchestrator.model import Group
 
@@ -58,6 +60,8 @@ class IntegrationMerger:
         preflight_config: PreflightConfig | None = None,
         preflight_output_dir: Callable[[str], Path] | None = None,
         log: Callable[[str], None] | None = None,
+        provision_args: list[str] | None = None,
+        provision_env_vars: dict[str, str] | None = None,
     ):
         self.repo_root = repo_root
         self.run_id = run_id
@@ -75,16 +79,49 @@ class IntegrationMerger:
             lambda gid: repo_root / ".orchestrator" / "runs" / run_id / "groups" / gid
         )
         self._log = log or (lambda _text: None)
+        # The integration worktree is the tree that represents the run's output
+        # (plan U32) — an operator naturally goes there to run what was just
+        # built, so it is provisioned exactly like a group worktree, once.
+        self._provision_args = provision_args or []
+        self._provision_env_vars = provision_env_vars
+        self._provisioned = False
+        self._provision_lock = threading.Lock()
 
     def ensure(self) -> Path:
         """Create (or reuse) the integration branch and its worktree. Idempotent."""
-        return create_worktree(
+        path = create_worktree(
             self.repo_root,
             run_id=self.run_id,
             group_id="integration",
             name="integration",
             branch=self.branch,
             start_point=self.launch_ref,
+        )
+        self._provision_once(path)
+        return path
+
+    def _provision_once(self, path: Path) -> None:
+        """Provision the integration worktree the first time ``ensure()`` sees
+        it exist (plan U32). Guarded by its own lock, never ``self._lock``:
+        ``tip()`` calls ``ensure()`` while already holding ``self._lock``, so
+        reacquiring it here would deadlock. Attempted exactly once per process
+        regardless of outcome — a failed sync is recorded and reported, not
+        retried on every subsequent ``tip()`` call."""
+        with self._provision_lock:
+            if self._provisioned:
+                return
+            self._provisioned = True
+        group_dir = self._preflight_output_dir("integration")
+
+        def _record(state: str, argv: list[str]) -> None:
+            write_provisioning_record(group_dir, worktree=path, command=argv, state=state)
+
+        provision_env(
+            path,
+            log=self._log,
+            env=self._provision_env_vars,
+            extra_args=self._provision_args,
+            on_state=_record,
         )
 
     def tip(self) -> str:

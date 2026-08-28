@@ -18,6 +18,7 @@ register routes without touching ``app.py``.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,9 +27,24 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
+from orchestrator.execution.review import surprise_residue
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
-from orchestrator.model import GroupingResult, RunManifest
+from orchestrator.execution.worktrees import read_provisioning_record
+from orchestrator.model import GroupingResult, RunManifest, Surprise
 from orchestrator.observatory.registry import Project, find_project, load_registry
+
+
+def _load_worktree_provisioning(group_dir: Path) -> "WorktreeProvisioning | None":
+    """Pass a group's ``provisioning.json`` through, dropping anything malformed
+    (plan U32) — the same tolerant-read contract as ``_group_heartbeat``, so a
+    file written mid-tick or from an older run never 500s the snapshot."""
+    payload = read_provisioning_record(group_dir)
+    if payload is None:
+        return None
+    try:
+        return WorktreeProvisioning.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 # Every run-scoped endpoint hangs off this prefix, so the SPA's client can build
@@ -76,6 +92,9 @@ class SnapshotSession(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Sum of every round's turn-1 inherited cache read (plan U9) — its own
+    # figure, distinct from total_cache_read_tokens.
+    total_inherited_cache_read_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -106,6 +125,41 @@ class GroupHeartbeat(BaseModel):
     # Still a fact, not a verdict: it says what, not whether it is too long.
     phase: str | None = None
     phase_elapsed_s: float | None = None
+    # Total paused time within the current round (rate-limit gate overlays,
+    # summed) and how long the current round has been open. Both already live in
+    # ``heartbeat.json``; absence means "not recorded", never "zero" — a heartbeat
+    # from before these fields shipped must not be read as "no pause happened".
+    paused_s: float | None = None
+    round_elapsed_s: float | None = None
+
+
+class WorktreeProvisioning(BaseModel):
+    """A worktree's provisioning outcome, read straight off ``provisioning.json``
+    (plan U32). Written beside the group's other run artifacts, never inside the
+    worktree itself, so this still reads correctly once a clean merge has torn
+    the worktree down — the state a reader most wants once the worktree itself
+    is gone.
+    """
+
+    worktree: str = ""
+    command: list[str] = Field(default_factory=list)
+    state: str = ""
+    detail: str = ""
+    at: datetime | None = None
+
+
+class SnapshotSurprise(BaseModel):
+    """One ``Surprise``, flattened for the UI (plan U12).
+
+    ``reason`` is set only on a surprise still pending *for* a group — why it
+    was never delivered (see ``surprise_residue``) — and left ``None`` on a
+    surprise a group *emitted*, which carries no such fact.
+    """
+
+    kind: str
+    description: str
+    affected_groups: list[str] = Field(default_factory=list)
+    reason: str | None = None
 
 
 class SnapshotGroup(BaseModel):
@@ -133,6 +187,16 @@ class SnapshotGroup(BaseModel):
     # that never started a round. Absence is normal, so it is a null field and
     # never an error.
     heartbeat: GroupHeartbeat | None = None
+    # None when no provisioning was ever recorded for this group (a run
+    # predating this feature, or a group that never reached worktree creation).
+    provisioning: WorktreeProvisioning | None = None
+    # Two directions of the same board (plan U12), kept as separate lists so the
+    # UI never has to infer direction from a shared one: surprises still sitting
+    # on the board addressed to this group (from ``surprises.json``), and
+    # surprises this group's own coder/reviewer rounds reported (from its
+    # ``report-g*``/``verdict-g*`` artifacts).
+    pending_surprises: list[SnapshotSurprise] = Field(default_factory=list)
+    emitted_surprises: list[SnapshotSurprise] = Field(default_factory=list)
 
 
 class DagEdge(BaseModel):
@@ -170,6 +234,10 @@ class RunSnapshot(BaseModel):
     run_id: str
     plan_path: str = ""
     base_session_id: str | None = None
+    # The base session as a session, not just an id (plan U30): role
+    # "orchestrator", so the run's own work is legible alongside the coder and
+    # reviewer sessions it drives. None wherever base_session_id is None.
+    base_session: SnapshotSession | None = None
     created_at: datetime | None = None
     groups: list[SnapshotGroup] = Field(default_factory=list)
     edges: list[DagEdge] = Field(default_factory=list)
@@ -312,6 +380,88 @@ def _transcript_mtime(transcript_path: str | None) -> datetime | None:
     return datetime.fromtimestamp(stat.st_mtime, UTC)
 
 
+_SPEC_GEN_RE = re.compile(r"^spec-gen(\d+)\.json$")
+
+
+def _rewrite_sessions(paths: RunPaths, run_id: str, group_id: str) -> list[SnapshotSession]:
+    """The orchestrator's own rewrite-spec calls for this group, synthesized from
+    ``spec-gen<N>.json`` (plan U14/U30).
+
+    A rewrite is a one-shot ``claude -p`` call, not a tracked ``SessionEntry`` —
+    ``_rewrite`` never calls ``record_session`` — so there is nothing in the
+    manifest to join here. What is on disk is the rewritten spec itself, one file
+    per generation it produced, and that is attribution enough: a group whose
+    directory holds no ``spec-gen*.json`` was never re-specced and gets no
+    orchestrator row beyond the run's base session.
+    """
+    group_dir = paths.group_dir(group_id)
+    if not group_dir.is_dir():
+        return []
+    rows: list[SnapshotSession] = []
+    for path in sorted(group_dir.glob("spec-gen*.json")):
+        match = _SPEC_GEN_RE.match(path.name)
+        if not match:
+            continue
+        generation = int(match.group(1))
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+        rows.append(
+            SnapshotSession(
+                session_id=f"{run_id}-{group_id}-rewrite-g{generation}",
+                role="orchestrator",
+                generation=generation,
+                name=f"{run_id}-{group_id}-orchestrator-g{generation}",
+                started_at=mtime.isoformat() if mtime else None,
+                ended_at=mtime.isoformat() if mtime else None,
+                transcript_mtime=mtime,
+            )
+        )
+    return rows
+
+
+def _merge_orchestrator_rows(
+    manifest_sessions: list[SnapshotSession], orchestrator_sessions: list[SnapshotSession]
+) -> list[SnapshotSession]:
+    """Interleave the orchestrator's own rows — the base session, every rewrite —
+    with the manifest's coder/reviewer sessions so each sorts immediately before
+    the generation it produced. The base session sits at generation 1: every
+    group's first coder is a fork of it, so it is what "produced" generation 1,
+    the same relationship a rewrite has to the generation that follows it. A
+    stable sort keyed only on "is this an orchestrator row" preserves the
+    manifest's own append order, and ``orchestrator_sessions``' own order,
+    among everything else.
+    """
+    combined = orchestrator_sessions + manifest_sessions
+    return sorted(
+        combined, key=lambda session: (session.generation, session.role != "orchestrator")
+    )
+
+
+def _base_session(
+    run_id: str, manifest: RunManifest | None, *, generation: int = 0
+) -> SnapshotSession | None:
+    """The run's base session, exposed as an orchestrator-role session (plan
+    U30). Nothing on disk records its model or token usage today — only
+    ``SessionRunner.start_base`` ever touches it, and it is never passed through
+    ``record_session`` — so this is a best-effort read of what the manifest does
+    carry, not a full ``SessionEntry``. ``generation`` is 0 for the run-level
+    exposure (``RunSnapshot.base_session``, which names no group) and 1 when
+    attached to a specific group's attempt history, where it sorts ahead of
+    that group's first generation.
+    """
+    if manifest is None or not manifest.base_session_id:
+        return None
+    return SnapshotSession(
+        session_id=manifest.base_session_id,
+        role="orchestrator",
+        generation=generation,
+        name=f"{run_id}-base",
+        started_at=manifest.created_at.isoformat() if manifest.created_at else None,
+    )
+
+
 def _group_heartbeat(paths: RunPaths, group_id: str) -> GroupHeartbeat | None:
     """Pass the group's heartbeat facts through, dropping anything malformed.
 
@@ -364,6 +514,65 @@ def _is_stale_failure(run_state: GroupRunState | None) -> bool:
     return run_state.state in (GroupState.COMPLETED, GroupState.RESOLVED)
 
 
+def _emitted_surprises(group_dir: Path) -> list[SnapshotSurprise]:
+    """Every surprise this group's own coder/reviewer rounds reported (plan
+    U12), read from its ``report-g*``/``verdict-g*`` artifacts — the
+    structured final message of every round already carries a ``surprises``
+    field, so no new persistence is needed to answer "what did this group
+    emit". Deduplicated the same way the board itself dedupes: identical
+    (kind, description, affected_groups) collapses to one entry, since a
+    surprise is commonly reported again by a later round.
+    """
+    if not group_dir.is_dir():
+        return []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    surprises: list[SnapshotSurprise] = []
+    for path in sorted(group_dir.glob("report-g*.json")) + sorted(
+        group_dir.glob("verdict-g*.json")
+    ):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for raw in payload.get("surprises") or []:
+            try:
+                surprise = Surprise.model_validate(raw)
+            except ValidationError:
+                continue
+            key = (surprise.kind, surprise.description, tuple(surprise.affected_groups))
+            if key in seen:
+                continue
+            seen.add(key)
+            surprises.append(
+                SnapshotSurprise(
+                    kind=surprise.kind,
+                    description=surprise.description,
+                    affected_groups=surprise.affected_groups,
+                )
+            )
+    return surprises
+
+
+def _pending_surprises_by_group(
+    paths: RunPaths, state: RunState | None
+) -> dict[str, list[SnapshotSurprise]]:
+    """Every bucket still on the board (plan U12), keyed by bucket — a real
+    group id or ``SurpriseBoard.RUN_LEVEL`` — each carrying why it never got
+    delivered. Computed once per snapshot rather than per group."""
+    return {
+        entry.bucket: [
+            SnapshotSurprise(
+                kind=surprise.kind,
+                description=surprise.description,
+                affected_groups=surprise.affected_groups,
+                reason=entry.reason,
+            )
+            for surprise in entry.surprises
+        ]
+        for entry in surprise_residue(paths, state)
+    }
+
+
 def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     """Compose state + manifest + DAG into the one body the board renders."""
     state = _load_state(paths)
@@ -377,6 +586,12 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     extra = set(state.groups if state else ()) | set(manifest.groups if manifest else ())
     ordering += sorted(extra - set(ordering))
 
+    pending_by_bucket = _pending_surprises_by_group(paths, state)
+    # Every group's first generation is a fork of this one session, so it is
+    # attached to each group's own attempt history too, at generation 1 —
+    # ahead of that group's first coder, the same relationship a rewrite has to
+    # the generation it produces (plan U30).
+    base_row = _base_session(paths.run_id, manifest, generation=1)
     groups: list[SnapshotGroup] = []
     for gid in ordering:
         run_state = state.groups.get(gid) if state else None
@@ -392,31 +607,38 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                 failure=run_state.failure if run_state else None,
                 stale_failure=_is_stale_failure(run_state),
                 depends_on=list(group.dependencies) if group else [],
-                sessions=[
-                    SnapshotSession(
-                        session_id=session.session_id,
-                        role=session.role.value,
-                        generation=session.generation,
-                        name=session.name,
-                        retirement_reason=session.retirement_reason,
-                        transcript_path=session.transcript_path,
-                        last_context_tokens=session.last_context_tokens,
-                        rounds_completed=session.rounds_completed,
-                        total_input_tokens=session.total_input_tokens,
-                        total_output_tokens=session.total_output_tokens,
-                        total_cache_read_tokens=session.total_cache_read_tokens,
-                        total_cache_creation_tokens=session.total_cache_creation_tokens,
-                        model=session.model,
-                        started_at=session.started_at,
-                        ended_at=session.ended_at,
-                        transcript_mtime=_transcript_mtime(session.transcript_path),
-                    )
-                    for session in (entry.sessions if entry else [])
-                ],
+                sessions=_merge_orchestrator_rows(
+                    [
+                        SnapshotSession(
+                            session_id=session.session_id,
+                            role=session.role.value,
+                            generation=session.generation,
+                            name=session.name,
+                            retirement_reason=session.retirement_reason,
+                            transcript_path=session.transcript_path,
+                            last_context_tokens=session.last_context_tokens,
+                            rounds_completed=session.rounds_completed,
+                            total_input_tokens=session.total_input_tokens,
+                            total_output_tokens=session.total_output_tokens,
+                            total_cache_read_tokens=session.total_cache_read_tokens,
+                            total_cache_creation_tokens=session.total_cache_creation_tokens,
+                            total_inherited_cache_read_tokens=session.total_inherited_cache_read_tokens,
+                            model=session.model,
+                            started_at=session.started_at,
+                            ended_at=session.ended_at,
+                            transcript_mtime=_transcript_mtime(session.transcript_path),
+                        )
+                        for session in (entry.sessions if entry else [])
+                    ],
+                    ([base_row] if base_row else []) + _rewrite_sessions(paths, paths.run_id, gid),
+                ),
                 difficulty=group.difficulty if group else None,
                 intensity=group.intensity.value if group else None,
                 estimated_tokens=group.estimated_tokens if group else None,
                 heartbeat=_group_heartbeat(paths, gid),
+                provisioning=_load_worktree_provisioning(paths.group_dir(gid)),
+                pending_surprises=pending_by_bucket.get(gid, []),
+                emitted_surprises=_emitted_surprises(paths.group_dir(gid)),
             )
         )
 
@@ -434,6 +656,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
         plan_path=(manifest.plan_path if manifest else "")
         or (grouping.plan_path if grouping else ""),
         base_session_id=manifest.base_session_id if manifest else None,
+        base_session=_base_session(paths.run_id, manifest),
         created_at=manifest.created_at if manifest else None,
         groups=groups,
         edges=edges,

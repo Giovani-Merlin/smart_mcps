@@ -27,6 +27,7 @@ from orchestrator.execution.manifest import (
     archive_review_scratch,
 )
 from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME
+from orchestrator.execution.review import format_residue_report, surprise_residue
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.execution.worktrees import (
     _branch_exists,
@@ -169,6 +170,11 @@ def finish_run(
             f"worktree removed but branch kept (git considers unmerged): {', '.join(kept_branches)}"
         )
 
+    residue = surprise_residue(paths, state)
+    announce(format_residue_report(residue))
+    if residue:
+        log(f"finish {run_id}: {len(residue)} surprise bucket(s) never delivered")
+
     return FinishResult(
         integration_branch=branch,
         integration_sha=tip,
@@ -197,6 +203,11 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
 # ----------------------------------------------------------------------- PR
 
 
+# Deliberately does not match `verdict-g<N>-r<M>-extra.json` — the mandatory
+# second pass a `paired_plus` group earns above `d_hard` (plan U28). A group
+# with such a pass therefore reports its first-pass verdict here; benign today
+# (the Observatory drill-in labels the `-extra` file so an operator can find it),
+# left unchanged rather than widened.
 _VERDICT_RE = re.compile(r"^verdict-g(\d+)-r(\d+)\.json$")
 
 

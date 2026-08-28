@@ -527,8 +527,12 @@ class TestDryRunCli:
         assert "g1" in out
         assert "tokens" in out.lower()
         # Plan U9: dry-run still writes the trace — it's the only artifact a
-        # dry run leaves — but not groups.json or base-context.md.
-        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
+        # dry run leaves — but not groups.json or base-context.md. Plan U8: it
+        # lands in the preview subdirectory, never beside a (possibly
+        # different) real grouping's groups.json.
+        assert (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        ).is_file()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
 
@@ -707,7 +711,10 @@ class TestNoSpecCli:
         assert not (repo / ".orchestrator" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").exists()
         assert not (repo / ".orchestrator" / "groupings" / "plan" / "base-context.md").exists()
-        assert (repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json").is_file()
+        # Plan U8: --no-spec's trace lives in the preview subdirectory.
+        assert (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        ).is_file()
 
     def test_no_spec_completes_in_under_a_second(self, tmp_path):
         import time
@@ -757,7 +764,9 @@ class TestGroupingTraceArtifact:
 
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
-        trace_path = repo / ".orchestrator" / "groupings" / "plan" / "grouping-trace.json"
+        trace_path = (
+            repo / ".orchestrator" / "groupings" / "plan" / "preview" / "grouping-trace.json"
+        )
 
         exit_code = main(
             ["group", str(plan), "--repo", str(repo), "--no-spec"],
@@ -844,7 +853,10 @@ class TestGroupingTraceArtifact:
 
 class TestSyncGate:
     """R13: `group` refuses to run against a stale index — sync() is invoked,
-    blocking, before the first index read (files_overview)."""
+    blocking, before the first index read (files_overview). Plan U6 inserts the
+    quiescence handshake (repeated `status`/`query` reads) between the two:
+    sync still comes first, and files_overview still waits for the index to be
+    read at least once, but now via the handshake rather than immediately."""
 
     def test_sync_runs_before_files_overview(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -863,7 +875,8 @@ class TestSyncGate:
             client=client,
         )
         assert calls[0] == ["sync"]
-        assert calls[1][0] == "files"
+        files_index = next(i for i, c in enumerate(calls) if c[0] == "files")
+        assert all(c[0] in ("status", "query") for c in calls[1:files_index])
 
     def test_run_grouping_also_syncs_first(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -877,7 +890,8 @@ class TestSyncGate:
         client = CodegraphClient(repo_root=repo, runner=recording_runner)
         run_grouping(plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=client)
         assert calls[0] == ["sync"]
-        assert calls[1][0] == "files"
+        files_index = next(i for i, c in enumerate(calls) if c[0] == "files")
+        assert all(c[0] in ("status", "query") for c in calls[1:files_index])
 
 
 UNKNOWN_SYMBOL_PLAN = """# feat: proxy task naming an unknown symbol
@@ -1131,3 +1145,53 @@ class TestTaskMapStripping:
         )
         assert exit_code == 0
         assert plan.read_bytes() == before
+
+
+class TestStageProgress:
+    """Plan U24: a `group` invocation streams stage/spec lines through the
+    ``progress`` seam instead of staying silent for the length of the run."""
+
+    def test_no_spec_path_emits_mapper_graph_partition_stages_in_order(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        lines: list[str] = []
+        compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            progress=lines.append,
+        )
+        assert lines == ["stage: mapper", "stage: quiescence", "stage: graph", "stage: partition"]
+
+    def test_full_pipeline_emits_one_spec_line_per_group(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        lines: list[str] = []
+        result, _ = run_grouping(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=StubLlm(),
+            client=make_client(repo),
+            progress=lines.append,
+        )
+        total = len(result.groups)
+        assert total >= 2  # otherwise "spec i/N" is not actually exercised
+        stage_lines = [line for line in lines if line.startswith("stage:")]
+        spec_lines = [line for line in lines if line.startswith("spec ")]
+        assert stage_lines == [
+            "stage: mapper",
+            "stage: quiescence",
+            "stage: graph",
+            "stage: partition",
+            f"stage: specs total={total}",
+        ]
+        assert spec_lines == [f"spec {i}/{total}" for i in range(1, total + 1)]
+        # Every progress line was emitted before the pipeline returned — the
+        # unbuffered-in-the-CLI half of the fix is exercised by the CLI-level
+        # test below; this half proves the seam actually fires per spec.
+        assert lines.index(f"stage: specs total={total}") < lines.index(f"spec 1/{total}")
+
+    def test_no_recorder_and_no_progress_still_works(self, tmp_path):
+        """The seam is optional — omitting ``progress`` must not raise."""
+        result, _ = grouping(tmp_path)
+        assert result.groups

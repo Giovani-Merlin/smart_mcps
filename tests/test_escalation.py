@@ -108,6 +108,7 @@ class TestEscalationPolicy:
             EscalationKind.REVIEWER_TOO_HARD,
             EscalationKind.REVIEWER_STRUCTURAL,
             EscalationKind.MERGE_CONFLICT,
+            EscalationKind.PREFLIGHT_FAILED,
         }
         for gate in (
             EscalationKind.GROUP_START,

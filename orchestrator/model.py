@@ -91,6 +91,10 @@ class SessionEntry(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Sum of every round's turn-1 inherited cache read (plan U9) — context this
+    # session did not create and cannot shrink, reported apart from
+    # total_cache_read_tokens so the two are never conflated.
+    total_inherited_cache_read_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -130,11 +134,32 @@ class RunManifest(BaseModel):
 
 
 class Surprise(BaseModel):
-    """A finding that may invalidate other groups' specs (origin R12)."""
+    """A finding that may invalidate other groups' specs (origin R12).
 
-    kind: Literal["interface_mismatch", "missing_dependency", "merge_conflict", "other"]
+    ``informational`` (plan U13) is a broadcast fact — a changed test baseline,
+    a pre-existing red suite — that briefs the next generation but is not
+    evidence a spec needs rewriting: it is folded into the next prompt without
+    spending a rewrite or calling the speccer, unlike every other kind.
+    """
+
+    kind: Literal[
+        "interface_mismatch", "missing_dependency", "merge_conflict", "other", "informational"
+    ]
     description: str
     affected_groups: list[str] = Field(default_factory=list)
+
+
+class SurpriseResidueEntry(BaseModel):
+    """One ``SurpriseBoard`` bucket still holding surprises when a run ended
+    (plan U12) — read straight off ``surprises.json``, never mutating it, so a
+    residue report can be produced from a finished or crashed run alike.
+    ``bucket`` is either a real group id or ``SurpriseBoard.RUN_LEVEL``.
+    """
+
+    bucket: str
+    count: int
+    reason: str
+    surprises: list[Surprise] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):
@@ -244,6 +269,7 @@ class EscalationKind(StrEnum):
     REVIEWER_TOO_HARD = "reviewer_too_hard"
     REVIEWER_STRUCTURAL = "reviewer_structural"
     MERGE_CONFLICT = "merge_conflict"
+    PREFLIGHT_FAILED = "preflight_failed"  # merge-gate check command failed (plan U3)
     CAPS_EXHAUSTED = "caps_exhausted"  # generation/rewrite cap about to FAIL the group
     GROUP_RESOLVE = "group_resolve"  # FAILED group's stranded work needs resolving (plan U2)
     GROUP_START = "group_start"  # interactive: approve before launch

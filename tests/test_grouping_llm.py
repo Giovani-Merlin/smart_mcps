@@ -35,6 +35,8 @@ def stub_codegraph_runner(args):
         return "stub repo (llm test — codegraph itself stays stubbed)\n"
     if args[0] == "status":
         return '{"initialized": true, "fileCount": 1, "nodeCount": 1, "edgeCount": 0, "pendingChanges": {"added": 0, "modified": 0, "removed": 0}}'
+    if args[0] == "query":
+        return "[]"
     raise AssertionError(f"unexpected codegraph call: {args}")
 
 

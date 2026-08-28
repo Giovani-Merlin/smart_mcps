@@ -7,9 +7,11 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +34,7 @@ from orchestrator.grouping.graphing import (
     EdgeProvenance,
     EdgeWeights,
     TaskGraph,
+    await_index_quiescence,
     build_task_graph,
     index_fingerprint,
     source_bytes_of,
@@ -39,6 +42,7 @@ from orchestrator.grouping.graphing import (
 from orchestrator.grouping.llm import JsonRunner, LlmCallRecorder, claude_json_runner
 from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
+    LOUVAIN_SEED,
     DefaultPartitionStrategy,
     Partition,
     WorkFn,
@@ -111,6 +115,83 @@ def _node_work_entries(graph: TaskGraph, config) -> list[NodeWorkEntry]:
 
 class GrouperError(Exception):
     """The grouping pipeline could not produce a valid result."""
+
+
+# The residual plan U7 accepts explicitly: the mapper is an LLM shelled with no
+# temperature or seed control, so a matching index fingerprint proves the
+# partition's *input* is unchanged, not that re-running the mapper would
+# reproduce the same task→file mapping. Every mismatch message repeats this so
+# an operator reading `--allow-index-drift`'s warning never mistakes
+# index-stability for full reproducibility.
+INDEX_DRIFT_RESIDUAL_NOTE = (
+    "note: this makes grouping index-stable, not reproducible — the mapper is "
+    "an unseeded LLM call and can still choose a different task→file mapping "
+    "against a byte-identical index"
+)
+
+
+class IndexFingerprintMismatch(GrouperError):
+    """Plan U7: a recorded grouping's index fingerprint no longer matches the
+    current codegraph index — the partition on disk was built against a
+    different index than the one the run would execute against now."""
+
+    def __init__(self, recorded: str, current: str) -> None:
+        self.recorded = recorded
+        self.current = current
+        super().__init__(
+            "index fingerprint mismatch: this grouping was built against index "
+            f"{recorded}, the current index is {current} — re-group with "
+            "`smart-mcps-orchestrate group <plan> --name <name>` to pick up the "
+            "new index, or pass --allow-index-drift to force a re-partition now "
+            f"({INDEX_DRIFT_RESIDUAL_NOTE})"
+        )
+
+
+def verify_index_fingerprint(
+    recorded: str,
+    client: CodegraphClient,
+    *,
+    allow_drift: bool,
+    log: Callable[[str], None] | None = None,
+) -> tuple[str, bool]:
+    """Plan U7: compare a grouping's recorded ``index_fingerprint`` (written
+    once at grouping time into ``ProvenanceEntry`` — see
+    ``pipeline.run_grouping``/``compute_partition`` — but until now never read
+    back) against the current index.
+
+    Returns ``(current_fingerprint, matched)``. A mismatch raises
+    ``IndexFingerprintMismatch`` unless ``allow_drift`` is set, in which case
+    the mismatch is logged as a loud warning instead and reported back via
+    ``matched=False`` — the caller is responsible for treating that as a
+    signal to re-partition rather than silently reusing the stale result;
+    this function never partitions anything itself.
+    """
+    current = index_fingerprint(client.logical_export())
+    if current == recorded:
+        return current, True
+    message = (
+        f"warning: index drift — this grouping was built against index {recorded}, "
+        f"the current index is {current}; forcing a re-partition "
+        f"(--allow-index-drift). {INDEX_DRIFT_RESIDUAL_NOTE}"
+    )
+    if not allow_drift:
+        raise IndexFingerprintMismatch(recorded, current)
+    if log is not None:
+        log(message)
+    else:
+        print(message)
+    return current, False
+
+
+# Stage/spec progress lines (plan U24): a `group` invocation is otherwise silent
+# for as long as the mapper and speccer LLM calls take, so this is the seam the
+# CLI hangs an unbuffered `print(..., flush=True)` off of.
+ProgressFn = Callable[[str], None]
+
+
+def _emit(progress: ProgressFn | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def _assert_slice_integrity(atoms: dict[str, list[str]], partition: Partition) -> None:
@@ -362,6 +443,7 @@ def compute_partition(
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
     provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
 ) -> PartitionOutcome:
     """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
     does before handing off to the speccer, callable on its own.
@@ -369,16 +451,29 @@ def compute_partition(
     ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
     fills a ``GroupingTrace`` alongside the computation without changing it —
     every fixture partitions identically with or without one attached.
+
+    ``progress``, if given, is called with one short stage-name string as each
+    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
+    and a half minutes of silence into a streamable job log.
     """
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
     config = config or OrchestratorConfig()
-    llm_runner = llm_runner or claude_json_runner
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
     client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
+    _emit(progress, "stage: mapper")
     plan_text = plan_path.read_text()
     client.sync()
+    _emit(progress, "stage: quiescence")
+    # Plan U6: `sync` returning is not proof the index has stopped moving — the
+    # fingerprint that motivated this handshake churned three times in fifteen
+    # minutes at one commit while `sync` reported "already up to date". Partition
+    # against the settled value, not whatever the very next read happens to be.
+    quiesced_fingerprint = await_index_quiescence(client, recorder=recorder)
     codegraph_files = client.files_overview()
     # Deterministic fast path: a plan carrying a task map already answered what
     # the mapper LLM would have to guess. Malformed maps fail hard (silent
@@ -402,6 +497,7 @@ def compute_partition(
         raise GrouperError("mapper produced no tasks from the plan document")
     _flag_self_modification(mapper_out)
 
+    _emit(progress, "stage: graph")
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
     graph = build_task_graph(mapper_out.mappings, client, weights, flags=mapper_out.flags)
     graph = _with_prose_fallback(graph, mapper_out, config.edge_weights.prose_neighbor)
@@ -447,6 +543,7 @@ def compute_partition(
         granularity=config.partition.granularity,
         recorder=recorder,
     )
+    _emit(progress, "stage: partition")
     partition = strategy.partition(graph)
     # Before _check_slice_overflow appends to the same list: at this point
     # strategy.flags carries only the repair-overshoot messages, which is exactly
@@ -495,7 +592,9 @@ def compute_partition(
             plan_content_sha256=hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),
             repo_commit_sha=repo_commit_sha,
             worktree_dirty=worktree_dirty,
-            index_fingerprint=index_fingerprint(client.status()),
+            index_fingerprint=quiesced_fingerprint,
+            louvain_seed=LOUVAIN_SEED,
+            louvain_resolution=config.partition.louvain_resolution,
         )
 
     # Same inert-observation contract as the trace recorder, and the same single
@@ -531,10 +630,13 @@ def run_grouping(
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
     provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
 ) -> tuple[GroupingResult, str]:
     """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
     config = config or OrchestratorConfig()
-    llm_runner = llm_runner or claude_json_runner
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
     client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
@@ -548,6 +650,7 @@ def run_grouping(
         recorder=recorder,
         llm_recorder=llm_recorder,
         provenance_recorder=provenance_recorder,
+        progress=progress,
     )
     graph, partition, dag = outcome.graph, outcome.partition, outcome.dag
     mapper_out = outcome.mapper_out
@@ -565,6 +668,8 @@ def run_grouping(
         }
         for gid, members in sorted(members_by_gid.items())
     }
+    total_specs = len(skeletons)
+    _emit(progress, f"stage: specs total={total_specs}")
     specs = write_specs(
         strip_task_map(outcome.plan_text),
         skeletons,
@@ -581,7 +686,7 @@ def run_grouping(
     roles = outcome.hub_roles
     flags = list(mapper_out.flags) + list(outcome.flags)
     groups: list[Group] = []
-    for gid, members in sorted(members_by_gid.items()):
+    for spec_index, (gid, members) in enumerate(sorted(members_by_gid.items()), start=1):
         gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
@@ -644,6 +749,7 @@ def run_grouping(
                 estimated_tokens=estimated,
             )
         )
+        _emit(progress, f"spec {spec_index}/{total_specs}")
 
     result = GroupingResult(
         plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags

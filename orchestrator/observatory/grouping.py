@@ -34,15 +34,23 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from orchestrator.execution.manifest import GroupingNameError, RunPaths, grouping_dir
+from orchestrator.model import GroupingResult
 from orchestrator.observatory.artifacts import load_json, load_text
 from orchestrator.observatory.runs import (
     RUN_PREFIX,
     load_manifest,
+    resolve_repo,
     resolve_run,
     run_groups_path,
 )
 
 router = APIRouter(tags=["grouping"], prefix=RUN_PREFIX)
+
+#: Project-scoped, not run-scoped: a named grouping's preview is read before any
+#: run exists, so it cannot hang off ``RUN_PREFIX``. Registered separately in
+#: ``app.py`` alongside ``launch.router``, which owns the rest of the
+#: pre-launch surface.
+preview_router = APIRouter(tags=["grouping"], prefix="/api/projects/{project}")
 
 # The trace schema this reader was written against. A newer trace still renders
 # — every section is read defensively — but the tab says so rather than
@@ -660,3 +668,95 @@ def get_llm_call(request: Request, project: str, run_id: str, seq: int) -> LlmCa
     if detail is None:
         raise HTTPException(status_code=404, detail=f"no grouper LLM call with seq {seq}")
     return detail
+
+
+# ------------------------------------------------------ pre-launch preview
+#
+# What the launch page shows before a run exists: a named grouping's own
+# ``groups.json``, parsed with the same ``GroupingResult`` model `group`
+# writes and reads. Reading that one file, rather than re-deriving anything
+# from the trace, is what keeps this listing unable to drift from what
+# `group --dry-run`'s ``_print_report`` prints for the same grouping.
+
+
+class GroupingPreviewGroup(BaseModel):
+    """One group, with exactly the fields ``_print_report`` prints per group."""
+
+    id: str
+    name: str
+    summary: str
+    tasks: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    estimated_tokens: int = 0
+    difficulty: float = 0.0
+    intensity: str = ""
+    dependencies: list[str] = Field(default_factory=list)
+    verification_count: int = 0
+
+
+class GroupingPreview(BaseModel):
+    """The launch page's read-only preview of a named grouping.
+
+    ``present`` is false, with ``missing`` explaining why, when the grouping
+    has no ``groups.json`` yet — a specless or dry-run-only grouping, or a name
+    that does not exist. The tab renders that as an empty state, never an error.
+    """
+
+    name: str
+    groups_path: str
+    present: bool = False
+    missing: str | None = None
+    plan_path: str = ""
+    flags: list[str] = Field(default_factory=list)
+    groups: list[GroupingPreviewGroup] = Field(default_factory=list)
+
+
+def build_grouping_preview(repo_root: Path, name: str) -> GroupingPreview:
+    """Read a named grouping's ``groups.json`` straight, no re-derivation."""
+    try:
+        directory = grouping_dir(repo_root, name)
+    except GroupingNameError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    groups_path = directory / "groups.json"
+    if not groups_path.is_file():
+        return GroupingPreview(
+            name=name,
+            groups_path=str(groups_path),
+            present=False,
+            missing=(
+                f"no groups.json at {groups_path} — this grouping has not been "
+                "produced yet, or was only ever run with --dry-run or --no-spec"
+            ),
+        )
+
+    result = GroupingResult.model_validate_json(groups_path.read_text())
+    return GroupingPreview(
+        name=name,
+        groups_path=str(groups_path),
+        present=True,
+        plan_path=result.plan_path,
+        flags=result.flags,
+        groups=[
+            GroupingPreviewGroup(
+                id=group.id,
+                name=group.name,
+                summary=group.summary,
+                tasks=group.tasks,
+                files=group.files,
+                estimated_tokens=group.estimated_tokens,
+                difficulty=group.difficulty,
+                intensity=group.intensity.value,
+                dependencies=group.dependencies,
+                verification_count=len(group.verification),
+            )
+            for group in result.groups
+        ],
+    )
+
+
+@preview_router.get("/groupings/{name}/preview", response_model=GroupingPreview)
+def get_grouping_preview(request: Request, project: str, name: str) -> GroupingPreview:
+    """The launch page's read-only preview of a named grouping, before any run
+    exists — the ``groups.json`` a real ``group`` invocation already wrote."""
+    return build_grouping_preview(resolve_repo(request, project), name)

@@ -80,6 +80,79 @@
   margin: 0;
 }
 
+.drill-in__difficulty {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: auto;
+  font-size: 0.8rem;
+}
+
+.drill-in__difficulty-score {
+  color: #55565c;
+}
+
+.drill-in__intensity {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background-color: #d3d5da;
+  color: #3c3d42;
+  white-space: nowrap;
+}
+
+.drill-in__intensity--paired_plus {
+  background-color: #ffd8a8;
+  color: #6b3e00;
+}
+
+.drill-in__provisioning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  color: #55565c;
+}
+
+.drill-in__provisioning-worktree {
+  font-family: monospace;
+}
+
+.drill-in__provisioning-state {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background-color: #d3d5da;
+  color: #3c3d42;
+  white-space: nowrap;
+}
+
+.drill-in__provisioning-state--provisioned {
+  background-color: #b2f2bb;
+  color: #1c5c22;
+}
+
+.drill-in__provisioning-state--failed {
+  background-color: #ffc9c9;
+  color: #7a1c1c;
+}
+
+.drill-in__provisioning-command {
+  font-family: monospace;
+  background-color: #f1f2f4;
+  border-radius: 4px;
+  padding: 0.05rem 0.4rem;
+}
+
+.drill-in__provisioning-detail {
+  color: #a51818;
+}
+
 .drill-in__close {
   font: inherit;
   padding: 0.25rem 0.75rem;
@@ -119,6 +192,14 @@
 
 .drill-in__side h4:not(:first-child) {
   margin-top: 1.25rem;
+}
+
+/* -------------------------------------------------------------- diffs */
+
+.drill-in__diffs {
+  margin-top: 1.5rem;
+  border-top: 1px solid #d3d5da;
+  padding-top: 1rem;
 }
 
 /* ------------------------------------------------------------- sessions */
@@ -197,6 +278,12 @@
 .drill-in__session-retired {
   font-size: 0.75rem;
   color: #7a1414;
+}
+
+.drill-in__session-started {
+  font-size: 0.75rem;
+  color: #7a7c85;
+  white-space: nowrap;
 }
 
 /* ----------------------------------------------------------- transcript */
@@ -368,6 +455,20 @@
   font-size: 0.8rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   word-break: break-all;
+}
+
+/* Distinct from `.artifact-card__kind`'s neutral pill so a `paired_plus`
+   group's extra pass is legible as the reason it has two verdicts, not a
+   second grey badge indistinguishable from the first (plan U28). */
+.artifact-card__extra-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background-color: #ffd8a8;
+  color: #6b3e00;
+  white-space: nowrap;
 }
 
 .artifact-card__body {

@@ -22,6 +22,7 @@ const KIND_LABELS: Record<EscalationKind, string> = {
   reviewer_too_hard: "Reviewer: too hard",
   reviewer_structural: "Reviewer: structural",
   merge_conflict: "Merge conflict",
+  preflight_failed: "Preflight failed",
   caps_exhausted: "Caps exhausted",
   group_resolve: "Resolve stranded work",
   group_start: "Group start",

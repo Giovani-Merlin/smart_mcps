@@ -4,6 +4,8 @@
 //   /                                          project picker
 //   /p/:project                                run index (no auto-jump)
 //   /p/:project/launch                         group / run / resume
+//   /p/:project/jobs                           every launched job, addressable
+//   /p/:project/jobs/:id                       one job's log, reloadable
 //   /p/:project/r/:runId/board                 Board
 //   /p/:project/r/:runId/history               attempt grid
 //   /p/:project/r/:runId/grouping?stage=&edge= how this plan became groups
@@ -31,6 +33,8 @@ import EventLog from "./components/EventLog";
 import GroupBoard from "./components/GroupBoard";
 import GroupDrillIn from "./components/GroupDrillIn";
 import GroupingTab from "./components/grouping/GroupingTab";
+import JobDetail from "./routes/JobDetail";
+import Jobs from "./routes/Jobs";
 import Launch from "./routes/Launch";
 import ProjectIndex from "./routes/ProjectIndex";
 import ProjectPicker from "./routes/ProjectPicker";
@@ -148,6 +152,8 @@ export const routes: RouteObject[] = [
   { path: "/p", element: <Navigate to="/" replace /> },
   { path: "/p/:project", element: <ProjectIndex /> },
   { path: "/p/:project/launch", element: <Launch /> },
+  { path: "/p/:project/jobs", element: <Jobs /> },
+  { path: "/p/:project/jobs/:id", element: <JobDetail /> },
   {
     path: "/p/:project/r/:runId",
     element: <RunLayout />,

@@ -395,7 +395,8 @@ class TestSidecarIsWritten:
             client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
         )
         assert exit_code == 0
-        sidecar = repo / ".orchestrator" / "groupings" / "plan" / "edge-provenance.json"
+        # Plan U8: --no-spec's sidecar lives in the preview subdirectory.
+        sidecar = repo / ".orchestrator" / "groupings" / "plan" / "preview" / "edge-provenance.json"
         document = json.loads(sidecar.read_text())
         assert document["version"] == 1
         assert document["max_contributions_per_edge"] == MAX_CONTRIBUTIONS_PER_EDGE

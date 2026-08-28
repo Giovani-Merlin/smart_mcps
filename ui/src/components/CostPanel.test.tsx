@@ -177,7 +177,7 @@ describe("the run-level calibration rollup", () => {
     expect(screen.getByTestId("cost-calibration-median").textContent).toBe(
       "1.16x over the estimate",
     );
-    expect(rollup.textContent).toContain("median across 3 groups");
+    expect(rollup.textContent).toContain("median across 3 single-generation groups");
     expect(rollup.textContent).toContain("bytes_per_token");
     expect(screen.getByTestId("cost-calibration-skipped").textContent).toContain("g4");
     // 219k observed against 213k predicted — both occupancy sums. The run's
@@ -216,5 +216,149 @@ describe("a real historical run degrades honestly", () => {
     // comparable" rather than a fabricated 1.00x.
     expect(screen.getByTestId("cost-prediction-g1").textContent).toContain("not comparable");
     expect(screen.getByTestId("cost-calibration").textContent).toContain("nothing to calibrate");
+  });
+});
+
+describe("the turn-1 inherited cache read is its own figure (U9)", () => {
+  it("shows it distinct from the total cache-read segment", () => {
+    renderPanel(COST_NEW_FORMAT);
+    const inherited = screen.getByTestId(
+      "cost-inherited-cache-c0000000-0000-4000-8000-000000000001",
+    );
+    expect(inherited.textContent).toContain("90k");
+    // The total cache-read segment for the same session is the sum of every
+    // turn's cache read (480k), not the 90k inherited figure alone.
+    const cacheReadSeg = segment("cost-bar-c0000000-0000-4000-8000-000000000001", "cache_read");
+    expect(cacheReadSeg.dataset.tokens).toBe("480000");
+  });
+
+  it("renders nothing when no inherited figure was recorded", () => {
+    renderPanel(COST_NEW_FORMAT);
+    // g2's coder carries no total_inherited_cache_read_tokens in the fixture.
+    expect(
+      screen.queryByTestId("cost-inherited-cache-c0000000-0000-4000-8000-000000000002"),
+    ).toBeNull();
+  });
+});
+
+describe("spend sums every turn of a round, not just the last (U9)", () => {
+  it("renders a cache-creation figure that scales with the round's turn count", () => {
+    const threeTurnSnapshot: RunSnapshot = {
+      ...COST_NEW_FORMAT,
+      run_id: "r-turns",
+      groups: [
+        {
+          group_id: "h1",
+          name: "one-turn",
+          summary: "single-turn round",
+          state: "completed",
+          generation: 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions: [
+            {
+              session_id: "h0000000-0000-4000-8000-000000000001",
+              role: "coder",
+              generation: 1,
+              name: "h1-coder",
+              transcript_path: null,
+              last_context_tokens: 10_000,
+              rounds_completed: 1,
+              total_input_tokens: 0,
+              total_output_tokens: 0,
+              total_cache_read_tokens: 0,
+              // one turn's worth
+              total_cache_creation_tokens: 5_000,
+              model: "claude-opus-5",
+              started_at: null,
+              ended_at: null,
+            },
+          ],
+        },
+        {
+          group_id: "h2",
+          name: "three-turns",
+          summary: "same per-turn cache-creation, summed over three turns",
+          state: "completed",
+          generation: 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions: [
+            {
+              session_id: "h0000000-0000-4000-8000-000000000002",
+              role: "coder",
+              generation: 1,
+              name: "h2-coder",
+              transcript_path: null,
+              last_context_tokens: 10_000,
+              rounds_completed: 1,
+              total_input_tokens: 0,
+              total_output_tokens: 0,
+              total_cache_read_tokens: 0,
+              // three turns' worth of the same per-turn figure, exactly what
+              // RoundSpend.from_envelope now sums instead of reading iterations[-1]
+              total_cache_creation_tokens: 15_000,
+              model: "claude-opus-5",
+              started_at: null,
+              ended_at: null,
+            },
+          ],
+        },
+      ],
+    };
+    renderPanel(threeTurnSnapshot);
+    const oneTurn = segment("cost-role-bar-h1-coder", "cache_creation");
+    const threeTurns = segment("cost-role-bar-h2-coder", "cache_creation");
+    expect(Number(threeTurns.dataset.tokens)).toBe(3 * Number(oneTurn.dataset.tokens));
+  });
+});
+
+describe("calibration reports both a last-generation and a peak ratio (U10)", () => {
+  it("includes a single-generation group in the median with one ratio", () => {
+    renderPanel(COST_NEW_FORMAT);
+    const row = screen.getByTestId("cost-calibration-row-g1");
+    expect(row.dataset.multiGeneration).toBe("false");
+    expect(screen.getByTestId("cost-calibration-generations-g1").textContent).toBe("1");
+    expect(screen.queryByTestId("cost-calibration-label-g1")).toBeNull();
+  });
+
+  it("shows a multi-generation group's last and peak ratios, labelled with its generation count and retirement reasons, and excludes it from the median", () => {
+    renderPanel(COST_NEW_FORMAT);
+    const row = screen.getByTestId("cost-calibration-row-g5");
+    expect(row.dataset.multiGeneration).toBe("true");
+    expect(screen.getByTestId("cost-calibration-generations-g5").textContent).toContain("4");
+
+    const label = screen.getByTestId("cost-calibration-label-g5");
+    expect(label.textContent).toContain("multi-generation");
+    expect(label.textContent).toContain("excluded from median");
+    expect(label.textContent).toContain("breaker retired");
+    expect(label.textContent).toContain("merge conflict");
+    expect(label.textContent).toContain("re-entry fallback");
+
+    // last generation: 45k / 50k = 0.9x; peak: 80k / 50k = 1.6x.
+    expect(row.textContent).toContain("0.90x");
+    expect(row.textContent).toContain("1.60x");
+
+    // g5 must not be counted in the 3-single-generation-group median computed
+    // from g1/g2/g3 elsewhere in this file.
+    const rollup = screen.getByTestId("cost-calibration");
+    expect(rollup.textContent).toContain("median across 3 single-generation groups");
+    expect(rollup.textContent).toContain("1 multi-generation row excluded");
+  });
+
+  it("reports no median, not a median over zero rows, when every group is multi-generation", () => {
+    const allMultiGen: RunSnapshot = {
+      ...COST_NEW_FORMAT,
+      run_id: "r-all-multi-gen",
+      groups: COST_NEW_FORMAT.groups.filter((g) => g.group_id === "g5"),
+    };
+    renderPanel(allMultiGen);
+    const median = screen.getByTestId("cost-calibration-median");
+    expect(median.textContent).toBe("no median — no single-generation groups to compute one from");
+    expect(median.textContent).not.toContain("NaN");
+    const rollup = screen.getByTestId("cost-calibration");
+    expect(rollup.textContent).toContain("median across 0 single-generation groups");
   });
 });

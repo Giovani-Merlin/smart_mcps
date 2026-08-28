@@ -88,6 +88,7 @@ export interface ManifestSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  total_inherited_cache_read_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
@@ -212,7 +213,7 @@ export interface ReviewerVerdict {
   notes: string;
 }
 
-// EscalationKind — the ten-member enum (model.py:185). The prototype's
+// EscalationKind — the eleven-member enum (model.py:185). The prototype's
 // four-value invention had no overlap with these and is gone.
 export type EscalationKind =
   | "coder_question"
@@ -220,6 +221,7 @@ export type EscalationKind =
   | "reviewer_too_hard"
   | "reviewer_structural"
   | "merge_conflict"
+  | "preflight_failed"
   | "caps_exhausted"
   | "group_resolve"
   | "group_start"
@@ -277,6 +279,10 @@ export interface SnapshotSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  // Sum of every round's turn-1 inherited cache read (plan U9) — its own
+  // figure, distinct from total_cache_read_tokens: context this session did
+  // not create and cannot shrink.
+  total_inherited_cache_read_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
@@ -308,6 +314,34 @@ export interface GroupHeartbeat {
   // written before the phase shipped.
   phase?: string | null;
   phase_elapsed_s?: number | null;
+  // Total paused time within the current round (rate-limit gate overlays,
+  // summed) and how long the current round has been open. Absent means "not
+  // recorded" — a heartbeat from before these fields shipped — never "zero",
+  // so the UI must not render an absent value as "no pause happened".
+  paused_s?: number | null;
+  round_elapsed_s?: number | null;
+}
+
+// WorktreeProvisioning (runs.py) — `provisioning.json` passed through
+// unchanged. Written beside the group's other run artifacts, never inside the
+// worktree itself, so it still reads correctly once a clean merge has torn
+// the worktree down (plan U32).
+export interface WorktreeProvisioning {
+  worktree: string;
+  command: string[];
+  state: string;
+  detail: string;
+  at?: string | null;
+}
+
+// SnapshotSurprise (runs.py) — one Surprise, flattened for the UI (plan U12).
+// `reason` is set only on a surprise pending *for* a group (why it was never
+// delivered); left unset on a surprise the group *emitted*.
+export interface SnapshotSurprise {
+  kind: string;
+  description: string;
+  affected_groups: string[];
+  reason?: string | null;
 }
 
 export interface SnapshotGroup {
@@ -333,6 +367,19 @@ export interface SnapshotGroup {
   // Null for every run written before the heartbeat shipped, and for any group
   // that never started a round. Absence is normal, never an error.
   heartbeat?: GroupHeartbeat | null;
+  // Null when no provisioning was ever recorded for this group (a run
+  // predating this feature, or a group that never reached worktree creation).
+  // Recorded outside the worktree, so it stays populated after a clean merge
+  // has torn the worktree down (plan U32).
+  provisioning?: WorktreeProvisioning | null;
+  // Two directions of the same board (plan U12): surprises still sitting on
+  // the board addressed to this group, and surprises this group's own
+  // coder/reviewer rounds reported. Kept as separate lists so the UI never
+  // has to infer direction from a shared one. Optional so every snapshot
+  // fixture predating this field keeps building — absence reads as empty,
+  // never as an error.
+  pending_surprises?: SnapshotSurprise[];
+  emitted_surprises?: SnapshotSurprise[];
 }
 
 export type ReviewIntensity = "self_verify" | "paired" | "paired_plus";
@@ -349,6 +396,10 @@ export interface RunSnapshot {
   run_id: string;
   plan_path: string;
   base_session_id?: string | null;
+  // The base session as a session, not just an id (plan U30): role
+  // "orchestrator", so the run's own work is legible alongside the coder and
+  // reviewer sessions it drives. Null wherever base_session_id is null.
+  base_session?: SnapshotSession | null;
   created_at?: string | null;
   groups: SnapshotGroup[];
   edges: DagEdge[];
@@ -391,6 +442,27 @@ export interface ExecutionOptions {
   escalation_source?: EscalationSource | null;
   escalation_timeout?: number | null;
   auto_resume?: boolean | null;
+  // Plan U18: the three model knobs (U17/U36). `null`/undefined means "not
+  // specified", same as every other field here.
+  model_worker?: string | null;
+  model_base?: string | null;
+  model_speccer?: string | null;
+}
+
+// ResolvedOptions (launch.py) — every execution option's effective default,
+// resolved exactly as the CLI would with no flags at all: config file, then
+// the library default. What the form shows next to a field left unspecified
+// (plan U18/F14), and what the run header shows for a running run.
+export interface ResolvedOptions {
+  concurrency: number;
+  permission_mode: string;
+  escalation_intensity: EscalationIntensity;
+  escalation_source: EscalationSource;
+  escalation_timeout?: number | null;
+  auto_resume: boolean;
+  model_worker: string;
+  model_base: string;
+  model_speccer: string;
 }
 
 export interface PlanDoc {
@@ -403,6 +475,32 @@ export interface GroupingSummary {
   name: string;
   plan_path: string;
   group_count: number;
+}
+
+// GroupingPreview (grouping.py) — the launch page's read-only listing of a
+// named grouping's own groups.json, before any run exists. Field-for-field
+// what `group --dry-run`'s `_print_report` prints per group.
+export interface GroupingPreviewGroup {
+  id: string;
+  name: string;
+  summary: string;
+  tasks: string[];
+  files: string[];
+  estimated_tokens: number;
+  difficulty: number;
+  intensity: string;
+  dependencies: string[];
+  verification_count: number;
+}
+
+export interface GroupingPreview {
+  name: string;
+  groups_path: string;
+  present: boolean;
+  missing?: string | null;
+  plan_path: string;
+  flags: string[];
+  groups: GroupingPreviewGroup[];
 }
 
 export type JobKind = "group" | "run" | "resume";
@@ -532,6 +630,23 @@ export interface Artifact {
   // Set only for a `permission_denied` report. Server-derived on read, so the
   // UI never re-implements the classification.
   denial_kind?: DenialKind | null;
+  // True for `verdict-g<N>-r<M>-extra.json` — the mandatory second
+  // verification pass a `paired_plus` group earns above `d_hard` (plan U28).
+  is_extra: boolean;
+}
+
+// DiffResult (artifacts.py) — a best-effort `git diff` between two refs (plan
+// U29). `available: false` covers every degrade path (a torn-down branch, an
+// absent manifest, missing session timing) with a human-readable `reason`
+// rather than an HTTP error, so the drill-in always has something to render.
+export interface DiffResult {
+  available: boolean;
+  reason?: string | null;
+  from_ref?: string | null;
+  to_ref?: string | null;
+  diff: string;
+  truncated: boolean;
+  total_bytes?: number | null;
 }
 
 // ------------------------------------------------------------- grouping tab
@@ -699,4 +814,58 @@ export interface GroupingView {
   // for where it was expected", not "there is no provenance".
   edge_provenance?: Record<string, unknown> | null;
   paths: Record<string, string>;
+}
+
+// ---------------------------------------------------------- grouper LLM calls
+
+// One entry in `llm/calls.json` (llm_record.py), passed through unchanged —
+// dotted OpenTelemetry GenAI keys and all. `gen_ai.operation.name` is what
+// tells a mapper call from a speccer one (and, once U14 records them, a
+// rewrite speccer call from a grouping-time one); `recorded_at` is what tells
+// them apart *by when they ran*.
+export interface LlmCallRecord {
+  seq: number;
+  recorded_at: string;
+  "gen_ai.operation.name": string;
+  "gen_ai.request.model"?: string | null;
+  attempt: number;
+  status: { code: string };
+  error?: string | null;
+  "claude.session_id"?: string | null;
+  "claude.transcript_path"?: string | null;
+  "gen_ai.usage.input_tokens": number;
+  "gen_ai.usage.output_tokens": number;
+  "claude.usage.cache_read_tokens": number;
+  "claude.usage.cache_creation_tokens": number;
+  duration_ms?: number | null;
+  schema_title?: string | null;
+  request_file?: string | null;
+  raw_file?: string | null;
+}
+
+// LlmCallsView (grouping.py) — the grouper's call index, or an honest account
+// of its absence via `missing`.
+export interface LlmCallsView {
+  run_id: string;
+  directory: string;
+  index_path: string;
+  present: boolean;
+  schema_version?: number | null;
+  grouping_run_id?: string | null;
+  produced_group_ids: string[];
+  produced_task_ids: string[];
+  calls: LlmCallRecord[];
+  missing: MissingArtifact[];
+}
+
+// LlmCallDetail (grouping.py) — one attempt, with the prompt it sent and the
+// raw text it got back.
+export interface LlmCallDetail {
+  seq: number;
+  call: LlmCallRecord;
+  request_path?: string | null;
+  request_text?: string | null;
+  raw_path?: string | null;
+  raw_text?: string | null;
+  missing: MissingArtifact[];
 }

@@ -60,7 +60,7 @@ rewrite cap exhausted, generation cap exhausted, operator skip, and `ReportError
 killed by the harness). Nothing else reaches it: an exception the orchestrator
 does not recognise is by definition not a judgement about the work, so it
 classifies Interrupted instead. Terminal by design; a human must look at it, via
-[[Retry]].
+\[[Retry]\].
 
 **Interrupted**:
 The non-terminal outcome recorded when a group dies of anything that is not one
@@ -83,7 +83,7 @@ _Avoid_: respawn (that is the fork-fresh path)
 **Resolve**:
 The orchestrator's recovery of a group that ended in a Work Failure: commit
 whatever its worktree still holds uncommitted, then merge the branch — through
-the same [[Preflight]] and conflict ladder every other merge passes. Reachable
+the same \[[Preflight]\] and conflict ladder every other merge passes. Reachable
 autonomously (HITL off) or on operator request (HITL on). Possible only because
 the orchestrator shells git itself, outside the worker's permission sandbox — the
 same reason an operator can commit by hand where the coder was denied. Never
@@ -145,15 +145,60 @@ integration branch: the worktree is clean, and the repo's configured check
 command exits zero in it. Asks the same two questions of an approved branch and
 of a Resolve's stranded work, and is the only gate a `self_verify` group has at
 all. Distinct from a Verification Item, which is prose for the reviewer to judge
-and never executed.
+and never executed. A failure is never treated as one undifferentiated thing —
+see \[[Preflight Kind]\] and \[[Preflight Baseline]\].
 _Avoid_: pre-merge check (too generic), validation (overloaded with the
 reviewer's judgement)
+
+**Preflight Kind**:
+The classification a Preflight failure is given *before* anyone is blamed for
+it: `env` (the check command never actually ran a test — a dirty worktree, a
+collection-phase import error, or an interrupted/internal/usage pytest exit),
+`timeout` (the check command hung), or `regression` (tests ran and genuinely
+failed). Only `regression` — and only once it clears the \[\[Preflight
+Baseline\]\] — spends a group's rewrite/generation budget; `env` and `timeout`
+fail the group fast with the diagnosis attached instead of burning a rewrite on
+a cause the diff cannot fix.
+_Avoid_: exit code (that is the raw signal a kind is classified from, not the
+classification itself)
+
+**Preflight Baseline**:
+The check command's per-test outcome set, captured once on the launch branch at
+run start and persisted as `preflight-baseline.json`. Every later preflight
+failure's failing-test set is compared against it: `new_failures` (attributable,
+keeps the rewrite path), `pre_existing` (every failing test was already red on
+the launch branch — routed the same as an `env` \[[Preflight Kind]\], never
+charged to the diff), or `no_baseline` (none could be captured — degrades to
+"cannot attribute," never to a false attribution).
+_Avoid_: baseline (alone, without "preflight" — this repo has more than one kind
+of recorded-before-the-fact comparison)
+
+**Informational Surprise**:
+A `Surprise` whose `kind` is `"informational"` — a broadcast fact (a changed test
+baseline, a pre-existing red suite) folded into the next generation's briefing
+without incrementing `rewrites` and without triggering a speccer call. Every
+other surprise kind still spends a rewrite when consumed; this kind exists
+specifically so a fact worth telling every affected group does not drain their
+rewrite budget just for having been told.
+_Avoid_: notification (implies a UI concept; this is a briefing mechanism inside
+the spec-rewrite pipeline)
+
+**Auth Pause**:
+The armed-and-self-releasing pause a run enters when an expired OAuth credential
+survives both cheaper rungs of the auth-refresh ladder — the local `expiresAt`
+check and the unconfined orchestrator's own refresh attempt. Reuses the same
+"arm, poll, self-release" gate machinery a usage-limit pause uses, with a health
+probe in place of a fixed reset deadline. Distinct from a usage-limit pause: an
+auth pause has no reset-time prose to parse, only "healthy again."
+_Avoid_: 401 (that is the wire signal that triggers rung (a), not the pause
+state itself), re-auth (implies a human must intervene, which is true only once
+both cheaper rungs have already failed)
 
 **Stranded Work**:
 Uncommitted changes left in a group's worktree by a process that died before the
 group reached any outcome — the orchestrator's own crash included. Never
 discarded; committed to the group's own branch under a `recover(...)` or
-`resolve(...)` subject, and merged only if it passes [[Preflight]].
+`resolve(...)` subject, and merged only if it passes \[[Preflight]\].
 _Avoid_: WIP (says nothing about who abandoned it), lost work (it is recoverable
 by construction)
 
@@ -168,7 +213,7 @@ starting the group over cold)
 **Failure Policy**:
 What the run does about *other* groups once one has ended without landing its
 work — `halt` (the default: admit nothing further) or `overlap` (admit anything
-not sharing a declared file, the pre-2026-08-19 behaviour). Both [[Work Failure]]
+not sharing a declared file, the pre-2026-08-19 behaviour). Both \[[Work Failure]\]
 and Interrupted trigger it, because both leave the same hole in the integration
 tip. In-flight groups are never cancelled to effect a halt; they run to their own
 outcome first.

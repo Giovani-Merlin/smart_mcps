@@ -15,7 +15,7 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -210,11 +210,26 @@ class RunPaths:
         return self.run_dir / "usage-limit.json"
 
     @property
+    def auth_pause_path(self) -> Path:
+        """The auth ladder's current pause, mirroring ``usage_limit_path`` (plan
+        U4): the gate fires from a worker thread, so this is its own
+        write-then-rename file rather than a field the scheduler's event loop
+        would have to lock around."""
+        return self.run_dir / "auth-pause.json"
+
+    @property
     def surprises_path(self) -> Path:
         """Persisted SurpriseBoard state (plan U7): an in-memory-only board dies
         with the process, silently dropping a surprise marked for a group that
         has not yet run when the run restarts."""
         return self.run_dir / "surprises.json"
+
+    @property
+    def preflight_baseline_path(self) -> Path:
+        """What was already red on the launch branch before the run started
+        (plan U2) — captured once, on a fresh run, and read back by the merge
+        gate to tell a new failure from a pre-existing one."""
+        return self.run_dir / "preflight-baseline.json"
 
     def group_dir(self, group_id: str) -> Path:
         return self.run_dir / "groups" / group_id
@@ -246,11 +261,30 @@ def log_event(paths: RunPaths, text: str) -> None:
 
     O_APPEND makes single small writes atomic across the process's group threads,
     so concurrent group transitions interleave line-by-line rather than tearing.
+
+    F22: timestamps are the operator's local zone (not UTC, as before) so they
+    read alongside a quoted usage-limit reset instant without a silent zone
+    mismatch (``UsageLimitGate._until_phrase`` converts to this same zone). The
+    zone is stated once, as the log's own first line, rather than repeated on
+    every line.
     """
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
-    line = f"{datetime.now(UTC).isoformat(timespec='seconds')}  {text}\n"
-    with paths.event_log_path.open("a") as fh:
-        fh.write(line)
+    path = paths.event_log_path
+    now = datetime.now().astimezone()
+    lines = []
+    if not path.exists():
+        lines.append(f"{now.isoformat(timespec='seconds')}  {_zone_header(now)}\n")
+    lines.append(f"{now.isoformat(timespec='seconds')}  {text}\n")
+    with path.open("a") as fh:
+        fh.writelines(lines)
+
+
+def _zone_header(now: datetime) -> str:
+    """ "zone: PDT (UTC-07:00)" — the label the run log's timestamps carry."""
+    offset = now.strftime("%z")  # e.g. "-0700"
+    formatted = f"{offset[:3]}:{offset[3:]}" if offset else "+00:00"
+    zone_name = now.tzname() or "local"
+    return f"log timestamps below are local time, zone {zone_name} (UTC{formatted})"
 
 
 class ManifestStore:

@@ -106,8 +106,76 @@ describe("the grid renders every attempt from real manifest data", () => {
     const onOpenSession = vi.fn();
     renderGrid(R20260726_GROUPING, { onOpenSession });
     const detail = await openCell("g2", 1);
-    fireEvent.click(within(detail).getByText("r20260726-grouping-g2-coder-g1"));
+    // The name's trailing "-g1" renders as its own "gen 1" badge (plan
+    // U35/F17), so the printed name itself is the suffix-stripped form.
+    fireEvent.click(within(detail).getByText("r20260726-grouping-g2-coder"));
     expect(onOpenSession).toHaveBeenCalledWith("g2", "13be2fe3-71f7-4c78-948a-8d32ac687aa2");
+  });
+});
+
+describe("session generation naming and timestamps (U35)", () => {
+  function snapshotWithSession(name: string, run = "r-test"): RunSnapshot {
+    return {
+      project: "smart-mcps",
+      run_id: run,
+      plan_path: "p.md",
+      groups: [
+        {
+          group_id: "g1",
+          name: "a-group",
+          summary: "",
+          state: "running",
+          generation: 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions: [
+            {
+              session_id: "s1",
+              role: "coder",
+              generation: 1,
+              name,
+              retirement_reason: null,
+              transcript_path: null,
+              last_context_tokens: 0,
+              rounds_completed: 0,
+              total_input_tokens: 0,
+              total_output_tokens: 0,
+              total_cache_read_tokens: 0,
+              total_cache_creation_tokens: 0,
+            },
+          ],
+        },
+      ],
+      edges: [],
+      stale_dag: false,
+      live_pids: {},
+    };
+  }
+
+  it("labels a session id ending -coder-g3 as gen 3 in the attempt grid, distinct from a group g3", async () => {
+    renderGrid(snapshotWithSession("r20260820-213134-g1-coder-g3", "r20260820-213134"));
+    const detail = await openCell("g1", 1);
+
+    expect(within(detail).getByText("gen 3")).toBeTruthy();
+    // The raw suffix is gone from the printed name — nothing on the page
+    // reads "-g3" as though it names a group.
+    expect(within(detail).getByText("r20260820-213134-g1-coder")).toBeTruthy();
+    expect(within(detail).queryByText("r20260820-213134-g1-coder-g3")).toBeNull();
+    // The "gen 3" badge is a rounded pill (`.attempt-session__gen`), visually
+    // distinct from the plain monospace group-id text used elsewhere on the
+    // page (`.attempt-grid__group-id`) — the two never share a class.
+    const genBadge = within(detail).getByText("gen 3");
+    expect(genBadge.className).toBe("attempt-session__gen");
+  });
+
+  it("renders no generation label for a session with no generation suffix", async () => {
+    renderGrid(snapshotWithSession("r-test-base"));
+    const detail = await openCell("g1", 1);
+
+    expect(within(detail).getByText("r-test-base")).toBeTruthy();
+    expect(within(detail).queryByText("gen 0")).toBeNull();
+    expect(within(detail).queryByText(/^gen \d+$/)).toBeNull();
   });
 });
 
@@ -289,6 +357,125 @@ describe("the seven special cases, rendered", () => {
       }),
     );
     expect((await openCell("g1", 1)).textContent).toContain("round bookkeeping lost");
+  });
+});
+
+describe("orchestrator sessions on the board (U30)", () => {
+  function baseSession(overrides: Partial<import("../types").SnapshotSession> = {}) {
+    return {
+      session_id: "base-1",
+      role: "orchestrator",
+      generation: 1,
+      name: "r-test-base",
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+      ...overrides,
+    };
+  }
+
+  function coderSession(generation: number) {
+    return {
+      session_id: `s-g${generation}`,
+      role: "coder",
+      generation,
+      name: `r-test-g1-coder-g${generation}`,
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+    };
+  }
+
+  function rewriteSession(generation: number) {
+    return {
+      session_id: `rewrite-g${generation}`,
+      role: "orchestrator",
+      generation,
+      name: `r-test-g1-orchestrator-g${generation}`,
+      retirement_reason: null,
+      transcript_path: null,
+      last_context_tokens: 0,
+      rounds_completed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cache_read_tokens: 0,
+      total_cache_creation_tokens: 0,
+    };
+  }
+
+  function snapshotWithSessions(sessions: unknown[], run = "r-test"): RunSnapshot {
+    return {
+      project: "smart-mcps",
+      run_id: run,
+      plan_path: "p.md",
+      base_session: baseSession(),
+      groups: [
+        {
+          group_id: "g1",
+          name: "a-group",
+          summary: "",
+          state: "completed",
+          generation: sessions.length ? Math.max(...sessions.map((s: any) => s.generation)) : 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions,
+        },
+      ],
+      edges: [],
+      stale_dag: false,
+      live_pids: {},
+    } as unknown as RunSnapshot;
+  }
+
+  it("[g19-base-session-exposed] exposes the run's base session with an orchestrator role", () => {
+    const snapshot = snapshotWithSessions([coderSession(1)]);
+    expect(snapshot.base_session?.role).toBe("orchestrator");
+  });
+
+  it("[g19-rewrite-before-generation] positions a rewrite before the generation it produced", async () => {
+    // gen 1 (base + coder), then a rewrite that produced gen 2, then gen 2's coder.
+    renderGrid(
+      snapshotWithSessions([baseSession(), coderSession(1), rewriteSession(2), coderSession(2)]),
+    );
+    const detail = await openCell("g1", 2);
+    const rows = within(detail)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    const orchestratorRowIndex = rows.findIndex((text) => text.includes("orchestrator"));
+    const coderRowIndex = rows.findIndex((text) => text.includes("coder"));
+    expect(orchestratorRowIndex).toBeGreaterThanOrEqual(0);
+    expect(coderRowIndex).toBeGreaterThan(orchestratorRowIndex);
+  });
+
+  it("[g19-visually-distinct] gives orchestrator sessions their own role class, distinct from coder/reviewer", async () => {
+    renderGrid(snapshotWithSessions([baseSession(), coderSession(1)]));
+    const detail = await openCell("g1", 1);
+    const orchestratorRole = within(detail).getByText("orchestrator");
+    const coderRole = within(detail).getByText("coder");
+    expect(orchestratorRole.className).toBe("attempt-session__role attempt-session__role--orchestrator");
+    expect(coderRole.className).toBe("attempt-session__role attempt-session__role--coder");
+    expect(orchestratorRole.className).not.toBe(coderRole.className);
+  });
+
+  it("[g19-no-spurious-rows] a group never re-specced shows no orchestrator rows beyond the base session", async () => {
+    renderGrid(snapshotWithSessions([baseSession(), coderSession(1)]));
+    const detail = await openCell("g1", 1);
+    const orchestratorRows = within(detail)
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.includes("orchestrator"));
+    expect(orchestratorRows).toHaveLength(1);
+    expect(orchestratorRows[0].textContent).toContain("r-test-base");
   });
 });
 

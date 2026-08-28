@@ -103,6 +103,17 @@ def _with_path_qualified_forms(rules: tuple[str, ...]) -> tuple[str, ...]:
 #: The baseline as shipped: every rule above, plus its path-qualified twin.
 DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = _with_path_qualified_forms(_BASE_ALLOWED_TOOLS)
 
+#: Plan U17: three independently settable models, one per role. Workers (coder
+#: and reviewer forks) are the bulk of spend and the bulk of their work is
+#: mechanical, so they default to the cheaper model; the orchestrator's own base
+#: session and the speccer/grouper are each a handful of calls that a whole run's
+#: correctness rests on, so both default to the strongest model. Measured on the
+#: observed run (docs/2026-08-20-observatory-frontend-findings.md): every role
+#: ran Opus, which is what the session limits were paying for.
+DEFAULT_WORKER_MODEL = "claude-sonnet-5"
+DEFAULT_BASE_MODEL = "claude-opus-5"
+DEFAULT_SPECCER_MODEL = "claude-opus-5"
+
 
 class EdgeWeightsConfig(BaseModel):
     """Affinity weights for the codegraph signals (plan R3) and the prose fallback.
@@ -335,6 +346,27 @@ class UsageLimitConfig(BaseModel):
     fallback_poll_s: float = 900.0
 
 
+class AuthConfig(BaseModel):
+    """The auth-refresh ladder's rung-(c) pause (plan U4).
+
+    Rungs (a) and (b) — reading ``expiresAt``, refreshing — need no timing
+    config: they run once, synchronously, the moment a 401 is seen. This
+    class covers only what happens when both rungs fail: how long to poll for
+    (``poll_s``), for how long total (``max_wait_s``), and whether the ladder
+    is wired in at all (``enabled``). Deliberately its own model rather than
+    reusing ``UsageLimitConfig`` wholesale — an auth pause has no reset-time
+    prose to parse (there is never a deadline, only "healthy again"), so
+    ``skew_s``/``fallback_poll_s`` would be dead fields here.
+    """
+
+    enabled: bool = True
+    # Overrides ``~/.claude/.credentials.json`` — chiefly for tests.
+    credentials_path: str | None = None
+    poll_s: float = 60.0
+    max_wait_s: float = 0.0
+    max_attempts: int = 6
+
+
 class SessionConfig(BaseModel):
     """How the run command shells the claude CLI (plan U9).
 
@@ -344,7 +376,19 @@ class SessionConfig(BaseModel):
     """
 
     claude_bin: str | list[str] = "claude"
-    model: str | None = None
+    # Plan U17: the coder/reviewer fork model. Independently settable from
+    # ``base_model`` and ``speccer_model`` below — changing this one leaves the
+    # other two at their own defaults.
+    model: str | None = DEFAULT_WORKER_MODEL
+    # The model behind the run's own base session (``SessionRunner.start_base``),
+    # which every worker fork inherits context from but does not share a model
+    # with — it is worth the stronger model because a bad base context or a bad
+    # rewrite propagates to every group downstream.
+    base_model: str | None = DEFAULT_BASE_MODEL
+    # The model behind the mapper/speccer's `claude -p` calls
+    # (``orchestrator.grouping.llm.claude_json_runner``) — one call per grouping
+    # (or per spec rewrite), and the place the strongest model earns its cost.
+    speccer_model: str | None = DEFAULT_SPECCER_MODEL
     # What a worker is permitted to execute, declared by the *run* rather than
     # inherited from whoever launched it.
     #
@@ -421,6 +465,10 @@ class SessionConfig(BaseModel):
     # What to do when the account's usage limit is reached mid-run: by default,
     # pause in place and retry the identical call once the limit releases.
     usage_limit: UsageLimitConfig = Field(default_factory=UsageLimitConfig)
+    # Plan U4: what to do when a 401 is reached mid-run — try to refresh the
+    # credential in place, and only pause (rather than halt the run) if that
+    # fails.
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 class EscalationConfig(BaseModel):

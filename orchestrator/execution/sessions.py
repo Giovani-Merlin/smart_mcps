@@ -41,9 +41,17 @@ from orchestrator.execution.confinement import (
     worker_cache_dirs,
     worker_cache_env,
 )
+from orchestrator.execution.prompting import (
+    render_coder_nudge_contract,
+    render_coder_nudge_skeleton,
+    render_reviewer_nudge_contract,
+    render_reviewer_nudge_skeleton,
+)
 from orchestrator.execution.worktrees import denied_git_tool_patterns
+from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
+from orchestrator.model import CoderReport
 
 REQUIRED_CLI_FLAGS = (
     "--print",
@@ -57,12 +65,6 @@ REQUIRED_CLI_FLAGS = (
 )
 
 DEFAULT_MAX_NUDGES = 2
-
-_NUDGE_PROMPT = (
-    "Your previous message did not end with a valid report block ({error}). "
-    'Reply now with ONLY a <run-report status="..."> block whose body is valid JSON '
-    "for the expected report schema — no other text."
-)
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -95,6 +97,20 @@ class UsageLimit(SessionError):
     prefix — because that is what ``ratelimit.parse_reset_at`` reads the reset
     time out of, and re-extracting it from a formatted message would be a second
     parser of the same string.
+    """
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail or message
+
+
+class AuthExpired(SessionError):
+    """The account's OAuth token was rejected — the round never ran (plan U4).
+
+    A distinct type for the same reason ``UsageLimit`` is: the response is not
+    "fork a fresh generation", it is "fix the credential, then replay this
+    exact call". ``detail`` carries the wire text unwrapped, same convention as
+    ``UsageLimit.detail``.
     """
 
     def __init__(self, message: str, detail: str = ""):
@@ -169,6 +185,46 @@ class RoundUsage:
         )
 
 
+@dataclass(frozen=True)
+class RoundSpend:
+    """What one round actually cost, summed across every turn (plan U9).
+
+    Unlike ``RoundUsage.context_tokens`` — which deliberately reads only the
+    last turn, because occupancy is what the next round resumes into — spend is
+    what every turn billed, and the envelope's *top-level* ``usage`` already is
+    that all-turns sum (see ``RoundUsage.from_envelope``'s docstring). No
+    iteration walk is needed, and this degrades correctly on older CLIs that
+    emit no ``iterations`` at all, where the top level is the whole round.
+
+    Per-request billing is independent, and ``cache_read_input_tokens`` on turn
+    *n* reports the whole re-read prefix — including what turn *n-1* wrote —
+    billed at 0.1x. Summing across turns is therefore correct and is not double
+    counting.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    #: Turn 1's own cache read: context this round inherited rather than
+    #: created, and cannot shrink. Reported separately from the round's total
+    #: cache read so the two are never conflated.
+    inherited_cache_read_tokens: int = 0
+
+    @classmethod
+    def from_envelope(cls, envelope: dict) -> RoundSpend:
+        usage = envelope.get("usage") or {}
+        iterations = usage.get("iterations") or []
+        first_turn = iterations[0] if isinstance(iterations, list) and iterations else usage
+        return cls(
+            input_tokens=int(usage.get("input_tokens", 0) or 0),
+            output_tokens=int(usage.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            inherited_cache_read_tokens=int(first_turn.get("cache_read_input_tokens", 0) or 0),
+        )
+
+
 @dataclass
 class SessionUsage:
     """Cumulative usage for one session across rounds (breaker input, plan U5).
@@ -178,6 +234,12 @@ class SessionUsage:
     collapsing it into ``total_input_tokens`` (as this did originally) makes an
     efficient run and an expensive one indistinguishable. ``last_context_tokens``
     is unchanged — the circuit breaker reads it and must not shift behaviour.
+
+    Spend and occupancy are two quantities (plan U9): the cumulative counters
+    below are built from ``RoundSpend`` (every turn of every round), while
+    ``last_context_tokens`` is built from ``RoundUsage`` (the latest turn only).
+    A 190-turn round must contribute all 190 turns' worth of spend but only its
+    last turn's occupancy.
     """
 
     rounds: int = 0
@@ -185,14 +247,19 @@ class SessionUsage:
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    #: Sum of every round's turn-1 inherited cache read — its own figure,
+    #: distinct from total_cache_read_tokens, because it is context the session
+    #: did not create and cannot shrink.
+    total_inherited_cache_read_tokens: int = 0
     last_context_tokens: int = 0
 
-    def add(self, usage: RoundUsage) -> None:
+    def add(self, usage: RoundUsage, spend: RoundSpend) -> None:
         self.rounds += 1
-        self.total_input_tokens += usage.input_tokens
-        self.total_output_tokens += usage.output_tokens
-        self.total_cache_read_tokens += usage.cache_read_input_tokens
-        self.total_cache_creation_tokens += usage.cache_creation_input_tokens
+        self.total_input_tokens += spend.input_tokens
+        self.total_output_tokens += spend.output_tokens
+        self.total_cache_read_tokens += spend.cache_read_input_tokens
+        self.total_cache_creation_tokens += spend.cache_creation_input_tokens
+        self.total_inherited_cache_read_tokens += spend.inherited_cache_read_tokens
         self.last_context_tokens = usage.context_tokens
 
 
@@ -230,6 +297,7 @@ class SessionRunner:
         *,
         claude_bin: str | Sequence[str] = "claude",
         model: str | None = None,
+        base_model: str | None = None,
         permission_mode: str | None = "acceptEdits",
         allowed_tools: Sequence[str] | None = None,
         transcript_root: Path | None = None,
@@ -244,9 +312,15 @@ class SessionRunner:
         cache_root: Path | None = None,
         extra_write_paths: Sequence[Path] | None = None,
         gate: UsageLimitGate | None = None,
+        auth_ladder: AuthLadder | None = None,
+        auth_gate: UsageLimitGate | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
+        # Plan U17: the fork/resume (worker) model. ``base_model`` is applied only
+        # to `start_base`'s call — independently settable, so a run can pin
+        # workers to one model and the base session to another.
         self.model = model
+        self.base_model = base_model
         self.max_thinking_tokens = max_thinking_tokens
         self.thinking = thinking
         self.permission_mode = permission_mode
@@ -278,6 +352,14 @@ class SessionRunner:
         # ``None`` restores the pre-auto-resume behaviour exactly: a usage limit
         # raises straight out of the call.
         self.gate = gate
+        # Plan U4: rungs (a)+(b) — read expiry, refresh in place — and rung (c)
+        # — arm-and-poll — of the auth ladder. Both default to ``None``, which
+        # restores exactly today's behaviour: a 401 raises ``AuthExpired``
+        # straight out of ``_call_with_retry`` (still a ``SessionError``, so the
+        # group lands INTERRUPTED and is resumable, same as an unconfigured
+        # usage-limit gate).
+        self.auth_ladder = auth_ladder
+        self.auth_gate = auth_gate
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
         self._confinement_warned = False
@@ -313,6 +395,7 @@ class SessionRunner:
             cwd=cwd,
             extra=["--session-id", session_id, "--name", f"{run_id}-base"],
             on_turn=on_turn,
+            model=self.base_model,
         )
 
     def start_fork(
@@ -433,6 +516,7 @@ class SessionRunner:
         extra: list[str],
         json_schema: dict | None = None,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+        model: str | None = None,
     ) -> RoundResult:
         argv = [
             *self._bin,
@@ -462,8 +546,12 @@ class SessionRunner:
             argv += ["--disallowedTools", ",".join(denied)]
         if self.settings:
             argv += ["--settings", self.settings]
-        if self.model:
-            argv += ["--model", self.model]
+        # ``model`` overrides ``self.model`` — used by `start_base` to pass its
+        # own ``base_model``, independent of the worker model every other call
+        # uses (plan U17).
+        effective_model = model if model is not None else self.model
+        if effective_model:
+            argv += ["--model", effective_model]
         if self.max_thinking_tokens is not None:
             argv += ["--max-thinking-tokens", str(self.max_thinking_tokens)]
         if self.thinking:
@@ -514,22 +602,56 @@ class SessionRunner:
 
         Exhausting ``max_attempts`` re-raises ``UsageLimit``, so today's
         INTERRUPTED path applies unchanged when the mechanism gives up.
+
+        A 401 (``AuthExpired``) is handled here too, on its own budget,
+        independent of the usage-limit one above (plan U4). The ladder's
+        rungs (a)+(b) run first and unconditionally — a stale token gets one
+        no-pause refresh attempt before anything is armed — and only a
+        refresh that fails or cannot be attempted (the refresh token has also
+        expired) falls to rung (c): ``auth_gate.pause`` arms a pause whose
+        ``probe`` is the same ``recover`` call, so the pause self-releases the
+        moment the credential is healthy again rather than on a fixed
+        deadline. Either way the call is replayed under a fresh session id,
+        same as a usage-limit retry — a 401 also lands after the CLI has
+        registered the id.
         """
         gate = self.gate
-        attempts = gate.max_attempts if gate is not None and gate.enabled else 1
-        for attempt in range(1, attempts + 1):
+        usage_budget = gate.max_attempts if gate is not None and gate.enabled else 1
+        auth_gate = self.auth_gate
+        auth_budget = auth_gate.max_attempts if auth_gate is not None and auth_gate.enabled else 1
+        usage_attempt = 0
+        auth_attempt = 0
+        while True:
             try:
                 return self._invoke(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
             except UsageLimit as exc:
-                if gate is None or not gate.enabled or attempt == attempts:
+                usage_attempt += 1
+                if gate is None or not gate.enabled or usage_attempt >= usage_budget:
                     raise
                 # A cancelled pause means the operator stopped the run: re-raise
                 # rather than retry into a limit that is still active.
                 if not gate.pause(exc.detail):
                     raise
+                # Plan U4 rung (a): a long pause is exactly the moment a token
+                # can have gone stale underneath the run. Best-effort — a
+                # refresh here just means the next 401, if any, never happens.
+                if self.auth_ladder is not None:
+                    self.auth_ladder.recover()
                 argv = _with_fresh_session_id(argv)
                 context = _argv_context(argv)
-        raise AssertionError("unreachable")
+            except AuthExpired as exc:
+                if self.auth_ladder is not None and self.auth_ladder.recover():
+                    # Rungs (a)+(b) fixed it — no pause needed.
+                    argv = _with_fresh_session_id(argv)
+                    context = _argv_context(argv)
+                    continue
+                auth_attempt += 1
+                if auth_gate is None or not auth_gate.enabled or auth_attempt >= auth_budget:
+                    raise
+                if not auth_gate.pause(exc.detail):
+                    raise
+                argv = _with_fresh_session_id(argv)
+                context = _argv_context(argv)
 
     def _invoke(
         self,
@@ -551,6 +673,8 @@ class SessionRunner:
             # forking changes nothing".
             if is_usage_limit(detail):
                 raise UsageLimit(message, detail)
+            if is_auth_error(detail):
+                raise AuthExpired(message, detail)
             raise SessionError(message)
         try:
             envelope = json.loads(stdout)
@@ -562,7 +686,8 @@ class SessionRunner:
             raise SessionError(f"claude reported an error result: {str(envelope['result'])[:500]}")
         session_id = str(envelope.get("session_id", ""))
         usage = RoundUsage.from_envelope(envelope)
-        self._usage.setdefault(session_id, SessionUsage()).add(usage)
+        spend = RoundSpend.from_envelope(envelope)
+        self._usage.setdefault(session_id, SessionUsage()).add(usage, spend)
         return RoundResult(
             session_id=session_id,
             text=str(envelope["result"]),
@@ -714,6 +839,24 @@ def parse_report(text: str, model_cls: type[M]) -> M:
         raise ReportError(f"report body failed validation: {exc}") from exc
 
 
+def _nudge_prompt(
+    attempt: int, exc: ReportError, model_cls: type, verification_ids: Sequence[str]
+) -> str:
+    """Nudge escalation (plan U16): nudge 1 quotes the contract verbatim plus the
+    parse error and the required ids; nudge 2 strips the task away and hands
+    back a filled-in skeleton so only the values need completing. All the
+    recovery cost sits on this bad path — a round that reports cleanly the
+    first time pays none of it."""
+    is_coder = model_cls is CoderReport
+    if attempt == 0:
+        if is_coder:
+            return render_coder_nudge_contract(str(exc), verification_ids)
+        return render_reviewer_nudge_contract(str(exc))
+    if is_coder:
+        return render_coder_nudge_skeleton(verification_ids)
+    return render_reviewer_nudge_skeleton()
+
+
 def nudge_until_report(
     runner: SessionRunner,
     first: RoundResult,
@@ -721,6 +864,7 @@ def nudge_until_report(
     *,
     cwd: Path,
     max_nudges: int = DEFAULT_MAX_NUDGES,
+    verification_ids: Sequence[str] = (),
 ) -> tuple[M, RoundResult]:
     """Parse the round's report, re-nudging the session a bounded number of times.
 
@@ -736,7 +880,7 @@ def nudge_until_report(
                 raise ReportError(f"round failed after {max_nudges} re-nudges: {exc}") from exc
             result = runner.resume(
                 session_id=result.session_id,
-                prompt=_NUDGE_PROMPT.format(error=exc),
+                prompt=_nudge_prompt(attempt, exc, model_cls, verification_ids),
                 cwd=cwd,
             )
     raise AssertionError("unreachable")
