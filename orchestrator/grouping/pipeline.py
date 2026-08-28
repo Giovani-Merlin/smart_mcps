@@ -220,6 +220,7 @@ def _check_slice_overflow(
     budget_cap: float,
     allow_oversized_slice: bool,
     flags: list[str],
+    coder_slack_multiplier: float,
 ) -> None:
     """R5: a slice's own summed work can exceed the cap no matter how the rest
     of the graph is partitioned — ``split_over_budget`` (U3) already keeps such
@@ -233,24 +234,39 @@ def _check_slice_overflow(
     Every over-cap slice is collected before raising (plan U6/C1) — a plan
     with several oversized slices names all of them in one ``GrouperError``
     instead of costing one ``group`` invocation per slice.
+
+    ``node_work_fn`` (and therefore ``budget_cap``) is already scaled to a
+    coder — plan U8/C2 requires the operator-facing message to distinguish
+    that "coder work" figure from the unscaled "node work" it was derived
+    from, and to state the multiplier, rather than reporting one bare "work"
+    number that could be read as either.
     """
     errors = ErrorAccumulator()
     for label, members in sorted(atoms.items()):
-        work_by_member = {m: node_work_fn(m) for m in sorted(members)}
-        total = sum(work_by_member.values())
-        if total <= budget_cap:
+        coder_work_by_member = {m: node_work_fn(m) for m in sorted(members)}
+        node_work_by_member = {
+            m: v / coder_slack_multiplier for m, v in coder_work_by_member.items()
+        }
+        total_coder_work = sum(coder_work_by_member.values())
+        if total_coder_work <= budget_cap:
             continue
-        overshoot = total - budget_cap
-        detail = ", ".join(f"{m}={work_by_member[m]:.0f}" for m in sorted(work_by_member))
+        overshoot = total_coder_work - budget_cap
+        total_node_work = sum(node_work_by_member.values())
+        detail = ", ".join(
+            f"{m}={node_work_by_member[m]:.0f} node work / {coder_work_by_member[m]:.0f} coder work"
+            for m in sorted(coder_work_by_member)
+        )
         message = (
             f"slice {label!r} cannot fit in one group: members [{detail}] sum to "
-            f"{total:.0f} work, exceeding the {budget_cap:.0f} cap by {overshoot:.0f}"
+            f"{total_node_work:.0f} node work / {total_coder_work:.0f} coder work "
+            f"(coder_slack_multiplier={coder_slack_multiplier:g}), exceeding the "
+            f"{budget_cap:.0f} coder work cap by {overshoot:.0f}"
         )
         if not allow_oversized_slice:
             errors.add(message)
             continue
         flags.append(
-            f"partition: slice {label!r} accepted {overshoot:.0f} over the "
+            f"partition: slice {label!r} accepted {overshoot:.0f} coder work over the "
             f"{budget_cap:.0f} cap (--allow-oversized-slice / allow_oversized_slice)"
         )
     errors.raise_all(GrouperError)
@@ -638,6 +654,7 @@ def compute_partition(
         budget_cap=budget_cap,
         allow_oversized_slice=config.partition.allow_oversized_slice,
         flags=flags,
+        coder_slack_multiplier=config.estimator.coder_slack_multiplier,
     )
     dag = build_group_dag(graph, partition)
 
