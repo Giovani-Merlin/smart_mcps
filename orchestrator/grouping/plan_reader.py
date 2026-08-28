@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from pathlib import Path
 
 import yaml
 
@@ -129,6 +130,63 @@ def parse_task_map(
             )
         )
     return MapperOutput(mappings=mappings, descriptions=descriptions, flags=flags)
+
+
+def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapping] | None:
+    """``group --price`` (plan U7): the same file/prospective/size_hints split as
+    ``parse_task_map``, but against the filesystem directly instead of a
+    ``CodegraphClient`` — pricing never needs ``symbols`` (they carry no weight
+    in ``estimator.node_work``), so this skips symbol verification entirely
+    rather than requiring a live index. ``None`` if the plan carries no task map
+    block, mirroring ``parse_task_map``.
+    """
+    blocks = _BLOCK.findall(plan_text)
+    if not blocks:
+        versions = _ANY_VERSION.findall(plan_text)
+        if versions:
+            raise TaskMapError(
+                f"unsupported task map version v{versions[0]} (this parser reads v1)"
+            )
+        return None
+    if len(blocks) > 1:
+        raise TaskMapError("multiple orchestrator-task-map blocks; exactly one is allowed")
+
+    try:
+        payload = yaml.safe_load(blocks[0])
+    except yaml.YAMLError as exc:
+        raise TaskMapError(f"task map is not valid YAML: {exc}") from exc
+    tasks = _validate_shape(payload)
+
+    mappings: list[TaskMapping] = []
+    for entry in tasks:
+        task_id = entry["task_id"]
+        raw_size_hints: dict[str, str] = entry.get("size_hints") or {}
+        files: list[str] = []
+        prospective: list[str] = []
+        for file in _dedupe(entry.get("files") or []):
+            if (repo_root / file).is_file():
+                if file in raw_size_hints:
+                    raise TaskMapError(
+                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
+                        "hints price unwritten (prospective) work only"
+                    )
+                files.append(file)
+            else:
+                prospective.append(file)
+        size_hints = tuple(
+            sorted((f, raw_size_hints[f]) for f in prospective if f in raw_size_hints)
+        )
+        mappings.append(
+            TaskMapping(
+                task_id,
+                files=tuple(files),
+                prospective_files=tuple(prospective),
+                size_hints=size_hints,
+                depends_on=tuple(_dedupe(entry.get("depends_on") or [])),
+                slice=entry.get("slice"),
+            )
+        )
+    return mappings
 
 
 def strip_task_map(plan_text: str) -> str:

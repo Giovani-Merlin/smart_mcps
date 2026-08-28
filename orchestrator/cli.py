@@ -116,6 +116,7 @@ from orchestrator.execution.worktrees import (
     write_provisioning_record,
 )
 from orchestrator.grouping.advisory import build_advisory_report, serialize_advisory_report
+from orchestrator.grouping.estimator import PRICE_CAP_APPROXIMATION_NOTE, PriceReport, price_plan
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
     JsonRunner,
@@ -138,7 +139,7 @@ from orchestrator.grouping.pipeline import (
     serialize_edge_provenance,
     serialize_grouping,
 )
-from orchestrator.grouping.plan_reader import strip_task_map
+from orchestrator.grouping.plan_reader import TaskMapError, strip_task_map
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
@@ -223,6 +224,17 @@ def main(
             "preset plus cohesion diagnostics (disconnection, seriality, "
             "monolithic structure) with zero LLM calls; writes preview/advisory.json, "
             "never touches groups.json"
+        ),
+    )
+    group_cmd.add_argument(
+        "--price",
+        action="store_true",
+        help=(
+            "parse the task map and price every task from working-tree byte counts, "
+            "sub-second, with no graph build and no codegraph client; prints per-task "
+            "and per-slice node/coder work against an approximate budget cap (compiled "
+            "with an empty codegraph summary) and exits non-zero if any slice is over "
+            "cap; writes no artifacts"
         ),
     )
     group_cmd.add_argument(
@@ -673,6 +685,19 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+
+    # --price never touches codegraph or an LLM (plan U7/C3): dispatched before
+    # any of the usage-limit gate, run-directory, or recorder setup below, all
+    # of which exist for modes that build a real graph.
+    if getattr(args, "price", False):
+        try:
+            report = price_plan(plan_path=plan_path, repo_root=repo_root, config=config)
+        except TaskMapError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        _print_price_report(report, plan_path)
+        return 1 if report.over_cap else 0
+
     # `group` has no run directory, so its gate logs to stdout and writes no
     # state file — but it waits out a limit exactly as a run does. Grouping is a
     # handful of expensive calls; losing the last one to a reset that clears in
@@ -878,6 +903,47 @@ def _print_advisory_report(report) -> None:
             print(f"  [{finding.kind}] {finding.message}")
     else:
         print("  none")
+
+
+def _print_price_report(report: PriceReport, plan_path: Path) -> None:
+    """``group --price`` (plan U7/C3): per-task and per-slice node/coder work
+    against the cap, plus the resolved budget parameters — named per U8's
+    node-work/coder-work vocabulary throughout.
+    """
+    print(f"plan: {plan_path}")
+    print(f"note: {PRICE_CAP_APPROXIMATION_NOTE}")
+
+    print("\nper-task work:")
+    for task in report.tasks:
+        slice_note = f" (slice: {task.slice})" if task.slice else ""
+        print(
+            f"  {task.task_id}: {task.node_work:.0f} node work / "
+            f"{task.coder_work:.0f} coder work{slice_note}"
+        )
+
+    print("\nper-slice work vs. cap:")
+    for slice_price in report.slices:
+        status = "FAIL" if slice_price.over_cap else "pass"
+        print(
+            f"  {slice_price.label} [{status}]: tasks [{', '.join(slice_price.tasks)}] sum to "
+            f"{slice_price.node_work:.0f} node work / {slice_price.coder_work:.0f} coder work "
+            f"against a {report.budget_cap:.0f} coder work cap"
+        )
+        if slice_price.over_cap:
+            overshoot = slice_price.coder_work - report.budget_cap
+            print(f"    overshoot: {overshoot:.0f} coder work over cap")
+
+    print("\nbudget parameters:")
+    print(f"  token_budget: {report.token_budget}")
+    print(f"  bytes_per_token: {report.bytes_per_token:g}")
+    print(f"  slack_multiplier: {report.slack_multiplier:g}")
+    print(f"  coder_slack_multiplier: {report.coder_slack_multiplier:g}")
+    print(f"  per_file_tool_allowance: {report.per_file_tool_allowance}")
+    print(f"  base_tokens (approximate — empty codegraph summary): {report.base_tokens}")
+    print(f"  head: {report.head:.0f}")
+    print(f"  budget cap (approximate): {report.budget_cap:.0f}")
+
+    print(f"\nresult: {'FAIL — one or more slices exceed the cap' if report.over_cap else 'pass'}")
 
 
 def _print_partition_report(trace: GroupingTrace) -> None:
