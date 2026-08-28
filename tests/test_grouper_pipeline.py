@@ -1320,3 +1320,74 @@ class TestStageProgress:
         """The seam is optional — omitting ``progress`` must not raise."""
         result, _ = grouping(tmp_path)
         assert result.groups
+
+
+class TestSliceOverflowAccumulation:
+    """Plan U6/C1: every over-cap slice is named in one error, not just the
+    first one hit while iterating."""
+
+    def test_three_over_cap_slices_all_named_in_one_error(self):
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {
+            "alpha": ["a1", "a2"],
+            "beta": ["b1"],
+            "gamma": ["g1", "g2", "g3"],
+        }
+        work = {
+            "a1": 60.0,
+            "a2": 60.0,
+            "b1": 150.0,
+            "g1": 40.0,
+            "g2": 40.0,
+            "g3": 40.0,
+        }
+        with pytest.raises(GrouperError) as excinfo:
+            _check_slice_overflow(
+                atoms=atoms,
+                node_work_fn=lambda node: work[node],
+                budget_cap=100.0,
+                allow_oversized_slice=False,
+                flags=[],
+            )
+        message = str(excinfo.value)
+        for label in ("alpha", "beta", "gamma"):
+            assert f"slice {label!r}" in message
+        assert "cannot fit in one group" in message
+        assert message.count("exceeding the 100 cap by") == 3
+
+    def test_single_over_cap_slice_wording_is_unchanged(self):
+        """Single-error behaviour keeps today's exact message, unwrapped."""
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {"alpha": ["a1", "a2"]}
+        work = {"a1": 60.0, "a2": 60.0}
+        with pytest.raises(GrouperError) as excinfo:
+            _check_slice_overflow(
+                atoms=atoms,
+                node_work_fn=lambda node: work[node],
+                budget_cap=100.0,
+                allow_oversized_slice=False,
+                flags=[],
+            )
+        assert str(excinfo.value) == (
+            "slice 'alpha' cannot fit in one group: members [a1=60, a2=60] sum to "
+            "120 work, exceeding the 100 cap by 20"
+        )
+
+    def test_allow_oversized_slice_still_accepts_every_offender(self):
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {"alpha": ["a1", "a2"], "beta": ["b1"]}
+        work = {"a1": 60.0, "a2": 60.0, "b1": 150.0}
+        flags: list[str] = []
+        _check_slice_overflow(
+            atoms=atoms,
+            node_work_fn=lambda node: work[node],
+            budget_cap=100.0,
+            allow_oversized_slice=True,
+            flags=flags,
+        )
+        assert len(flags) == 2
+        assert any("alpha" in f for f in flags)
+        assert any("beta" in f for f in flags)

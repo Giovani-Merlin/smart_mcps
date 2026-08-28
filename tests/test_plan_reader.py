@@ -300,6 +300,63 @@ class TestSizeHints:
             parse_task_map(plan_with(map_yaml), make_client(tmp_path))
 
 
+class TestErrorAccumulation:
+    """Plan U6/C1: a validation phase reports every problem it finds together,
+    not just the first — and phase order still holds: a shape problem hides
+    reference problems in the same call until the shape is fixed."""
+
+    def test_two_unknown_key_tasks_reported_together(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n    description: d\n    bogus_key: 1\n"
+            "  - task_id: t2\n    description: d\n    another_bogus: 2\n"
+        )
+        with pytest.raises(TaskMapError) as excinfo:
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        message = str(excinfo.value)
+        assert "bogus_key" in message
+        assert "another_bogus" in message
+
+    def test_fixing_unknown_keys_then_reveals_both_size_hints_problems_together(self, tmp_path):
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n"
+            "    description: d\n"
+            "    files: [app/new1.py]\n"
+            "    size_hints:\n"
+            "      app/other.py: large\n"
+            "  - task_id: t2\n"
+            "    description: d\n"
+            "    files: [app/new2.py]\n"
+            "    size_hints:\n"
+            "      app/new2.py: huge\n"
+        )
+        with pytest.raises(TaskMapError) as excinfo:
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        message = str(excinfo.value)
+        assert "app/other.py" in message
+        assert "not in this task's files" in message
+        assert "'huge'" in message
+
+    def test_shape_errors_hide_reference_errors_in_the_same_call(self, tmp_path):
+        """A duplicate task_id (reference phase) alongside an unknown key
+        (shape phase) is not reported yet — the shape phase reports and stops
+        first."""
+        map_yaml = (
+            "# orchestrator-task-map v1\n"
+            "tasks:\n"
+            "  - task_id: t1\n    description: d\n    bogus_key: 1\n"
+            "  - task_id: t1\n    description: d\n"
+        )
+        with pytest.raises(TaskMapError) as excinfo:
+            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        message = str(excinfo.value)
+        assert "bogus_key" in message
+        assert "duplicate" not in message
+
+
 class TestStripTaskMap:
     """R27: the task-map block is grouper parser input only — strip_task_map
     removes it (plus a directly preceding heading) from LLM-facing plan text."""
