@@ -114,6 +114,7 @@ from orchestrator.execution.worktrees import (
     worktree_path,
     write_provisioning_record,
 )
+from orchestrator.grouping.advisory import build_advisory_report, serialize_advisory_report
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
     JsonRunner,
@@ -207,6 +208,16 @@ def main(
             "print the partition-only report (groups, DAG, node work, budget cap, "
             "hub roles, slice atoms, last-modifying stage) with zero LLM calls; "
             "never writes artifacts"
+        ),
+    )
+    group_cmd.add_argument(
+        "--advise",
+        action="store_true",
+        help=(
+            "build the task graph once and report every GRANULARITY_LEVELS "
+            "preset plus cohesion diagnostics (disconnection, seriality, "
+            "monolithic structure) with zero LLM calls; writes preview/advisory.json, "
+            "never touches groups.json"
         ),
     )
     group_cmd.add_argument(
@@ -685,6 +696,25 @@ def _cmd_group(
         # grouping job that otherwise shows nothing for three and a half minutes.
         print(f"progress: {message}", flush=True)
 
+    if getattr(args, "advise", False):
+        try:
+            report = build_advisory_report(
+                plan_path=plan_path,
+                repo_root=repo_root,
+                config=config,
+                llm_runner=llm_runner,
+                client=client,
+                allow_unknown_symbols=allow_unknown_symbols,
+                progress=_progress,
+            )
+        except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        (preview_dir / "advisory.json").write_text(serialize_advisory_report(report))
+        _print_advisory_report(report)
+        return 0
+
     if getattr(args, "no_spec", False):
         try:
             outcome = compute_partition(
@@ -811,6 +841,33 @@ def _warn_self_modification(flags: list[str]) -> None:
     that edits orchestrator/ is caught before the run starts, not mid-run."""
     if SELF_MODIFICATION_FLAG in flags:
         print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
+
+
+def _print_advisory_report(report) -> None:
+    """R12-R14: the human-readable rendering of ``advisory.json`` — presentable
+    as-is, since the plan-skill group hands this straight to the user for the
+    split-or-proceed question."""
+    print(f"plan: {report.plan_path}")
+    print("\ngranularity comparison:")
+    for preset in report.granularities:
+        star = " *pareto*" if preset.pareto_dominant else ""
+        print(f"\n  {preset.granularity}{star}:")
+        print(f"    groups: {preset.group_count}")
+        print(
+            "    node work fraction of cap (mean/max): "
+            f"{preset.node_work_fraction_mean:.2f} / {preset.node_work_fraction_max:.2f}"
+        )
+        print(f"    cross-group edge cut: {preset.cross_group_edge_cut}")
+        print(f"    group DAG depth: {preset.group_dag_depth}")
+        print(f"    simulated makespan: {preset.simulated_makespan:.1f}")
+        print(f"    modularity: {preset.modularity:.3f}")
+
+    print("\ncohesion diagnostics:")
+    if report.cohesion:
+        for finding in report.cohesion:
+            print(f"  [{finding.kind}] {finding.message}")
+    else:
+        print("  none")
 
 
 def _print_partition_report(trace: GroupingTrace) -> None:

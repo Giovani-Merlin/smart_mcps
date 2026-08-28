@@ -435,36 +435,42 @@ class PartitionOutcome:
     base_tokens: int
 
 
-def compute_partition(
+@dataclass(frozen=True)
+class GraphBuildOutcome:
+    """The mapper → graph prefix of ``compute_partition`` (plan U11 seam),
+    extracted so ``--advise`` can build the task graph **once** and partition
+    it at every granularity preset, instead of repeating the mapper and
+    codegraph work per preset. ``compute_partition`` itself is just this
+    followed by one partition; nothing about its behavior changes.
+    """
+
+    plan_text: str
+    mapper_out: MapperOutput
+    graph: TaskGraph
+    quiesced_fingerprint: str
+    base_context: str
+    base_tokens: int
+    budget_cap: float
+
+
+def build_partition_graph(
     plan_path: Path,
     repo_root: Path,
-    config: OrchestratorConfig | None = None,
-    llm_runner: JsonRunner | None = None,
-    client: CodegraphClient | None = None,
+    config: OrchestratorConfig,
+    llm_runner: JsonRunner,
+    client: CodegraphClient,
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
-    provenance_recorder: EdgeProvenanceRecorder | None = None,
     progress: ProgressFn | None = None,
-) -> PartitionOutcome:
-    """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
-    does before handing off to the speccer, callable on its own.
-
-    ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
-    fills a ``GroupingTrace`` alongside the computation without changing it —
-    every fixture partitions identically with or without one attached.
-
-    ``progress``, if given, is called with one short stage-name string as each
-    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
-    and a half minutes of silence into a streamable job log.
+) -> GraphBuildOutcome:
+    """Mapper → graph (R19/plan U11 seam): everything before a partition
+    strategy runs. Callers must have already defaulted ``config``/``llm_runner``/
+    ``client`` — this function takes them as required so it never silently
+    builds a second ``CodegraphClient`` behind a caller's back.
     """
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
-    config = config or OrchestratorConfig()
-    llm_runner = llm_runner or functools.partial(
-        claude_json_runner, model=config.session.speccer_model
-    )
-    client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
     _emit(progress, "stage: mapper")
@@ -511,9 +517,6 @@ def compute_partition(
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
     budget_cap = partition_budget_cap(base_tokens, config.estimator)
 
-    def node_work_fn(node: str) -> float:
-        return node_work(graph.metadata.get(node, {}), config.estimator)
-
     if recorder is not None:
         recorder.set_config(config.model_dump())
         recorder.set_input_graph(graph.nodes, graph.affinity, graph.dependencies)
@@ -536,6 +539,68 @@ def compute_partition(
                 budget_cap=budget_cap,
             )
         )
+
+    return GraphBuildOutcome(
+        plan_text=plan_text,
+        mapper_out=mapper_out,
+        graph=graph,
+        quiesced_fingerprint=quiesced_fingerprint,
+        base_context=base_context,
+        base_tokens=base_tokens,
+        budget_cap=budget_cap,
+    )
+
+
+def compute_partition(
+    plan_path: Path,
+    repo_root: Path,
+    config: OrchestratorConfig | None = None,
+    llm_runner: JsonRunner | None = None,
+    client: CodegraphClient | None = None,
+    allow_unknown_symbols: bool = False,
+    recorder: TraceRecorder | None = None,
+    llm_recorder: LlmCallRecorder | None = None,
+    provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
+) -> PartitionOutcome:
+    """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
+    does before handing off to the speccer, callable on its own.
+
+    ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
+    fills a ``GroupingTrace`` alongside the computation without changing it —
+    every fixture partitions identically with or without one attached.
+
+    ``progress``, if given, is called with one short stage-name string as each
+    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
+    and a half minutes of silence into a streamable job log.
+    """
+    config = config or OrchestratorConfig()
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
+    client = client or CodegraphClient(repo_root=repo_root)
+
+    build = build_partition_graph(
+        plan_path=plan_path,
+        repo_root=repo_root,
+        config=config,
+        llm_runner=llm_runner,
+        client=client,
+        allow_unknown_symbols=allow_unknown_symbols,
+        recorder=recorder,
+        llm_recorder=llm_recorder,
+        progress=progress,
+    )
+    plan_text = build.plan_text
+    mapper_out = build.mapper_out
+    graph = build.graph
+    quiesced_fingerprint = build.quiesced_fingerprint
+    base_context = build.base_context
+    base_tokens = build.base_tokens
+    budget_cap = build.budget_cap
+
+    def node_work_fn(node: str) -> float:
+        return node_work(graph.metadata.get(node, {}), config.estimator)
 
     strategy = DefaultPartitionStrategy(
         work_fn=node_work_fn,
