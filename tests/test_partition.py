@@ -14,12 +14,14 @@ import pytest
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
+    DegenerateRepair,
     GroupCycleError,
     SingleGroupStrategy,
     TaskGraph,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
+    find_slice_reentrant_paths,
     lift_independent,
     merge_small_groups,
     repair_cycles,
@@ -350,6 +352,37 @@ class TestSccRepair:
         }
         assert len(results) == 1
 
+    def test_repair_records_a_degenerate_repair_when_overshoot_occurs(self):
+        """Plan U9: an unre-splittable overshoot also lands in ``degenerate``
+        (not just ``flags``) as a structured ``DegenerateRepair`` carrying the
+        task-level edges that closed the cycle — the pipeline's degeneracy
+        gate needs these to source its edge-provenance breakdown."""
+        g = graph(
+            "a1 a2 b".split(),
+            dependencies={("a1", "b"): 1.0, ("b", "a2"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        partition = {"a1": 0, "a2": 0, "b": 1}
+        flags: list[str] = []
+        degenerate: list[DegenerateRepair] = []
+        repair_cycles(
+            g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags, degenerate=degenerate
+        )
+        assert len(degenerate) == 1
+        repair = degenerate[0]
+        assert repair.evidence_edges == (("a1", "b"), ("b", "a2"))
+        assert repair.overshoot_messages == tuple(flags)
+
+    def test_repair_does_not_record_a_degenerate_repair_when_resplit_succeeds(self):
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        degenerate: list[DegenerateRepair] = []
+        repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=[], degenerate=degenerate)
+        assert degenerate == []
+
 
 class TestSliceContraction:
     """Task-map slice labels enter Louvain as must-link node contraction (plan U5)."""
@@ -471,6 +504,75 @@ class TestSliceContraction:
         partition = strategy.partition(g)
         assert groups_of(partition) == {frozenset({"a1", "a2", "b1", "b2"})}
         assert strategy.last_stage == "repair"
+
+
+class TestSliceReentry:
+    """Plan U9/C5: a dependency path that leaves a declared slice and
+    re-enters it closes a cycle once the slice contracts to one supernode —
+    ``find_slice_reentrant_paths`` names the exact shape on the contracted
+    graph, before partitioning ever runs."""
+
+    def test_run10_shape_is_detected_and_named(self):
+        """u1 -> u2 -> u3 with u1/u3 slice-mates (docs/todos/grouping_improvements.md
+        C5, run 10): the path leaves slice `resilience` at u2 and returns."""
+        g = graph(
+            "u1 u2 u3".split(),
+            dependencies={("u1", "u2"): 1.0, ("u2", "u3"): 1.0},
+            slices={"u1": "resilience", "u3": "resilience"},
+        )
+        atoms = slice_atoms(g, {})
+        results = find_slice_reentrant_paths(g, atoms)
+        assert len(results) == 1
+        assert results[0].slice == "resilience"
+        assert results[0].path == ("u1", "u2", "u3")
+
+    def test_direct_intra_slice_edge_is_not_flagged(self):
+        """A dependency straight between two slice-mates, with no intermediate
+        node, is not a reentrant path — it simply vanishes at contraction."""
+        g = graph(
+            "u1 u3".split(),
+            dependencies={("u1", "u3"): 1.0},
+            slices={"u1": "s", "u3": "s"},
+        )
+        atoms = slice_atoms(g, {})
+        assert find_slice_reentrant_paths(g, atoms) == []
+
+    def test_cross_slice_mutual_dependency_is_not_a_reentrant_path(self):
+        """Two different slices depending on each other through different
+        member pairs (a1 -> b1, b2 -> a2) is a real group-level cycle, but it
+        is not "a path that leaves a slice and returns to itself" — that
+        shape belongs to repair_cycles' merge-and-resplit, not this gate."""
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+            slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
+        )
+        atoms = slice_atoms(g, {})
+        assert find_slice_reentrant_paths(g, atoms) == []
+
+    def test_two_independent_reentrant_slices_are_both_reported(self):
+        """Multiple slice-re-entrant shapes in one map are all detected
+        together, not just the first one found (R5 discipline)."""
+        g = graph(
+            "u1 u2 u3 v1 v2 v3".split(),
+            dependencies={
+                ("u1", "u2"): 1.0,
+                ("u2", "u3"): 1.0,
+                ("v1", "v2"): 1.0,
+                ("v2", "v3"): 1.0,
+            },
+            slices={"u1": "alpha", "u3": "alpha", "v1": "beta", "v3": "beta"},
+        )
+        atoms = slice_atoms(g, {})
+        results = find_slice_reentrant_paths(g, atoms)
+        assert {r.slice for r in results} == {"alpha", "beta"}
+        by_slice = {r.slice: r.path for r in results}
+        assert by_slice["alpha"] == ("u1", "u2", "u3")
+        assert by_slice["beta"] == ("v1", "v2", "v3")
+
+    def test_no_slices_returns_no_reentries(self):
+        g = graph("a b".split(), dependencies={("a", "b"): 1.0})
+        assert find_slice_reentrant_paths(g, slice_atoms(g, {})) == []
 
 
 class TestDefaultStrategyEndToEnd:

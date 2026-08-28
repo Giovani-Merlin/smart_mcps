@@ -20,7 +20,7 @@ lowest-affinity split for over-budget groups.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypeVar
@@ -349,6 +349,11 @@ class DefaultPartitionStrategy:
     recorder: PartitionRecorder | None = None
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
+    # Structured counterpart to the overshoot strings in ``flags`` (plan U9):
+    # each repaired group that stayed over budget also lands here with its
+    # offending task-level edges attached, so a caller can classify them
+    # (declared vs. inferred) without re-deriving the SCC.
+    degenerate_repairs: list[DegenerateRepair] = field(default_factory=list, init=False)
 
     def _record_stage(self, name: str, partition: Partition) -> None:
         if self.recorder is not None:
@@ -356,6 +361,7 @@ class DefaultPartitionStrategy:
 
     def partition(self, graph: TaskGraph) -> Partition:
         self.flags = []
+        self.degenerate_repairs = []
         if not graph.nodes:
             self.last_stage = None
             return {}
@@ -402,7 +408,13 @@ class DefaultPartitionStrategy:
         stages.append(("merge", dict(partition)))
         self._record_stage("merge", partition)
         partition = repair_cycles(
-            graph, partition, self.work_fn, self.budget_cap, self.flags, recorder=self.recorder
+            graph,
+            partition,
+            self.work_fn,
+            self.budget_cap,
+            self.flags,
+            recorder=self.recorder,
+            degenerate=self.degenerate_repairs,
         )
         stages.append(("repair", dict(partition)))
         self._record_stage("repair", partition)
@@ -474,6 +486,81 @@ def slice_atoms(graph: TaskGraph, roles: dict[str, str]) -> dict[str, list[str]]
         if isinstance(label, str) and label:
             atoms[label].append(node)
     return {label: members for label, members in sorted(atoms.items()) if len(members) >= 2}
+
+
+@dataclass(frozen=True)
+class SliceReentryPath:
+    """A dependency path that leaves a declared slice and returns to it (plan
+    U9/C5): once the slice contracts to one supernode for Louvain, this is
+    exactly what closes a cycle that does not exist at task level, and it used
+    to surface only as a generic degenerate-partition saturation message with
+    no actionable edit. ``path`` runs slice member to slice member, in order,
+    naming every node in between.
+    """
+
+    slice: str
+    path: tuple[str, ...]
+
+
+def _find_path_leaving_and_returning(
+    start: str, member_set: set[str], successors: Mapping[str, list[str]]
+) -> tuple[str, ...] | None:
+    """Shortest dependency path from ``start`` (a slice member), through nodes
+    outside the slice, back to another slice member — sorted BFS, so the
+    reported path is stable across runs."""
+    queue: deque[tuple[str, ...]] = deque([(start,)])
+    visited = {start}
+    while queue:
+        path = queue.popleft()
+        current = path[-1]
+        for nxt in sorted(successors.get(current, ())):
+            if nxt in member_set:
+                if nxt != start and len(path) > 1:
+                    return (*path, nxt)
+                continue
+            if nxt in visited:
+                continue
+            visited.add(nxt)
+            queue.append((*path, nxt))
+    return None
+
+
+def find_slice_reentrant_paths(
+    graph: TaskGraph, atoms: dict[str, list[str]]
+) -> list[SliceReentryPath]:
+    """Detect, on the contracted graph, every slice a dependency path leaves
+    and re-enters (plan U9/C5) — the shape ``_contract_slices`` turns into a
+    cycle that does not exist at task level. The full task graph is already
+    required to be acyclic (``TaskGraph.assert_acyclic_dependencies``), so any
+    cycle introduced by contraction must pass through at least one slice
+    supernode; every slice whose supernode sits in such a cycle is reported
+    here (R5 discipline: the caller collects and raises all of them together),
+    each with one concrete path reconstructed from the original graph.
+    """
+    if not atoms:
+        return []
+    unit_graph, _self_loops, _unit_of = _contract_slices(graph, atoms)
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for up, down in unit_graph.dependencies:
+        adjacency[up].add(down)
+    sccs = _strongly_connected_components(adjacency, set(unit_graph.nodes))
+    cyclic_units = {unit for scc in sccs if len(scc) > 1 for unit in scc}
+
+    successors: dict[str, list[str]] = defaultdict(list)
+    for up, down in graph.dependencies:
+        successors[up].append(down)
+
+    results: list[SliceReentryPath] = []
+    for label, members in sorted(atoms.items()):
+        if f"slice::{label}" not in cyclic_units:
+            continue
+        member_set = set(members)
+        for start in sorted(members):
+            path = _find_path_leaving_and_returning(start, member_set, successors)
+            if path is not None:
+                results.append(SliceReentryPath(slice=label, path=path))
+                break
+    return results
 
 
 def _contract_slices(
@@ -1182,6 +1269,19 @@ def _resplit_by_wave(
     return chunks
 
 
+@dataclass(frozen=True)
+class DegenerateRepair:
+    """One cyclic group-SCC ``repair_cycles`` could not re-split back under
+    budget (plan U9/C4.2), carrying the task-level edges that closed the
+    cycle — the same set ``evidence_edges`` computes internally — so a caller
+    can classify them (declared vs. inferred) without a second SCC walk.
+    """
+
+    cycle_groups: tuple[int, ...]
+    evidence_edges: tuple[Pair, ...]
+    overshoot_messages: tuple[str, ...]
+
+
 def repair_cycles(
     graph: TaskGraph,
     partition: Partition,
@@ -1189,6 +1289,7 @@ def repair_cycles(
     budget_cap: float | None,
     flags: list[str],
     recorder: PartitionRecorder | None = None,
+    degenerate: list[DegenerateRepair] | None = None,
 ) -> Partition:
     """SCC-merge, then a mandatory dependency-safe re-split (plan U5).
 
@@ -1200,7 +1301,10 @@ def repair_cycles(
     reintroduces a cycle. A chunk that still cannot fit under budget after
     re-splitting is left over budget with an entry appended to ``flags``
     naming it and the overshoot, rather than failing — these are greenfield
-    estimates, and a hard failure here would be unactionable.
+    estimates, and a hard failure here would be unactionable. When ``degenerate``
+    is given, the same overshoot also lands there as a ``DegenerateRepair``
+    (plan U9) — a structured counterpart the caller can source edge-provenance
+    counts from without re-deriving the SCC.
     """
     group_edges = _group_edges(graph, partition)
     gids = set(partition.values())
@@ -1262,6 +1366,14 @@ def repair_cycles(
                 target,
                 [list(chunk) for chunk in chunks],
                 overshoots,
+            )
+        if overshoots and degenerate is not None:
+            degenerate.append(
+                DegenerateRepair(
+                    cycle_groups=tuple(sorted(component)),
+                    evidence_edges=tuple(evidence_edges(component)),
+                    overshoot_messages=tuple(overshoots),
+                )
             )
         first, *rest = chunks
         for node in first:

@@ -47,11 +47,14 @@ from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
     LOUVAIN_SEED,
     DefaultPartitionStrategy,
+    DegenerateRepair,
+    Pair,
     Partition,
     WorkFn,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
+    find_slice_reentrant_paths,
     slice_atoms,
 )
 from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
@@ -272,8 +275,55 @@ def _check_slice_overflow(
     errors.raise_all(GrouperError)
 
 
+def _edge_provenance_counts(
+    graph: TaskGraph, edges: tuple[Pair, ...]
+) -> tuple[int, int, dict[str, int]]:
+    """Classify ``edges`` (a degenerate-partition SCC's task-level dependency
+    edges) as declared vs. inferred, sourced from the same per-edge ledgers
+    ``edge_provenance_document`` already walks (plan U9/C4.2) — no second
+    provenance channel. ``inferred_kinds`` counts inferred edges by their
+    ledger's signal kinds (e.g. ``"call"``, ``"call+impact"``), so the message
+    can name what they were inferred *from*.
+    """
+    provenance = graph.provenance
+    if not isinstance(provenance, EdgeProvenance):
+        return 0, len(edges), {"unknown": len(edges)} if edges else {}
+    declared = inferred = 0
+    inferred_kinds: dict[str, int] = {}
+    for key in edges:
+        if provenance.dependency_is_declared(key):
+            declared += 1
+            continue
+        inferred += 1
+        kinds = provenance.dependency_kinds(key)
+        label = "+".join(kinds) if kinds else "unknown"
+        inferred_kinds[label] = inferred_kinds.get(label, 0) + 1
+    return declared, inferred, inferred_kinds
+
+
+def _degenerate_repair_detail(graph: TaskGraph, repair: DegenerateRepair) -> str:
+    """One repaired group's overshoot message(s) plus the inferred/declared
+    provenance breakdown of the task edges that closed its cycle (plan
+    U9/C4.2, R8) — e.g. "103 of 127 dependency edges in this group are
+    inferred (103 call), 24 are declared depends_on", the sentence that would
+    have named the run-2/run-3 saturation immediately instead of a generic
+    "graph is saturated" diagnosis.
+    """
+    declared, inferred, inferred_kinds = _edge_provenance_counts(graph, repair.evidence_edges)
+    total = declared + inferred
+    provenance = "0 of 0 dependency edges recorded for this group"
+    if total:
+        kinds = ", ".join(f"{count} {kind}" for kind, count in sorted(inferred_kinds.items()))
+        provenance = (
+            f"{inferred} of {total} dependency edges in this group are inferred"
+            f"{f' ({kinds})' if kinds else ''}, {declared} are declared depends_on"
+        )
+    return "; ".join([*repair.overshoot_messages, provenance])
+
+
 def _check_degenerate_partition(
-    repair_flags: list[str],
+    graph: TaskGraph,
+    repairs: list[DegenerateRepair],
     allow_degenerate_partition: bool,
 ) -> None:
     """A cycle repair that could not re-split back under budget is a *failure*.
@@ -285,15 +335,18 @@ def _check_degenerate_partition(
     and `group` exited 0 (docs/orchestrator-grouping.md, limitation 5).
 
     Loud by default, mirroring ``_check_slice_overflow``: the overshoot is
-    reported with the partition's own message, and the escape hatch
+    reported with the partition's own message plus how many of the offending
+    SCC's edges are inferred vs. declared and what the inferred ones were
+    inferred from (plan U9/C4.2/R8) — sourced from ``graph.provenance``, the
+    same ledgers ``edge-provenance.json`` already records. The escape hatch
     (``--allow-degenerate-partition`` / ``[partition] allow_degenerate_partition``
     — exactly equivalent) accepts it instead. Unlike an oversized slice, this is
     never something the operator declared, so the default is an error rather than
     a warning.
     """
-    if not repair_flags or allow_degenerate_partition:
+    if not repairs or allow_degenerate_partition:
         return
-    detail = "\n  ".join(repair_flags)
+    detail = "\n  ".join(_degenerate_repair_detail(graph, repair) for repair in repairs)
     raise GrouperError(
         "partition is degenerate — cycle repair collapsed groups it could not "
         f"re-split back under budget:\n  {detail}\n"
@@ -301,6 +354,28 @@ def _check_degenerate_partition(
         "than the plan being too large. Inspect grouping-trace.json ('repairs') for "
         "the offending edges, or accept it with --allow-degenerate-partition."
     )
+
+
+def _check_slice_reentry(graph: TaskGraph, atoms: dict[str, list[str]]) -> None:
+    """R10/C5: before partitioning, name any dependency path that leaves a
+    declared slice and re-enters it — the exact shape that makes
+    ``_contract_slices`` close a cycle that does not exist at task level, and
+    that used to surface only as a generic degenerate-partition saturation
+    message with no actionable edit (run 10, docs/todos/grouping_improvements.md
+    C5). Every slice exhibiting the shape is collected and reported together
+    (R5 discipline), each naming the slice, the full offending path, and both
+    remedies.
+    """
+    errors = ErrorAccumulator()
+    for reentry in find_slice_reentrant_paths(graph, atoms):
+        path = reentry.path
+        bring_in = ", ".join(repr(n) for n in path[1:-1])
+        errors.add(
+            f"slice {reentry.slice!r} contracts {path[0]!r} and {path[-1]!r}, but "
+            f"{' -> '.join(path)} leaves the slice and returns — bring {bring_in} "
+            "into the slice or drop the label"
+        )
+    errors.raise_all(GrouperError)
 
 
 SELF_MODIFICATION_FLAG = (
@@ -626,6 +701,14 @@ def compute_partition(
     def node_work_fn(node: str) -> float:
         return node_work(graph.metadata.get(node, {}), config.estimator)
 
+    # Computed once, ahead of partitioning, so the slice-reentry check (R10/C5)
+    # can run on the pre-partition graph — `DefaultPartitionStrategy.partition`
+    # recomputes its own roles/atoms internally for contraction, which is fine:
+    # neither call mutates the graph, and this one only ever feeds checks.
+    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
+    atoms = slice_atoms(graph, roles)
+    _check_slice_reentry(graph, atoms)
+
     strategy = DefaultPartitionStrategy(
         work_fn=node_work_fn,
         budget_cap=budget_cap,
@@ -641,11 +724,10 @@ def compute_partition(
     # strategy.flags carries only the repair-overshoot messages, which is exactly
     # what the degeneracy gate judges.
     _check_degenerate_partition(
-        repair_flags=list(strategy.flags),
+        graph=graph,
+        repairs=strategy.degenerate_repairs,
         allow_degenerate_partition=config.partition.allow_degenerate_partition,
     )
-    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
-    atoms = slice_atoms(graph, roles)
     _assert_slice_integrity(atoms, partition)
     flags = list(strategy.flags)
     _check_slice_overflow(

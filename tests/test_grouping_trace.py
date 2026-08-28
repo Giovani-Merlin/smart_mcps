@@ -394,6 +394,15 @@ class TestAcceptedOvershootRecorded:
     The trace must carry that same entry, both in its repairs[] section and in
     the flags mirrored from the partitioner (plan U9: "as well as in flags[]")."""
 
+    # Two slices, each depending on the other through a *different* member pair
+    # (a1 -> b1, b2 -> a2): contraction closes a 2-cycle between the two slice
+    # supernodes directly, not a path that leaves one slice and returns to
+    # itself — so this stays a repair-cycles overshoot rather than tripping
+    # the slice-reentry gate (plan U9/C5), which only fires for the latter
+    # shape. Before U9 this fixture used one slice with a path through an
+    # unrelated task (a1 -> b -> a2 with a1/a2 slice-mates) — exactly the run-10
+    # shape U9 now diagnoses earlier and more specifically, so it can no longer
+    # reach repair_cycles at all.
     OVERSHOOT_PLAN = """# feat: repair overshoot repro
 
 ## Task Map
@@ -403,18 +412,24 @@ class TestAcceptedOvershootRecorded:
 tasks:
   - task_id: a1
     description: a1
-    slice: s
+    slice: s1
     files: [a1.py]
     depends_on: []
-  - task_id: b
-    description: b
-    files: [b.py]
+  - task_id: b1
+    description: b1
+    slice: s2
+    files: [b1.py]
     depends_on: [a1]
+  - task_id: b2
+    description: b2
+    slice: s2
+    files: [b2.py]
+    depends_on: []
   - task_id: a2
     description: a2
-    slice: s
+    slice: s1
     files: [a2.py]
-    depends_on: [b]
+    depends_on: [b2]
 ```
 """
 
