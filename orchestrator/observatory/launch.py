@@ -201,10 +201,6 @@ class GroupJobBody(BaseModel):
     token_budget: int | None = None
     dry_run: bool = False
     auto_resume: bool | None = None
-    # F1: grouping is the one moment the speccer actually runs, so its model
-    # must be settable here — the run form's speccer knob drives only the
-    # run-time *rewrite* speccer.
-    model_speccer: str | None = None
 
 
 class RunJobBody(BaseModel):
@@ -238,8 +234,6 @@ def build_argv(kind: JobKind, options: BaseModel, *, repo: Path) -> list[str]:
             argv.append("--dry-run")
         if options.auto_resume is not None:
             argv.append("--auto-resume" if options.auto_resume else "--no-auto-resume")
-        if options.model_speccer:
-            argv += ["--model-speccer", options.model_speccer]
     elif kind == "run":
         assert isinstance(options, RunJobBody)
         if options.grouping:

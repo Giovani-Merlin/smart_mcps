@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from orchestrator.grouping.graphing import TaskGraph
 from orchestrator.grouping.partition import Partition
 from orchestrator.grouping.plan_sections import PlanSections, UnitSection, section_for_task
-from orchestrator.grouping.speccer import GroupSpec
-from orchestrator.model import SUMMARY_MAX_CHARS, VerificationItem
+from orchestrator.model import SUMMARY_MAX_CHARS, GroupSpec, VerificationItem
 
 #: groups.json flag recorded whenever assembly (not the speccer) produced specs.
 ASSEMBLED_FLAG = "specs: assembled from plan — speccer LLM skipped"

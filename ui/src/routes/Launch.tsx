@@ -26,7 +26,7 @@ import {
   startResumeJob,
   startRunJob,
 } from "../api";
-import ExecutionOptionsForm, { ModelField } from "../components/launch/ExecutionOptions";
+import ExecutionOptionsForm from "../components/launch/ExecutionOptions";
 import GroupingPreview from "../components/launch/GroupingPreview";
 import JobLog from "../components/launch/JobLog";
 import { useQueryParams } from "../useQueryParams";
@@ -122,7 +122,7 @@ export function Launch() {
       {loadError && <p className="app__error">{loadError}</p>}
 
       <div className="launch__cards">
-        <GroupCard project={project} plans={plans} resolved={resolved} onLaunched={setJob} />
+        <GroupCard project={project} plans={plans} onLaunched={setJob} />
         <RunCard project={project} groupings={groupings} resolved={resolved} onLaunched={setJob} />
         <ResumeCard
           project={project}
@@ -172,14 +172,10 @@ function useLaunch(onLaunched: (job: JobInfo) => void) {
 function GroupCard({
   project,
   plans,
-  resolved,
   onLaunched,
 }: {
   project: string;
   plans: PlanDoc[];
-  /** Effective defaults for placeholder text — same contract as the run form's
-   * `ExecutionOptionsForm` (plan U18/F14). */
-  resolved?: ResolvedOptions | null;
   onLaunched: (job: JobInfo) => void;
 }) {
   const [plan, setPlan] = useState("");
@@ -190,9 +186,6 @@ function GroupCard({
   // Three-state, matching `auto_resume` on the run/resume forms: unset (null)
   // lets the CLI's own default stand, unticking sends the explicit opt-out.
   const [autoResume, setAutoResume] = useState<boolean | null>(null);
-  // F1: grouping is the one moment the speccer actually runs — the run form's
-  // speccer knob only drives the run-time rewrite speccer.
-  const [modelSpeccer, setModelSpeccer] = useState<string | null>(null);
   const { busy, error, launch } = useLaunch(onLaunched);
 
   return (
@@ -261,16 +254,6 @@ function GroupCard({
           onChange={(e) => setTokenBudget(e.target.value)}
         />
       </label>
-      <ModelField
-        id="launch-group-model-speccer"
-        label="Speccer model (writes the group specs)"
-        value={modelSpeccer}
-        models={resolved?.known_models ?? []}
-        placeholder={
-          resolved?.model_speccer ? `(from config: ${resolved.model_speccer})` : "(from config)"
-        }
-        onChange={setModelSpeccer}
-      />
       <label className="launch__check" htmlFor="launch-dry-run">
         <input
           id="launch-dry-run"
@@ -302,7 +285,6 @@ function GroupCard({
               token_budget: tokenBudget.trim() === "" ? null : Number(tokenBudget),
               dry_run: dryRun,
               auto_resume: autoResume,
-              model_speccer: modelSpeccer,
             }),
           )
         }

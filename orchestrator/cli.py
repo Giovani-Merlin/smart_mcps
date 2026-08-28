@@ -25,6 +25,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from string import Template
 
 from pydantic import ValidationError
 
@@ -118,7 +119,9 @@ from orchestrator.grouping.advisory import build_advisory_report, serialize_advi
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
     JsonRunner,
+    LlmCallRecorder,
     LlmError,
+    call_llm_json,
     claude_json_runner,
     with_usage_limit_retry,
 )
@@ -136,13 +139,14 @@ from orchestrator.grouping.pipeline import (
     serialize_grouping,
 )
 from orchestrator.grouping.plan_reader import strip_task_map
-from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
+    SUMMARY_MAX_CHARS,
     CoderReport,
     Group,
     GroupingResult,
+    GroupSpec,
     HumanAction,
     ReviewIntensity,
     RunManifest,
@@ -150,6 +154,7 @@ from orchestrator.model import (
     SessionRole,
     Surprise,
 )
+from orchestrator.prompts import load_template
 
 # Reviewer sessions one group at a given intensity spawns (plan U8's
 # --review-intensity warning): self-verify skips the reviewer entirely,
@@ -262,14 +267,16 @@ def main(
             "are set."
         ),
     )
-    # F1: only the speccer knob — grouping is the one moment the speccer
-    # actually runs, and it previously had no CLI model control at all (a repo
-    # without a config.toml had no way whatsoever). Worker and base models are
-    # meaningless for `group`, so `_add_model_args` (all three) would mislead.
+    # F1: only the speccer knob — the grouping-time speccer is gone (plan U4,
+    # ADR 0006), so this now controls only the mapper, which still runs for a
+    # foreign plan with no embedded task map, and previously had no CLI model
+    # control at all (a repo without a config.toml had no way whatsoever).
+    # Worker and base models are meaningless for `group`, so `_add_model_args`
+    # (all three) would mislead.
     group_cmd.add_argument(
         "--model-speccer",
         default=None,
-        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+        help="model for the mapper's claude -p calls (default: config, else claude-opus-5)",
     )
     _add_auto_resume_arg(group_cmd)
     _add_common_args(group_cmd)
@@ -475,7 +482,10 @@ def _add_model_args(cmd: argparse.ArgumentParser) -> None:
     cmd.add_argument(
         "--model-speccer",
         default=None,
-        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+        help=(
+            "model for the mapper's and mid-run rewrite speccer's claude -p calls "
+            "(default: config, else claude-opus-5)"
+        ),
     )
 
 
@@ -634,8 +644,8 @@ def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
 
 
 def _speccer_json_runner(llm_runner: JsonRunner | None, config: OrchestratorConfig) -> JsonRunner:
-    """The default one-shot runner for the mapper/speccer path, bound to the
-    speccer model (plan U17).
+    """The default one-shot runner for the mapper / rewrite-speccer path, bound
+    to the speccer model (plan U17).
 
     A caller-supplied ``llm_runner`` (tests, mainly) is returned untouched —
     only the production default gets the model bound, via ``functools.partial``
@@ -1971,19 +1981,98 @@ def _resolve_deps(
     )
 
 
+_REWRITE_SPEC_SCHEMA = {
+    "title": "speccer_output",
+    "type": "object",
+    "required": ["groups"],
+    "properties": {
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["group_id", "name", "summary", "spec", "verification"],
+                "properties": {
+                    "group_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "summary": {"type": "string", "maxLength": SUMMARY_MAX_CHARS},
+                    "spec": {"type": "string"},
+                    "verification": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "description"],
+                            "properties": {
+                                "id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "required": {"type": "boolean"},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+def _rewrite_group_spec(
+    plan_text: str,
+    skeletons: dict[str, dict],
+    runner: JsonRunner,
+    max_retries: int = 2,
+    failure_dir: Path | None = None,
+    recorder: LlmCallRecorder | None = None,
+) -> dict[str, GroupSpec]:
+    """Ask the rewrite speccer LLM for a name/summary/spec/verification for every
+    skeleton group (one group, in practice — the mid-run rewrite seam).
+
+    ``skeletons`` maps group_id → {tasks, files, previous_spec, rewrite_context} —
+    the deterministic facts the prose must cover. Output must cover exactly the
+    given group ids."""
+    prompt = Template(load_template("rewrite_speccer")).substitute(
+        plan_text=plan_text,
+        groups_json=json.dumps(skeletons, indent=2, sort_keys=True),
+    )
+
+    def validate(payload: dict) -> dict[str, GroupSpec]:
+        entries = payload["groups"]
+        if not isinstance(entries, list):
+            raise ValueError("'groups' must be a list")
+        try:
+            specs = [GroupSpec.model_validate(entry) for entry in entries]
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        got = {spec.group_id for spec in specs}
+        expected = set(skeletons)
+        if got != expected:
+            raise ValueError(f"group ids mismatch: expected {sorted(expected)}, got {sorted(got)}")
+        return {spec.group_id: spec for spec in specs}
+
+    return call_llm_json(
+        runner,
+        prompt,
+        _REWRITE_SPEC_SCHEMA,
+        validate=validate,
+        max_retries=max_retries,
+        failure_dir=failure_dir,
+        recorder=recorder,
+    )
+
+
 def _rewrite_provider(
     plan_text: str,
     llm_runner: JsonRunner,
     failure_dir: Path,
     recorder: JsonlCallRecorder | None = None,
 ):
-    """rewrite_spec seam: one-group skeleton through the Phase A speccer, with the
-    surprises folded in as rewrite context (they are never empty on escalation
-    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.).
+    """rewrite_spec seam: one-group skeleton through the mid-run rewrite speccer,
+    with the surprises folded in as rewrite context (they are never empty on
+    escalation paths — Phase B synthesizes a context surprise for
+    blocked/too_hard/etc.).
 
     ``recorder``, when given, appends each rewrite speccer call to the run's own
-    ``llm/calls.json`` (plan U14) — the same record shape grouping-time speccer
-    calls already get, so a rewrite's cost, prompt and response survive."""
+    ``llm/calls.json`` (plan U14) — the same record shape mapper calls already
+    get, so a rewrite's cost, prompt and response survive."""
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
         skeleton = {
@@ -1996,7 +2085,7 @@ def _rewrite_provider(
                 ],
             }
         }
-        spec = write_specs(
+        spec = _rewrite_group_spec(
             plan_text, skeleton, llm_runner, failure_dir=failure_dir, recorder=recorder
         )[group.id]
         return group.model_copy(

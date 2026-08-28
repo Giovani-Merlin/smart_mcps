@@ -529,9 +529,6 @@ export interface GroupJobBody {
   token_budget?: number | null;
   dry_run?: boolean;
   auto_resume?: boolean | null;
-  // F1: grouping is the one moment the speccer actually runs — the run form's
-  // speccer knob drives only the run-time rewrite speccer.
-  model_speccer?: string | null;
 }
 
 export interface RunJobBody {
