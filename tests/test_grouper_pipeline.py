@@ -38,51 +38,109 @@ GREENFIELD_PLAN = """# feat: greenfield service
 
 ## Units
 
-- t1-scaffold: create the app skeleton
-- t2-items-api: items API routes
-- t3-items-ui: items admin page
-- t4-docs: usage docs
+### U1. scaffold — create the app skeleton
+
+- **Goal**: create the app skeleton
+- **Summary**: Creates the app skeleton.
+- **Files**: `app/main.py` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: —
+- **Verification**: `app/main.py` exists.
+
+### U2. items-api — items API routes
+
+- **Goal**: items API routes
+- **Summary**: Items API routes on the scaffold.
+- **Files**: `app/items.py` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: items
+- **Implements / Consumes**: implements `/api/items`
+- **Verification**: `GET /api/items` responds.
+
+### U3. items-ui — items admin page
+
+- **Goal**: items admin page
+- **Summary**: Items admin page calling the items API.
+- **Files**: `web/items.tsx` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: items
+- **Implements / Consumes**: consumes `/api/items`
+- **Verification**: the items page renders.
+
+### U4. docs — usage docs
+
+- **Goal**: usage docs
+- **Summary**: Usage docs for the service.
+- **Files**: `docs/usage.md` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: —
+- **Implements / Consumes**: —
+- **Verification**: `docs/usage.md` exists.
 
 ## Task Map
 
 ```yaml
 # orchestrator-task-map v1
 tasks:
-  - task_id: t1-scaffold
+  - task_id: u1-scaffold
     description: create the app skeleton
     files: [app/main.py]
-  - task_id: t2-items-api
+  - task_id: u2-items-api
     description: items API routes
     slice: items
     files: [app/items.py]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
     implements: ["/api/items"]
-  - task_id: t3-items-ui
+  - task_id: u3-items-ui
     description: items admin page
     slice: items
     files: [web/items.tsx]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
     consumes: ["/api/items"]
-  - task_id: t4-docs
+  - task_id: u4-docs
     description: usage docs
     files: [docs/usage.md]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
 ```
 """
 
 MIXED_PLAN = """# feat: cross-stack feature on the existing server
 
+## Units
+
+### U1. api — extend the existing server with the items route
+
+- **Goal**: extend the existing server with the items route
+- **Summary**: Extends the existing server with the items route.
+- **Files**: `server.py`
+- **Symbols**: `real_fn`
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: implements `/api/items`
+- **Verification**: `GET /api/items` returns items.
+
+### U2. ui — new admin page consuming the items route
+
+- **Goal**: new admin page consuming the items route
+- **Summary**: New admin page consuming the items route.
+- **Files**: `web/items.tsx` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: consumes `/api/items`
+- **Verification**: the admin page lists items.
+
 ## Task Map
 
 ```yaml
 # orchestrator-task-map v1
 tasks:
-  - task_id: t1-api
+  - task_id: u1-api
     description: extend the existing server with the items route
     files: [server.py]
     symbols: [real_fn]
     implements: ["/api/items"]
-  - task_id: t2-ui
+  - task_id: u2-ui
     description: new admin page consuming the items route
     files: [web/items.tsx]
     consumes: ["/api/items"]
@@ -157,7 +215,9 @@ MAPPER_RESPONSE = json.dumps(
 
 
 def speccer_response(prompt, schema):
-    """Echoes a valid spec for every group id present in the prompt."""
+    """Echoes a valid spec for every group id present in the prompt — only the
+    mid-run *rewrite* speccer (``execution/review.py``, kept per plan U2/ADR
+    0006) still calls this seam; grouping-time assembly never does."""
     # raw_decode tolerates the corrective nudge a retry appends after the JSON blob
     payload, _ = json.JSONDecoder().raw_decode(prompt.split("GROUPS_JSON:\n", 1)[1])
     group_ids = sorted(payload.keys())
@@ -180,7 +240,9 @@ def speccer_response(prompt, schema):
 
 
 class StubLlm:
-    """Dispatches on the JSON schema title — the pipeline's two LLM seams."""
+    """Dispatches on the JSON schema title — the mapper and the (unremoved,
+    mid-run) rewrite speccer. Grouping-time deterministic assembly (plan U2)
+    never reaches the speccer branch for a task-mapped plan."""
 
     def __init__(self, mapper=MAPPER_RESPONSE, speccer=speccer_response):
         self.mapper = mapper
@@ -350,23 +412,24 @@ class TestTaskMapRegimes:
         result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
         by_task = {task: group for group in result.groups for task in group.tasks}
         # slice-mates co-grouped (contraction + the semantic route-tag edge)
-        assert by_task["t2-items-api"].id == by_task["t3-items-ui"].id
+        assert by_task["u2-items-api"].id == by_task["u3-items-ui"].id
         # ordered groups, not N independents: everything hangs off the scaffold
         assert len(result.groups) >= 2
-        scaffold_gid = by_task["t1-scaffold"].id
+        scaffold_gid = by_task["u1-scaffold"].id
         for group in result.groups:
             if group.id != scaffold_gid:
                 assert scaffold_gid in group.dependencies
         # prospective files reach Group.files — workers must create them
-        assert "app/items.py" in by_task["t2-items-api"].files
+        assert "app/items.py" in by_task["u2-items-api"].files
         assert any("retained as prospective" in flag for flag in result.flags)
 
-    def test_premapped_plan_invokes_runner_only_for_the_speccer(self, tmp_path):
-        """Regime (d): the mapper LLM is skipped and flagged."""
+    def test_premapped_plan_never_calls_the_llm_runner(self, tmp_path):
+        """Regime (d): the mapper LLM is skipped and flagged, and deterministic
+        spec assembly (plan U2) means the run makes zero LLM calls at all."""
         result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
         assert result.flags[0] == "task map: parsed from plan — mapper LLM skipped"
-        titles = [title for title, _ in llm.prompts]
-        assert titles and set(titles) == {"speccer_output"}
+        assert result.flags[-1] == "specs: assembled from plan — speccer LLM skipped"
+        assert llm.prompts == []
 
     def test_plan_without_task_map_keeps_the_mapper_path(self, tmp_path):
         """Regime (b): foreign plans work unchanged — mapper called, no skip flag."""
@@ -379,8 +442,8 @@ class TestTaskMapRegimes:
         route tags land in one group; structural and semantic layers coexist."""
         result, _ = self.run_plan(tmp_path, MIXED_PLAN)
         by_task = {task: group for group in result.groups for task in group.tasks}
-        assert by_task["t1-api"].id == by_task["t2-ui"].id
-        files = by_task["t1-api"].files
+        assert by_task["u1-api"].id == by_task["u2-ui"].id
+        files = by_task["u1-api"].files
         assert "server.py" in files and "web/items.tsx" in files
 
     def test_malformed_task_map_fails_loudly_with_zero_llm_calls(self, tmp_path):
@@ -431,33 +494,19 @@ class TestPipeline:
         assert group.estimated_tokens > 0
 
     def test_groups_carry_r6_contract_fields(self, tmp_path):
-        result, _ = grouping(tmp_path)
-        group = result.groups[0]
-        assert group.verification and group.verification[0].id
-        assert 0.0 <= group.difficulty <= 1.0
-        assert group.intensity is not None
-        assert group.files
-
-    def test_oversummary_rejected_at_validation_not_truncated(self, tmp_path):
-        """Plan U4 scenario: summaries over the length bound are rejected."""
-
-        def long_summary(prompt, schema):
-            payload = json.loads(speccer_response(prompt, schema))
-            for entry in payload["groups"]:
-                entry["summary"] = "x" * 200
-            return json.dumps(payload)
-
-        with pytest.raises(LlmError):
-            grouping(tmp_path, llm=StubLlm(speccer=long_summary))
-
-    def test_speccer_schema_failure_retries_then_aborts(self, tmp_path):
-        """Plan U4 scenario: invalid speccer JSON triggers a bounded retry nudge."""
-        llm = StubLlm(speccer="not json at all")
-        with pytest.raises(LlmError):
-            grouping(tmp_path, llm=llm)
-        speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
-        assert len(speccer_prompts) >= 2
-        assert "failed validation" in speccer_prompts[1]
+        """Verification is assembled from the plan's own units (plan U2), so this
+        needs a task-mapped Units plan rather than the mapper-driven PLAN_TEXT
+        fixture, whose LLM-invented task ids carry no unit section."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        for group in result.groups:
+            assert group.verification and group.verification[0].id
+            assert 0.0 <= group.difficulty <= 1.0
+            assert group.intensity is not None
+            assert group.files
 
     def test_group_estimate_counts_shared_file_once(self, tmp_path):
         """A file shared by several member tasks is sized once for the group
@@ -643,8 +692,8 @@ class TestComputePartition:
         assert outcome.dag == {0: {1}}
         assert outcome.node_work and all(v >= 0 for v in outcome.node_work.values())
         assert outcome.budget_cap > 0
-        assert outcome.hub_roles["t1-scaffold"] == "utility_hub"
-        assert outcome.slice_atoms == {"items": ["t2-items-api", "t3-items-ui"]}
+        assert outcome.hub_roles["u1-scaffold"] == "utility_hub"
+        assert outcome.slice_atoms == {"items": ["u2-items-api", "u3-items-ui"]}
         assert outcome.last_stage in {"contraction", "louvain", "lift", "split", "merge"}
         assert "greenfield service" in outcome.base_context
 
@@ -1074,7 +1123,7 @@ class TestTaskMapStripping:
         assert "orchestrator-task-map v1" not in outcome.base_context
         assert "## Task Map" not in outcome.base_context
         # the surrounding unit prose survives the strip
-        assert "t1-scaffold: create the app skeleton" in outcome.base_context
+        assert "### U1. scaffold — create the app skeleton" in outcome.base_context
 
     def test_base_context_compilation_stays_byte_stable(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -1098,14 +1147,17 @@ class TestTaskMapStripping:
         assert outcome.base_tokens == expected_tokens
         assert outcome.budget_cap == partition_budget_cap(expected_tokens, config.estimator)
 
-    def test_speccer_prompt_has_no_version_marker(self, tmp_path):
+    def test_assembled_spec_has_no_version_marker(self, tmp_path):
+        """Deterministic assembly (plan U2) embeds unit sections verbatim, so the
+        stripped-marker guarantee must hold for the assembled ``spec`` field too,
+        not just the base context."""
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
-        llm = StubLlm()
-        run_grouping(plan_path=plan, repo_root=repo, llm_runner=llm, client=make_client(repo))
-        speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
-        assert speccer_prompts
-        assert all("orchestrator-task-map v1" not in p for p in speccer_prompts)
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        assert result.groups
+        assert all("orchestrator-task-map v1" not in g.spec for g in result.groups)
 
     def test_rewrite_prompt_has_no_version_marker(self, tmp_path):
         from orchestrator.cli import _rewrite_provider
@@ -1124,7 +1176,7 @@ class TestTaskMapStripping:
             spec="old spec",
             difficulty=0.1,
             intensity=ReviewIntensity.SELF_VERIFY,
-            tasks=["t1-scaffold"],
+            tasks=["u1-scaffold"],
             files=["app/main.py"],
         )
         rewrite_spec(group, surprises=[Surprise(kind="other", description="stuck")])
@@ -1163,7 +1215,9 @@ class TestStageProgress:
         )
         assert lines == ["stage: mapper", "stage: quiescence", "stage: graph", "stage: partition"]
 
-    def test_full_pipeline_emits_one_spec_line_per_group(self, tmp_path):
+    def test_full_pipeline_emits_the_assemble_stage_with_no_per_spec_progress(self, tmp_path):
+        """Deterministic assembly (plan U2) is a single sub-second stage, not a
+        per-group LLM loop — no more ``spec i/N`` progress lines."""
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
         lines: list[str] = []
@@ -1174,22 +1228,14 @@ class TestStageProgress:
             client=make_client(repo),
             progress=lines.append,
         )
-        total = len(result.groups)
-        assert total >= 2  # otherwise "spec i/N" is not actually exercised
-        stage_lines = [line for line in lines if line.startswith("stage:")]
-        spec_lines = [line for line in lines if line.startswith("spec ")]
-        assert stage_lines == [
+        assert len(result.groups) >= 2
+        assert lines == [
             "stage: mapper",
             "stage: quiescence",
             "stage: graph",
             "stage: partition",
-            f"stage: specs total={total}",
+            "stage: assemble",
         ]
-        assert spec_lines == [f"spec {i}/{total}" for i in range(1, total + 1)]
-        # Every progress line was emitted before the pipeline returned — the
-        # unbuffered-in-the-CLI half of the fix is exercised by the CLI-level
-        # test below; this half proves the seam actually fires per spec.
-        assert lines.index(f"stage: specs total={total}") < lines.index(f"spec 1/{total}")
 
     def test_no_recorder_and_no_progress_still_works(self, tmp_path):
         """The seam is optional — omitting ``progress`` must not raise."""

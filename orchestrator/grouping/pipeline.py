@@ -1,6 +1,7 @@
 """End-to-end grouping pipeline: plan document in → groups + DAG + base context out.
 
-LLM at the edges (mapper in, speccer out), deterministic core in between (plan U4).
+LLM only at the mapper edge (foreign plans with no embedded task map); specs are
+assembled deterministically from the plan's own unit sections (plan U2), zero LLM.
 Partition computation stays strictly separate from execution — CoCoder fused them;
 we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 """
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import OrchestratorConfig
+from orchestrator.grouping.assembler import ASSEMBLED_FLAG, AssemblyInputs, assemble_group_specs
 from orchestrator.grouping.base_context import compile_base_context
 from orchestrator.grouping.estimator import (
     DifficultySignals,
@@ -51,9 +53,9 @@ from orchestrator.grouping.partition import (
     detect_hub_roles,
     slice_atoms,
 )
-from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
+from orchestrator.grouping.plan_sections import parse_plan_sections
 from orchestrator.grouping.scorecard import compute_scorecard
-from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.trace import (
     BudgetArithmetic,
     GroupDifficultyEntry,
@@ -632,13 +634,13 @@ def run_grouping(
     provenance_recorder: EdgeProvenanceRecorder | None = None,
     progress: ProgressFn | None = None,
 ) -> tuple[GroupingResult, str]:
-    """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
+    """Full pipeline: mapper (LLM) → graph → partition → estimator → deterministic
+    spec assembly (zero LLM, plan U2)."""
     config = config or OrchestratorConfig()
     llm_runner = llm_runner or functools.partial(
         claude_json_runner, model=config.session.speccer_model
     )
     client = client or CodegraphClient(repo_root=repo_root)
-    failure_dir = repo_root / ".orchestrator" / "failures"
 
     outcome = compute_partition(
         plan_path=plan_path,
@@ -660,22 +662,18 @@ def run_grouping(
     for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
-    skeletons = {
-        group_label(gid): {
-            "tasks": sorted(members),
-            "descriptions": {t: mapper_out.descriptions.get(t, "") for t in sorted(members)},
-            "files": _union_files(graph, members),
-        }
-        for gid, members in sorted(members_by_gid.items())
-    }
-    total_specs = len(skeletons)
-    _emit(progress, f"stage: specs total={total_specs}")
-    specs = write_specs(
-        strip_task_map(outcome.plan_text),
-        skeletons,
-        llm_runner,
-        failure_dir=failure_dir,
-        recorder=llm_recorder,
+    _emit(progress, "stage: assemble")
+    plan_sections = parse_plan_sections(outcome.plan_text)
+    specs = assemble_group_specs(
+        AssemblyInputs(
+            plan_sections=plan_sections,
+            graph=graph,
+            partition=partition,
+            dag=dag,
+            members_by_gid=members_by_gid,
+            descriptions=mapper_out.descriptions,
+            group_label=group_label,
+        )
     )
 
     upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}
@@ -684,9 +682,9 @@ def run_grouping(
             upstream_of[down_gid].append(up_gid)
 
     roles = outcome.hub_roles
-    flags = list(mapper_out.flags) + list(outcome.flags)
+    flags = list(mapper_out.flags) + list(outcome.flags) + [ASSEMBLED_FLAG]
     groups: list[Group] = []
-    for spec_index, (gid, members) in enumerate(sorted(members_by_gid.items()), start=1):
+    for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
@@ -749,7 +747,6 @@ def run_grouping(
                 estimated_tokens=estimated,
             )
         )
-        _emit(progress, f"spec {spec_index}/{total_specs}")
 
     result = GroupingResult(
         plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags

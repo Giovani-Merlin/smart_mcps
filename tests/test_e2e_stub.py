@@ -312,14 +312,14 @@ def test_group_cli_premapped_greenfield_plan_skips_mapper_and_orders_groups(repo
     # groups.json dependencies realize the plan's depends_on: every group not
     # holding the scaffold depends on the scaffold's group
     by_task = {task: group for group in grouping["groups"] for task in group["tasks"]}
-    assert by_task["t2-items-api"]["id"] == by_task["t3-items-ui"]["id"]
-    scaffold_gid = by_task["t1-scaffold"]["id"]
+    assert by_task["u2-items-api"]["id"] == by_task["u3-items-ui"]["id"]
+    scaffold_gid = by_task["u1-scaffold"]["id"]
     for group in grouping["groups"]:
         if group["id"] != scaffold_gid:
             assert scaffold_gid in group["dependencies"]
 
     # prospective files ship in Group.files so workers create them
-    assert "app/items.py" in by_task["t2-items-api"]["files"]
+    assert "app/items.py" in by_task["u2-items-api"]["files"]
 
 
 def test_breaker_trip_respawns_generation_two_and_completes(repo, fake_home, capsys):
@@ -651,7 +651,7 @@ def test_resume_after_regroup_uses_the_run_snapshot_not_the_live_grouping(repo, 
         (repo / ".orchestrator" / "groupings" / "alpha" / "groups.json").read_text()
     )
     live_tasks = {task for group in live_grouping["groups"] for task in group["tasks"]}
-    assert live_tasks == {"t1-api", "t2-ui"}  # the live directory really did change
+    assert live_tasks == {"u1-api", "u2-ui"}  # the live directory really did change
 
     script_session(
         fake_home,

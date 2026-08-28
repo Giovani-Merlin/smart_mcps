@@ -109,7 +109,7 @@ def _parse_verification_items(raw: str) -> tuple[str, ...]:
     sentence, or a sub-bullet list (one item per ``- ``, continuation lines
     joined into the same item)."""
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not lines:
+    if not lines or lines == ["—"]:
         return ()
     if not lines[0].startswith("- "):
         return (" ".join(lines),)
