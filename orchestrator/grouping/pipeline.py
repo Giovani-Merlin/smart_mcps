@@ -608,6 +608,7 @@ def compute_partition(
         hub_threshold=config.partition.hub_threshold,
         louvain_resolution=config.partition.louvain_resolution,
         granularity=config.partition.granularity,
+        target_fill_ratio=config.partition.target_fill_ratio,
         recorder=recorder,
     )
     _emit(progress, "stage: partition")
