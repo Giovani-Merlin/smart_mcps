@@ -13,6 +13,8 @@
 // does. That is why the selects carry an explicit "(from config)" option rather
 // than defaulting to a value this form invented.
 
+import { useState } from "react";
+
 import type { ExecutionOptions as Options, ResolvedOptions } from "../../types";
 import { ESCALATION_INTENSITIES } from "../../types";
 import "./ExecutionOptions.css";
@@ -44,6 +46,74 @@ const SOURCES = ["workers_via_orchestrator", "orchestrator_only"];
 /** "" in a select means unset — the CLI flag is omitted and the config decides. */
 function pick(raw: string): string | null {
   return raw === "" ? null : raw;
+}
+
+/** Sentinel option value for "type a model id yourself" — never a real model. */
+const CUSTOM_MODEL = "__custom__";
+
+/**
+ * One model knob: a `<select>` over the known model list (F2) with a free-text
+ * escape hatch. The dropdown exists because these were free-text `<input>`s and
+ * a typo silently became a bad model — `claude -p --model <bogus>` exits 0, so
+ * nothing downstream would ever complain. The escape hatch stays because the
+ * list is hard-coded (there is no trustworthy discovery), so a newer model id
+ * must always remain enterable.
+ */
+export function ModelField({
+  id,
+  label,
+  value,
+  models,
+  placeholder,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string | null;
+  models: string[];
+  placeholder: string;
+  onChange: (next: string | null) => void;
+}) {
+  // Custom mode is sticky while the operator types: `value` alone cannot carry
+  // it, because a half-typed id that happens to be "" or match a list entry
+  // would snap the control back to the dropdown mid-keystroke.
+  const [customMode, setCustomMode] = useState(false);
+  const custom = customMode || (value !== null && !models.includes(value));
+  return (
+    <label htmlFor={id}>
+      {label}
+      <select
+        id={id}
+        value={custom ? CUSTOM_MODEL : (value ?? "")}
+        onChange={(e) => {
+          if (e.target.value === CUSTOM_MODEL) {
+            setCustomMode(true);
+            return;
+          }
+          setCustomMode(false);
+          onChange(pick(e.target.value));
+        }}
+      >
+        <option value="">{placeholder}</option>
+        {models.map((model) => (
+          <option key={model} value={model}>
+            {model}
+          </option>
+        ))}
+        <option value={CUSTOM_MODEL}>other…</option>
+      </select>
+      {custom && (
+        <input
+          id={`${id}-custom`}
+          type="text"
+          value={value ?? ""}
+          placeholder="model id"
+          aria-label={`${label} (custom)`}
+          onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+        />
+      )}
+    </label>
+  );
 }
 
 export function ExecutionOptionsForm({
@@ -169,40 +239,32 @@ export function ExecutionOptionsForm({
           />
         </label>
 
-        <label htmlFor={id("model-worker")}>
-          Worker model
-          <input
-            id={id("model-worker")}
-            type="text"
-            value={value.model_worker ?? ""}
-            placeholder={resolved?.model_worker ?? "(from config)"}
-            onChange={(e) => set({ model_worker: e.target.value === "" ? null : e.target.value })}
-          />
-        </label>
+        <ModelField
+          id={id("model-worker")}
+          label="Worker model"
+          value={value.model_worker ?? null}
+          models={resolved?.known_models ?? []}
+          placeholder={fromConfig(resolved?.model_worker)}
+          onChange={(model_worker) => set({ model_worker })}
+        />
 
-        <label htmlFor={id("model-base")}>
-          Orchestrator (base) model
-          <input
-            id={id("model-base")}
-            type="text"
-            value={value.model_base ?? ""}
-            placeholder={resolved?.model_base ?? "(from config)"}
-            onChange={(e) => set({ model_base: e.target.value === "" ? null : e.target.value })}
-          />
-        </label>
+        <ModelField
+          id={id("model-base")}
+          label="Orchestrator (base) model"
+          value={value.model_base ?? null}
+          models={resolved?.known_models ?? []}
+          placeholder={fromConfig(resolved?.model_base)}
+          onChange={(model_base) => set({ model_base })}
+        />
 
-        <label htmlFor={id("model-speccer")}>
-          Speccer model
-          <input
-            id={id("model-speccer")}
-            type="text"
-            value={value.model_speccer ?? ""}
-            placeholder={resolved?.model_speccer ?? "(from config)"}
-            onChange={(e) =>
-              set({ model_speccer: e.target.value === "" ? null : e.target.value })
-            }
-          />
-        </label>
+        <ModelField
+          id={id("model-speccer")}
+          label="Rewrite speccer model (mid-run spec rewrites)"
+          value={value.model_speccer ?? null}
+          models={resolved?.known_models ?? []}
+          placeholder={fromConfig(resolved?.model_speccer)}
+          onChange={(model_speccer) => set({ model_speccer })}
+        />
       </div>
 
       <div className="exec-options__checks">

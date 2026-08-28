@@ -91,10 +91,14 @@ class SessionEntry(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
-    # Sum of every round's turn-1 inherited cache read (plan U9) — context this
-    # session did not create and cannot shrink, reported apart from
-    # total_cache_read_tokens so the two are never conflated.
-    total_inherited_cache_read_tokens: int = 0
+    # The context this session started from (F10): round 1 turn 1's
+    # cache_read + cache_creation — the prefix it inherited and cannot shrink,
+    # reported apart from total_cache_read_tokens so the two are never
+    # conflated. Replaces total_inherited_cache_read_tokens, whose name
+    # asserted a fact (turn-1 cache read) the data never carried — the envelope
+    # holds no turn-1 entry, so it silently reported the *last* turn. 0 on
+    # entries recorded before the rename, read as "not recorded".
+    base_context_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -114,6 +118,13 @@ class RunManifest(BaseModel):
     plan_path: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     base_session_id: str | None = None
+    # The base session as a real entry (F8). Run-level on purpose: forcing it
+    # into a group via `record_session` would corrupt that group's cost
+    # roll-ups, but leaving it as only the scalar id above made the base row
+    # structurally unresolvable — `find_session` walks groups[*].sessions[*],
+    # so clicking the orchestrator row 404'd forever. None on manifests written
+    # before this field existed.
+    base_session: SessionEntry | None = None
     grouping: str | None = None  # named grouping this run snapshotted (plan U10)
     # Persisted at run time so `resume` restores the original run's HITL tier
     # instead of silently reverting to EscalationConfig()'s on_stuck default

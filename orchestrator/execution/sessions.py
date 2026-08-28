@@ -206,22 +206,40 @@ class RoundSpend:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
-    #: Turn 1's own cache read: context this round inherited rather than
-    #: created, and cannot shrink. Reported separately from the round's total
-    #: cache read so the two are never conflated.
-    inherited_cache_read_tokens: int = 0
+    #: The prefix this round's first turn started from, ``cache_read +
+    #: cache_creation`` of turn 1 (F10) — context the session inherited rather
+    #: than produced, and cannot shrink. The *sum* is the honest figure: a
+    #: fork's first genuine call splits its inherited prefix across both fields
+    #: (~20k of stable prefix head cache-read, the rest re-created), so neither
+    #: half alone is the shared base context.
+    base_context_tokens: int = 0
 
     @classmethod
-    def from_envelope(cls, envelope: dict) -> RoundSpend:
+    def from_envelope(cls, envelope: dict, first_turn: TurnUsage | None = None) -> RoundSpend:
+        """``first_turn`` comes from the stream (``StreamOutcome.first_turn``),
+        not the envelope: a probed result envelope with ``num_turns: 2`` carried
+        a one-element ``iterations`` whose single entry was turn *2* — the
+        envelope holds no turn-1 data at all, so indexing ``iterations[0]`` here
+        silently reported the last turn (the F10 defect). The iterations fallback
+        below survives only for callers with no stream observation, and is
+        best-effort at best."""
         usage = envelope.get("usage") or {}
-        iterations = usage.get("iterations") or []
-        first_turn = iterations[0] if isinstance(iterations, list) and iterations else usage
+        if first_turn is not None:
+            base_context = (
+                first_turn.cache_read_input_tokens + first_turn.cache_creation_input_tokens
+            )
+        else:
+            iterations = usage.get("iterations") or []
+            first = iterations[0] if isinstance(iterations, list) and iterations else usage
+            base_context = int(first.get("cache_read_input_tokens", 0) or 0) + int(
+                first.get("cache_creation_input_tokens", 0) or 0
+            )
         return cls(
             input_tokens=int(usage.get("input_tokens", 0) or 0),
             output_tokens=int(usage.get("output_tokens", 0) or 0),
             cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
             cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
-            inherited_cache_read_tokens=int(first_turn.get("cache_read_input_tokens", 0) or 0),
+            base_context_tokens=base_context,
         )
 
 
@@ -247,19 +265,23 @@ class SessionUsage:
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
-    #: Sum of every round's turn-1 inherited cache read — its own figure,
-    #: distinct from total_cache_read_tokens, because it is context the session
-    #: did not create and cannot shrink.
-    total_inherited_cache_read_tokens: int = 0
+    #: The context this session started from — round 1 turn 1's ``cache_read +
+    #: cache_creation`` (F10). Recorded once, not summed: a later round's first
+    #: turn re-reads the whole accumulated context, so summing across rounds
+    #: conflates the shared base with the session's own growth. Near-constant
+    #: across a run's forks (61.5k–62.5k on r20260828-090936), which is exactly
+    #: what "shared base context" should read as.
+    base_context_tokens: int = 0
     last_context_tokens: int = 0
 
     def add(self, usage: RoundUsage, spend: RoundSpend) -> None:
+        if self.rounds == 0:
+            self.base_context_tokens = spend.base_context_tokens
         self.rounds += 1
         self.total_input_tokens += spend.input_tokens
         self.total_output_tokens += spend.output_tokens
         self.total_cache_read_tokens += spend.cache_read_input_tokens
         self.total_cache_creation_tokens += spend.cache_creation_input_tokens
-        self.total_inherited_cache_read_tokens += spend.inherited_cache_read_tokens
         self.last_context_tokens = usage.context_tokens
 
 
@@ -427,19 +449,21 @@ class SessionRunner:
         of finding the one already recorded.
         """
         session_id = session_id or str(uuid.uuid4())
+        extra = [
+            "--resume",
+            base_id,
+            "--fork-session",
+            "--session-id",
+            session_id,
+            "--name",
+            name,
+        ]
+        cwd, extra = _fork_cwd_experiment(cwd, extra)
         with self._fork_lock:
             return self._call(
                 prompt,
                 cwd=cwd,
-                extra=[
-                    "--resume",
-                    base_id,
-                    "--fork-session",
-                    "--session-id",
-                    session_id,
-                    "--name",
-                    name,
-                ],
+                extra=extra,
                 json_schema=json_schema,
                 on_turn=on_turn,
             )
@@ -662,7 +686,7 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        returncode, stdout, stderr, deny_signals = self._spawn(
+        returncode, stdout, stderr, deny_signals, first_turn = self._spawn(
             argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
         )
         if returncode != 0:
@@ -686,7 +710,7 @@ class SessionRunner:
             raise SessionError(f"claude reported an error result: {str(envelope['result'])[:500]}")
         session_id = str(envelope.get("session_id", ""))
         usage = RoundUsage.from_envelope(envelope)
-        spend = RoundSpend.from_envelope(envelope)
+        spend = RoundSpend.from_envelope(envelope, first_turn=first_turn)
         self._usage.setdefault(session_id, SessionUsage()).add(usage, spend)
         return RoundResult(
             session_id=session_id,
@@ -704,7 +728,7 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         prompt: str | None = None,
-    ) -> tuple[int, str, str, list[str]]:
+    ) -> tuple[int, str, str, list[str], TurnUsage | None]:
         """One tracked subprocess, read incrementally rather than a single
         blocking ``communicate()`` (plan U1): the tracker still sees the PID for
         exactly the round's lifetime (spawned once, exited once — plan U6's
@@ -753,13 +777,41 @@ class SessionRunner:
         if outcome.envelope is None:
             if outcome.returncode == 0:
                 raise SessionError(f"claude stream ended without a terminal result ({context})")
-            return outcome.returncode, "", outcome.stderr, outcome.deny_signals
+            return outcome.returncode, "", outcome.stderr, outcome.deny_signals, outcome.first_turn
         return (
             outcome.returncode,
             json.dumps(outcome.envelope),
             outcome.stderr,
             outcome.deny_signals,
+            outcome.first_turn,
         )
+
+
+def _fork_cwd_experiment(cwd: Path, extra: list[str]) -> tuple[Path, list[str]]:
+    """W10 arm B — **experiment only, off unless explicitly armed**.
+
+    The prompt-cache key starts with the system prompt, which embeds the working
+    directory and the git snapshot, so a fork whose cwd is its worktree misses
+    the base session's cache at token ~20k and re-creates ~41.5k of prefix
+    (measured, r20260828-090936). Arm B forks with cwd = the repo root — the
+    same cwd the base session ran at — and hands the worktree over via
+    ``--add-dir``, to measure whether that alone yields a cache hit, what it
+    does to wall-clock-to-first-tool-use, and whether the worker even survives
+    (Landlock confinement is scoped to cwd, and git resolves from cwd).
+
+    Set ``SMART_MCPS_FORK_CWD_EXPERIMENT=repo_root`` to arm. Deliberately not a
+    config knob: the decision on record is to measure, not to redesign — moving
+    forks to repo-root cwd for real means reworking confinement scoping, git
+    invocation, and the worker workspace contract.
+    """
+    if os.environ.get("SMART_MCPS_FORK_CWD_EXPERIMENT") != "repo_root":
+        return cwd, extra
+    resolved = cwd.resolve()
+    for parent in resolved.parents:
+        if parent.name == ".worktrees":
+            repo_root = parent.parent
+            return repo_root, [*extra, "--add-dir", str(resolved)]
+    return cwd, extra
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:

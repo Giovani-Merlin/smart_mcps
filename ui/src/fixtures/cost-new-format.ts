@@ -58,7 +58,7 @@ export const COST_NEW_FORMAT: RunSnapshot = {
           total_output_tokens: 24_000,
           total_cache_read_tokens: 480_000,
           total_cache_creation_tokens: 60_000,
-          total_inherited_cache_read_tokens: 90_000,
+          base_context_tokens: 90_000,
           model: "claude-opus-5",
           started_at: "2026-08-10T09:01:00Z",
           ended_at: "2026-08-10T09:48:00Z",

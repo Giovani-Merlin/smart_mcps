@@ -30,7 +30,11 @@ from pydantic import BaseModel
 
 from orchestrator.execution.denial import classify_denial
 from orchestrator.execution.manifest import RunPaths
-from orchestrator.execution.worktrees import group_branch, integration_branch
+from orchestrator.execution.worktrees import (
+    group_branch,
+    integration_branch,
+    read_provisioning_record,
+)
 from orchestrator.model import SessionRole
 from orchestrator.observatory.runs import RUN_PREFIX, load_manifest, resolve_run
 
@@ -89,11 +93,24 @@ def _diff_between(repo_root: Path, from_ref: str, to_ref: str) -> DiffResult:
     )
 
 
-def _fork_point(paths: RunPaths, branch: str) -> tuple[str | None, DiffResult | None]:
-    """``merge-base(integration, branch)`` — the same fork point
-    ``base_ref_for`` captured at group launch (``cli.py:_workspace_seams``),
-    recomputed live since the Observatory keeps no in-memory cache across
-    requests. Returns ``(ref, None)`` on success or ``(None, failure)``."""
+def _fork_point(
+    paths: RunPaths, group_id: str, branch: str
+) -> tuple[str | None, DiffResult | None]:
+    """The group's launch-time fork point. Returns ``(ref, None)`` on success
+    or ``(None, failure)``.
+
+    Prefers the ``base_ref`` the run persisted in the group's provisioning
+    record at worktree creation (``cli.py:_workspace_seams``). The live
+    ``merge-base(integration, branch)`` recompute is only a fallback for runs
+    predating that field — it is NOT equivalent: once the group merges into
+    integration, integration contains its commits and the merge base collapses
+    to the branch's own head, so every merged group's diff silently reads
+    "No changes"."""
+    record = read_provisioning_record(paths.group_dir(group_id))
+    if record is not None:
+        base_ref = record.get("base_ref")
+        if isinstance(base_ref, str) and base_ref:
+            return base_ref, None
     integration = integration_branch(paths.run_id)
     if not _branch_exists(paths.repo_root, integration):
         return None, DiffResult(
@@ -118,7 +135,7 @@ def group_diff(paths: RunPaths, group_id: str) -> DiffResult:
                 f"branch {branch!r} no longer exists — its worktree was torn down after merging"
             ),
         )
-    fork_point, failure = _fork_point(paths, branch)
+    fork_point, failure = _fork_point(paths, group_id, branch)
     if failure is not None:
         return failure
     return _diff_between(paths.repo_root, fork_point, branch)
@@ -195,7 +212,7 @@ def generation_diff(paths: RunPaths, group_id: str, generation: int) -> DiffResu
             ),
         )
 
-    fork_point, failure = _fork_point(paths, branch)
+    fork_point, failure = _fork_point(paths, group_id, branch)
     if failure is not None:
         return failure
 

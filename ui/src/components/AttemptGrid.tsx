@@ -235,6 +235,28 @@ function AttemptGrid({
         {pathError && <span className="attempt-grid__path-error"> ({pathError})</span>}
       </p>
 
+      {/* The run's own session (F8): every group's first coder is a fork of
+        * this one conversation, so it is rendered once at run level rather
+        * than repeated per row. Clicking opens the same session viewer the
+        * cells use; the first group is a stand-in host for the drill-in, since
+        * the base session belongs to generation 1 of every group equally. */}
+      {snapshot?.base_session && (
+        <ul className="attempt-grid__sessions attempt-grid__base-session" aria-label="Run session">
+          <SessionRow
+            session={snapshot.base_session}
+            onOpen={
+              onOpenSession && snapshot.groups.length > 0
+                ? () =>
+                    onOpenSession(
+                      snapshot.groups[0].group_id,
+                      snapshot.base_session!.session_id,
+                    )
+                : undefined
+            }
+          />
+        </ul>
+      )}
+
       {!grid ? (
         <p className="attempt-grid__empty">Waiting for the run snapshot…</p>
       ) : grid.rows.length === 0 ? (

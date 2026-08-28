@@ -112,14 +112,23 @@ class TranscriptEvent(BaseModel):
 
 
 def find_session(paths: RunPaths, session_id: str) -> tuple[str, SessionEntry] | None:
-    """The manifest is the only cross-session join — group id plus entry, or None."""
+    """The manifest is the only cross-session join — group id plus entry, or None.
+
+    The run-level base session (F8) resolves too, with ``""`` for the group id:
+    it belongs to no group by construction (forcing it into one would corrupt
+    per-group cost roll-ups), and the transcript endpoint only reads the entry.
+    """
     store = ManifestStore(paths)
     if not store.exists():
         return None
-    for group_id, entry in store.load().groups.items():
+    manifest = store.load()
+    for group_id, entry in manifest.groups.items():
         for session in entry.sessions:
             if session.session_id == session_id:
                 return group_id, session
+    base = manifest.base_session
+    if base is not None and base.session_id == session_id:
+        return "", base
     return None
 
 

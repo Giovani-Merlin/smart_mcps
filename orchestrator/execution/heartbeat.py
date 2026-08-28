@@ -115,6 +115,12 @@ class RoundHeartbeat:
         # just the last one. Reset only when a new round starts.
         self._paused_accum = 0.0
         self._last_log = time.monotonic()
+        # Optional per-tick side task (plan F9): the review loop hangs its
+        # transcript probe here — `start_fork` blocks for the round's whole
+        # first turn, so this thread is the only thing awake to notice the
+        # transcript file appearing. Same contract as everything else here: it
+        # can never fail a round, so `_loop` wraps the call.
+        self.on_tick: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------ facts
 
@@ -269,6 +275,18 @@ class RoundHeartbeat:
         while not self._stop.wait(self.interval):
             self.write_once()
             self._maybe_log()
+            self._maybe_on_tick()
+
+    def _maybe_on_tick(self) -> None:
+        """Run the caller's tick hook, if any — same never-fail contract as
+        ``write_once``: evidence gathering must not be able to kill a round."""
+        hook = self.on_tick
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception:  # noqa: BLE001 - see write_once
+            pass
 
     def _maybe_log(self) -> None:
         """Same contract as ``write_once``: evidence is never worth a round, so a

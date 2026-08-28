@@ -102,6 +102,13 @@ class StreamOutcome:
     returncode: int
     envelope: dict | None  # the terminal "result" event, or None if never seen
     stderr: str
+    #: Usage of the round's *first* assistant turn, observed on the stream (F10).
+    #: The terminal envelope cannot supply this: a probed result envelope with
+    #: ``num_turns: 2`` carried a one-element ``iterations`` whose single entry
+    #: was turn 2 — the envelope holds no turn-1 data at all, so the stream is
+    #: the only place it can be captured. None when no assistant turn carried
+    #: usage before the stream ended.
+    first_turn: TurnUsage | None = None
     #: Refusal/errno text seen in `tool_result` blocks during the round (plan P2).
     #: Passive and advisory: an *independent* corroborator for attributing a
     #: `permission_denied` report, since it comes from the harness rather than from
@@ -153,6 +160,7 @@ class StreamingProcess:
         self._preexec_fn = preexec_fn
         self._proc: subprocess.Popen[str] | None = None
         self._result_envelope: dict | None = None
+        self._first_turn_usage: TurnUsage | None = None
         self._stderr_lines: list[str] = []
         self._deny_signals: list[str] = []
         self._stdout_thread: threading.Thread | None = None
@@ -215,8 +223,12 @@ class StreamingProcess:
             event_type = event.get("type")
             if event_type == "assistant":
                 usage = ((event.get("message") or {}).get("usage")) or {}
-                if usage and self.on_turn is not None:
-                    self.on_turn(TurnUsage.from_message_usage(usage))
+                if usage:
+                    turn = TurnUsage.from_message_usage(usage)
+                    if self._first_turn_usage is None:
+                        self._first_turn_usage = turn
+                    if self.on_turn is not None:
+                        self.on_turn(turn)
             elif event_type == "user":
                 # `user` events carry the `tool_result` blocks — i.e. what actually
                 # came back from every tool call. This branch did not exist, so
@@ -337,4 +349,5 @@ class StreamingProcess:
             envelope=self._result_envelope,
             stderr="".join(self._stderr_lines),
             deny_signals=list(self._deny_signals),
+            first_turn=self._first_turn_usage,
         )

@@ -41,6 +41,7 @@ def write_provisioning_record(
     command: Sequence[str],
     state: str,
     detail: str = "",
+    base_ref: str | None = None,
 ) -> None:
     """Persist what provisioning did to ``worktree`` (plan U32).
 
@@ -48,6 +49,13 @@ def write_provisioning_record(
     itself, so a group whose worktree was later torn down (``remove_worktree``,
     on a clean merge) still has a record of how it was provisioned — the
     drill-in reads this file, not the worktree.
+
+    ``base_ref`` is the group's launch-time fork point (``merge-base`` of the
+    integration tip and the group branch, captured at worktree creation). It is
+    persisted here because a live ``merge-base`` recompute collapses to the
+    branch head once the group merges into integration — every merged group's
+    diff read "No changes" until the Observatory could read the ref the run
+    actually branched from.
     """
     payload = {
         "worktree": str(worktree),
@@ -56,6 +64,8 @@ def write_provisioning_record(
         "detail": detail,
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
+    if base_ref is not None:
+        payload["base_ref"] = base_ref
     atomic_write_text(provisioning_record_path(group_dir), json.dumps(payload, indent=2) + "\n")
 
 

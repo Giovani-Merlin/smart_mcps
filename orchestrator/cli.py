@@ -145,6 +145,7 @@ from orchestrator.model import (
     HumanAction,
     ReviewIntensity,
     RunManifest,
+    SessionEntry,
     SessionRole,
     Surprise,
 )
@@ -249,6 +250,15 @@ def main(
             "to [partition] granularity in config.toml; this flag wins when both "
             "are set."
         ),
+    )
+    # F1: only the speccer knob — grouping is the one moment the speccer
+    # actually runs, and it previously had no CLI model control at all (a repo
+    # without a config.toml had no way whatsoever). Worker and base models are
+    # meaningless for `group`, so `_add_model_args` (all three) would mislead.
+    group_cmd.add_argument(
+        "--model-speccer",
+        default=None,
+        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
     )
     _add_auto_resume_arg(group_cmd)
     _add_common_args(group_cmd)
@@ -1525,6 +1535,7 @@ def _cmd_run(
             )
             base_heartbeat.mark_phase("establishing the base session")
             base_heartbeat.start()
+            base_started_at = datetime.now(UTC).isoformat()
             try:
                 base = runner.start_base(
                     run_id=run_id, base_context=base_context_path.read_text(), cwd=repo_root
@@ -1535,10 +1546,33 @@ def _cmd_run(
             finally:
                 base_heartbeat.stop()
             base_session_id = base.session_id
+            # F8: record the base session as a real SessionEntry so the
+            # Observatory's session lookup can resolve it — the transcript file
+            # exists (start_base blocks through the whole first round), only the
+            # manifest join was missing.
+            base_transcript = runner.transcript_path(base_session_id)
+            base_usage = runner.usage_of(base_session_id)
+            base_entry = SessionEntry(
+                session_id=base_session_id,
+                role=SessionRole.BASE,
+                name=f"{run_id}-base",
+                transcript_path=str(base_transcript) if base_transcript else None,
+                last_context_tokens=base_usage.last_context_tokens,
+                rounds_completed=base_usage.rounds,
+                total_input_tokens=base_usage.total_input_tokens,
+                total_output_tokens=base_usage.total_output_tokens,
+                total_cache_read_tokens=base_usage.total_cache_read_tokens,
+                total_cache_creation_tokens=base_usage.total_cache_creation_tokens,
+                base_context_tokens=base_usage.base_context_tokens,
+                model=runner.base_model,
+                started_at=base_started_at,
+                ended_at=datetime.now(UTC).isoformat(),
+            )
             manifest = RunManifest(
                 run_id=run_id,
                 plan_path=grouping.plan_path,
                 base_session_id=base_session_id,
+                base_session=base_entry,
                 grouping=grouping_name,
                 escalation=config.escalation,
                 usage_limit=config.session.usage_limit,
@@ -1719,11 +1753,20 @@ def _workspace_seams(
             start_point=tip,
         )
 
+        # Captured before provisioning (which never commits) so `_record` can
+        # persist it: once the group merges, a live merge-base recompute
+        # collapses to the branch head and the fork point is unrecoverable.
+        tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
+
         def _record(state: str, argv: list[str]) -> None:
             # U32: kept beside the group's other run artifacts, not inside the
             # worktree, so it outlives a clean-merge teardown (remove_worktree).
             write_provisioning_record(
-                paths.group_dir(group.id), worktree=path, command=argv, state=state
+                paths.group_dir(group.id),
+                worktree=path,
+                command=argv,
+                state=state,
+                base_ref=tips[group.id],
             )
 
         # U6/R16: the worktree owns its environment — provision after creation,
@@ -1735,7 +1778,6 @@ def _workspace_seams(
             extra_args=session.provision_args,
             on_state=_record,
         )
-        tips[group.id] = _git_ok(repo_root, "merge-base", tip, branch).strip()
         return path
 
     def base_ref_for(group: Group) -> str:

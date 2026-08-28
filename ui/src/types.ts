@@ -88,7 +88,7 @@ export interface ManifestSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
-  total_inherited_cache_read_tokens?: number;
+  base_context_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
@@ -279,10 +279,11 @@ export interface SnapshotSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
-  // Sum of every round's turn-1 inherited cache read (plan U9) — its own
-  // figure, distinct from total_cache_read_tokens: context this session did
-  // not create and cannot shrink.
-  total_inherited_cache_read_tokens?: number;
+  // The context the session started from (F10) — round 1 turn 1's
+  // cache_read + cache_creation. Its own figure, distinct from
+  // total_cache_read_tokens: context this session did not create and cannot
+  // shrink.
+  base_context_tokens?: number;
   model?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
@@ -463,6 +464,9 @@ export interface ResolvedOptions {
   model_worker: string;
   model_base: string;
   model_speccer: string;
+  // F2: the model choices the launch form's dropdowns offer. Advisory only —
+  // every model field keeps a free-text escape hatch.
+  known_models: string[];
 }
 
 export interface PlanDoc {
@@ -525,6 +529,9 @@ export interface GroupJobBody {
   token_budget?: number | null;
   dry_run?: boolean;
   auto_resume?: boolean | null;
+  // F1: grouping is the one moment the speccer actually runs — the run form's
+  // speccer knob drives only the run-time rewrite speccer.
+  model_speccer?: string | null;
 }
 
 export interface RunJobBody {

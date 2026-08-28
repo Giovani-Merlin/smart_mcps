@@ -138,10 +138,11 @@ export interface SessionCost {
   roundsCompleted: number;
   /** Latest round's context occupancy. Never added into a cumulative figure. */
   lastContextTokens: number;
-  /** Sum of every round's turn-1 inherited cache read (plan U9) — context this
-   * session did not create and cannot shrink. Its own figure, distinct from
-   * `classes.cache_read`, which is every turn's cache read summed. */
-  inheritedCacheReadTokens: number;
+  /** The context the session started from (F10) — round 1 turn 1's
+   * cache_read + cache_creation: the prefix it inherited and cannot shrink.
+   * Its own figure, distinct from `classes.cache_read`, which is every turn's
+   * cache read summed. */
+  baseContextTokens: number;
   model: string | null;
   retirementReason: string | null;
 }
@@ -212,7 +213,7 @@ export function sessionCost(session: SnapshotSession): SessionCost {
     ),
     roundsCompleted: session.rounds_completed,
     lastContextTokens: session.last_context_tokens,
-    inheritedCacheReadTokens: session.total_inherited_cache_read_tokens ?? 0,
+    baseContextTokens: session.base_context_tokens ?? 0,
     model: session.model ?? null,
     retirementReason: session.retirement_reason ?? null,
   };

@@ -97,6 +97,42 @@ never reviewed. Deliberately distinct from completed: a group that reached
 integration without a verdict must not claim one (ADR 0004).
 _Avoid_: completed (that asserts a passed review), failed (its work is merged)
 
+**Spec Assembly**:
+The deterministic construction of a group's name, summary, spec, and
+verification from the plan's own unit sections plus graph facts (depends-on
+order, implements/consumes, slices) — zero LLM calls, regenerated whenever the
+partition changes. The default source of group specs.
+_Avoid_: speccer (that is the opt-in LLM overlay stage), packer (loose spoken
+alias for the same stage)
+
+**Advisory Report**:
+The deterministic artifact `group --advise` emits from one cached task graph:
+the partition at every granularity level side by side, plus plan-cohesion
+diagnostics (weak connectivity → "this reads as N plans"; layering → "this
+reads as serial phases"). It advises a human or skill; it never decides.
+_Avoid_: recommendation (the report names seams, someone else chooses)
+
+**Plan Seam**:
+A boundary the Advisory Report detects along which one plan could split into
+several — either a weakly-connected task set (an independent sub-plan) or a
+phase boundary in a mostly-serial layering. Splitting along a seam is a
+mechanical move of existing unit sections, never a rewrite.
+
+**Deepening**:
+The optional interactive pass (`/orchestrator-deepen`) that enriches a plan's
+per-unit specs — edge cases, sharpened verification — by exploring the codebase
+with read-only subagents and then grilling the human. Writes into the plan doc
+itself, so Spec Assembly carries it into groups for free.
+_Avoid_: enrichment overlay (deepening edits the plan, not groups.json)
+
+**Plan Digest**:
+The deterministic condensation of a plan for shared worker context: the plan's
+preamble plus every unit's tagged one-line summary, parsed from the plan doc —
+never LLM-summarized at group time. Full unit sections travel only in the
+owning group's spec; cross-group needs are served contracts-only.
+_Avoid_: plan summary (implies an LLM wrote it), shared plan (the full doc is
+exactly what workers no longer receive)
+
 **Granularity**:
 The explicit dial on how aggressively the partitioner merges small groups —
 `independent` (both merge guards on), `balanced` (makespan no-regression guard

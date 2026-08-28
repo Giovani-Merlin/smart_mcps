@@ -78,6 +78,7 @@ class TestBuildArgv:
                 token_budget=50_000,
                 dry_run=True,
                 auto_resume=False,
+                model_speccer="claude-opus-5",
             ),
             repo=repo,
         )
@@ -87,6 +88,13 @@ class TestBuildArgv:
         assert argv[argv.index("--token-budget") + 1] == "50000"
         assert "--dry-run" in argv
         assert "--no-auto-resume" in argv
+        # F1: grouping is the moment the speccer actually runs, so its model is
+        # settable on the group job — the run form's knob only drives rewrites.
+        assert argv[argv.index("--model-speccer") + 1] == "claude-opus-5"
+
+    def test_group_speccer_model_is_omitted_when_unset(self, repo):
+        argv = build_argv("group", GroupJobBody(plan="docs/plans/p.md"), repo=repo)
+        assert "--model-speccer" not in argv
 
     def test_every_execution_option_has_a_flag(self, repo):
         """One-for-one with ``cli._add_execution_args``. The moment this surface
@@ -276,6 +284,16 @@ class TestResolvedOptions:
             "model_worker": "claude-sonnet-5",
             "model_base": "claude-opus-5",
             "model_speccer": "claude-opus-5",
+            "known_models": [
+                "opus",
+                "sonnet",
+                "haiku",
+                "fable",
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-haiku-4-5",
+                "claude-fable-5",
+            ],
         }
 
     def test_a_config_file_overrides_the_library_defaults(self, client, repo):

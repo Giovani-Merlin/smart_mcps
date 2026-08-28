@@ -92,9 +92,10 @@ class SnapshotSession(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
-    # Sum of every round's turn-1 inherited cache read (plan U9) — its own
-    # figure, distinct from total_cache_read_tokens.
-    total_inherited_cache_read_tokens: int = 0
+    # The context the session started from (F10) — round 1 turn 1's
+    # cache_read + cache_creation. Its own figure, distinct from
+    # total_cache_read_tokens.
+    base_context_tokens: int = 0
     model: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -443,16 +444,36 @@ def _base_session(
     run_id: str, manifest: RunManifest | None, *, generation: int = 0
 ) -> SnapshotSession | None:
     """The run's base session, exposed as an orchestrator-role session (plan
-    U30). Nothing on disk records its model or token usage today — only
-    ``SessionRunner.start_base`` ever touches it, and it is never passed through
-    ``record_session`` — so this is a best-effort read of what the manifest does
-    carry, not a full ``SessionEntry``. ``generation`` is 0 for the run-level
-    exposure (``RunSnapshot.base_session``, which names no group) and 1 when
-    attached to a specific group's attempt history, where it sorts ahead of
-    that group's first generation.
+    U30). Reads the real run-level ``manifest.base_session`` entry (F8) — model,
+    usage figures, transcript path — falling back to a best-effort synthesis
+    from the scalar ``base_session_id`` for manifests written before that entry
+    existed. ``generation`` is 0 for the run-level exposure
+    (``RunSnapshot.base_session``, which names no group) and 1 when attached to
+    a specific group's attempt history, where it sorts ahead of that group's
+    first generation.
     """
     if manifest is None or not manifest.base_session_id:
         return None
+    entry = manifest.base_session
+    if entry is not None:
+        return SnapshotSession(
+            session_id=entry.session_id,
+            role="orchestrator",
+            generation=generation,
+            name=entry.name or f"{run_id}-base",
+            transcript_path=entry.transcript_path,
+            last_context_tokens=entry.last_context_tokens,
+            rounds_completed=entry.rounds_completed,
+            total_input_tokens=entry.total_input_tokens,
+            total_output_tokens=entry.total_output_tokens,
+            total_cache_read_tokens=entry.total_cache_read_tokens,
+            total_cache_creation_tokens=entry.total_cache_creation_tokens,
+            base_context_tokens=entry.base_context_tokens,
+            model=entry.model,
+            started_at=entry.started_at,
+            ended_at=entry.ended_at,
+            transcript_mtime=_transcript_mtime(entry.transcript_path),
+        )
     return SnapshotSession(
         session_id=manifest.base_session_id,
         role="orchestrator",
@@ -622,7 +643,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                             total_output_tokens=session.total_output_tokens,
                             total_cache_read_tokens=session.total_cache_read_tokens,
                             total_cache_creation_tokens=session.total_cache_creation_tokens,
-                            total_inherited_cache_read_tokens=session.total_inherited_cache_read_tokens,
+                            base_context_tokens=session.base_context_tokens,
                             model=session.model,
                             started_at=session.started_at,
                             ended_at=session.ended_at,

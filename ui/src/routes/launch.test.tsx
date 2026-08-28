@@ -32,6 +32,16 @@ const DEFAULT_RESOLVED = {
   model_worker: "claude-sonnet-5",
   model_base: "claude-opus-5",
   model_speccer: "claude-opus-5",
+  known_models: [
+    "opus",
+    "sonnet",
+    "haiku",
+    "fable",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-fable-5",
+  ],
 };
 
 vi.mock("../api", () => ({
@@ -430,14 +440,23 @@ describe("the launch route", () => {
 
   // -------------------------------------------------------- U18: resolved options
 
-  it("renders three model inputs, defaulted to the values the CLI would resolve", async () => {
+  it("renders three model selects, defaulted to the values the CLI would resolve", async () => {
+    // F2: the model knobs are dropdowns over the known-model list now — a typo
+    // in a free-text input silently became a bad model, and `claude -p
+    // --model <bogus>` exits 0. The unset option names the resolved default.
     mount();
-    const worker = (await screen.findAllByLabelText("Worker model"))[0] as HTMLInputElement;
-    const base = screen.getAllByLabelText("Orchestrator (base) model")[0] as HTMLInputElement;
-    const speccer = screen.getAllByLabelText("Speccer model")[0] as HTMLInputElement;
-    await waitFor(() => expect(worker.placeholder).toBe("claude-sonnet-5"));
-    expect(base.placeholder).toBe("claude-opus-5");
-    expect(speccer.placeholder).toBe("claude-opus-5");
+    const worker = (await screen.findAllByLabelText("Worker model"))[0] as HTMLSelectElement;
+    const base = screen.getAllByLabelText("Orchestrator (base) model")[0] as HTMLSelectElement;
+    const speccer = screen.getAllByLabelText(/Rewrite speccer model/)[0] as HTMLSelectElement;
+    await waitFor(() =>
+      expect(worker.options[0].textContent).toBe("(from config: claude-sonnet-5)"),
+    );
+    expect(base.options[0].textContent).toBe("(from config: claude-opus-5)");
+    expect(speccer.options[0].textContent).toBe("(from config: claude-opus-5)");
+    // The known models are offered, plus the free-text escape hatch.
+    const offered = Array.from(worker.options).map((o) => o.value);
+    expect(offered).toContain("claude-sonnet-5");
+    expect(offered).toContain("__custom__");
   });
 
   it("shows concurrency's resolved default of 1 rather than an empty input", async () => {
@@ -502,7 +521,7 @@ describe("the launch route", () => {
     fireEvent.change(await screen.findByLabelText("Run"), { target: { value: "r1" } });
     const tier = (await screen.findAllByLabelText("Escalation tier"))[1] as HTMLSelectElement;
     await waitFor(() => expect(tier.value).toBe("on_stuck"));
-    const worker = screen.getAllByLabelText("Worker model")[1] as HTMLInputElement;
+    const worker = screen.getAllByLabelText("Worker model")[1] as HTMLSelectElement;
     expect(worker.value).toBe("claude-opus-5");
   });
 

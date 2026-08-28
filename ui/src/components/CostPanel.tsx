@@ -12,12 +12,13 @@
 // value from one panel by a value from the other. `cost.ts` enforces the same
 // separation structurally: the spend derivation is never handed the estimate.
 //
-// **Cache reads are drawn subordinate.** They are the cheap class. A bar that is
-// mostly cache-read describes a healthy session, so cache-read segments get the
-// muted colour from `TOKEN_CLASSES`, no border, and last place in the legend —
-// the loud segments are the ones that actually cost something. The emphasis is
-// chosen in `cost.ts`, never here; this file only renders it. What that looks
-// like on both a new-format and a legacy run: `docs/observatory/cost-panel.png`.
+// **Numbers, not bars.** Cache read runs ~75:1 over cache creation and ~300:1
+// over output on a real run (122.7M / 1.6M / 0.4M on r20260828-090936), so a
+// proportional bar renders every segment but one as a sliver readable only on
+// hover. Each token class is a plain formatted number instead, with cache read
+// still visually muted — it is the cheap class, and a session that is mostly
+// cache read is healthy, not expensive. The emphasis is chosen in `cost.ts`,
+// never here; this file only renders it.
 //
 // **Absence is a rendering, not an error.** Every run written before the
 // token-class split has all four counters at zero, which is a different claim
@@ -36,7 +37,6 @@ import {
   buildCostView,
   describeRatio,
   formatTokens,
-  totalOf,
 } from "../cost";
 import type { CostView, GroupCost, RoleCost, SessionCost, TokenClasses } from "../cost";
 import type { RunSnapshot } from "../types";
@@ -51,125 +51,79 @@ export interface CostPanelProps {
 
 const NO_ACTUALS_NOTE = "actuals not recorded for this run";
 
-// ------------------------------------------------------------------ segments
+// ------------------------------------------------------------------- figures
 
-function Legend() {
+/** The four token classes as plain formatted numbers (W9). The `data-tokens` /
+ * `data-emphasis` attributes stay on the value element so tests keep asserting
+ * on values rather than layout. */
+function ClassFigures({ classes, testId }: { classes: TokenClasses; testId: string }) {
   return (
-    <ul className="cost-legend" aria-label="Token classes">
+    <dl className="cost-figures" data-testid={testId} aria-label={figuresLabel(classes)}>
       {TOKEN_CLASSES.map((cls) => (
-        <li
+        <div
           key={cls.key}
-          className={`cost-legend__item cost-legend__item--${cls.emphasis}`}
+          className={`cost-figures__item cost-figures__item--${cls.emphasis}`}
           title={cls.hint}
         >
-          <span
-            className={`cost-swatch cost-swatch--${cls.key} cost-swatch--${cls.emphasis}`}
-            style={{ ["--seg-colour" as string]: cls.colour }}
-            aria-hidden="true"
-          />
-          {cls.label}
-          {cls.emphasis === "muted" && <span className="cost-legend__aside"> (cheap)</span>}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** One segmented bar: four classes, widths proportional to `scale` so bars
- * across roles stay comparable. Cache read keeps the muted treatment. */
-function ClassBar({
-  classes,
-  scale,
-  testId,
-}: {
-  classes: TokenClasses;
-  scale: number;
-  testId: string;
-}) {
-  const total = totalOf(classes);
-  const denominator = scale > 0 ? scale : total > 0 ? total : 1;
-  return (
-    <div className="cost-bar" data-testid={testId} role="img" aria-label={barLabel(classes)}>
-      {TOKEN_CLASSES.map((cls) => {
-        const value = classes[cls.key];
-        return (
-          <span
-            key={cls.key}
-            className={`cost-bar__seg cost-bar__seg--${cls.key} cost-bar__seg--${cls.emphasis}`}
+          <dt className="cost-figures__label">{cls.label}</dt>
+          <dd
+            className={`cost-figures__value cost-figures__value--${cls.emphasis}`}
             data-testid={`${testId}-${cls.key}`}
             data-emphasis={cls.emphasis}
-            data-tokens={value}
-            style={{
-              ["--seg-colour" as string]: cls.colour,
-              width: `${(value / denominator) * 100}%`,
-            }}
-            title={`${cls.label}: ${value.toLocaleString()} tokens`}
-          />
-        );
-      })}
-    </div>
+            data-tokens={classes[cls.key]}
+            title={`${cls.label}: ${classes[cls.key].toLocaleString()} tokens`}
+          >
+            {formatTokens(classes[cls.key])}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
-function barLabel(classes: TokenClasses): string {
+function figuresLabel(classes: TokenClasses): string {
   return TOKEN_CLASSES.map((cls) => `${cls.label} ${classes[cls.key]}`).join(", ");
 }
 
-/** Per-round totals as a sparkline. Only drawn when the manifest carried a
- * `rounds` list — no orchestrator on disk writes one yet, so the usual
- * rendering is nothing at all rather than a flat line implying one round. */
-function RoundSparkline({ rounds }: { rounds: number[] }) {
+/** Per-round totals, as numbers. Only rendered when the manifest carried a
+ * `rounds` list — the usual rendering is nothing at all rather than a single
+ * figure implying one round. */
+function RoundTotals({ rounds }: { rounds: number[] }) {
   if (rounds.length < 2) return null;
-  const peak = Math.max(...rounds, 1);
   return (
     <span
-      className="cost-spark"
+      className="cost-rounds"
       data-testid="cost-spark"
       title={`per-round totals: ${rounds.map((r) => r.toLocaleString()).join(", ")}`}
-      aria-label={`${rounds.length} rounds, peak ${peak} tokens`}
     >
-      {rounds.map((value, index) => (
-        <span
-          key={index}
-          className="cost-spark__bar"
-          style={{ height: `${Math.max(8, (value / peak) * 100)}%` }}
-        />
-      ))}
+      rounds: {rounds.map((r) => formatTokens(r)).join(" → ")}
     </span>
   );
 }
 
-function SessionRow({ session, scale }: { session: SessionCost; scale: number }) {
+function SessionRow({ session }: { session: SessionCost }) {
   return (
     <li className="cost-session">
       <span className="cost-session__name" title={session.model ?? undefined}>
         gen {session.generation} · {session.name || session.sessionId.slice(0, 8)}
       </span>
-      <ClassBar classes={session.classes} scale={scale} testId={`cost-bar-${session.sessionId}`} />
-      <span className="cost-session__total">{formatTokens(session.total)}</span>
-      {session.inheritedCacheReadTokens > 0 && (
+      <ClassFigures classes={session.classes} testId={`cost-bar-${session.sessionId}`} />
+      <span className="cost-session__total">{formatTokens(session.total)} total</span>
+      {session.baseContextTokens > 0 && (
         <span
           className="cost-session__inherited"
           data-testid={`cost-inherited-cache-${session.sessionId}`}
-          title="Turn 1's cache read: context this round inherited rather than created, and cannot shrink. Distinct from the total cache-read segment above."
+          title="The context this session started from: its first turn's cache read + cache creation — the prefix it inherited and cannot shrink. Near-constant across a run's forks."
         >
-          {formatTokens(session.inheritedCacheReadTokens)} inherited
+          {formatTokens(session.baseContextTokens)} base context
         </span>
       )}
-      <RoundSparkline rounds={session.roundTotals} />
+      <RoundTotals rounds={session.roundTotals} />
     </li>
   );
 }
 
-function RoleBlock({
-  groupId,
-  role,
-  scale,
-}: {
-  groupId: string;
-  role: RoleCost;
-  scale: number;
-}) {
+function RoleBlock({ groupId, role }: { groupId: string; role: RoleCost }) {
   return (
     <div className="cost-role" data-testid={`cost-role-${groupId}-${role.role}`}>
       <div className="cost-role__head">
@@ -182,11 +136,11 @@ function RoleBlock({
           cache reads
         </span>
       </div>
-      <ClassBar classes={role.classes} scale={scale} testId={`cost-role-bar-${groupId}-${role.role}`} />
+      <ClassFigures classes={role.classes} testId={`cost-role-bar-${groupId}-${role.role}`} />
       {role.sessions.length > 0 && (
         <ul className="cost-role__sessions">
           {role.sessions.map((session) => (
-            <SessionRow key={session.sessionId} session={session} scale={scale} />
+            <SessionRow key={session.sessionId} session={session} />
           ))}
         </ul>
       )}
@@ -325,10 +279,6 @@ function PredictionPanel({ view, manifestPath }: { view: CostView; manifestPath:
 // -------------------------------------------------------------- panel: spend
 
 function GroupSpend({ group }: { group: GroupCost }) {
-  // One scale per group so the coder and reviewer bars are comparable with each
-  // other. Deliberately not a run-wide scale: the question here is "how did this
-  // group's roles compare", not "which group was biggest".
-  const scale = Math.max(...group.roles.map((r) => r.total), 1);
   return (
     <article className="cost-group" data-testid={`cost-group-${group.groupId}`}>
       <header className="cost-group__head">
@@ -358,7 +308,7 @@ function GroupSpend({ group }: { group: GroupCost }) {
       {group.actualsRecorded ? (
         <div className="cost-group__roles">
           {group.roles.map((role) => (
-            <RoleBlock key={role.role} groupId={group.groupId} role={role} scale={scale} />
+            <RoleBlock key={role.role} groupId={group.groupId} role={role} />
           ))}
         </div>
       ) : (
@@ -389,9 +339,9 @@ function SpendPanel({ view, manifestPath }: { view: CostView; manifestPath: stri
         Every round of every session, by role, in four token classes. Summed from the per-round
         figures the runner records — never from a session-level envelope total, which counts every
         turn and once read 50x high. This is spend, not occupancy: it is not comparable with the
-        estimate above and is deliberately not shown against it.
+        estimate above and is deliberately not shown against it. Cache read is the cheap class
+        (0.1x) and shown dimmed; the loud figures are the ones that actually cost something.
       </p>
-      <Legend />
 
       {!view.actualsRecorded && (
         <p className="cost-panel__absent" data-testid="cost-actuals-missing">

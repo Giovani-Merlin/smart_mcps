@@ -169,6 +169,10 @@ class ResolvedOptions(BaseModel):
     model_worker: str
     model_base: str
     model_speccer: str
+    # F2: the model choices the launch form's dropdowns offer. Served here
+    # rather than on a new endpoint because the UI already fetches the resolved
+    # options for every form. Advisory only — the CLI accepts any string.
+    known_models: list[str]
 
 
 def resolve_options(repo: Path) -> ResolvedOptions:
@@ -186,6 +190,7 @@ def resolve_options(repo: Path) -> ResolvedOptions:
         model_worker=config.session.model or DEFAULT_WORKER_MODEL,
         model_base=config.session.base_model or DEFAULT_BASE_MODEL,
         model_speccer=config.session.speccer_model or DEFAULT_SPECCER_MODEL,
+        known_models=list(config.session.known_models),
     )
 
 
@@ -196,6 +201,10 @@ class GroupJobBody(BaseModel):
     token_budget: int | None = None
     dry_run: bool = False
     auto_resume: bool | None = None
+    # F1: grouping is the one moment the speccer actually runs, so its model
+    # must be settable here — the run form's speccer knob drives only the
+    # run-time *rewrite* speccer.
+    model_speccer: str | None = None
 
 
 class RunJobBody(BaseModel):
@@ -229,6 +238,8 @@ def build_argv(kind: JobKind, options: BaseModel, *, repo: Path) -> list[str]:
             argv.append("--dry-run")
         if options.auto_resume is not None:
             argv.append("--auto-resume" if options.auto_resume else "--no-auto-resume")
+        if options.model_speccer:
+            argv += ["--model-speccer", options.model_speccer]
     elif kind == "run":
         assert isinstance(options, RunJobBody)
         if options.grouping:

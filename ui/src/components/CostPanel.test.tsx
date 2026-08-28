@@ -121,16 +121,15 @@ describe("per-group bars are four classes split by role", () => {
 });
 
 describe("cache reads are visually subordinate", () => {
-  it("marks only the cache-read segment as muted, in the bars and the legend", () => {
+  it("marks only the cache-read figure as muted", () => {
     renderPanel(COST_NEW_FORMAT);
     for (const cls of TOKEN_CLASSES) {
       const seg = segment("cost-role-bar-g1-coder", cls.key);
       expect(seg.dataset.emphasis).toBe(cls.key === "cache_read" ? "muted" : "primary");
       expect(seg.className).toContain(
-        cls.key === "cache_read" ? "cost-bar__seg--muted" : "cost-bar__seg--primary",
+        cls.key === "cache_read" ? "cost-figures__value--muted" : "cost-figures__value--primary",
       );
     }
-    expect(screen.getAllByText(/\(cheap\)/).length).toBeGreaterThan(0);
   });
 
   it("states each role's total excluding cache reads, so the cheap class cannot inflate it", () => {

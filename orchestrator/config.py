@@ -69,6 +69,11 @@ _BASE_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(test *)",
     "Bash(which *)",
     "Bash(env)",
+    # Verification tooling: g4 (r20260828-090936) had to substitute HTTP smoke
+    # tests because curl, pkill and the agent-browser CLI were all blocked.
+    "Bash(curl *)",
+    "Bash(pkill *)",
+    "Bash(agent-browser *)",
 )
 
 
@@ -113,6 +118,24 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = _with_path_qualified_forms(_BASE_ALLOWE
 DEFAULT_WORKER_MODEL = "claude-sonnet-5"
 DEFAULT_BASE_MODEL = "claude-opus-5"
 DEFAULT_SPECCER_MODEL = "claude-opus-5"
+
+#: The model choices the Observatory's launch forms offer (F2). Hard-coded on
+#: purpose — there is no `claude` subcommand that lists models, and
+#: `claude -p --model <bogus>` exits 0 while printing
+#: `[claude-code:unrecognized_model]`, so no discovery or validation machinery
+#: can be trusted. Aliases first, then the current concrete ids. Overridable
+#: via `[session] known_models` in config.toml; the forms also keep a free-text
+#: escape hatch, so this list gates nothing.
+KNOWN_MODELS: tuple[str, ...] = (
+    "opus",
+    "sonnet",
+    "haiku",
+    "fable",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-fable-5",
+)
 
 
 class EdgeWeightsConfig(BaseModel):
@@ -389,6 +412,9 @@ class SessionConfig(BaseModel):
     # (``orchestrator.grouping.llm.claude_json_runner``) — one call per grouping
     # (or per spec rewrite), and the place the strongest model earns its cost.
     speccer_model: str | None = DEFAULT_SPECCER_MODEL
+    # The model list the launch forms offer as a dropdown (F2) — see
+    # KNOWN_MODELS on why it is a hard-coded list and not discovery.
+    known_models: list[str] = Field(default_factory=lambda: list(KNOWN_MODELS))
     # What a worker is permitted to execute, declared by the *run* rather than
     # inherited from whoever launched it.
     #

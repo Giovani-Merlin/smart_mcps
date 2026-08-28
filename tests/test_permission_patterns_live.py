@@ -136,6 +136,13 @@ def test_the_shipped_baseline_covers_a_venv_interpreter() -> None:
     """
     assert "Bash(*/python *)" in DEFAULT_ALLOWED_TOOLS
     assert "Bash(*/npm *)" in DEFAULT_ALLOWED_TOOLS
+    # W1 (r20260828-090936): g4 had to substitute HTTP smoke tests because
+    # curl, pkill and the agent-browser CLI were all denied — ordinary
+    # verification tooling for any group that must prove a service responds.
+    assert "Bash(curl *)" in DEFAULT_ALLOWED_TOOLS
+    assert "Bash(pkill *)" in DEFAULT_ALLOWED_TOOLS
+    assert "Bash(agent-browser *)" in DEFAULT_ALLOWED_TOOLS
+    assert "Bash(*/curl *)" in DEFAULT_ALLOWED_TOOLS  # the auto-generated twin
     # Every executable rule got a twin; the argument-less one did not need one.
     assert "Bash(*/env)" not in DEFAULT_ALLOWED_TOOLS
     assert "Bash(*)" not in DEFAULT_ALLOWED_TOOLS, "the baseline must not grant every command"

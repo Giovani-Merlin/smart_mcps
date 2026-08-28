@@ -53,85 +53,47 @@
   max-width: 82ch;
 }
 
-/* ------------------------------------------------------------------ legend */
+/* ----------------------------------------------------------------- figures */
 
-.cost-legend {
+/* The four token classes as labeled numbers (W9). A definition list laid out
+   as a row of label/value pairs; wide sets wrap rather than overflow. */
+.cost-figures {
   display: flex;
-  gap: 1rem;
   flex-wrap: wrap;
-  list-style: none;
-  padding: 0;
-  margin: 0.5rem 0 1rem;
+  gap: 0.15rem 1.1rem;
+  margin: 0;
+}
+
+.cost-figures__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.cost-figures__label {
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  text-transform: lowercase;
+}
+
+.cost-figures__value {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8rem;
 }
 
-.cost-legend__item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-/* Subordinate in the legend too — the cheap class is listed last and dimmed. */
-.cost-legend__item--muted {
-  color: var(--fg-muted);
-}
-
-.cost-legend__aside {
-  font-style: italic;
-}
-
-.cost-swatch {
-  width: 0.8rem;
-  height: 0.8rem;
-  border-radius: 3px;
-  background: var(--seg-colour);
-  border: 1px solid rgb(0 0 0 / 12%);
-}
-
-.cost-swatch--muted {
-  opacity: 0.55;
-  border-color: transparent;
-}
-
-/* -------------------------------------------------------------------- bars */
-
-.cost-bar {
-  display: flex;
-  height: 0.9rem;
-  width: 100%;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--bg-track);
-}
-
-.cost-bar__seg {
-  display: block;
-  height: 100%;
-  background: var(--seg-colour);
-}
-
-.cost-bar__seg--primary {
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
-}
-
 /* Cache read. Muted on purpose: the cheap class must not look like the cost. */
-.cost-bar__seg--muted {
-  opacity: 0.45;
-  box-shadow: none;
+.cost-figures__item--muted .cost-figures__value,
+.cost-figures__item--muted .cost-figures__label {
+  opacity: 0.6;
 }
 
-.cost-spark {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 1px;
-  height: 1rem;
-  width: 3.5rem;
-}
-
-.cost-spark__bar {
-  flex: 1;
-  background: var(--fg-muted);
-  border-radius: 1px;
+.cost-rounds {
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------------ groups */
@@ -207,12 +169,19 @@
 }
 
 .cost-session {
-  display: grid;
-  grid-template-columns: 14rem 1fr 5rem 3.5rem;
-  align-items: center;
-  gap: 0.5rem;
+  /* Columns of numbers, not a bar: name | class figures | total | base
+     context | rounds. The figures column is content-sized now that nothing
+     needs a 1fr track to stretch a bar into. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.9rem;
   font-size: 0.78rem;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.3rem;
+}
+
+.cost-session__name {
+  flex: 0 1 14rem;
 }
 
 .cost-session__name {

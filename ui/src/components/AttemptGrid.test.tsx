@@ -443,6 +443,21 @@ describe("orchestrator sessions on the board (U30)", () => {
     expect(snapshot.base_session?.role).toBe("orchestrator");
   });
 
+  it("[f8-base-session-rendered] renders the run-level base session as a clickable row", async () => {
+    // F8: the orchestrator row used to be synthesized per group while the
+    // run-level entry rendered nowhere — and clicking it 404'd because the
+    // base session was never in the manifest join. Now the real entry renders
+    // once at run level and opens the session viewer.
+    const onOpenSession = vi.fn();
+    renderGrid(snapshotWithSessions([coderSession(1)]), { onOpenSession });
+    const strip = await screen.findByLabelText("Run session");
+    expect(strip.textContent).toContain("orchestrator");
+    const open = strip.querySelector("button");
+    expect(open).toBeTruthy();
+    fireEvent.click(open!);
+    expect(onOpenSession).toHaveBeenCalledWith("g1", "base-1");
+  });
+
   it("[g19-rewrite-before-generation] positions a rewrite before the generation it produced", async () => {
     // gen 1 (base + coder), then a rewrite that produced gen 2, then gen 2's coder.
     renderGrid(

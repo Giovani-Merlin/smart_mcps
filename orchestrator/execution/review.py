@@ -445,6 +445,7 @@ class _GroupExecution:
             self._log(f"{self._round_tag(rounds + 1)}: started")
             self._heartbeat.mark_round(self.generation, rounds + 1)
             self._heartbeat.mark_phase("forking the base session")
+            self._watch_transcript(self.coder_entry)
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
                 base_id=self.deps.base_session_id,
@@ -466,6 +467,11 @@ class _GroupExecution:
 
         verification_ids = [item.id for item in self.group.verification]
         while True:
+            # F4: nothing used to supersede "forking the base session" once the
+            # fork returned, so a finished round still read as mid-fork minutes
+            # later. Each pass through this loop is the coder producing (or
+            # being nudged toward) its report.
+            self._heartbeat.mark_phase("coder working toward a report")
             report, result = await asyncio.to_thread(
                 nudge_until_report,
                 self.deps.runner,
@@ -668,7 +674,7 @@ class _GroupExecution:
         entry.total_output_tokens = usage.total_output_tokens
         entry.total_cache_read_tokens = usage.total_cache_read_tokens
         entry.total_cache_creation_tokens = usage.total_cache_creation_tokens
-        entry.total_inherited_cache_read_tokens = usage.total_inherited_cache_read_tokens
+        entry.base_context_tokens = usage.base_context_tokens
 
     def _persist_coder_usage(self) -> None:
         """Record the active coder's latest context size on its manifest entry
@@ -749,9 +755,40 @@ class _GroupExecution:
     def _refresh_transcript(self, entry: SessionEntry) -> None:
         """Fill in a pre-registered entry's transcript path once its session
         actually exists on disk (plan U7) — recorded before the fork call, so
-        the path itself isn't known until the call returns."""
+        the path itself isn't known until the call returns.
+
+        Authoritative over whatever `_watch_transcript` filled early (F9): a
+        usage-limit retry can mint a fresh session id mid-fork, making the
+        heartbeat's early path provisional — this overwrite, keyed on the
+        adopted id, is what settles it."""
+        self._heartbeat.on_tick = None
         entry.transcript_path = _transcript_str(self.deps.runner, entry.session_id)
         self.deps.store.save(self.deps.manifest)
+
+    def _watch_transcript(self, entry: SessionEntry) -> None:
+        """Fill ``transcript_path`` while the fork is still blocking (F9).
+
+        `start_fork` blocks for the round's entire first turn — 8 to 24 minutes
+        on r20260828-090936 — and until it returns the transcript endpoint 404s,
+        so the operator cannot watch the very work they are waiting on. The
+        transcript *file* appears as soon as the CLI starts writing; only the
+        manifest pointer is missing. The group's heartbeat thread is the one
+        thing awake during the fork, so it re-globs for the pre-registered id
+        each tick and persists the path the moment the file exists. The hook
+        self-clears once it has done its job; `_refresh_transcript` clears it
+        unconditionally and overwrites the path after the fork returns."""
+
+        def probe() -> None:
+            if entry.transcript_path:
+                self._heartbeat.on_tick = None
+                return
+            path = _transcript_str(self.deps.runner, entry.session_id)
+            if path is not None:
+                entry.transcript_path = path
+                self.deps.store.save(self.deps.manifest)
+                self._heartbeat.on_tick = None
+
+        self._heartbeat.on_tick = probe
 
     def _persist_reviewer_usage(self, session_id: str) -> None:
         """Record the reviewer's latest context size on its manifest entry after
@@ -775,6 +812,7 @@ class _GroupExecution:
             return None, None  # AE7: no reviewer session is ever created
         assert self.workspace is not None
         self.ctx.set_state(GroupState.REVIEWING)
+        self._heartbeat.mark_phase("reviewer verifying the report")  # F4
         if self.reviewer_sid is None:
             first = await asyncio.to_thread(
                 self.deps.runner.start_fork,
@@ -862,6 +900,7 @@ class _GroupExecution:
         attempts_left = self.deps.execution.max_conflict_resolve_attempts
         while True:
             self.ctx.set_state(GroupState.MERGING)
+            self._heartbeat.mark_phase("merging into integration")  # F4
             self._log(f"group {self.gid}: merge attempt")
             try:
                 await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
