@@ -34,9 +34,18 @@ For **every area the plan will touch**, establish ground truth before grilling:
 - `codegraph context` for how the area works, `explore` for exact symbol names,
   `impact` for the blast radius of planned changes (see
   `skills/codegraph/SKILL.md`).
-- Record **exact existing symbols and file paths** — the task map's `symbols`
-  must exist in the index (unknown ones get dropped with a flag), and its
-  `files` are checked against the working tree.
+- Record **exact existing file paths** — the task map's `files` are checked
+  against the working tree.
+- `symbols` is **optional** and only ever a supplement, never a requirement.
+  Listed symbols contribute derived precedence edges between tasks that touch
+  them — useful when the plan's own `depends_on` and shared-file affinity
+  don't already capture the coupling. On a dense codebase, populating
+  `symbols` heavily can backfire: on this repo it added over a hundred
+  inferred edges and degenerated the partition (near-saturated the task
+  graph into one component). Default to leaving `symbols` empty and let
+  declared `depends_on` plus shared-file affinity carry the structure; add
+  symbols deliberately, only where the coupling is real and otherwise
+  invisible to the mapper.
 - Files the plan will create are **prospective**: they go in the map like any
   other file and get marked `*(new)*` in the unit prose — or
   `*(new, small|medium|large)*` when you have a confident size estimate, which
@@ -108,16 +117,30 @@ belongs here.>
 
 ## Units
 
+Unit headings and task ids are the same identity in two forms — heading
+`### U<N>. <name>` ↔ task id `u<N>-<slug>` — the parser and the digest builder
+both key off this pairing, so a mismatch is a bug, not a style choice. Every
+unit's **`Summary:`** line is required: it is the only piece of the unit that
+ships into every other worker's shared context (the full unit body ships only
+to workers on that unit's own group), so write it as a self-contained sentence
+a stranger unit can consume with no other context.
+
 ### U1. <name> — <goal in one line>
 
+- **Summary**: <one tagged sentence — what this unit ships, used verbatim in
+  the shared digest every worker's context carries>
 - **Goal**: <what done looks like>
 - **Files**: `existing/path.py`, `new/path.py` *(new, medium)*
-- **Symbols**: `existing_fn`, `ExistingClass`
+- **Symbols**: — <or `existing_fn`, `ExistingClass` — optional; see the
+  dense-codebase trade-off in Phase 2>
 - **Depends-on**: — <or U-IDs>
 - **Slice**: — <or slice label>
 - **Implements / Consumes**: — <or route/contract tags>
-- **Verification**: <concrete checks — these feed the speccer's verification
-  items, so write them as testable statements>
+- **Verification**: <concrete checks, one per bullet — these feed the
+  speccer's verification items, so write them as testable statements. A
+  single check is still one bullet, not inline prose:
+  - <first observable outcome>
+  - <second observable outcome, if any>>
 
 ## Task Map
 
@@ -196,6 +219,23 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   dissolved or over-budget slice, and hub/Louvain shape — all before paying for
   the speccer. Fix any error it reports (never by hand-editing `groups.json` or
   a `grouping-trace.json` — fix the plan's map) and re-run until it's clean.
+
+  Once `--no-spec` is clean, run the advisory pass — also zero LLM, one graph
+  build:
+
+  ```sh
+  smart-mcps-orchestrate group docs/plans/<the-plan>.md --advise
+  ```
+
+  Present its diagnostics to the user as-is: the granularity comparison across
+  presets, and any cohesion flags ("this reads as N separate plans", "this
+  reads as serial phases", "structurally monolithic"). Then **ask** the user
+  whether to split the plan along the reported seams or proceed as one plan —
+  proceed-as-one is an explicit option, not just the silent default. Never
+  split the plan yourself, never rewrite plan prose based on the advisory —
+  the mechanical split and a deepen command are wave-2 capability that does
+  not exist yet; if the user wants to split now, that's a manual plan edit,
+  not something this skill or `--advise` performs for them.
 
   Then present the plan summary + unit list to the user, and point at:
 
