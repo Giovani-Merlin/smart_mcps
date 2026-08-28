@@ -118,6 +118,7 @@ def run_preflight(
     output_dir: Path,
     log: Callable[[str], None] | None = None,
     declared_files: Sequence[str] = (),
+    baseline: "PreflightBaseline | None" = None,
 ) -> None:
     """Run Preflight's two checks against ``worktree``, in order.
 
@@ -140,6 +141,16 @@ def run_preflight(
     rather than the declared ``tests/test_worktrees.py``), so a hard gate would
     fail honest work. ``PreflightFailure`` stays reserved for the dirty-tree
     and check-command failures.
+
+    ``baseline`` — what was already red on the launch branch — is the gate's
+    reference point, not merely an attribution hint. When the check command
+    fails but *every* failing test was already failing on the launch branch,
+    the diff introduced no regression, so the tree is allowed through with a
+    logged note instead of a ``PreflightFailure``. Without this the gate keys
+    off the exit code alone and no group can ever merge into a repo that has a
+    single red test at HEAD. Only ``regression``-kind failures are eligible:
+    a dirty tree, a collection error, or a timeout never produced a comparable
+    result set and still fails hard.
     """
     _log = log or (lambda _text: None)
     missing = [name for name in declared_files if not (worktree / name).exists()]
@@ -184,6 +195,14 @@ def run_preflight(
     output_path.write_text(combined)
     if result.returncode != 0:
         kind = _classify_exit_failure(result.returncode, combined)
+        if kind == "regression":
+            comparison = compare_to_baseline(baseline, failing_tests_from_junit(junit_path))
+            if comparison.verdict == "pre_existing":
+                _log(
+                    f"preflight: check command exited {result.returncode}, but every failing "
+                    "test was already red on the launch branch — no regression, allowing merge"
+                )
+                return
         raise PreflightFailure(
             f"check command {' '.join(command)} exited {result.returncode} — "
             f"output at {output_path}",

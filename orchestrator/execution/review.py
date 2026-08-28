@@ -997,9 +997,22 @@ class _GroupExecution:
             if summary_tail:
                 diagnosis += f"\n{summary_tail}"
             return diagnosis, False
+        # Name the tests this diff actually broke. The raw summary tail lists
+        # every FAILED line, pre-existing ones included, and a rewrite spec
+        # built from it sends the next coder to fix tests it did not break —
+        # often outside its own declared files. The baseline is what tells
+        # them apart, so spend it here too, not only on the routing decision.
         diagnosis = f"preflight failed (regression): {exc.reason}"
+        if comparison.new_failures:
+            named = "\n".join(f"  {test_id}" for test_id in sorted(comparison.new_failures))
+            diagnosis += f"\nnew failures introduced by this diff:\n{named}"
         if summary_tail:
             diagnosis += f"\n{summary_tail}"
+        if comparison.new_failures:
+            diagnosis += (
+                "\nAny FAILED line above that is not in the list of new failures was "
+                "already red on the launch branch — it is not yours to fix."
+            )
         return diagnosis, True
 
     async def _resolve_conflict_in_place(self, exc: MergeConflict) -> bool:

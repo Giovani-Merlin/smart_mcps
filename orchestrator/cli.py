@@ -1427,6 +1427,10 @@ def _cmd_run(
             repo_root,
             run_id,
             preflight_config=config.preflight,
+            # Read back rather than reusing the local `baseline`: a resumed run
+            # never recaptures one, but the file from the original launch is
+            # still the right reference for the merge gate.
+            preflight_baseline=load_baseline(paths.preflight_baseline_path),
             preflight_output_dir=paths.group_dir,
             log=lambda message: log_event(paths, message),
             # The integration worktree is the tree that represents this run's

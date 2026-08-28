@@ -13,6 +13,7 @@ import pytest
 from orchestrator.config import PreflightConfig
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.preflight import (
+    PreflightBaseline,
     PreflightFailure,
     detect_check_command,
     run_preflight,
@@ -495,3 +496,99 @@ def test_merge_reports_the_group_s_undelivered_declared_files_and_still_merges(r
     reports = [line for line in logged if "declared file(s) not present" in line]
     assert len(reports) == 1
     assert "tests/test_worktrees.py" in reports[0]
+
+
+# ------------------------------------------------- baseline-aware merge gate
+
+
+def _junit_writer(results: dict[str, str]) -> str:
+    """A check command that writes a JUnit report with `results` and exits 1."""
+    cases = "".join(
+        f'<testcase classname="tests/test_x.py" name="{name}">'
+        + ("<failure/>" if outcome == "failed" else "")
+        + "</testcase>"
+        for name, outcome in results.items()
+    )
+    return (
+        "import sys, pathlib\n"
+        f"xml = {'''<testsuite>''' + cases + '''</testsuite>'''!r}\n"
+        "path = [a for a in sys.argv if a.startswith('--junitxml=')]\n"
+        "pathlib.Path(path[0].split('=', 1)[1]).write_text(xml)\n"
+        "print('AssertionError: short test summary info')\n"
+        "sys.exit(1)\n"
+    )
+
+
+def _run_with_junit(worktree: Path, out_dir: Path, results: dict[str, str], baseline):
+    script = _junit_writer(results)
+    config = PreflightConfig(
+        check_command=[
+            "python3",
+            "-c",
+            script,
+            f"--junitxml={out_dir / 'preflight-junit.xml'}",
+        ]
+    )
+    return run_preflight(worktree, config=config, output_dir=out_dir, baseline=baseline)
+
+
+def test_pre_existing_failures_allow_the_merge(tmp_path):
+    """A check exiting nonzero whose every failing test was already red on the
+    launch branch is not a regression — the tree merges rather than failing."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    baseline = PreflightBaseline(
+        command=["pytest"],
+        commit_sha="deadbeef",
+        exit_code=1,
+        tests={"tests/test_x.py::test_old": "failed"},
+    )
+    logged: list[str] = []
+    script = _junit_writer({"test_old": "failed", "test_fine": "passed"})
+    out_dir = tmp_path / "out"
+    config = PreflightConfig(
+        check_command=[
+            "python3",
+            "-c",
+            script,
+            f"--junitxml={out_dir / 'preflight-junit.xml'}",
+        ]
+    )
+    run_preflight(worktree, config=config, output_dir=out_dir, log=logged.append, baseline=baseline)
+    assert any("already red on the launch branch" in line for line in logged)
+
+
+def test_one_new_failure_among_pre_existing_ones_still_blocks(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    baseline = PreflightBaseline(
+        command=["pytest"],
+        commit_sha="deadbeef",
+        exit_code=1,
+        tests={"tests/test_x.py::test_old": "failed"},
+    )
+    out_dir = tmp_path / "out"
+    with pytest.raises(PreflightFailure) as excinfo:
+        _run_with_junit(worktree, out_dir, {"test_old": "failed", "test_new": "failed"}, baseline)
+    assert excinfo.value.kind == "regression"
+
+
+def test_without_a_baseline_the_strict_exit_code_gate_is_unchanged(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    out_dir = tmp_path / "out"
+    with pytest.raises(PreflightFailure):
+        _run_with_junit(worktree, out_dir, {"test_old": "failed"}, None)
+
+
+def test_a_collection_error_is_never_excused_by_the_baseline(tmp_path):
+    """Only `regression` failures are eligible: an env failure produced no
+    comparable result set, so a matching baseline must not let it through."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    baseline = PreflightBaseline(command=["pytest"], commit_sha="deadbeef", exit_code=1, tests={})
+    script = "import sys\nprint('ModuleNotFoundError: no module named x')\nsys.exit(1)\n"
+    config = PreflightConfig(check_command=["python3", "-c", script])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=config, output_dir=tmp_path / "out", baseline=baseline)
+    assert excinfo.value.kind == "env"

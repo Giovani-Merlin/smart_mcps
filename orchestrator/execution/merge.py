@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from orchestrator.config import PreflightConfig
-from orchestrator.execution.preflight import run_preflight
+from orchestrator.execution.preflight import PreflightBaseline, run_preflight
 from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
     WorktreeError,
@@ -58,6 +58,7 @@ class IntegrationMerger:
         launch_ref: str = "HEAD",
         *,
         preflight_config: PreflightConfig | None = None,
+        preflight_baseline: PreflightBaseline | None = None,
         preflight_output_dir: Callable[[str], Path] | None = None,
         log: Callable[[str], None] | None = None,
         provision_args: list[str] | None = None,
@@ -71,6 +72,10 @@ class IntegrationMerger:
         # Approvals of independent groups can land concurrently; merges serialize.
         self._lock = threading.Lock()
         self._preflight_config = preflight_config or PreflightConfig()
+        # What was already red on the launch branch. Preflight compares against
+        # it so a tree whose only failures are pre-existing still merges; None
+        # (no baseline captured) keeps the strict exit-code gate.
+        self._preflight_baseline = preflight_baseline
         # Defaults keep every existing in-process test (constructed with no
         # RunPaths at all) byte-identical: check output lands under the repo's
         # own `.orchestrator/` tree, keyed by run and group, same shape as
@@ -168,6 +173,7 @@ class IntegrationMerger:
                 output_dir=self._preflight_output_dir(group.id),
                 log=self._log,
                 declared_files=group.files,
+                baseline=self._preflight_baseline,
             )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
