@@ -86,7 +86,7 @@ def test_group_still_prefers_a_path_that_resolves_against_cwd(repo, elsewhere):
     from test_grouper_pipeline import GREENFIELD_PLAN
 
     (repo / "both.md").write_text(GREENFIELD_PLAN)
-    (elsewhere / "both.md").write_text(GREENFIELD_PLAN.replace("t4-docs", "t4-from-cwd"))
+    (elsewhere / "both.md").write_text(GREENFIELD_PLAN.replace("u4-docs", "u4-from-cwd"))
 
     exit_code = main(
         ["group", "both.md", "--repo", str(repo), "--name", "from-cwd"],
@@ -98,8 +98,8 @@ def test_group_still_prefers_a_path_that_resolves_against_cwd(repo, elsewhere):
         (repo / ".orchestrator" / "groupings" / "from-cwd" / "groups.json").read_text()
     )
     tasks = {task for group in grouping["groups"] for task in group["tasks"]}
-    assert "t4-from-cwd" in tasks  # the cwd-relative plan, not the repo's
-    assert "t4-docs" not in tasks
+    assert "u4-from-cwd" in tasks  # the cwd-relative plan, not the repo's
+    assert "u4-docs" not in tasks
 
 
 def test_group_reports_the_path_the_operator_typed_when_it_resolves_nowhere(

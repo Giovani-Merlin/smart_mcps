@@ -143,10 +143,11 @@ class TestAllowDriftRepartitions:
         assert recorded_fp in err
         assert "not reproducible" in err  # the mapper-is-unseeded-LLM residual note
 
-        # a real re-partition ran: the mapper/speccer LLM were invoked again for
-        # this resume, not skipped in favour of the stale groups.json
+        # a real re-partition ran: the mapper LLM was invoked again for this
+        # resume, not skipped in favour of the stale groups.json — specs are
+        # assembled deterministically (plan U2), so the speccer is never called.
         assert any(title == "mapper_output" for title, _ in stub.prompts)
-        assert any(title == "speccer_output" for title, _ in stub.prompts)
+        assert not any(title == "speccer_output" for title, _ in stub.prompts)
 
         # the run's own frozen snapshot now carries the new fingerprint, not the
         # stale recorded one — proof it was overwritten, not silently reused
