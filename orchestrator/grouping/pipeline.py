@@ -20,6 +20,7 @@ from pathlib import Path
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.assembler import ASSEMBLED_FLAG, AssemblyInputs, assemble_group_specs
 from orchestrator.grouping.base_context import compile_base_context
+from orchestrator.grouping.errors import ErrorAccumulator
 from orchestrator.grouping.estimator import (
     DifficultySignals,
     difficulty_score,
@@ -228,7 +229,12 @@ def _check_slice_overflow(
     ``--allow-oversized-slice``, config ``[partition] allow_oversized_slice`` —
     exactly equivalent) accepts the overshoot instead and records it in
     ``flags`` for the caller to surface.
+
+    Every over-cap slice is collected before raising (plan U6/C1) — a plan
+    with several oversized slices names all of them in one ``GrouperError``
+    instead of costing one ``group`` invocation per slice.
     """
+    errors = ErrorAccumulator()
     for label, members in sorted(atoms.items()):
         work_by_member = {m: node_work_fn(m) for m in sorted(members)}
         total = sum(work_by_member.values())
@@ -241,11 +247,13 @@ def _check_slice_overflow(
             f"{total:.0f} work, exceeding the {budget_cap:.0f} cap by {overshoot:.0f}"
         )
         if not allow_oversized_slice:
-            raise GrouperError(message)
+            errors.add(message)
+            continue
         flags.append(
             f"partition: slice {label!r} accepted {overshoot:.0f} over the "
             f"{budget_cap:.0f} cap (--allow-oversized-slice / allow_oversized_slice)"
         )
+    errors.raise_all(GrouperError)
 
 
 def _check_degenerate_partition(

@@ -15,6 +15,7 @@ from collections import defaultdict
 
 import yaml
 
+from orchestrator.grouping.errors import ErrorAccumulator
 from orchestrator.grouping.graphing import CodegraphClient, TaskMapping
 from orchestrator.grouping.mapper import MapperOutput
 
@@ -151,7 +152,16 @@ def strip_task_map(plan_text: str) -> str:
 
 
 def _validate_shape(payload: object) -> list[dict]:
-    """Structural validation per docs/orchestrator-task-map.md — every miss is hard."""
+    """Structural validation per docs/orchestrator-task-map.md — every miss is hard.
+
+    Two accumulated phases (plan U6/C1): shape first (per-entry structural
+    correctness — types, required fields, unknown keys), then references
+    (cross-entry correctness — size_hints paths/classes, duplicate ids,
+    depends_on, cycles, slice caps). Each phase reports every problem it finds
+    in one ``TaskMapError`` and stops; a malformed shape makes reference
+    checks meaningless noise, so the reference phase never runs until shape
+    is clean.
+    """
     if not isinstance(payload, dict):
         raise TaskMapError("task map top level must be a mapping with a 'tasks' list")
     unknown_top = set(payload) - {"tasks"}
@@ -161,61 +171,73 @@ def _validate_shape(payload: object) -> list[dict]:
     if not isinstance(tasks, list) or not tasks:
         raise TaskMapError("task map 'tasks' must be a non-empty list")
 
+    shape_errors = ErrorAccumulator()
     for entry in tasks:
         if not isinstance(entry, dict):
-            raise TaskMapError("each task entry must be a mapping")
+            shape_errors.add("each task entry must be a mapping")
+            continue
         unknown = set(entry) - _KNOWN_KEYS
         if unknown:
-            raise TaskMapError(f"task entry has unknown keys: {sorted(unknown)}")
+            shape_errors.add(f"task entry has unknown keys: {sorted(unknown)}")
         for key in ("task_id", "description"):
             if not isinstance(entry.get(key), str) or not entry[key]:
-                raise TaskMapError(f"task entry needs a non-empty string {key!r}")
+                shape_errors.add(f"task entry needs a non-empty string {key!r}")
+        label = (
+            entry.get("task_id")
+            if isinstance(entry.get("task_id"), str) and entry.get("task_id")
+            else "<unknown>"
+        )
         if entry.get("slice") is not None and (
             not isinstance(entry["slice"], str) or not entry["slice"]
         ):
-            raise TaskMapError(f"task {entry['task_id']!r} 'slice' must be a string or null")
+            shape_errors.add(f"task {label!r} 'slice' must be a string or null")
         for key in _LIST_FIELDS:
             value = entry.get(key) or []
             if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
-                raise TaskMapError(
-                    f"task {entry['task_id']!r} {key!r} must be a list of non-empty strings"
-                )
+                shape_errors.add(f"task {label!r} {key!r} must be a list of non-empty strings")
+    shape_errors.raise_all(TaskMapError)
+
+    reference_errors = ErrorAccumulator()
+    for entry in tasks:
         size_hints = entry.get("size_hints")
-        if size_hints is not None:
-            if not isinstance(size_hints, dict) or not all(
-                isinstance(path, str) and path and isinstance(cls, str) and cls
-                for path, cls in size_hints.items()
-            ):
-                raise TaskMapError(
-                    f"task {entry['task_id']!r} 'size_hints' must be a mapping of "
-                    "path to size class"
+        if size_hints is None:
+            continue
+        if not isinstance(size_hints, dict) or not all(
+            isinstance(path, str) and path and isinstance(cls, str) and cls
+            for path, cls in size_hints.items()
+        ):
+            reference_errors.add(
+                f"task {entry['task_id']!r} 'size_hints' must be a mapping of path to size class"
+            )
+            continue
+        declared_files = set(entry.get("files") or [])
+        for path, cls in size_hints.items():
+            if path not in declared_files:
+                reference_errors.add(
+                    f"task {entry['task_id']!r} size_hints names {path!r}, which is "
+                    "not in this task's files"
                 )
-            declared_files = set(entry.get("files") or [])
-            for path, cls in size_hints.items():
-                if path not in declared_files:
-                    raise TaskMapError(
-                        f"task {entry['task_id']!r} size_hints names {path!r}, which is "
-                        "not in this task's files"
-                    )
-                if cls not in SIZE_HINT_CLASSES:
-                    raise TaskMapError(
-                        f"task {entry['task_id']!r} size_hints class {cls!r} for {path!r} "
-                        f"must be one of {sorted(SIZE_HINT_CLASSES)}"
-                    )
+            if cls not in SIZE_HINT_CLASSES:
+                reference_errors.add(
+                    f"task {entry['task_id']!r} size_hints class {cls!r} for {path!r} "
+                    f"must be one of {sorted(SIZE_HINT_CLASSES)}"
+                )
 
     ids = [entry["task_id"] for entry in tasks]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
-        raise TaskMapError(f"duplicate task_id values: {duplicates}")
+        reference_errors.add(f"duplicate task_id values: {duplicates}")
 
     id_set = set(ids)
+    depends_clean = True
     for entry in tasks:
         for dep in entry.get("depends_on") or []:
             if dep == entry["task_id"]:
-                raise TaskMapError(f"task {entry['task_id']!r} depends_on itself")
-            if dep not in id_set:
-                raise TaskMapError(f"task {entry['task_id']!r} depends_on unknown task {dep!r}")
-    _check_acyclic({e["task_id"]: list(e.get("depends_on") or []) for e in tasks})
+                reference_errors.add(f"task {entry['task_id']!r} depends_on itself")
+                depends_clean = False
+            elif dep not in id_set:
+                reference_errors.add(f"task {entry['task_id']!r} depends_on unknown task {dep!r}")
+                depends_clean = False
 
     slice_members: dict[str, list[str]] = defaultdict(list)
     for entry in tasks:
@@ -223,10 +245,18 @@ def _validate_shape(payload: object) -> list[dict]:
             slice_members[entry["slice"]].append(entry["task_id"])
     for label, members in sorted(slice_members.items()):
         if len(members) > SLICE_TASK_CAP:
-            raise TaskMapError(
+            reference_errors.add(
                 f"slice {label!r} has {len(members)} tasks (cap {SLICE_TASK_CAP}) — "
                 "a whole-plan slice contracts to one giant node; split it or drop labels"
             )
+
+    if depends_clean and not duplicates:
+        try:
+            _check_acyclic({e["task_id"]: list(e.get("depends_on") or []) for e in tasks})
+        except TaskMapError as exc:
+            reference_errors.add(str(exc))
+
+    reference_errors.raise_all(TaskMapError)
     return tasks
 
 
