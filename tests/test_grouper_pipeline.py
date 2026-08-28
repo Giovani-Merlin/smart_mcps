@@ -1349,15 +1349,20 @@ class TestSliceOverflowAccumulation:
                 budget_cap=100.0,
                 allow_oversized_slice=False,
                 flags=[],
+                coder_slack_multiplier=2.5,
             )
         message = str(excinfo.value)
         for label in ("alpha", "beta", "gamma"):
             assert f"slice {label!r}" in message
         assert "cannot fit in one group" in message
-        assert message.count("exceeding the 100 cap by") == 3
+        assert message.count("exceeding the 100 coder work cap by") == 3
+        assert message.count("node work") >= 3
+        assert message.count("coder work") >= 3
+        assert "coder_slack_multiplier=2.5" in message
 
     def test_single_over_cap_slice_wording_is_unchanged(self):
-        """Single-error behaviour keeps today's exact message, unwrapped."""
+        """Single-error behaviour keeps today's exact message, unwrapped,
+        now naming both scales (plan U8/C2) instead of one bare "work"."""
         from orchestrator.grouping.pipeline import _check_slice_overflow
 
         atoms = {"alpha": ["a1", "a2"]}
@@ -1369,10 +1374,13 @@ class TestSliceOverflowAccumulation:
                 budget_cap=100.0,
                 allow_oversized_slice=False,
                 flags=[],
+                coder_slack_multiplier=2.5,
             )
         assert str(excinfo.value) == (
-            "slice 'alpha' cannot fit in one group: members [a1=60, a2=60] sum to "
-            "120 work, exceeding the 100 cap by 20"
+            "slice 'alpha' cannot fit in one group: members "
+            "[a1=24 node work / 60 coder work, a2=24 node work / 60 coder work] sum to "
+            "48 node work / 120 coder work (coder_slack_multiplier=2.5), "
+            "exceeding the 100 coder work cap by 20"
         )
 
     def test_allow_oversized_slice_still_accepts_every_offender(self):
@@ -1387,7 +1395,9 @@ class TestSliceOverflowAccumulation:
             budget_cap=100.0,
             allow_oversized_slice=True,
             flags=flags,
+            coder_slack_multiplier=2.5,
         )
         assert len(flags) == 2
         assert any("alpha" in f for f in flags)
         assert any("beta" in f for f in flags)
+        assert any("coder work" in f for f in flags)

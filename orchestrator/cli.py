@@ -936,7 +936,7 @@ def _print_partition_report(trace: GroupingTrace) -> None:
         print(f"  groups: {sc.group_count}")
         print(f"  cross-group edges: {sc.cross_group_edges}")
         print(
-            "  work fraction of cap (min/mean/max): "
+            "  node work fraction of cap (min/mean/max): "
             f"{sc.work_fraction_min:.2f} / {sc.work_fraction_mean:.2f} / {sc.work_fraction_max:.2f}"
         )
         print(f"  critical path length: {sc.critical_path_length}")
