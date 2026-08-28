@@ -203,6 +203,10 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     exit_code = main(
         ["run", "--repo", str(repo), "--run-id", run_id, "--review-intensity", "paired"],
         llm_runner=StubLlm(),
+        # Same stubbed codegraph as the `group` call above: the run re-derives
+        # the index fingerprint and compares it to the one recorded at grouping
+        # time, so a real client here would mismatch the stub's index and halt.
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
     )
     out = capsys.readouterr().out
     assert exit_code == 0

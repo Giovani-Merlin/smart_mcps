@@ -129,8 +129,11 @@ def test_exports_run_group_session_join(tmp_path: Path) -> None:
 
     [group] = export.groups
     assert (group.id, group.name, group.final_state) == ("g1", "alpha", "completed")
-    [session] = group.sessions
-    assert session.role == "coder"
+    # The run's base session is attached to every group's attempt history at
+    # generation 1 — every group's first coder is a fork of it — so a group
+    # carries its own sessions plus that one orchestrator row.
+    assert [session.role for session in group.sessions] == ["coder", "orchestrator"]
+    session = group.sessions[0]
     assert session.transcript_path == str(root / "slug" / "aaa.jsonl")
     assert session.transcript_missing is False
     assert session.tokens.output == 7
@@ -197,7 +200,10 @@ def test_groups_and_sessions_in_chronological_order(tmp_path: Path) -> None:
     )
     export = _export(paths, root)
     assert [g.id for g in export.groups] == ["g2", "g1", "g3"]
-    assert [s.session_id for s in export.groups[1].sessions] == ["b1", "b2"]
+    # The attached base row carries no start time of its own; chronological
+    # order is asserted over the group's own coder sessions.
+    coders = [s for s in export.groups[1].sessions if s.role == "coder"]
+    assert [s.session_id for s in coders] == ["b1", "b2"]
 
 
 def test_stale_failure_normalized_to_null(tmp_path: Path) -> None:
@@ -353,7 +359,7 @@ def test_old_run_missing_fields_export_as_null(tmp_path: Path) -> None:
     assert export.base_session.base_context_sha256 is None
     [group] = export.groups
     assert group.final_state == "pending"  # no state.json → never observed running
-    [session] = group.sessions
+    [session] = [s for s in group.sessions if s.role == "coder"]
     assert session.started_at is None
     assert session.ended_at is None
     assert session.model is None
