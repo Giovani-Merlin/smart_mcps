@@ -1401,3 +1401,189 @@ class TestSliceOverflowAccumulation:
         assert any("alpha" in f for f in flags)
         assert any("beta" in f for f in flags)
         assert any("coder work" in f for f in flags)
+
+
+RUN10_SHAPE_PLAN = """# feat: run-10 slice re-entry repro
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-preflight-classification
+    description: classify preflight failures
+    slice: resilience
+    files: [a.py]
+  - task_id: u2-preflight-baseline
+    description: establish a baseline
+    files: [b.py]
+    depends_on: [u1-preflight-classification]
+  - task_id: u3-merge-gate-triage
+    description: triage the merge gate
+    slice: resilience
+    files: [c.py]
+    depends_on: [u2-preflight-baseline]
+```
+"""
+
+TWO_REENTRANT_SLICES_PLAN = """# feat: two independent slice re-entries
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-x
+    description: u1
+    slice: alpha
+    files: [a1.py]
+  - task_id: u2-x
+    description: u2
+    files: [a2.py]
+    depends_on: [u1-x]
+  - task_id: u3-x
+    description: u3
+    slice: alpha
+    files: [a3.py]
+    depends_on: [u2-x]
+  - task_id: v1-x
+    description: v1
+    slice: beta
+    files: [b1.py]
+  - task_id: v2-x
+    description: v2
+    files: [b2.py]
+    depends_on: [v1-x]
+  - task_id: v3-x
+    description: v3
+    slice: beta
+    files: [b3.py]
+    depends_on: [v2-x]
+```
+"""
+
+
+class TestSliceReentryPipeline:
+    """Plan U9/C5: a dependency path leaving and re-entering a slice must be
+    named specifically, not surfaced as the generic degenerate-partition
+    saturation message — this is run 10 from
+    docs/todos/grouping_improvements.md, reproduced through the full
+    ``compute_partition`` pipeline (mapper skipped: a task map is present)."""
+
+    def test_run10_shape_names_slice_path_and_both_remedies(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(RUN10_SHAPE_PLAN)
+        with pytest.raises(GrouperError) as excinfo:
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                llm_runner=_llm_must_not_be_called,
+                client=make_client(repo),
+            )
+        message = str(excinfo.value)
+        assert "slice 'resilience'" in message
+        assert "u1-preflight-classification -> u2-preflight-baseline -> u3-merge-gate-triage" in (
+            message
+        )
+        assert "bring 'u2-preflight-baseline' into the slice" in message
+        assert "or drop the label" in message
+        # Not the generic saturation diagnosis this used to fall back to.
+        assert "saturated" not in message
+        assert "degenerate" not in message
+
+    def test_two_independent_reentrant_slices_reported_together(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(TWO_REENTRANT_SLICES_PLAN)
+        with pytest.raises(GrouperError) as excinfo:
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                llm_runner=_llm_must_not_be_called,
+                client=make_client(repo),
+            )
+        message = str(excinfo.value)
+        assert "slice 'alpha'" in message
+        assert "slice 'beta'" in message
+        assert "u1-x -> u2-x -> u3-x" in message
+        assert "v1-x -> v2-x -> v3-x" in message
+        assert "2 problems found" in message
+
+
+class TestDegeneratePartitionProvenance:
+    """Plan U9/C4.2/R8: the degenerate-partition error names how many of the
+    offending SCC's edges are inferred vs. declared, and what the inferred
+    ones were inferred from — sourced from the same per-edge ledgers
+    ``edge-provenance.json`` already records, not a second channel."""
+
+    def _graph_with_provenance(self):
+        from orchestrator.grouping.graphing import EdgeContribution, EdgeProvenance
+        from orchestrator.grouping.partition import TaskGraph, canonical_pair
+
+        provenance = EdgeProvenance()
+        provenance.record_dependency(
+            ("a", "b"),
+            EdgeContribution(kind="call", declared=False, scaled_weight=2.0),
+        )
+        provenance.record_dependency(
+            ("a", "b"),
+            EdgeContribution(kind="call", declared=False, scaled_weight=2.0),
+        )
+        provenance.record_dependency(
+            ("b", "c"),
+            EdgeContribution(kind="impact", declared=False, scaled_weight=1.5),
+        )
+        provenance.record_dependency(
+            ("c", "a"),
+            EdgeContribution(kind="declared_depends_on", declared=True, scaled_weight=1.0),
+        )
+        return TaskGraph(
+            nodes=frozenset({"a", "b", "c"}),
+            affinity={canonical_pair("a", "b"): 2.0, canonical_pair("b", "c"): 1.5},
+            dependencies={("a", "b"): 2.0, ("b", "c"): 1.5, ("c", "a"): 1.0},
+            provenance=provenance,
+        )
+
+    def test_edge_provenance_counts_classify_declared_vs_inferred(self):
+        from orchestrator.grouping.pipeline import _edge_provenance_counts
+
+        graph = self._graph_with_provenance()
+        declared, inferred, inferred_kinds = _edge_provenance_counts(
+            graph, (("a", "b"), ("b", "c"), ("c", "a"))
+        )
+        assert declared == 1
+        assert inferred == 2
+        assert inferred_kinds == {"call": 1, "impact": 1}
+
+    def test_degenerate_partition_error_names_counts_and_kinds(self):
+        from orchestrator.grouping.partition import DegenerateRepair
+        from orchestrator.grouping.pipeline import _check_degenerate_partition
+
+        graph = self._graph_with_provenance()
+        overshoot = "partition: group containing 'a' stays 5 over the 10 cap after cycle repair"
+        repair = DegenerateRepair(
+            cycle_groups=(0, 1),
+            evidence_edges=(("a", "b"), ("b", "c"), ("c", "a")),
+            overshoot_messages=(overshoot,),
+        )
+        with pytest.raises(GrouperError) as excinfo:
+            _check_degenerate_partition(
+                graph=graph, repairs=[repair], allow_degenerate_partition=False
+            )
+        message = str(excinfo.value)
+        assert overshoot in message
+        assert "2 of 3 dependency edges" in message
+        assert "1 call" in message
+        assert "1 impact" in message
+        assert "1 are declared depends_on" in message
+
+    def test_allow_degenerate_partition_suppresses_the_error(self):
+        from orchestrator.grouping.partition import DegenerateRepair
+        from orchestrator.grouping.pipeline import _check_degenerate_partition
+
+        graph = self._graph_with_provenance()
+        repair = DegenerateRepair(
+            cycle_groups=(0, 1),
+            evidence_edges=(("a", "b"),),
+            overshoot_messages=("partition: group containing 'a' stays 5 over the 10 cap",),
+        )
+        _check_degenerate_partition(graph=graph, repairs=[repair], allow_degenerate_partition=True)
