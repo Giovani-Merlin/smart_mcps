@@ -1122,8 +1122,12 @@ class TestTaskMapStripping:
         )
         assert "orchestrator-task-map v1" not in outcome.base_context
         assert "## Task Map" not in outcome.base_context
-        # the surrounding unit prose survives the strip
-        assert "### U1. scaffold — create the app skeleton" in outcome.base_context
+        # plan U3: base context carries the digest (per-unit Summary lines), not
+        # the unit's full section body — the heading itself is not embedded.
+        assert "### U1. scaffold — create the app skeleton" not in outcome.base_context
+        assert "U1 (scaffold — create the app skeleton) Summary: Creates the app skeleton." in (
+            outcome.base_context
+        )
 
     def test_base_context_compilation_stays_byte_stable(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -1197,6 +1201,81 @@ class TestTaskMapStripping:
         )
         assert exit_code == 0
         assert plan.read_bytes() == before
+
+
+class TestLayeredContext:
+    """Plan U3 (R22/R23): base context carries the plan digest, not the full
+    plan; group specs carry contracts-only lines for cross-group neighbors,
+    never a neighbor's full section body."""
+
+    def test_base_context_carries_digest_not_full_sections(self, tmp_path):
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        sections = parse_plan_sections(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert sections.preamble.strip() in outcome.base_context
+        for unit in sections.units.values():
+            assert f"Summary: {unit.summary}" in outcome.base_context
+            assert unit.text not in outcome.base_context
+        assert "orchestrator-task-map v1" not in outcome.base_context
+
+    def test_group_spec_plus_base_context_covers_its_own_sections_exactly_once(self, tmp_path):
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        sections = parse_plan_sections(GREENFIELD_PLAN)
+        result, base_context = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        unit_by_task = {}
+        for unit in sections.units.values():
+            for task_id in ("u1-scaffold", "u2-items-api", "u3-items-ui", "u4-docs"):
+                if task_id.startswith(unit.unit_id + "-"):
+                    unit_by_task[task_id] = unit
+
+        for group in result.groups:
+            combined = base_context + "\n" + group.spec
+            own_units = {unit_by_task[task_id] for task_id in group.tasks}
+            for unit in own_units:
+                assert combined.count(unit.text) == 1
+            other_units = set(sections.units.values()) - own_units
+            for unit in other_units:
+                assert unit.text not in group.spec
+
+    def test_base_tokens_and_cap_derive_from_the_digest_with_no_compensation(self, tmp_path):
+        """Plan U3: the digest is smaller than the full plan it replaces, so
+        base_tokens/budget_cap shrink/grow with it — no compensating offset is
+        applied to keep the cap where it was under the old full-plan context."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        config = OrchestratorConfig()
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        expected_tokens = int(len(outcome.base_context) / config.estimator.bytes_per_token)
+        assert outcome.base_tokens == expected_tokens
+        assert outcome.budget_cap == partition_budget_cap(expected_tokens, config.estimator)
+        # the digest is strictly smaller than the full stripped plan it
+        # replaced within base context, so base_tokens/budget_cap moved with
+        # it, uncorrected — no compensating offset restores the old cap.
+        from orchestrator.grouping.plan_reader import strip_task_map
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        digest = parse_plan_sections(GREENFIELD_PLAN).digest
+        full_plan_text = strip_task_map(GREENFIELD_PLAN)
+        assert len(digest) < len(full_plan_text)
 
 
 class TestStageProgress:

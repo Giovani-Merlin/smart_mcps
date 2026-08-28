@@ -94,6 +94,7 @@ def _relational_header(
     descriptions: Mapping[str, str],
     upstream_labels: list[str],
     downstream_labels: list[str],
+    contract_labels: list[str],
     slice_label: str | None,
 ) -> str:
     lines = [f"# Group {gid_str}: {name}", ""]
@@ -127,6 +128,19 @@ def _relational_header(
     lines.append("Downstream groups:")
     if downstream_labels:
         lines.extend(f"- {label}" for label in downstream_labels)
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    # plan U3: contracts-only lines for cross-group units this group consumes
+    # from or provides to — derived purely from implements/consumes tag matches
+    # (not from graph.dependencies, which only covers declared depends_on
+    # edges and misses a pure tag relationship like an unrelated-slice
+    # consumer). One line per counterpart, never the counterpart's full
+    # section.
+    lines.append("Contracts (cross-group):")
+    if contract_labels:
+        lines.extend(f"- {label}" for label in contract_labels)
     else:
         lines.append("- (none)")
     lines.append("")
@@ -173,6 +187,19 @@ def assemble_group_specs(inputs: AssemblyInputs) -> dict[str, GroupSpec]:
         for down_gid in downs:
             upstream_of[down_gid].append(up_gid)
 
+    task_group: dict[str, int] = {
+        task_id: gid for gid, members in inputs.members_by_gid.items() for task_id in members
+    }
+    implementers: dict[str, list[str]] = {}
+    consumers: dict[str, list[str]] = {}
+    for task_id, unit in sorted(unit_by_task.items()):
+        if unit is None:
+            continue
+        for tag in unit.implements:
+            implementers.setdefault(tag, []).append(task_id)
+        for tag in unit.consumes:
+            consumers.setdefault(tag, []).append(task_id)
+
     specs: dict[str, GroupSpec] = {}
     covered_unit_ids: set[str] = set()
 
@@ -208,6 +235,26 @@ def assemble_group_specs(inputs: AssemblyInputs) -> dict[str, GroupSpec]:
                             _contract_label(down_gid_str, task_id, unit, tag, "consumes")
                         )
 
+        contract_labels: list[str] = []
+        for task_id in ordered_members:
+            unit = unit_by_task.get(task_id)
+            if unit is None:
+                continue
+            for tag in unit.consumes:
+                for other_task in implementers.get(tag, ()):
+                    if task_group.get(other_task) != gid:
+                        other_unit = unit_by_task.get(other_task)
+                        contract_labels.append(
+                            _contract_label(gid_str, other_task, other_unit, tag, "consumes")
+                        )
+            for tag in unit.implements:
+                for other_task in consumers.get(tag, ()):
+                    if task_group.get(other_task) != gid:
+                        other_unit = unit_by_task.get(other_task)
+                        contract_labels.append(
+                            _contract_label(gid_str, other_task, other_unit, tag, "provides")
+                        )
+
         slice_labels = sorted(
             {str(inputs.graph.metadata.get(task_id, {}).get("slice") or "") for task_id in members}
             - {""}
@@ -223,6 +270,7 @@ def assemble_group_specs(inputs: AssemblyInputs) -> dict[str, GroupSpec]:
             descriptions=inputs.descriptions,
             upstream_labels=sorted(set(upstream_labels)),
             downstream_labels=sorted(set(downstream_labels)),
+            contract_labels=sorted(set(contract_labels)),
             slice_label=slice_label,
         )
 

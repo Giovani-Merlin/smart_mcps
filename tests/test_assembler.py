@@ -166,6 +166,34 @@ class TestAssembleGroupSpecs:
         with pytest.raises(AssemblyError, match="u3"):
             assemble_group_specs(make_inputs(PLAN_NO_VERIFICATION_U3))
 
+    def test_cross_group_contract_names_tag_and_task_not_neighbor_section(self):
+        """Plan U3: a group consuming a contract implemented by another group
+        carries a contracts line naming the tag and the implementing task id,
+        and never the neighbor's full section body."""
+        inputs = make_inputs()
+        # Split u2-items-api (implements /api/items) and u3-items-ui (consumes
+        # it) into separate groups so the contract crosses a group boundary.
+        split_inputs = AssemblyInputs(
+            plan_sections=inputs.plan_sections,
+            graph=inputs.graph,
+            partition={"u1-scaffold": 0, "u2-items-api": 0, "u3-items-ui": 1},
+            dag={0: {1}},
+            members_by_gid={0: ["u1-scaffold", "u2-items-api"], 1: ["u3-items-ui"]},
+            descriptions=inputs.descriptions,
+            group_label=inputs.group_label,
+        )
+        specs = assemble_group_specs(split_inputs)
+        sections = parse_plan_sections(PLAN)
+        # g2 (u3-items-ui) consumes `/api/items` from u2-items-api (in g1) —
+        # no depends_on edge links u2 and u3 directly, so this only shows up
+        # via tag matching, not the dependency-edge-based Upstream/Downstream
+        # sections.
+        contracts_block = specs["g2"].spec.split("Contracts (cross-group):")[1].split("Slice:")[0]
+        assert "/api/items" in contracts_block
+        assert "u2-items-api" in contracts_block
+        assert "Items API routes on the scaffold." in contracts_block  # u2's Summary line
+        assert sections.units["u2"].text not in specs["g2"].spec
+
     def test_byte_deterministic_across_two_calls(self):
         a = assemble_group_specs(make_inputs())
         b = assemble_group_specs(make_inputs())
