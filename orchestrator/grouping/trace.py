@@ -141,15 +141,24 @@ class MergeCandidateEntry(BaseModel):
 
 
 class RepairEntry(BaseModel):
-    """One cyclic group-SCC ``repair_cycles`` merged, with the task-level
-    edges that evidence the cycle (plan U8: "evidence edges") and, when a
-    re-split ran, the chunks it produced and any that stayed over budget."""
+    """One cyclic group-SCC ``repair_cycles`` repaired.
+
+    ``action`` distinguishes the two repair paths (plan U10): ``"withdraw"``
+    means the cycle was broken by withdrawing inferred precedence edges
+    (named in ``withdrawn_edges``, never a declared edge) and no groups were
+    merged — ``merge_target``/``resplit_chunks`` stay empty/unset. ``"merge"``
+    (the pre-U10 default and the fallback when withdrawal alone cannot break
+    the cycle) merged the whole SCC, with the task-level edges that evidence
+    the cycle (plan U8: "evidence edges") and, when a re-split ran, the
+    chunks it produced and any that stayed over budget."""
 
     cyclic_groups: list[int] = Field(default_factory=list)
     evidence_edges: list[tuple[str, str]] = Field(default_factory=list)
-    merge_target: int
+    merge_target: int | None = None
     resplit_chunks: list[list[str]] = Field(default_factory=list)
     overshoots: list[str] = Field(default_factory=list)
+    action: str = "merge"
+    withdrawn_edges: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class GroupDifficultyEntry(BaseModel):
@@ -430,9 +439,11 @@ class TraceRecorder:
         self,
         cyclic_groups: list[int],
         evidence_edges: list[tuple[str, str]],
-        merge_target: int,
+        merge_target: int | None,
         resplit_chunks: list[list[str]],
         overshoots: list[str],
+        action: str = "merge",
+        withdrawn_edges: list[tuple[str, str]] | None = None,
     ) -> None:
         self.trace.repairs.append(
             RepairEntry(
@@ -441,5 +452,7 @@ class TraceRecorder:
                 merge_target=merge_target,
                 resplit_chunks=[list(c) for c in resplit_chunks],
                 overshoots=list(overshoots),
+                action=action,
+                withdrawn_edges=list(withdrawn_edges or ()),
             )
         )

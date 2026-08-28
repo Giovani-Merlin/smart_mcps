@@ -384,6 +384,153 @@ class TestSccRepair:
         assert degenerate == []
 
 
+class _RepairRecorder:
+    """Minimal PartitionRecorder capturing only repair calls, as plain dicts."""
+
+    def __init__(self):
+        self.repairs = []
+
+    def record_stage(self, *a, **k):
+        pass
+
+    def record_hub_role(self, *a, **k):
+        pass
+
+    def record_louvain(self, *a, **k):
+        pass
+
+    def record_split(self, *a, **k):
+        pass
+
+    def record_merge_candidate(self, *a, **k):
+        pass
+
+    def record_repair(
+        self,
+        cyclic_groups,
+        evidence_edges,
+        merge_target,
+        resplit_chunks,
+        overshoots,
+        action="merge",
+        withdrawn_edges=None,
+    ):
+        self.repairs.append(
+            {
+                "cyclic_groups": list(cyclic_groups),
+                "evidence_edges": list(evidence_edges),
+                "action": action,
+                "withdrawn_edges": list(withdrawn_edges or ()),
+            }
+        )
+
+
+class TestSccRepairWithdrawal:
+    """Plan U10/C4.1/R11: repair_cycles withdraws inferred precedence edges
+    before falling back to the U5 merge+re-split, and never touches a
+    declared (mapper depends_on) edge."""
+
+    def test_cycle_closed_only_by_an_inferred_edge_withdraws_instead_of_merging(self):
+        """a->b->c->a: a->b and b->c are declared, c->a is only inferred (a
+        call relation, weight already banked into affinity by the graph
+        builder). Withdrawing that one edge alone breaks the cycle, so no
+        merge happens and every group stays exactly as it was pre-repair."""
+        g = graph(
+            "a b c d".split(),
+            affinity={("a", "c"): 5.0},
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 5.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        recorder = _RepairRecorder()
+        repaired = repair_cycles(
+            g,
+            partition,
+            lambda n: 1.0,
+            budget_cap=None,
+            flags=[],
+            recorder=recorder,
+            declared=frozenset({("a", "b"), ("b", "c")}),
+        )
+        assert repaired == partition
+        assert groups_of(repaired) == {
+            frozenset({"a"}),
+            frozenset({"b"}),
+            frozenset({"c"}),
+            frozenset({"d"}),
+        }
+        build_group_dag(g, repaired)  # must not raise: the edge is actually gone
+        assert ("c", "a") not in g.dependencies
+        assert g.affinity[canonical_pair("a", "c")] == 5.0  # already banked, untouched
+
+        assert len(recorder.repairs) == 1
+        entry = recorder.repairs[0]
+        assert entry["action"] == "withdraw"
+        assert entry["withdrawn_edges"] == [("c", "a")]
+
+    def test_cycle_of_solely_declared_edges_still_merges_and_never_withdraws(self):
+        g = graph(
+            "a b c".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2}
+        recorder = _RepairRecorder()
+        repaired = repair_cycles(
+            g,
+            partition,
+            lambda n: 1.0,
+            budget_cap=None,
+            flags=[],
+            recorder=recorder,
+            declared=frozenset({("a", "b"), ("b", "c"), ("c", "a")}),
+        )
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"})}
+        assert ("a", "b") in g.dependencies
+        assert ("b", "c") in g.dependencies
+        assert ("c", "a") in g.dependencies
+
+        assert len(recorder.repairs) == 1
+        entry = recorder.repairs[0]
+        assert entry["action"] == "merge"
+        assert entry["withdrawn_edges"] == []
+
+    def test_no_declared_info_reproduces_pre_u10_merge_behaviour(self):
+        """``declared=None`` (the default when a caller has no provenance) is
+        deliberately conservative: nothing is a withdrawal candidate, so the
+        old merge+re-split path runs exactly as before plan U10."""
+        g = graph(
+            "a b c d".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=None, flags=[])
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"}), frozenset({"d"})}
+
+    def test_withdrawal_repair_is_deterministic_across_runs(self):
+        results = set()
+        for _ in range(5):
+            g = graph(
+                "a b c d".split(),
+                affinity={("a", "c"): 5.0},
+                dependencies={
+                    ("a", "b"): 1.0,
+                    ("b", "c"): 1.0,
+                    ("c", "a"): 5.0,
+                    ("c", "d"): 1.0,
+                },
+            )
+            partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+            repaired = repair_cycles(
+                g,
+                partition,
+                lambda n: 1.0,
+                budget_cap=None,
+                flags=[],
+                declared=frozenset({("a", "b"), ("b", "c")}),
+            )
+            results.add(tuple(sorted(repaired.items())))
+        assert len(results) == 1
+
+
 class TestSliceContraction:
     """Task-map slice labels enter Louvain as must-link node contraction (plan U5)."""
 

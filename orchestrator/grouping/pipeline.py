@@ -709,6 +709,14 @@ def compute_partition(
     atoms = slice_atoms(graph, roles)
     _check_slice_reentry(graph, atoms)
 
+    # The mapper's own depends_on pairs (plan U10) — repair_cycles never withdraws
+    # these, even when they also carry an inferred contribution on the same edge.
+    declared_edges = frozenset(
+        (upstream, mapping.task_id)
+        for mapping in mapper_out.mappings
+        for upstream in mapping.depends_on
+    )
+
     strategy = DefaultPartitionStrategy(
         work_fn=node_work_fn,
         budget_cap=budget_cap,
@@ -717,8 +725,12 @@ def compute_partition(
         granularity=config.partition.granularity,
         target_fill_ratio=config.partition.target_fill_ratio,
         recorder=recorder,
+        declared=declared_edges,
     )
     _emit(progress, "stage: partition")
+    # strategy.partition may withdraw inferred precedence edges from graph.dependencies
+    # in place (plan U10's cycle repair) — everything above this line has already read
+    # what it needs from `graph`, so the mutation is safe.
     partition = strategy.partition(graph)
     # Before _check_slice_overflow appends to the same list: at this point
     # strategy.flags carries only the repair-overshoot messages, which is exactly
