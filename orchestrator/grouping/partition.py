@@ -182,9 +182,11 @@ class PartitionRecorder(Protocol):
         self,
         cyclic_groups: list[int],
         evidence_edges: list[Pair],
-        merge_target: int,
+        merge_target: int | None,
         resplit_chunks: list[list[str]],
         overshoots: list[str],
+        action: str = "merge",
+        withdrawn_edges: list[Pair] | None = None,
     ) -> None: ...
 
 
@@ -347,6 +349,10 @@ class DefaultPartitionStrategy:
     granularity: Granularity = "independent"
     target_fill_ratio: float = DEFAULT_TARGET_FILL_RATIO
     recorder: PartitionRecorder | None = None
+    # Declared (mapper depends_on) task-level pairs (plan U10): repair_cycles never
+    # withdraws these. `None` means "no declared-edge information available" — the
+    # conservative default that reproduces pre-U10 behaviour (merge, never withdraw).
+    declared: frozenset[Pair] | None = None
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
     # Structured counterpart to the overshoot strings in ``flags`` (plan U9):
@@ -415,6 +421,7 @@ class DefaultPartitionStrategy:
             self.flags,
             recorder=self.recorder,
             degenerate=self.degenerate_repairs,
+            declared=self.declared,
         )
         stages.append(("repair", dict(partition)))
         self._record_stage("repair", partition)
@@ -1282,6 +1289,23 @@ class DegenerateRepair:
     overshoot_messages: tuple[str, ...]
 
 
+def _acyclic_after_excluding(
+    graph: TaskGraph, partition: Partition, component: list[int], exclude: set[Pair]
+) -> bool:
+    """Would ``component`` still be a group-level SCC if ``exclude`` (task-level
+    edges) were withdrawn from ``graph.dependencies``? Used to test a withdrawal
+    candidate before committing it (plan U10)."""
+    members = set(component)
+    edges: dict[int, set[int]] = defaultdict(set)
+    for up, down in graph.dependencies:
+        if (up, down) in exclude:
+            continue
+        gu, gd = partition[up], partition[down]
+        if gu != gd and gu in members and gd in members:
+            edges[gu].add(gd)
+    return not any(len(c) > 1 for c in _strongly_connected_components(edges, members))
+
+
 def repair_cycles(
     graph: TaskGraph,
     partition: Partition,
@@ -1290,21 +1314,35 @@ def repair_cycles(
     flags: list[str],
     recorder: PartitionRecorder | None = None,
     degenerate: list[DegenerateRepair] | None = None,
+    declared: frozenset[Pair] | None = None,
 ) -> Partition:
-    """SCC-merge, then a mandatory dependency-safe re-split (plan U5).
+    """Inferred-edge withdrawal first, then SCC-merge + a mandatory
+    dependency-safe re-split, as a last resort (plan U5/U10).
 
     A cycle surviving the U4 merge guard can only have originated earlier —
     at Louvain, lift or split — so it is repaired here rather than raised to
-    the caller. Merging every cyclic group-SCC's members into one supergroup
-    always yields an acyclic condensation (standard SCC theorem); the
-    wave-ordered re-split that follows (``_resplit_by_wave``) never
-    reintroduces a cycle. A chunk that still cannot fit under budget after
-    re-splitting is left over budget with an entry appended to ``flags``
-    naming it and the overshoot, rather than failing — these are greenfield
-    estimates, and a hard failure here would be unactionable. When ``degenerate``
-    is given, the same overshoot also lands there as a ``DegenerateRepair``
-    (plan U9) — a structured counterpart the caller can source edge-provenance
-    counts from without re-deriving the SCC.
+    the caller. For each cyclic group-SCC, every *inferred* task-level edge
+    crossing between its members is a candidate for withdrawal (banking its
+    weight as affinity — already true, since ``_EdgeAccumulator.add`` records
+    the same weight into both maps at build time, mirroring
+    ``graphing._drop_inferred_cycles`` at the task level). Withdrawing all of
+    them is tried as one step; if that alone makes the component acyclic, the
+    edges are withdrawn (mutating ``graph.dependencies`` in place so the
+    caller's later ``build_group_dag`` check sees the same graph) and no merge
+    happens for that component. **Declared edges are never candidates.**
+
+    Only when withdrawal alone cannot break the cycle — including when
+    ``declared`` is not supplied at all, the conservative default that
+    reproduces pre-U10 behaviour — does the component fall through to the old
+    path: merging every member into one supergroup always yields an acyclic
+    condensation (standard SCC theorem); the wave-ordered re-split that
+    follows (``_resplit_by_wave``) never reintroduces a cycle. A chunk that
+    still cannot fit under budget after re-splitting is left over budget with
+    an entry appended to ``flags`` naming it and the overshoot, rather than
+    failing — these are greenfield estimates, and a hard failure here would be
+    unactionable. When ``degenerate`` is given, the same overshoot also lands
+    there as a ``DegenerateRepair`` (plan U9) — a structured counterpart the
+    caller can source edge-provenance counts from without re-deriving the SCC.
     """
     group_edges = _group_edges(graph, partition)
     gids = set(partition.values())
@@ -1322,6 +1360,33 @@ def repair_cycles(
             and partition[down] in members
             and partition[up] != partition[down]
         )
+
+    still_cyclic: list[list[int]] = []
+    for component in cyclic:
+        evidence = evidence_edges(component)
+        inferred = [e for e in evidence if e not in declared] if declared is not None else []
+        withdrawable = set(inferred)
+        if withdrawable and _acyclic_after_excluding(graph, partition, component, withdrawable):
+            for key in sorted(withdrawable):
+                # graph.dependencies is a plain dict at runtime (Mapping is the
+                # public type); mutating it here is what makes the caller's
+                # later build_group_dag(graph, partition) see the withdrawal.
+                graph.dependencies.pop(key, None)
+            if recorder is not None:
+                recorder.record_repair(
+                    sorted(component),
+                    evidence,
+                    None,
+                    [],
+                    [],
+                    action="withdraw",
+                    withdrawn_edges=sorted(withdrawable),
+                )
+        else:
+            still_cyclic.append(component)
+    cyclic = still_cyclic
+    if not cyclic:
+        return partition
 
     merge_target = {gid: min(component) for component in cyclic for gid in component}
     merged_partition = {node: merge_target.get(gid, gid) for node, gid in partition.items()}
