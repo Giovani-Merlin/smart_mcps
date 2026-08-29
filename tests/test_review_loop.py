@@ -47,6 +47,8 @@ from orchestrator.model import (
     SessionRole,
     Surprise,
     VerificationItem,
+    VerificationResult,
+    unmet_required_verification,
 )
 
 
@@ -57,11 +59,16 @@ def coder_report(
     denied_command: str = "",
     denial_error: str = "",
     denial_source: str = "",
+    verification_results: list[dict] | None = None,
 ) -> str:
     body: dict = {
         "status": status,
         "summary": "round done",
-        "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
+        "verification_results": (
+            [{"item_id": "v1", "status": "pass", "notes": ""}]
+            if verification_results is None
+            else verification_results
+        ),
         "surprises": surprises or [],
     }
     if question:
@@ -1612,7 +1619,11 @@ async def test_ladder_70_percent_fires_once_and_not_again_below_90(tmp_path):
             ]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000),
+    )
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1632,7 +1643,11 @@ async def test_ladder_90_percent_sends_exactly_one_prioritised_conclusions_promp
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=181_000)]]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000),
+    )
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1650,7 +1665,11 @@ async def test_ladder_99_percent_is_not_interrupted_and_produces_a_normal_report
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=198_000)]]  # 99% of 200_000
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000),
+    )
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1667,7 +1686,11 @@ async def test_ladder_100_percent_sends_compact_report_prompt_and_ends_gracefull
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=201_000)]]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000),
+    )
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     # the round still ends by its own report being parsed — never killed mid-turn.
     assert state == GroupState.COMPLETED
@@ -1695,7 +1718,11 @@ async def test_ladder_thresholds_fire_at_most_once_per_round_even_with_many_turn
             ]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000))
+    harness = Harness(
+        tmp_path,
+        runner,
+        breaker=BreakerConfig(context_ladder_enabled=True, context_token_limit=200_000),
+    )
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
@@ -1843,3 +1870,125 @@ async def test_fork_base_session_launches_workers_off_the_base_session(tmp_path)
     coder_sid = runner.session_ids["r1-g1-coder-g1"]
     assert runner.prompts[coder_sid][0].startswith("<run-manifest")
     assert any("coder launching, forking base session" in line for line in run_log_lines(harness))
+
+
+class TestUnmetRequiredVerification:
+    """The pure half of the verification gate (run r20260829-162627 P1)."""
+
+    def _items(self):
+        return [
+            VerificationItem(id="v1", description="tests pass"),
+            VerificationItem(id="v2", description="docs updated", required=False),
+        ]
+
+    def test_all_required_items_passing_is_no_gap(self):
+        results = [VerificationResult(item_id="v1", status="pass")]
+        assert unmet_required_verification(self._items(), results) == []
+
+    def test_missing_required_item_is_named_with_its_description(self):
+        gaps = unmet_required_verification(self._items(), [])
+        assert len(gaps) == 1
+        assert "v1" in gaps[0] and "tests pass" in gaps[0]
+
+    def test_failed_required_item_is_a_gap_and_quotes_the_notes(self):
+        results = [VerificationResult(item_id="v1", status="fail", notes="split corrupts plans")]
+        gaps = unmet_required_verification(self._items(), results)
+        assert len(gaps) == 1
+        assert "fail" in gaps[0] and "split corrupts plans" in gaps[0]
+
+    def test_skipped_required_item_is_a_gap(self):
+        results = [VerificationResult(item_id="v1", status="skipped")]
+        assert len(unmet_required_verification(self._items(), results)) == 1
+
+    def test_optional_item_is_never_a_gap(self):
+        results = [
+            VerificationResult(item_id="v1", status="pass"),
+            VerificationResult(item_id="v2", status="fail"),
+        ]
+        assert unmet_required_verification(self._items(), results) == []
+
+    def test_result_for_an_undeclared_item_is_ignored(self):
+        results = [
+            VerificationResult(item_id="v1", status="pass"),
+            VerificationResult(item_id="v9", status="fail"),
+        ]
+        assert unmet_required_verification(self._items(), results) == []
+
+    def test_every_gap_is_reported_not_just_the_first(self):
+        items = [VerificationItem(id=f"v{n}", description=f"check {n}") for n in (1, 2, 3)]
+        assert len(unmet_required_verification(items, [])) == 3
+
+    def test_a_group_declaring_nothing_has_no_gaps(self):
+        assert unmet_required_verification([], []) == []
+
+
+@pytest.mark.asyncio
+async def test_self_verify_report_missing_verification_does_not_merge(tmp_path):
+    """The hole this gate closes: a self_verify group creates no reviewer, so
+    before it, `status: completed` alone carried a group to the merge no matter
+    what it claimed about its verification items."""
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [
+                coder_report(verification_results=[]),
+                coder_report(),  # second round reports properly → merges
+            ]
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]  # merged only after the gap was closed
+    roles = [s.role.value for s in harness.manifest.groups["g1"].sessions]
+    assert roles == ["coder"]  # still no reviewer — the gate is not a reviewer
+
+
+@pytest.mark.asyncio
+async def test_self_verify_report_failing_verification_never_merges(tmp_path):
+    failing = coder_report(
+        verification_results=[{"item_id": "v1", "status": "fail", "notes": "broken"}]
+    )
+    # Every round of every generation reports the same failing item: the group
+    # burns its rounds and generations and is retired without ever merging.
+    runner = StubRunner({f"r1-g1-coder-g{gen}": [failing] * 4 for gen in range(1, 5)})
+    harness = Harness(tmp_path, runner)
+    with pytest.raises(GroupFailure, match="generation cap"):
+        await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    assert harness.merged == []
+
+
+@pytest.mark.asyncio
+async def test_verification_gap_persists_a_verdict_naming_the_unmet_items(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report(verification_results=[]), coder_report()]})
+    harness = Harness(tmp_path, runner)
+    await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
+    verdicts = list(
+        (tmp_path / ".orchestrator" / "runs" / "r1" / "groups" / "g1").glob("verdict-*")
+    )
+    assert verdicts, "the gate should leave a verdict artifact explaining itself"
+    body = json.loads(verdicts[0].read_text())
+    assert body["status"] == "changes_required"
+    assert any("v1" in change for change in body["required_changes"])
+
+
+@pytest.mark.asyncio
+async def test_paired_group_with_a_verification_gap_never_reaches_the_reviewer(tmp_path):
+    """The gate runs before `_review_round`, so a report that has not met its
+    own contract does not spend a reviewer session."""
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report(verification_results=[]), coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group(intensity=ReviewIntensity.PAIRED))
+    assert state == GroupState.COMPLETED
+    # Only the second, complete report was worth a reviewer prompt.
+    reviewer_prompts = [
+        text
+        for prompts in runner.prompts.values()
+        for text in prompts
+        if "approved | changes_required" in text
+    ]
+    assert len(reviewer_prompts) == 1

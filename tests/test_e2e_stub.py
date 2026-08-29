@@ -112,12 +112,21 @@ def coder_entry(
     files: dict[str, str] | None = None,
     commit: str | None = None,
     question: str = "",
+    verification_ids: list[str] | None = None,
     **extra,
 ) -> dict:
+    # A `completed` report must carry a passing result for every *required*
+    # verification item its group declares, or the verification gate turns the
+    # round into `changes_required` before any reviewer or merge. Groups built
+    # by `make_group` declare none, so the default satisfies them; a group
+    # whose spec came from the rewrite speccer declares `<gid>-v1`, and those
+    # call sites pass it explicitly.
     body: dict = {
         "status": status,
         "summary": "scripted round",
-        "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
+        "verification_results": [
+            {"item_id": vid, "status": "pass", "notes": ""} for vid in (verification_ids or ["v1"])
+        ],
         "surprises": surprises or [],
     }
     if question:
@@ -386,7 +395,9 @@ def test_surprise_rewrites_dependent_group_before_launch(repo, fake_home):
     script_session(
         fake_home,
         name_of(run_id, "g2", "coder"),
-        coder_entry(files={"g2.txt": "two\n"}, commit="g2: work"),
+        # g2's spec was rewritten by the surprise before launch, so its
+        # verification items are the speccer's, not make_group's (none).
+        coder_entry(files={"g2.txt": "two\n"}, commit="g2: work", verification_ids=["g2-v1"]),
     )
     script_session(fake_home, name_of(run_id, "g2", "reviewer"), verdict_entry("approved"))
 
@@ -450,6 +461,7 @@ def test_merge_conflict_routes_group_through_rewrite_to_completion(repo, fake_ho
         coder_entry(
             files={"conflict.txt": "g1 version\n", "g2.out": "g2 done\n"},
             commit="g2: align with integration",
+            verification_ids=["g2-v1"],  # generation 2 runs the rewritten spec
         ),
     )
     script_session(
