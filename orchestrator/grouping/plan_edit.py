@@ -311,9 +311,20 @@ def split_plan(plan_text: str, groups: Sequence[Sequence[str]]) -> list[SplitDoc
             + ", ".join(sorted(conflicts))
         )
 
-    head, unit_texts, unit_order, _tail = split_units(plan_text)
-    span = task_map_block_span(plan_text)
-    assert span is not None  # task_doc is not None, so the block exists
+    head, unit_texts, unit_order, tail = split_units(plan_text)
+    map_span = task_map_block_span(plan_text)
+    assert map_span is not None  # task_doc is not None, so the block exists
+
+    # Both edits are span replacements into the *whole* plan text, never a
+    # reassembly of pieces: that keeps whatever separates the two regions —
+    # the newline after the task map's closing fence above all — exactly where
+    # the author put it, and carries the tail (`## Task Map` and every section
+    # after `## Units`, in this repo's plan layout) through untouched.
+    units_span = (len(head), len(plan_text) - len(tail))
+    if map_span[0] < units_span[1] and units_span[0] < map_span[1]:
+        raise PlanEditError(
+            "task-map block overlaps the '## Units' section — cannot split verbatim"
+        )
 
     documents: list[SplitDocument] = []
     for index in range(len(groups)):
@@ -324,10 +335,18 @@ def split_plan(plan_text: str, groups: Sequence[Sequence[str]]) -> list[SplitDoc
         }
         ordered_unit_ids = [u for u in unit_order if u in doc_unit_keys]
         units_text = "".join(unit_texts[u] for u in ordered_unit_ids)
-        new_head = head[: span[0]] + map_block + head[span[1] :]
+
+        # Apply the later span first so the earlier one's offsets stay valid,
+        # whichever order the plan puts the task map and `## Units` in.
+        text = plan_text
+        for start, end, replacement in sorted(
+            ((*map_span, map_block), (*units_span, units_text)), reverse=True
+        ):
+            text = text[:start] + replacement + text[end:]
+
         documents.append(
             SplitDocument(
-                text=new_head + units_text,
+                text=text,
                 task_ids=tuple(ordered_task_ids),
                 unit_ids=tuple(ordered_unit_ids),
             )

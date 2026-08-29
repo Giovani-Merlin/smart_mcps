@@ -5,6 +5,7 @@ splitting via verbatim plan surgery (plan U2).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,82 @@ from orchestrator.grouping.plan_edit import (
     extract_task_map_entries,
     split_plan,
     split_units,
+    validate_plan,
 )
 
+# The real layout every plan in this repo uses: `## Units` first, the task
+# map after it, and further sections after that. `PLAN_MAP_FIRST` covers the
+# opposite ordering, which `split_plan` must handle just as well.
 PLAN_TEXT = """---
+title: sample plan
+type: feat
+date: 2026-08-29
+---
+
+# feat: sample plan
+
+Some preamble prose.
+
+## Units
+
+### U1. Scaffold
+
+- **Summary**: Create the FastAPI scaffold.
+- **Verification**:
+  - The app boots.
+
+### U2. Users API
+
+- **Summary**: Users CRUD routes on the scaffold.
+- **Verification**:
+  - `/api/users` returns 200.
+
+### U3. Orders API
+
+- **Summary**: Orders CRUD routes on the scaffold.
+- **Verification**:
+  - `/api/orders` returns 200.
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-scaffold
+    description: Create the scaffold
+    slice: null
+    files:
+      - app/main.py
+    symbols: []
+    depends_on: []
+    implements: []
+    consumes: []
+  - task_id: u2-users-api
+    description: Users CRUD routes
+    slice: users
+    files:
+      - app/routes/users.py
+    symbols: []
+    depends_on: [u1-scaffold]
+    implements: ["/api/users"]
+    consumes: []
+  - task_id: u3-orders-api
+    description: Orders CRUD routes
+    slice: orders
+    files:
+      - app/routes/orders.py
+    symbols: []
+    depends_on: []
+    implements: ["/api/orders"]
+    consumes: []
+```
+
+## Requirement coverage
+
+Every trailing section after `## Units` must survive a split.
+"""
+
+PLAN_MAP_FIRST = """---
 title: sample plan
 type: feat
 date: 2026-08-29
@@ -464,3 +538,46 @@ class TestSplitCli:
             price_exit = main(["group", str(tmp_path / part), "--price", "--repo", str(tmp_path)])
             out = capsys.readouterr().out
             assert price_exit == 0, out
+
+
+class TestSplitPreservesDocumentStructure:
+    """Regression cover for the two defects that shipped in run
+    r20260829-162627: `split` glued the task map's closing fence onto the first
+    unit heading (losing that unit and leaving the fence open), and dropped
+    everything after `## Units` outright. Both were invisible to the original
+    suite because its fixture put the task map *before* the units section —
+    the opposite of every real plan in this repo.
+    """
+
+    def _split(self, plan_text):
+        return split_plan(plan_text, [["u1-scaffold", "u2-users-api"], ["u3-orders-api"]])
+
+    def test_first_unit_heading_starts_its_own_line(self):
+        for doc in self._split(PLAN_TEXT):
+            assert "```###" not in doc.text
+            for unit_id in doc.unit_ids:
+                number = unit_id[1:]
+                assert re.search(rf"^### U{number}\.", doc.text, re.MULTILINE), doc.text
+
+    def test_task_map_fence_stays_balanced(self):
+        for doc in self._split(PLAN_TEXT):
+            assert doc.text.count("```") % 2 == 0, doc.text
+
+    def test_sections_after_units_survive_in_every_document(self):
+        for doc in self._split(PLAN_TEXT):
+            assert "## Requirement coverage" in doc.text
+            assert "Every trailing section after" in doc.text
+
+    def test_every_document_parses_as_a_plan(self):
+        for doc in self._split(PLAN_TEXT):
+            assert validate_plan(doc.text) == []
+
+    def test_map_first_layout_splits_correctly_too(self):
+        for doc in self._split(PLAN_MAP_FIRST):
+            assert "```###" not in doc.text
+            assert validate_plan(doc.text) == []
+
+    def test_text_outside_the_two_edited_spans_is_untouched(self):
+        for doc in self._split(PLAN_TEXT):
+            assert doc.text.startswith("---\ntitle: sample plan\n")
+            assert "Some preamble prose." in doc.text
