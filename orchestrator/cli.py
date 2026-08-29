@@ -140,6 +140,7 @@ from orchestrator.grouping.pipeline import (
     serialize_edge_provenance,
     serialize_grouping,
 )
+from orchestrator.grouping.plan_edit import PlanEditError, validate_plan, verify_map_unchanged
 from orchestrator.grouping.plan_reader import TaskMapError, strip_task_map
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
@@ -312,6 +313,22 @@ def main(
     groupings_cmd = subparsers.add_parser("groupings", help="list named groupings")
     groupings_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    plan_check_cmd = subparsers.add_parser(
+        "plan-check",
+        help="validate a plan's task-map/unit-section consistency, or diff two plans' maps",
+    )
+    plan_check_cmd.add_argument("plan", type=Path, help="path to the plan document")
+    plan_check_cmd.add_argument(
+        "--against",
+        type=Path,
+        default=None,
+        help=(
+            "compare this plan's task-map entries and unit ids against another plan "
+            "document, byte-for-byte on surviving entries; exits non-zero on any drift"
+        ),
+    )
+    plan_check_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
     status_cmd = subparsers.add_parser("status", help="show run state and sessions")
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
     status_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
@@ -392,6 +409,8 @@ def main(
         return _cmd_run(args, llm_runner, client, resume=True)
     if args.command == "groupings":
         return _cmd_groupings(args)
+    if args.command == "plan-check":
+        return _cmd_plan_check(args)
     if args.command == "status":
         return _cmd_status(args)
     if args.command == "answer":
@@ -1181,6 +1200,48 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
     for info in infos:
         print(f"{info.name}: {info.plan_path} ({info.group_count} group(s))")
     return 0
+
+
+def _cmd_plan_check(args: argparse.Namespace) -> int:
+    """Structural-only plan validation (or a two-document map diff), zero LLM
+    and zero codegraph — see ``orchestrator/grouping/plan_edit.py``."""
+    repo_root = args.repo.resolve()
+    plan_path = _anchor_plan_path(args.plan, repo_root)
+    if not plan_path.is_file():
+        print(f"error: plan not found: {plan_path}", file=sys.stderr)
+        return 1
+    plan_text = plan_path.read_text()
+
+    against = getattr(args, "against", None)
+    if against is not None:
+        against_path = _anchor_plan_path(against, repo_root)
+        if not against_path.is_file():
+            print(f"error: plan not found: {against_path}", file=sys.stderr)
+            return 1
+        diffs = verify_map_unchanged(plan_text, against_path.read_text())
+        if not diffs:
+            print(
+                f"plan-check: {plan_path} and {against_path} agree on surviving "
+                "map entries and unit ids"
+            )
+            return 0
+        print(f"plan-check: {len(diffs)} difference(s) between {plan_path} and {against_path}:")
+        for diff in diffs:
+            print(f"  - {diff}")
+        return 1
+
+    try:
+        problems = validate_plan(plan_text)
+    except PlanEditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not problems:
+        print(f"plan-check: {plan_path} is internally consistent")
+        return 0
+    print(f"plan-check: {len(problems)} problem(s) in {plan_path}:")
+    for problem in problems:
+        print(f"  - {problem}")
+    return 1
 
 
 # ----------------------------------------------------------------- run/resume
