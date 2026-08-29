@@ -166,6 +166,31 @@ map (foreign plans, hand-written plans) keep working unchanged. Present block �
 the mapper LLM is skipped and `groups.json` records the flag
 `task map: parsed from plan — mapper LLM skipped`.
 
+## Mechanical split
+
+`smart-mcps-orchestrate split` (plan U2, see
+[`docs/orchestrator-grouping.md`](orchestrator-grouping.md)) partitions a plan
+into N documents by moving unit sections and task-map entries **verbatim**
+between them, through
+[`orchestrator/grouping/plan_edit.py`](../orchestrator/grouping/plan_edit.py).
+A split preserves, byte-for-byte, on every task id and unit that survives into
+an output document:
+
+- every field of the task-map entry (`description`, `slice`, `files`,
+  `size_hints`, `symbols`, `depends_on`, `implements`, `consumes`) — the
+  entry's bytes are copied, not re-serialized;
+- the entry's relative order within its output document;
+- the matching `### U<N>.` unit section's full text, including every bullet
+  this document describes and any enrichment `/orchestrator-deepen` added.
+
+**No map field is ever rewritten by a split.** A unit whose task ids would
+land in more than one output document is refused outright — the unit's
+heading has nowhere single to go — rather than silently duplicated or
+truncated. `plan-check --against` (same module) is the byte-level guard that
+verifies this after any programmatic edit, split or otherwise: it reports
+every task-map entry or unit id that was added, removed, or had a field
+change value between two plan documents.
+
 ## Versioning
 
 The marker line pins the contract version. Additive evolution bumps the minor
