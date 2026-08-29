@@ -1,5 +1,7 @@
 """Tests for the deterministic plan-section parser (plan U1)."""
 
+from orchestrator.grouping.assembler import AssemblyInputs, assemble_group_specs
+from orchestrator.grouping.graphing import TaskGraph
 from orchestrator.grouping.plan_sections import (
     PlanSectionsError,
     parse_plan_sections,
@@ -122,6 +124,64 @@ PLAN_NO_UNITS_HEADING = """# feat: legacy plan
 - T1: extend the proxy server tool list
 """
 
+_U1_BASE = """### U1. plan-sections — deterministic plan parsing
+
+- **Goal**: A parser that splits things.
+- **Summary**: Parses the plan into sections.
+- **Files**: `orchestrator/grouping/plan_sections.py` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: implements `plan-sections`
+- **Verification**:
+  - Parsing this plan document itself yields one section per task-map entry.
+  - A plan whose unit heading is missing raises one error.
+"""
+
+_U1_ENRICHED = """### U1. plan-sections — deterministic plan parsing
+
+- **Goal**: A parser that splits things.
+- **Summary**: Parses the plan into sections.
+- **Files**: `orchestrator/grouping/plan_sections.py` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: implements `plan-sections`
+- **Verification**:
+  - Parsing this plan document itself yields one section per task-map entry.
+  - A plan whose unit heading is missing raises one error.
+- **Edge cases**: an empty plan yields zero unit sections, not an error.
+- **Non-goals / must-not**: must not regenerate any unit's prose.
+"""
+
+PLAN_WITH_TASK_MAP_ENRICHED = PLAN_WITH_TASK_MAP.replace(_U1_BASE, _U1_ENRICHED)
+assert PLAN_WITH_TASK_MAP_ENRICHED != PLAN_WITH_TASK_MAP
+
+PLAN_RUN_PASS = """# feat: toy plan
+
+## Units
+
+### U1. plan-sections — deterministic plan parsing
+
+- **Goal**: A parser that splits things.
+- **Summary**: Parses the plan into sections.
+- **Files**: `orchestrator/grouping/plan_sections.py` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: implements `plan-sections`
+- **Verification**:
+  - Run: `uv run pytest tests/test_plan_sections.py`
+    Pass: exits 0 with no failures.
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-plan-sections
+    description: parser
+    files: [orchestrator/grouping/plan_sections.py]
+```
+"""
+
 
 class TestParsePlanSections:
     def test_one_section_per_task_map_entry_verbatim(self):
@@ -217,3 +277,81 @@ class TestSectionForTask:
     def test_non_unit_task_id_returns_none(self):
         sections = parse_plan_sections(PLAN_WITH_TASK_MAP)
         assert section_for_task(sections.units, "t1-scaffold") is None
+
+
+class TestDeepenEnrichmentBullets:
+    """Plan g3-1/g3-2: `Edge cases` / `Non-goals` / `Run:`+`Pass:` bullets are
+    unknown labels to `_split_bullets` — they must parse harmlessly, leave
+    every known field untouched, and never leak into the shared digest."""
+
+    def test_known_fields_unchanged_by_new_bullets(self):
+        base = parse_plan_sections(PLAN_WITH_TASK_MAP).units["u1"]
+        enriched = parse_plan_sections(PLAN_WITH_TASK_MAP_ENRICHED).units["u1"]
+        assert enriched.summary == base.summary
+        assert enriched.summary_is_fallback == base.summary_is_fallback
+        assert enriched.verification == base.verification
+        assert enriched.implements == base.implements
+        assert enriched.consumes == base.consumes
+        assert enriched.text != base.text
+
+    def test_digest_carries_only_tagged_summary_no_edge_case_text(self):
+        sections = parse_plan_sections(PLAN_WITH_TASK_MAP_ENRICHED)
+        assert "an empty plan yields zero unit sections" not in sections.digest
+        assert "must not regenerate any unit's prose" not in sections.digest
+
+    def test_new_bullets_appear_verbatim_in_assembled_group_spec(self):
+        sections = parse_plan_sections(PLAN_WITH_TASK_MAP_ENRICHED)
+        graph = TaskGraph(
+            nodes=frozenset({"u1-plan-sections", "u2-spec-assembly"}),
+            dependencies={("u1-plan-sections", "u2-spec-assembly"): 1.0},
+            metadata={},
+        )
+        inputs = AssemblyInputs(
+            plan_sections=sections,
+            graph=graph,
+            partition={"u1-plan-sections": 0, "u2-spec-assembly": 0},
+            dag={},
+            members_by_gid={0: ["u1-plan-sections", "u2-spec-assembly"]},
+            descriptions={},
+            group_label=lambda gid: f"g{gid + 1}",
+        )
+        specs = assemble_group_specs(inputs)
+        assert "an empty plan yields zero unit sections, not an error." in specs["g1"].spec
+        assert "must not regenerate any unit's prose." in specs["g1"].spec
+
+
+class TestRunPassVerificationBullet:
+    """Plan g3-3: a `Run:`/`Pass:` verification bullet becomes exactly one
+    `VerificationItem` whose description carries both lines, and the coverage
+    lint still maps it to exactly one group."""
+
+    def test_run_pass_bullet_is_one_verification_item_with_both_lines(self):
+        sections = parse_plan_sections(PLAN_RUN_PASS)
+        u1 = sections.units["u1"]
+        assert len(u1.verification) == 1
+        assert "Run:" in u1.verification[0]
+        assert "Pass:" in u1.verification[0]
+        assert "uv run pytest tests/test_plan_sections.py" in u1.verification[0]
+        assert "exits 0 with no failures." in u1.verification[0]
+
+    def test_coverage_lint_maps_it_to_exactly_one_group(self):
+        sections = parse_plan_sections(PLAN_RUN_PASS)
+        graph = TaskGraph(
+            nodes=frozenset({"u1-plan-sections"}),
+            dependencies={},
+            metadata={},
+        )
+        inputs = AssemblyInputs(
+            plan_sections=sections,
+            graph=graph,
+            partition={"u1-plan-sections": 0},
+            dag={},
+            members_by_gid={0: ["u1-plan-sections"]},
+            descriptions={},
+            group_label=lambda gid: f"g{gid + 1}",
+        )
+        specs = assemble_group_specs(inputs)
+        all_items = [item for spec in specs.values() for item in spec.verification]
+        assert len(all_items) == 1
+        assert "Run:" in all_items[0].description
+        assert "Pass:" in all_items[0].description
