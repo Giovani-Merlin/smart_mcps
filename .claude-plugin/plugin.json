@@ -1,5 +1,5 @@
 {
   "name": "smart-mcps",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Session hooks + CLI skills for codegraph, NotebookLM, and Perplexity"
 }
