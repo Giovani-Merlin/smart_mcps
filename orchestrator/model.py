@@ -190,6 +190,36 @@ class VerificationResult(BaseModel):
     notes: str = ""
 
 
+def unmet_required_verification(
+    items: list["VerificationItem"], results: list[VerificationResult]
+) -> list[str]:
+    """Required verification items a ``completed`` coder report does not carry a
+    passing result for — missing entirely, or reported ``fail``/``skipped``.
+
+    Until this existed the field was write-only: coders filled
+    ``verification_results`` and nothing ever read it, so a ``self_verify``
+    group (which creates no reviewer at all) merged on the single ``status``
+    field the coder sets about itself. Run r20260829-162627 shipped a broken
+    ``orchestrate split`` that way, with all seven items self-reported ``pass``.
+
+    Pure data — no LLM call, no I/O. Optional items are ignored; a result for
+    an item the group never declared is ignored too, since only the declared
+    contract is being gated.
+    """
+    reported = {result.item_id: result for result in results}
+    gaps: list[str] = []
+    for item in items:
+        if not item.required:
+            continue
+        result = reported.get(item.id)
+        if result is None:
+            gaps.append(f"[{item.id}] no verification result reported: {item.description}")
+        elif result.status != "pass":
+            detail = f" — {result.notes}" if result.notes else ""
+            gaps.append(f"[{item.id}] reported {result.status}: {item.description}{detail}")
+    return gaps
+
+
 #: Cap on the verbatim error a coder may quote in `denial_error`. Generous enough
 #: for a stack trace or a build tail, small enough that a runaway log cannot bloat
 #: every report artifact on disk.

@@ -208,6 +208,16 @@ class TestRealPlanCrossCheck:
                 str(repo),
                 "--no-spec",
                 "--allow-unknown-symbols",
+                # This test prices the *live* working-tree bytes of the files
+                # the 2026-08-26 plan happens to name, so a slice sits within a
+                # few hundred work units of the cap and any ordinary commit that
+                # grows one of those files (adding ~30 lines to model.py did it)
+                # fails the partition on R5 — a signal about repo size, not about
+                # the thing under test. What is under test is that `--price` and
+                # `grouping-trace.json` agree on node work for the same map, and
+                # that comparison needs a complete trace, not a partition that
+                # fits a budget.
+                "--allow-oversized-slice",
             ],
             client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
         )

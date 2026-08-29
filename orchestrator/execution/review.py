@@ -99,6 +99,7 @@ from orchestrator.model import (
     SessionRole,
     Surprise,
     SurpriseResidueEntry,
+    unmet_required_verification,
 )
 
 
@@ -439,9 +440,7 @@ class _GroupExecution:
             # returned, so a group killed mid-launch left a log that never
             # mentioned it had started, and a live run showed a silent gap with no
             # indication anything was happening.
-            launch = (
-                "forking base session" if self.deps.fork_base_session else "fresh session"
-            )
+            launch = "forking base session" if self.deps.fork_base_session else "fresh session"
             self._log(
                 f"group {self.gid} generation {self.generation}: "
                 f"coder launching, {launch} (session {self.coder_sid})"
@@ -539,7 +538,34 @@ class _GroupExecution:
                 await self._on_coder_stuck(report, report_path)
                 return False
 
-            verdict, verdict_path = await self._review_round(report_path, rounds)
+            # The verification gate (run r20260829-162627 P1): a `completed`
+            # report that does not carry a passing result for every *required*
+            # item never reaches a reviewer, and never reaches the merge. It
+            # becomes an ordinary `changes_required` round instead — same
+            # breaker, same handoff, same revision prompt — so the coder gets
+            # told exactly which items it left unmet. This is the only thing
+            # standing between a self_verify group and an unchecked merge:
+            # `_review_round` creates no reviewer for that tier, so without it
+            # the coder's own `status` field is the entire gate.
+            gaps = unmet_required_verification(self.group.verification, report.verification_results)
+            if gaps:
+                verdict = ReviewerVerdict(
+                    status="changes_required",
+                    required_changes=gaps,
+                    notes=(
+                        "verification gate: the report claims completed but does not "
+                        "report a passing result for every required verification item"
+                    ),
+                )
+                verdict_path = self.deps.store.save_group_artifact(
+                    self.gid, artifact_name("verdict", self.generation, rounds), verdict
+                )
+                self._log(
+                    f"{self._round_tag(rounds)}: verification gate held "
+                    f"({len(gaps)} required item(s) unmet)"
+                )
+            else:
+                verdict, verdict_path = await self._review_round(report_path, rounds)
             if verdict is None or verdict.status == "approved":
                 outcome = "self-verified" if verdict is None else "approved"
                 self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
