@@ -14,3 +14,5 @@ node_modules/
 docs/research/perplexity/
 docs/research/manual/
 research/** */
+# Codegraph index + daemon state (local to each machine)
+.codegraph/
