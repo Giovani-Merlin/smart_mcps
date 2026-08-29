@@ -22,6 +22,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -299,7 +300,13 @@ class ReviewDeps:
     runner: SessionRunner
     store: ManifestStore
     manifest: RunManifest
-    base_session_id: str
+    # The run's compiled base context, prepended to every worker's first prompt
+    # (ADR 0007). ``base_session_id`` is the legacy fork path's parent session
+    # and is ``None`` unless ``fork_base_session`` is on — with no fork there is
+    # no base session to have an id.
+    base_context: str
+    base_session_id: str | None
+    fork_base_session: bool
     breaker: BreakerConfig
     execution: ExecutionConfig
     board: SurpriseBoard
@@ -432,9 +439,12 @@ class _GroupExecution:
             # returned, so a group killed mid-launch left a log that never
             # mentioned it had started, and a live run showed a silent gap with no
             # indication anything was happening.
+            launch = (
+                "forking base session" if self.deps.fork_base_session else "fresh session"
+            )
             self._log(
                 f"group {self.gid} generation {self.generation}: "
-                f"coder launching, forking base session (session {self.coder_sid})"
+                f"coder launching, {launch} (session {self.coder_sid})"
             )
             # `round N: started` logged and marked *before* the fork call, not
             # after — matching `_reenter`'s pattern. `start_fork` is itself round
@@ -444,11 +454,12 @@ class _GroupExecution:
             # round at all.
             self._log(f"{self._round_tag(rounds + 1)}: started")
             self._heartbeat.mark_round(self.generation, rounds + 1)
-            self._heartbeat.mark_phase("forking the base session")
+            self._heartbeat.mark_phase(
+                "forking the base session" if self.deps.fork_base_session else "starting the coder"
+            )
             self._watch_transcript(self.coder_entry)
             first = await asyncio.to_thread(
-                self.deps.runner.start_fork,
-                base_id=self.deps.base_session_id,
+                self._launch_call(),
                 prompt=prompt,
                 name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                 cwd=self.workspace,
@@ -653,6 +664,19 @@ class _GroupExecution:
         self._log(f"group {self.gid} re-entry: resumed session {entry.session_id}")
         return result
 
+    def _launch_call(self) -> Callable[..., RoundResult]:
+        """How a *first* round is launched, with its parent context bound.
+
+        The two launch sites (coder and reviewer) call this rather than
+        duplicating the branch: a fresh session primed with the run's base
+        context (the default), or the legacy fork of the run's base session
+        (ADR 0007). Both take the same ``prompt``/``name``/``cwd`` keywords
+        from there on.
+        """
+        if self.deps.fork_base_session:
+            return partial(self.deps.runner.start_fork, base_id=self.deps.base_session_id)
+        return partial(self.deps.runner.start_worker, base_context=self.deps.base_context)
+
     def _reentry_fallback(self, entry: SessionEntry, reason: str) -> None:
         """Retire the unreachable session and log the fork decision; the caller
         falls through to the fresh-fork path (existing handoff-free coder prompt)."""
@@ -815,8 +839,7 @@ class _GroupExecution:
         self._heartbeat.mark_phase("reviewer verifying the report")  # F4
         if self.reviewer_sid is None:
             first = await asyncio.to_thread(
-                self.deps.runner.start_fork,
-                base_id=self.deps.base_session_id,
+                self._launch_call(),
                 prompt=render_reviewer_prompt(
                     self.deps.run_id,
                     self.group,

@@ -228,7 +228,7 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
     # AE6: the manifest joins every session to a transcript the stub produced,
     # with names and summaries present
     manifest = manifest_of(repo, run_id)
-    assert manifest["base_session_id"]
+    assert manifest["base_session_id"] is None  # ADR 0007: no base session at all
     assert set(manifest["groups"]) == set(gids)
     for gid in gids:
         entry = manifest["groups"][gid]
@@ -241,19 +241,26 @@ def test_full_run_happy_path_with_warm_rejection(repo, fake_home, capsys):
             assert Path(session["transcript_path"]).is_file()
         assert all(session["retirement_reason"] is None for session in entry["sessions"])
 
-    # identity-block contract: every worker fork's first prompt opens with the
-    # <run-manifest> block (never an injected-looking prefix), and workers ran in
-    # worktrees whose paths keep the repo dir name as a substring
-    forks = [call for call in calls_of(fake_home) if "--fork-session" in call["argv"]]
-    assert len(forks) == 2 * len(gids)
-    for call in forks:
-        assert call["prompt"].startswith(f'<run-manifest run_id="{run_id}"')
+    # ADR 0007: nothing forks. Every worker is a fresh session whose first
+    # prompt carries the base context itself, followed by the <run-manifest>
+    # identity block (never an injected-looking prefix), and workers ran in
+    # worktrees whose paths keep the repo dir name as a substring.
+    assert not [call for call in calls_of(fake_home) if "--fork-session" in call["argv"]]
+    launches = [
+        call
+        for call in calls_of(fake_home)
+        if "--session-id" in call["argv"] and "--resume" not in call["argv"]
+    ]
+    assert len(launches) == 2 * len(gids)
+    base_context = (repo / ".orchestrator" / "runs" / run_id / "base-context.md").read_text()
+    for call in launches:
+        assert call["prompt"].startswith("# Base context")
+        assert base_context in call["prompt"]
+        assert f'<run-manifest run_id="{run_id}"' in call["prompt"]
         assert REPO_DIR_NAME in call["cwd"] and ".worktrees" in call["cwd"]
 
-    # the base session was created once, from the repo root, named <run_id>-base
-    base_calls = named_calls(fake_home, f"{run_id}-base")
-    assert len(base_calls) == 1
-    assert "--fork-session" not in base_calls[0]["argv"]
+    # and no base session was ever spawned
+    assert named_calls(fake_home, f"{run_id}-base") == []
 
     # one --no-ff merge commit per group on the integration branch; clean group
     # worktrees were removed after merging
@@ -524,7 +531,7 @@ def test_reject_forever_fails_group_and_strands_dependent(repo, fake_home, capsy
     assert named_calls(fake_home, name_of(run_id, "g2", "coder")) == []
 
 
-def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_home):
+def test_resume_completes_interrupted_run_with_no_base_session(repo, fake_home):
     run_id = "r6"
     groups = [
         make_group("g1", intensity=ReviewIntensity.SELF_VERIFY),
@@ -566,11 +573,10 @@ def test_resume_completes_interrupted_run_without_new_base_session(repo, fake_ho
     # stale failure line for a group recorded as completed.
     assert state["groups"]["g2"].get("failure") is None
 
-    # the resumed run reused the original base session instead of starting one
-    base_calls = named_calls(fake_home, f"{run_id}-base")
-    assert len(base_calls) == 1
+    # neither the run nor the resume ever spawned a base session (ADR 0007)
+    assert named_calls(fake_home, f"{run_id}-base") == []
     manifest = manifest_of(repo, run_id)
-    assert manifest["base_session_id"]
+    assert manifest["base_session_id"] is None
     log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
     assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
 
@@ -929,3 +935,62 @@ def test_no_auto_resume_keeps_todays_stop_and_resume_behaviour(repo, fake_home):
     # And the choice is persisted, so a bare `resume` does not silently regain
     # auto-resume — the trap `--intensity` already fell into.
     assert manifest_of(repo, run_id)["usage_limit"]["auto_resume"] is False
+
+
+# ------------------------------------------------------- fork mode (ADR 0007)
+
+
+def test_fork_base_restores_the_forked_launch_shape(repo, fake_home):
+    """The legacy path is kept, not deleted: `--fork-base` must still spawn one
+    base session and fork every worker off it (ADR 0007). The day a Claude Code
+    release stops keying the prompt-cache prefix on cwd, flipping the flag is
+    the whole change — so it has to keep working."""
+    write_config(repo, fake_home)
+    exit_code = main(
+        ["group", str(repo / "plan.md"), "--repo", str(repo)],
+        llm_runner=StubLlm(),
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert exit_code == 0
+    grouping = json.loads(
+        (repo / ".orchestrator" / "groupings" / "plan" / "groups.json").read_text()
+    )
+    gids = [group["id"] for group in grouping["groups"]]
+
+    run_id = "r-fork"
+    for gid in gids:
+        script_session(
+            fake_home,
+            name_of(run_id, gid, "coder"),
+            coder_entry(files={f"{gid}.out": f"work of {gid}\n"}, commit=f"{gid}: scripted work"),
+        )
+        script_session(fake_home, name_of(run_id, gid, "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--review-intensity",
+            "paired",
+            "--fork-base",
+        ],
+        llm_runner=StubLlm(),
+        client=CodegraphClient(repo_root=repo, runner=codegraph_response),
+    )
+    assert exit_code == 0
+
+    # one base session, from the repo root, not itself a fork
+    base_calls = named_calls(fake_home, f"{run_id}-base")
+    assert len(base_calls) == 1
+    assert "--fork-session" not in base_calls[0]["argv"]
+    assert manifest_of(repo, run_id)["base_session_id"]
+
+    # and one fork per worker, whose prompt is the worker prompt alone — the
+    # base context is inherited from the parent session, not prepended
+    forks = [call for call in calls_of(fake_home) if "--fork-session" in call["argv"]]
+    assert len(forks) == 2 * len(gids)
+    for call in forks:
+        assert call["prompt"].startswith(f'<run-manifest run_id="{run_id}"')

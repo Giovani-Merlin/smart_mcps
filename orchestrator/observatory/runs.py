@@ -608,10 +608,12 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
     ordering += sorted(extra - set(ordering))
 
     pending_by_bucket = _pending_surprises_by_group(paths, state)
-    # Every group's first generation is a fork of this one session, so it is
-    # attached to each group's own attempt history too, at generation 1 —
-    # ahead of that group's first coder, the same relationship a rewrite has to
-    # the generation it produces (plan U30).
+    # When the run forked a base session, every group's first generation came
+    # out of it, so it is attached to each group's own attempt history at
+    # generation 1 — ahead of that group's first coder, the same relationship a
+    # rewrite has to the generation it produces (plan U30). A run whose workers
+    # started fresh (ADR 0007, the default) has no base session and simply has
+    # no such row; `_base_session` already returns None for that.
     base_row = _base_session(paths.run_id, manifest, generation=1)
     groups: list[SnapshotGroup] = []
     for gid in ordering:

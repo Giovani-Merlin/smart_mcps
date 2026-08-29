@@ -113,10 +113,40 @@ class StubRunner:
         # call, in order — what a context-ladder prompt actually looked like.
         self.sent: dict[str, list[str]] = {}
         self.disallowed: list[str] = []
+        # name -> the base context text a fresh worker was primed with,
+        # and (legacy path) name -> the base session it forked from.
+        self.base_contexts: dict[str, str] = {}
+        self.fork_parents: dict[str, str] = {}
+
+    def start_worker(
+        self,
+        *,
+        base_context,
+        prompt,
+        name,
+        cwd,
+        session_id=None,
+        json_schema=None,
+        on_turn=None,
+    ) -> RoundResult:
+        """The default launch path (ADR 0007): a fresh session whose first
+        prompt already carries the base context."""
+        self.base_contexts[name] = base_context
+        return self._launch(
+            f"{base_context}\n\n{prompt}" if base_context else prompt,
+            name,
+            session_id,
+            on_turn,
+        )
 
     def start_fork(
         self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
     ) -> RoundResult:
+        """The legacy launch path, reached only under fork_base_session."""
+        self.fork_parents[name] = base_id
+        return self._launch(prompt, name, session_id, on_turn)
+
+    def _launch(self, prompt, name, session_id, on_turn) -> RoundResult:
         self._counter += 1
         session_id = session_id or f"sess-{self._counter}"
         self.forks.append(name)
@@ -207,6 +237,9 @@ def abort() -> EscalationResponse:
     return EscalationResponse(id="x", action=HumanAction.ABORT)
 
 
+BASE_CONTEXT = "SHARED BASE CONTEXT for the run"
+
+
 class Harness:
     """Deps + context wiring shared by every scenario."""
 
@@ -219,10 +252,15 @@ class Harness:
         execution=None,
         broker: StubBroker | None = None,
         policy: EscalationPolicy | None = None,
+        fork_base_session: bool = False,
     ):
         self.runner = runner
         self.store = ManifestStore(RunPaths(tmp_path, "r1"))
-        self.manifest = RunManifest(run_id="r1", plan_path="p.md", base_session_id="base-0")
+        self.manifest = RunManifest(
+            run_id="r1",
+            plan_path="p.md",
+            base_session_id="base-0" if fork_base_session else None,
+        )
         self.board = SurpriseBoard()
         self.merged: list[str] = []
         self.rewritten: list[list[Surprise]] = []
@@ -246,7 +284,9 @@ class Harness:
             runner=runner,
             store=self.store,
             manifest=self.manifest,
-            base_session_id="base-0",
+            base_context=BASE_CONTEXT,
+            base_session_id="base-0" if fork_base_session else None,
+            fork_base_session=fork_base_session,
             breaker=breaker or BreakerConfig(),
             execution=execution or ExecutionConfig(),
             board=self.board,
@@ -971,15 +1011,15 @@ def seed_reentry_session(
 
 
 @pytest.mark.asyncio
-async def test_round_started_is_logged_before_start_fork_is_invoked(tmp_path):
-    """R21: the round-start line must cover the fork, not trail it — asserted
-    with a `start_fork` stub that reads the log at call time."""
+async def test_round_started_is_logged_before_the_launch_call_is_invoked(tmp_path):
+    """R21: the round-start line must cover the launch, not trail it — asserted
+    with a `start_worker` stub that reads the log at call time."""
     seen_at_call_time: list[list[str]] = []
 
     class RoundStartAssertingRunner(StubRunner):
-        def start_fork(self, **kwargs):
+        def start_worker(self, **kwargs):
             seen_at_call_time.append(run_log_lines(harness))
-            return super().start_fork(**kwargs)
+            return super().start_worker(**kwargs)
 
     runner = RoundStartAssertingRunner(
         {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
@@ -987,7 +1027,7 @@ async def test_round_started_is_logged_before_start_fork_is_invoked(tmp_path):
     harness = Harness(tmp_path, runner)
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
-    assert seen_at_call_time, "start_fork stub never ran"
+    assert seen_at_call_time, "start_worker stub never ran"
     lines_before_fork = seen_at_call_time[0]
     assert any(
         line.endswith("group g1 generation 1 round 1: started") for line in lines_before_fork
@@ -1190,9 +1230,7 @@ async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
         def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
             raise SessionError("warm resume down")
 
-        def start_fork(
-            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
-        ):
+        def start_worker(self, **kwargs):
             raise SessionError("fork also down")
 
     runner = AlwaysDown({})
@@ -1290,20 +1328,11 @@ async def test_first_round_crash_records_session_before_the_fork_call_completes(
     # session instead, orphaning whatever claude already did in its own
     # session before the crash.
     class CrashMidFork(StubRunner):
-        def start_fork(
-            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
-        ):
-            if name == "r1-g1-coder-g1":
-                self.crashed_session_id = session_id
+        def start_worker(self, **kwargs):
+            if kwargs["name"] == "r1-g1-coder-g1":
+                self.crashed_session_id = kwargs["session_id"]
                 raise SessionError("orchestrator crashed mid-fork")
-            return super().start_fork(
-                base_id=base_id,
-                prompt=prompt,
-                name=name,
-                cwd=cwd,
-                session_id=session_id,
-                json_schema=json_schema,
-            )
+            return super().start_worker(**kwargs)
 
     runner = CrashMidFork({})
     harness = Harness(tmp_path, runner)
@@ -1524,9 +1553,7 @@ async def test_interrupted_before_any_round_still_leaves_a_dated_manifest_entry(
     # has a manifest entry an operator can date — started_at is set at
     # creation, not deferred to round completion.
     class CrashMidFork(StubRunner):
-        def start_fork(
-            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
-        ):
+        def start_worker(self, **kwargs):
             raise SessionError("orchestrator crashed mid-fork")
 
     runner = CrashMidFork({})
@@ -1725,13 +1752,11 @@ async def test_the_launch_line_is_written_before_the_fork_not_after(tmp_path):
     live run showed a long silence with nothing to explain it.
     """
 
-    class ForkNeverReturns(StubRunner):
-        def start_fork(
-            self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
-        ):
+    class LaunchNeverReturns(StubRunner):
+        def start_worker(self, **kwargs):
             raise SessionError("killed mid-launch")
 
-    harness = Harness(tmp_path, ForkNeverReturns({}))
+    harness = Harness(tmp_path, LaunchNeverReturns({}))
     with pytest.raises(SessionError, match="killed mid-launch"):
         await harness.run(make_group())
 
@@ -1780,3 +1805,41 @@ async def test_a_runner_without_a_gate_is_unaffected(tmp_path):
     assert await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY)) == (
         GroupState.COMPLETED
     )
+
+
+# ------------------------------------------------------ launch mode (ADR 0007)
+
+
+@pytest.mark.asyncio
+async def test_workers_start_fresh_with_the_base_context_by_default(tmp_path):
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    # both workers were primed with the run's base context, and nothing forked
+    assert set(runner.base_contexts) == {"r1-g1-coder-g1", "r1-g1-reviewer-g1"}
+    assert set(runner.base_contexts.values()) == {BASE_CONTEXT}
+    assert runner.fork_parents == {}
+    # and it reached the first prompt verbatim, ahead of the worker's own
+    coder_sid = runner.session_ids["r1-g1-coder-g1"]
+    assert runner.prompts[coder_sid][0].startswith(BASE_CONTEXT)
+    assert "<run-manifest" in runner.prompts[coder_sid][0]
+    assert any("coder launching, fresh session" in line for line in run_log_lines(harness))
+
+
+@pytest.mark.asyncio
+async def test_fork_base_session_launches_workers_off_the_base_session(tmp_path):
+    """The legacy path stays reachable and unchanged (ADR 0007)."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner, fork_base_session=True)
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.base_contexts == {}
+    assert set(runner.fork_parents.values()) == {"base-0"}
+    coder_sid = runner.session_ids["r1-g1-coder-g1"]
+    assert runner.prompts[coder_sid][0].startswith("<run-manifest")
+    assert any("coder launching, forking base session" in line for line in run_log_lines(harness))

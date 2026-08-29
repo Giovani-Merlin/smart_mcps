@@ -453,6 +453,22 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
     cmd.add_argument(
+        "--fork-base",
+        dest="fork_base",
+        action="store_true",
+        default=None,
+        help=(
+            "launch workers by forking the run's base session (legacy; the fork "
+            "misses the base session's prompt cache — see ADR 0007)"
+        ),
+    )
+    cmd.add_argument(
+        "--no-fork-base",
+        dest="fork_base",
+        action="store_false",
+        help="launch workers as fresh sessions primed with the base context (default)",
+    )
+    cmd.add_argument(
         "--on-failure",
         default=None,
         choices=["halt", "overlap"],
@@ -569,6 +585,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         session_updates["usage_limit"] = config.session.usage_limit.model_copy(
             update={"auto_resume": auto_resume}
         )
+    if getattr(args, "fork_base", None) is not None:
+        session_updates["fork_base_session"] = args.fork_base
     if getattr(args, "model_worker", None):
         session_updates["model"] = args.model_worker
     if getattr(args, "model_base", None):
@@ -1645,9 +1663,11 @@ def _cmd_run(
                 print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
                 return 1
             manifest = persisted_manifest
-            if not manifest.base_session_id:
+            if config.session.fork_base_session and not manifest.base_session_id:
                 print("error: manifest has no base session — start a fresh run", file=sys.stderr)
                 return 1
+            # `None` is the normal shape now: with no fork there is no base
+            # session, so a resume has nothing to reattach to (ADR 0007).
             base_session_id = manifest.base_session_id
             # Plan U19 (F20): a resume reuses the existing base session and used to
             # skip the manifest write entirely, so `/snapshot` kept serving the
@@ -1663,6 +1683,22 @@ def _cmd_run(
                 }
             )
             store.save(manifest)
+        elif not config.session.fork_base_session:
+            # No fork, no base session: every worker starts fresh with the base
+            # context in its own first prompt (ADR 0007). This skips the run's
+            # one Opus `start_base` call and the long silence it opened with.
+            base_session_id = None
+            manifest = RunManifest(
+                run_id=run_id,
+                plan_path=grouping.plan_path,
+                base_session_id=None,
+                grouping=grouping_name,
+                escalation=config.escalation,
+                usage_limit=config.session.usage_limit,
+                launch_branch=_resolve_launch_branch(repo_root),
+            )
+            store.save(manifest)
+            atomic_write_text(paths.groups_path, groups_path.read_text())
         else:
             # Establishing the base session is the *first* long silence an operator
             # meets — it precedes every group, so no group heartbeat exists yet and
@@ -1731,7 +1767,9 @@ def _cmd_run(
             runner=runner,
             store=store,
             manifest=manifest,
+            base_context=base_context_path.read_text(),
             base_session_id=base_session_id,
+            fork_base_session=config.session.fork_base_session,
             breaker=config.breaker,
             execution=config.execution,
             # groups=grouping.groups (plan U11): validates every affected_groups
@@ -2315,7 +2353,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"interrupted at {state.interrupted_at}")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
-        print(f"base session: {manifest.base_session_id}")
+        print(f"base session: {manifest.base_session_id or '(none — workers start fresh)'}")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
         line = f"\n{gid}: {entry.state.value} (generation {entry.generation})"

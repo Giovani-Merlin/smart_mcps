@@ -419,6 +419,17 @@ class SessionConfig(BaseModel):
     # ``base_model`` and ``speccer_model`` below — changing this one leaves the
     # other two at their own defaults.
     model: str | None = DEFAULT_WORKER_MODEL
+    # Whether workers fork the run's base session (legacy) or start fresh with
+    # the base context prepended to their first prompt (default).
+    #
+    # The fork's premise was "compile an expensive base context once, fork it
+    # cheaply". Measured on r20260828-090936 it does not hold: every fork hits
+    # exactly 19,968 cached tokens and re-creates the remaining ~41.5k, because
+    # Claude Code embeds the cwd and a git snapshot in the system prompt and
+    # each group's cwd is its own worktree. Off by default; the fork path is
+    # kept intact behind this flag against a release that stops keying the
+    # cache prefix on cwd. See ADR 0007.
+    fork_base_session: bool = False
     # The model behind the run's own base session (``SessionRunner.start_base``),
     # which every worker fork inherits context from but does not share a model
     # with — it is worth the stronger model because a bad base context or a bad

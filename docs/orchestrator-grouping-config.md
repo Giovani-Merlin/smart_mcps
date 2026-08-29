@@ -404,12 +404,17 @@ ______________________________________________________________________
 | --------------------- | ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `claude_bin`          | `"claude"`          | —                 | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                            |
 | `model`               | `"claude-sonnet-5"` | `--model-worker`  | model for coder/reviewer worker forks — the bulk of a run's spend, and mostly mechanical work                                                                      |
-| `base_model`          | `"claude-opus-5"`   | `--model-base`    | model for the run's own base session, which every worker fork inherits context from but does not share a model with                                                |
+| `base_model`          | `"claude-opus-5"`   | `--model-base`    | model for the run's own base session — only reached under `fork_base_session`; with the default off, no base session is ever created                               |
+| `fork_base_session`   | `false`             | `--fork-base` / `--no-fork-base` | legacy: launch workers by forking the run's base session. The fork misses that session's prompt cache (19,968 tokens hit, ~41.5k re-created) because the cache key embeds the cwd and each group's cwd is its own worktree — see [ADR 0007](adr/0007-workers-start-fresh-instead-of-forking-the-base-session.md) |
 | `speccer_model`       | `"claude-opus-5"`   | `--model-speccer` | model for the mapper/speccer's `claude -p` calls — one call per grouping (or per spec rewrite), where the strongest model earns its cost                           |
 | `allowed_tools`       | `[]`                | —                 | extra `--allowedTools` entries                                                                                                                                     |
 | `transcript_root`     | `null`              | —                 | override `~/.claude/projects` (tests)                                                                                                                              |
 | `max_thinking_tokens` | `4000`              | —                 | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning |
 | `thinking`            | `"adaptive"`        | —                 | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                      |
+
+By default every worker is a fresh session whose first prompt carries the
+compiled base context, and the run spawns no base session at all — so
+`manifest.base_session_id` is `null` and `base_model` goes unused (ADR 0007).
 
 The three model fields are independently settable (plan U17): workers default to
 the cheaper Sonnet model, while the base session and the speccer default to Opus.

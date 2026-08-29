@@ -118,6 +118,14 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text())
 
     base_id = manifest.get("base_session_id")
+    if not base_id:
+        print(
+            "this run has no base session: its workers started fresh rather than forking "
+            "(the default since ADR 0007), so there is no inherited prefix to measure. "
+            "Re-run the orchestrator with --fork-base to produce a run this script can read.",
+            file=sys.stderr,
+        )
+        return 1
     base_entry = manifest.get("base_session") or {}
     base_path = _find_transcript(base_id, base_entry.get("transcript_path"), args.transcript_root)
     if base_path is None:
