@@ -310,17 +310,70 @@ ______________________________________________________________________
 ## `[preflight]` — the mechanical, LLM-free merge gate
 
 [`PreflightConfig`](../orchestrator/config.py). Runs before every merge attempt:
-worktree clean, then the resolved check command exits zero. A failure is
+worktree clean, then every resolved **check step** exits zero. A failure is
 classified into one of `env` / `timeout` / `regression` before it is ever routed
-(see [How grouping works → merge gate triage](orchestrator-grouping.md) and the
-reference HTML's Preflight & auth recovery section) — only `regression`, and only
-when the failing tests are not entirely pre-existing per the launch-branch
-baseline, actually spends a rewrite.
+(see the reference HTML's Preflight & auth recovery section) — only
+`regression`, and only when it introduces nothing the launch-branch baseline did
+not already have, actually spends a rewrite.
 
-| Field             | Default | Effect                                                                                                                 | CLI |
-| ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- | --- |
-| `check_command`   | `null`  | overrides auto-detection (`uv run pytest` / `npm test`); `null` and no detected markers means no check runs at all     | —   |
-| `check_timeout_s` | `900.0` | a hung check command holds the merge lock for every other group — always a `timeout`-kind failure, never a silent pass | —   |
+### A check run is a sequence of steps, not one command
+
+It used to be one command, resolved by marker *precedence*: `pyproject.toml` /
+`uv.lock` won, and `package.json` was reached only when there were no uv
+markers. In a repo carrying both — this one — every merge was gated on
+`uv run pytest` alone and no group's JavaScript was ever compiled or tested.
+`detect_check_steps` now resolves all of them, run in order, first failure
+stopping the run:
+
+| Step         | When it is detected                                              | Command                                                        | JUnit |
+| ------------ | ---------------------------------------------------------------- | -------------------------------------------------------------- | ----- |
+| `pytest`     | `pyproject.toml` or `uv.lock` at the root                        | `uv run pytest -p no:cacheprovider --junitxml=<out>`            | yes   |
+| `npm-test`   | root `package.json`, **no** uv markers                           | `npm test`                                                      | no    |
+| `vitest`     | `ui/package.json` + `ui/node_modules` + `vitest` in devDeps      | `npx vitest run --reporter=junit --outputFile=<out>` in `ui/`   | yes   |
+| `npm-test-ui`| as above but no `vitest` devDep                                  | `npm test` in `ui/`                                             | no    |
+| `tsc`        | `typescript` in `ui/` devDeps + `ui/tsconfig.json`               | `npx tsc --noEmit` in `ui/`                                     | no    |
+
+vitest's JUnit reporter emits the same `<testcase classname=… name=…>` shape
+pytest's does, so one parser serves both; vitest ids are namespaced `ui::` so
+the two id spaces cannot collide. The UI gate costs about 9s per merge on this
+repo (199 vitest tests in ~6s, `tsc` in ~3s).
+
+`ui/node_modules` is provisioned by `provision_node_env` (`npm ci`) alongside
+`uv sync`, for group and integration worktrees alike. When it is **missing the
+UI steps are skipped, never failed** — an `env`-kind preflight failure raises
+`GroupFailure`, which under `--on-failure halt` kills the run, and a machine
+without npm must not be able to do that. The asymmetry is logged instead:
+`preflight: step 'vitest' was in the baseline but is skipped here (no ui/node_modules)`.
+
+### When a failure is excused
+
+The baseline (`preflight-baseline.json`, captured once on the launch branch)
+records **every step**: its exit code, and its per-test outcomes where it wrote
+a report. A failing step is excused as pre-existing only against *comparable
+evidence*:
+
+- a step that writes JUnit — compared by failing-test set, unioned across steps
+  with each step's id prefix applied. An **empty** set is no evidence, not
+  "nothing new": `∅ - baseline` is `∅`, which reads as pre-existing against
+  every baseline, and that is exactly how a report-less regression once merged
+  silently.
+- a step that writes none (`tsc`, a bare `npm test`) — compared by exit code
+  against the baseline's record of *that same step name*. Red at launch and red
+  here introduced nothing; red here against a clean launch is a hard block.
+
+`env` and `timeout` failures are never excused: neither produced a comparable
+result at all.
+
+pytest's exit-code table (1 = tests failed, 2/3/4/5 = the run never really
+happened) is applied only to the `pytest` step and to an explicitly configured
+`check_command`. Any other step's nonzero exit is a `regression`: `tsc` exits
+**2** on an ordinary type error, and reading that through pytest's table would
+call it `env` — unattributable, so no rewrite for the coder, and a halted run.
+
+| Field             | Default | Effect                                                                                                                        | CLI |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- | --- |
+| `check_command`   | `null`  | overrides detection with a single step; gets `--junitxml` appended when it ends in `pytest`. `null` and no markers means no check runs at all | —   |
+| `check_timeout_s` | `900.0` | applied per step; a hung one holds the merge lock for every other group — always a `timeout`-kind failure, never a silent pass | —   |
 
 ## `[auth]` — the auth-refresh ladder's pause rung
 

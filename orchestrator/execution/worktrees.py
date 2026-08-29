@@ -397,6 +397,60 @@ def provision_env(
     return True
 
 
+def provision_node_env(
+    worktree: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    log: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
+    on_state: Callable[[str, list[str]], None] | None = None,
+) -> bool:
+    """Provision ``ui/node_modules`` via ``npm ci`` — ``provision_env``'s
+    contract, for the JavaScript half of the checkout.
+
+    A worktree is a fresh checkout and ``node_modules/`` is gitignored, so
+    without this the merge gate's ``vitest``/``tsc`` steps never resolve and
+    silently skip (``detect_check_steps`` requires ``ui/node_modules``). Runs
+    only when ``ui/package.json`` exists; anything else is skipped silently.
+
+    Non-fatal by the same reasoning as ``provision_env``, and here it matters
+    more: a failed install leaves the UI steps skipped, which is a *weaker*
+    gate, never a failed run. A machine without npm must not be able to halt a
+    run under ``on-failure halt``.
+    """
+    ui = worktree / "ui"
+    if not (ui / "package.json").is_file():
+        if on_state is not None:
+            on_state("skipped", [])
+        return False
+    run = runner or subprocess.run
+    argv = ["npm", "ci", "--no-audit", "--fund=false"]
+    try:
+        result = run(
+            argv,
+            cwd=ui,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env} if env else None,
+        )
+    except OSError as exc:  # npm missing entirely — same non-fatal contract
+        _report_sync_failure(f"npm ci failed in {ui}: {exc}", log)
+        if on_state is not None:
+            on_state("failed", argv)
+        return False
+    if result.returncode != 0:
+        _report_sync_failure(f"npm ci failed in {ui}: {(result.stderr or '').strip()[:500]}", log)
+        if on_state is not None:
+            on_state("failed", argv)
+        return False
+    if log is not None:
+        when = datetime.now(UTC).strftime("%H:%M")
+        log(f"worktree {ui} was provisioned with `{' '.join(argv)}` at {when}")
+    if on_state is not None:
+        on_state("provisioned", argv)
+    return True
+
+
 def _report_sync_failure(message: str, log: Callable[[str], None] | None) -> None:
     print(f"warning: {message}", file=sys.stderr)
     if log is not None:

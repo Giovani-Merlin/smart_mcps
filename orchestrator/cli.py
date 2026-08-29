@@ -112,6 +112,7 @@ from orchestrator.execution.worktrees import (
     create_worktree,
     group_branch,
     provision_env,
+    provision_node_env,
     worktree_path,
     write_provisioning_record,
 )
@@ -1914,6 +1915,14 @@ def _workspace_seams(
             env=cache_env,
             extra_args=session.provision_args,
             on_state=_record,
+        )
+        # The JavaScript half of the same contract: without `ui/node_modules`
+        # the merge gate's vitest/tsc steps silently skip. No `on_state` — the
+        # provisioning record holds one command, and it is the venv's.
+        provision_node_env(
+            path,
+            log=lambda message: log_event(paths, message),
+            env=cache_env,
         )
         return path
 

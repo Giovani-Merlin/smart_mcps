@@ -8,6 +8,8 @@ from pathlib import Path
 
 from orchestrator.config import PreflightConfig
 from orchestrator.execution.preflight import (
+    BaselineStep,
+    CheckStep,
     PreflightBaseline,
     capture_preflight_baseline,
     compare_to_baseline,
@@ -176,3 +178,67 @@ def test_uncaptured_baseline_object_also_reports_no_baseline():
     comparison = compare_to_baseline(baseline, {"a"})
     assert comparison.verdict == "no_baseline"
     assert comparison.new_failures == frozenset()
+
+
+# --------------------------------------------------- per-step baseline (A4)
+
+
+def test_capture_records_every_step_even_after_one_fails(tmp_path, monkeypatch):
+    """A group's `tsc` failure can only be excused against the launch branch's
+    own `tsc` exit code, so the capture must not stop at a red pytest."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    out_dir = tmp_path / "out"
+    steps = [
+        CheckStep(name="pytest", argv=["python3", "-c", "import sys; sys.exit(1)"]),
+        CheckStep(name="tsc", argv=["python3", "-c", "import sys; sys.exit(2)"]),
+    ]
+    monkeypatch.setattr(
+        "orchestrator.execution.preflight.detect_check_steps",
+        lambda root, *, output_dir, junit_stem="preflight-junit": steps,
+    )
+
+    baseline = capture_preflight_baseline(
+        repo, config=PreflightConfig(), output_dir=out_dir, commit_sha="abc123"
+    )
+
+    assert baseline.captured is True
+    assert [step.name for step in baseline.steps] == ["pytest", "tsc"]
+    assert baseline.step("tsc") is not None
+    assert baseline.step("tsc").exit_code == 2
+    assert baseline.step("vitest") is None
+    # The legacy top-level fields still describe the first step, so a manifest
+    # written by the single-command gate keeps loading.
+    assert baseline.exit_code == 1
+    assert baseline.command == steps[0].argv
+
+
+def test_failing_tests_unions_across_steps(tmp_path):
+    baseline = PreflightBaseline(
+        command=["uv", "run", "pytest"],
+        commit_sha="abc123",
+        exit_code=1,
+        tests={"tests/test_x.py::test_a": "failed"},
+        steps=[
+            BaselineStep(name="pytest", tests={"tests/test_x.py::test_a": "failed"}, exit_code=1),
+            BaselineStep(
+                name="vitest", tests={"ui::src/a.test.ts::renders": "failed"}, exit_code=1
+            ),
+        ],
+    )
+    assert baseline.failing_tests == frozenset(
+        {"tests/test_x.py::test_a", "ui::src/a.test.ts::renders"}
+    )
+
+
+def test_a_baseline_without_steps_still_reads_its_legacy_tests_mapping(tmp_path):
+    """An in-flight run's persisted JSON predates `steps` entirely."""
+    path = tmp_path / "preflight-baseline.json"
+    path.write_text(
+        '{"command": ["uv", "run", "pytest"], "commit_sha": "abc", "exit_code": 1,'
+        ' "captured": true, "tests": {"tests/test_x.py::test_a": "failed"}}'
+    )
+    baseline = load_baseline(path)
+    assert baseline is not None
+    assert baseline.steps == []
+    assert baseline.failing_tests == frozenset({"tests/test_x.py::test_a"})

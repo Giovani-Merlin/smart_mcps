@@ -983,12 +983,23 @@ class _GroupExecution:
                 diagnosis += f"\n{summary_tail}"
             return diagnosis, False
         # kind == "regression": tests actually ran and something actually
-        # failed — the only question left is whether it is new.
-        junit_path = (
-            exc.output_path.parent / "preflight-junit.xml" if exc.output_path is not None else None
-        )
-        failing = failing_tests_from_junit(junit_path) if junit_path is not None else frozenset()
-        comparison = compare_to_baseline(self.deps.preflight_baseline, failing)
+        # failed — the only question left is whether it is new. The gate
+        # already answered that (it had to, to decide whether to raise), so
+        # take its verdict rather than re-deriving one: re-derivation guessed a
+        # single `preflight-junit.xml` beside the log and so was blind to the
+        # UI steps' own reports. The fallback covers a `PreflightFailure`
+        # raised from somewhere other than `run_preflight`.
+        comparison = exc.comparison
+        if comparison is None:
+            junit_path = (
+                exc.output_path.parent / "preflight-junit.xml"
+                if exc.output_path is not None
+                else None
+            )
+            failing = (
+                failing_tests_from_junit(junit_path) if junit_path is not None else frozenset()
+            )
+            comparison = compare_to_baseline(self.deps.preflight_baseline, failing)
         if comparison.verdict == "pre_existing":
             diagnosis = (
                 f"preflight failed (pre-existing): {exc.reason} — every failing test was "

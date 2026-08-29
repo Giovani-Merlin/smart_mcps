@@ -28,6 +28,7 @@ from orchestrator.execution.worktrees import (
     create_worktree,
     integration_branch,
     provision_env,
+    provision_node_env,
     remove_worktree,
     write_provisioning_record,
 )
@@ -128,6 +129,10 @@ class IntegrationMerger:
             extra_args=self._provision_args,
             on_state=_record,
         )
+        # The JavaScript half: the integration worktree runs the same merge
+        # gate a group's does, and its UI steps need `ui/node_modules` too. No
+        # `on_state` — the provisioning record holds one command, the venv's.
+        provision_node_env(path, log=self._log, env=self._provision_env_vars)
 
     def tip(self) -> str:
         """Current integration-branch commit — the branch point for a group's

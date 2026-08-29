@@ -51,6 +51,7 @@ from orchestrator.execution.worktrees import (
     integration_branch,
     is_denied_git_invocation,
     provision_env,
+    provision_node_env,
     remove_worktree,
     worktree_path,
 )
@@ -1095,3 +1096,52 @@ def test_the_limit_prose_reaches_the_gate_unwrapped(fake_home, tmp_path):
     with pytest.raises(UsageLimit) as caught:
         runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
     assert caught.value.detail == detail
+
+
+def test_provision_node_env_runs_npm_ci_only_when_ui_package_json_exists(tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert provision_node_env(bare, runner=fake_run) is False
+    assert calls == []
+
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    assert provision_node_env(ui_repo, runner=fake_run) is True
+    assert calls == [["npm", "ci", "--no-audit", "--fund=false"]]
+
+
+def test_provision_node_env_failure_is_non_fatal(tmp_path):
+    """A machine without npm must weaken the merge gate, never halt the run."""
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    events: list[str] = []
+
+    def missing_npm(argv, **kwargs):
+        raise FileNotFoundError("npm")
+
+    assert provision_node_env(ui_repo, runner=missing_npm, log=events.append) is False
+    assert any("npm ci failed" in event for event in events)
+
+
+def test_provision_node_env_runs_in_the_ui_subdirectory(tmp_path):
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    states: list[tuple[str, list[str]]] = []
+    provision_node_env(ui_repo, runner=fake_run, on_state=lambda s, a: states.append((s, a)))
+    assert seen["cwd"] == ui_repo / "ui"
+    assert states == [("provisioned", ["npm", "ci", "--no-audit", "--fund=false"])]
