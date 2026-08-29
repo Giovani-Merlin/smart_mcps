@@ -16,6 +16,7 @@ already-loaded plan text, sub-second even on the repo's largest plan.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import yaml
@@ -25,6 +26,7 @@ from orchestrator.grouping.plan_sections import UNIT_HEADING, locate_units_span
 
 _ENTRY_START = re.compile(r"^  - task_id:[ \t]*(?P<task_id>\S+)[ \t]*$", re.MULTILINE)
 _FENCE = "```"
+_FRONTMATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 
 
 class PlanEditError(Exception):
@@ -227,3 +229,127 @@ def verify_map_unchanged(before: str, after: str) -> list[str]:
             diffs.append(f"unit section {unit_id!r} was added")
 
     return diffs
+
+
+@dataclass(frozen=True)
+class SplitDocument:
+    """One output document from ``split_plan``: its full text, and the task
+    and unit ids it carries — for the caller's own reporting, not needed to
+    reconstruct the text itself."""
+
+    text: str
+    task_ids: tuple[str, ...]
+    unit_ids: tuple[str, ...]
+
+
+def assign_tasks(task_ids: Sequence[str], groups: Sequence[Sequence[str]]) -> list[int]:
+    """Assign every id in ``task_ids`` to exactly one 0-based index into
+    ``groups``, returning the chosen index per ``task_ids`` entry (same order).
+
+    Raises naming every problem at once: a task id in ``groups`` that isn't in
+    ``task_ids``, a task id in ``task_ids`` assigned to no group, and a task id
+    assigned to more than one group.
+    """
+    known = set(task_ids)
+    unknown = sorted({task_id for group in groups for task_id in group} - known)
+    if unknown:
+        raise PlanEditError(f"names unknown task id(s): {', '.join(unknown)}")
+
+    assignment: dict[str, int] = {}
+    duplicates: set[str] = set()
+    for index, group in enumerate(groups):
+        for task_id in group:
+            if task_id in assignment:
+                duplicates.add(task_id)
+            else:
+                assignment[task_id] = index
+
+    unassigned = sorted(set(task_ids) - set(assignment))
+    problems: list[str] = []
+    if unassigned:
+        problems.append(f"unassigned task id(s): {', '.join(unassigned)}")
+    if duplicates:
+        problems.append(
+            f"task id(s) assigned to more than one document: {', '.join(sorted(duplicates))}"
+        )
+    if problems:
+        raise PlanEditError("; ".join(problems))
+
+    return [assignment[task_id] for task_id in task_ids]
+
+
+def split_plan(plan_text: str, groups: Sequence[Sequence[str]]) -> list[SplitDocument]:
+    """Partition ``plan_text`` into ``len(groups)`` document bodies by moving
+    task-map entries and unit sections verbatim between them — the module's
+    one write path, used by ``orchestrate split``.
+
+    Every task id declared in the plan's task map must land in exactly one
+    group (``assign_tasks`` names every violation). A unit whose task ids
+    would otherwise land in more than one document is also refused — the
+    unit's ``### U<N>.`` heading has nowhere single to go.
+    """
+    task_doc = extract_task_map_entries(plan_text)
+    if task_doc is None:
+        raise PlanEditError("plan has no task-map block to split")
+
+    indices = assign_tasks(task_doc.order, groups)
+    assignment = dict(zip(task_doc.order, indices, strict=True))
+
+    unit_assignment: dict[str, int] = {}
+    conflicts: set[str] = set()
+    for task_id in task_doc.order:
+        key = _unit_key_for_task(task_id)
+        if key is None:
+            continue
+        doc_index = assignment[task_id]
+        if key in unit_assignment and unit_assignment[key] != doc_index:
+            conflicts.add(key)
+        unit_assignment.setdefault(key, doc_index)
+    if conflicts:
+        raise PlanEditError(
+            "task ids sharing a unit section were split across documents: "
+            + ", ".join(sorted(conflicts))
+        )
+
+    head, unit_texts, unit_order, _tail = split_units(plan_text)
+    span = task_map_block_span(plan_text)
+    assert span is not None  # task_doc is not None, so the block exists
+
+    documents: list[SplitDocument] = []
+    for index in range(len(groups)):
+        ordered_task_ids = [t for t in task_doc.order if assignment[t] == index]
+        map_block = render_task_map_block(task_doc, ordered_task_ids)
+        doc_unit_keys = {
+            key for t in ordered_task_ids if (key := _unit_key_for_task(t)) is not None
+        }
+        ordered_unit_ids = [u for u in unit_order if u in doc_unit_keys]
+        units_text = "".join(unit_texts[u] for u in ordered_unit_ids)
+        new_head = head[: span[0]] + map_block + head[span[1] :]
+        documents.append(
+            SplitDocument(
+                text=new_head + units_text,
+                task_ids=tuple(ordered_task_ids),
+                unit_ids=tuple(ordered_unit_ids),
+            )
+        )
+    return documents
+
+
+def add_frontmatter_field(text: str, key: str, value: str) -> str:
+    """Insert ``key: value`` into ``text``'s leading YAML frontmatter block, or
+    prepend a new one if ``text`` has none."""
+    match = _FRONTMATTER.match(text)
+    if match is None:
+        return f"---\n{key}: {value}\n---\n\n{text}"
+    insert_at = match.end() - len("---\n")
+    return text[:insert_at] + f"{key}: {value}\n" + text[insert_at:]
+
+
+def add_predecessor_note(text: str, note: str) -> str:
+    """Insert ``note`` as its own paragraph immediately after ``text``'s
+    frontmatter block (or at the very top, if it has none) — the one piece of
+    new prose ``orchestrate split`` writes, for a downstream part of a serial
+    seam."""
+    match = _FRONTMATTER.match(text)
+    insert_at = match.end() if match else 0
+    return text[:insert_at] + f"\n{note}\n" + text[insert_at:]
