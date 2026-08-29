@@ -6,18 +6,22 @@ R22 strategy seam.
 """
 
 import ast
+import statistics
 from pathlib import Path
 
 import pytest
 
+from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.partition import (
     DefaultPartitionStrategy,
+    DegenerateRepair,
     GroupCycleError,
     SingleGroupStrategy,
     TaskGraph,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
+    find_slice_reentrant_paths,
     lift_independent,
     merge_small_groups,
     repair_cycles,
@@ -348,6 +352,184 @@ class TestSccRepair:
         }
         assert len(results) == 1
 
+    def test_repair_records_a_degenerate_repair_when_overshoot_occurs(self):
+        """Plan U9: an unre-splittable overshoot also lands in ``degenerate``
+        (not just ``flags``) as a structured ``DegenerateRepair`` carrying the
+        task-level edges that closed the cycle — the pipeline's degeneracy
+        gate needs these to source its edge-provenance breakdown."""
+        g = graph(
+            "a1 a2 b".split(),
+            dependencies={("a1", "b"): 1.0, ("b", "a2"): 1.0},
+            slices={"a1": "s", "a2": "s"},
+        )
+        partition = {"a1": 0, "a2": 0, "b": 1}
+        flags: list[str] = []
+        degenerate: list[DegenerateRepair] = []
+        repair_cycles(
+            g, partition, lambda n: 1.0, budget_cap=2.0, flags=flags, degenerate=degenerate
+        )
+        assert len(degenerate) == 1
+        repair = degenerate[0]
+        assert repair.evidence_edges == (("a1", "b"), ("b", "a2"))
+        assert repair.overshoot_messages == tuple(flags)
+
+    def test_repair_does_not_record_a_degenerate_repair_when_resplit_succeeds(self):
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+        )
+        partition = {"a1": 0, "a2": 0, "b1": 1, "b2": 1}
+        degenerate: list[DegenerateRepair] = []
+        repair_cycles(g, partition, lambda n: 1.0, budget_cap=2.0, flags=[], degenerate=degenerate)
+        assert degenerate == []
+
+
+class _RepairRecorder:
+    """Minimal PartitionRecorder capturing only repair calls, as plain dicts."""
+
+    def __init__(self):
+        self.repairs = []
+
+    def record_stage(self, *a, **k):
+        pass
+
+    def record_hub_role(self, *a, **k):
+        pass
+
+    def record_louvain(self, *a, **k):
+        pass
+
+    def record_split(self, *a, **k):
+        pass
+
+    def record_merge_candidate(self, *a, **k):
+        pass
+
+    def record_repair(
+        self,
+        cyclic_groups,
+        evidence_edges,
+        merge_target,
+        resplit_chunks,
+        overshoots,
+        action="merge",
+        withdrawn_edges=None,
+    ):
+        self.repairs.append(
+            {
+                "cyclic_groups": list(cyclic_groups),
+                "evidence_edges": list(evidence_edges),
+                "action": action,
+                "withdrawn_edges": list(withdrawn_edges or ()),
+            }
+        )
+
+
+class TestSccRepairWithdrawal:
+    """Plan U10/C4.1/R11: repair_cycles withdraws inferred precedence edges
+    before falling back to the U5 merge+re-split, and never touches a
+    declared (mapper depends_on) edge."""
+
+    def test_cycle_closed_only_by_an_inferred_edge_withdraws_instead_of_merging(self):
+        """a->b->c->a: a->b and b->c are declared, c->a is only inferred (a
+        call relation, weight already banked into affinity by the graph
+        builder). Withdrawing that one edge alone breaks the cycle, so no
+        merge happens and every group stays exactly as it was pre-repair."""
+        g = graph(
+            "a b c d".split(),
+            affinity={("a", "c"): 5.0},
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 5.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        recorder = _RepairRecorder()
+        repaired = repair_cycles(
+            g,
+            partition,
+            lambda n: 1.0,
+            budget_cap=None,
+            flags=[],
+            recorder=recorder,
+            declared=frozenset({("a", "b"), ("b", "c")}),
+        )
+        assert repaired == partition
+        assert groups_of(repaired) == {
+            frozenset({"a"}),
+            frozenset({"b"}),
+            frozenset({"c"}),
+            frozenset({"d"}),
+        }
+        build_group_dag(g, repaired)  # must not raise: the edge is actually gone
+        assert ("c", "a") not in g.dependencies
+        assert g.affinity[canonical_pair("a", "c")] == 5.0  # already banked, untouched
+
+        assert len(recorder.repairs) == 1
+        entry = recorder.repairs[0]
+        assert entry["action"] == "withdraw"
+        assert entry["withdrawn_edges"] == [("c", "a")]
+
+    def test_cycle_of_solely_declared_edges_still_merges_and_never_withdraws(self):
+        g = graph(
+            "a b c".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2}
+        recorder = _RepairRecorder()
+        repaired = repair_cycles(
+            g,
+            partition,
+            lambda n: 1.0,
+            budget_cap=None,
+            flags=[],
+            recorder=recorder,
+            declared=frozenset({("a", "b"), ("b", "c"), ("c", "a")}),
+        )
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"})}
+        assert ("a", "b") in g.dependencies
+        assert ("b", "c") in g.dependencies
+        assert ("c", "a") in g.dependencies
+
+        assert len(recorder.repairs) == 1
+        entry = recorder.repairs[0]
+        assert entry["action"] == "merge"
+        assert entry["withdrawn_edges"] == []
+
+    def test_no_declared_info_reproduces_pre_u10_merge_behaviour(self):
+        """``declared=None`` (the default when a caller has no provenance) is
+        deliberately conservative: nothing is a withdrawal candidate, so the
+        old merge+re-split path runs exactly as before plan U10."""
+        g = graph(
+            "a b c d".split(),
+            dependencies={("a", "b"): 1.0, ("b", "c"): 1.0, ("c", "a"): 1.0, ("c", "d"): 1.0},
+        )
+        partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+        repaired = repair_cycles(g, partition, lambda n: 1.0, budget_cap=None, flags=[])
+        assert groups_of(repaired) == {frozenset({"a", "b", "c"}), frozenset({"d"})}
+
+    def test_withdrawal_repair_is_deterministic_across_runs(self):
+        results = set()
+        for _ in range(5):
+            g = graph(
+                "a b c d".split(),
+                affinity={("a", "c"): 5.0},
+                dependencies={
+                    ("a", "b"): 1.0,
+                    ("b", "c"): 1.0,
+                    ("c", "a"): 5.0,
+                    ("c", "d"): 1.0,
+                },
+            )
+            partition = {"a": 0, "b": 1, "c": 2, "d": 3}
+            repaired = repair_cycles(
+                g,
+                partition,
+                lambda n: 1.0,
+                budget_cap=None,
+                flags=[],
+                declared=frozenset({("a", "b"), ("b", "c")}),
+            )
+            results.add(tuple(sorted(repaired.items())))
+        assert len(results) == 1
+
 
 class TestSliceContraction:
     """Task-map slice labels enter Louvain as must-link node contraction (plan U5)."""
@@ -469,6 +651,75 @@ class TestSliceContraction:
         partition = strategy.partition(g)
         assert groups_of(partition) == {frozenset({"a1", "a2", "b1", "b2"})}
         assert strategy.last_stage == "repair"
+
+
+class TestSliceReentry:
+    """Plan U9/C5: a dependency path that leaves a declared slice and
+    re-enters it closes a cycle once the slice contracts to one supernode —
+    ``find_slice_reentrant_paths`` names the exact shape on the contracted
+    graph, before partitioning ever runs."""
+
+    def test_run10_shape_is_detected_and_named(self):
+        """u1 -> u2 -> u3 with u1/u3 slice-mates (docs/todos/grouping_improvements.md
+        C5, run 10): the path leaves slice `resilience` at u2 and returns."""
+        g = graph(
+            "u1 u2 u3".split(),
+            dependencies={("u1", "u2"): 1.0, ("u2", "u3"): 1.0},
+            slices={"u1": "resilience", "u3": "resilience"},
+        )
+        atoms = slice_atoms(g, {})
+        results = find_slice_reentrant_paths(g, atoms)
+        assert len(results) == 1
+        assert results[0].slice == "resilience"
+        assert results[0].path == ("u1", "u2", "u3")
+
+    def test_direct_intra_slice_edge_is_not_flagged(self):
+        """A dependency straight between two slice-mates, with no intermediate
+        node, is not a reentrant path — it simply vanishes at contraction."""
+        g = graph(
+            "u1 u3".split(),
+            dependencies={("u1", "u3"): 1.0},
+            slices={"u1": "s", "u3": "s"},
+        )
+        atoms = slice_atoms(g, {})
+        assert find_slice_reentrant_paths(g, atoms) == []
+
+    def test_cross_slice_mutual_dependency_is_not_a_reentrant_path(self):
+        """Two different slices depending on each other through different
+        member pairs (a1 -> b1, b2 -> a2) is a real group-level cycle, but it
+        is not "a path that leaves a slice and returns to itself" — that
+        shape belongs to repair_cycles' merge-and-resplit, not this gate."""
+        g = graph(
+            "a1 a2 b1 b2".split(),
+            dependencies={("a1", "b1"): 1.0, ("b2", "a2"): 1.0},
+            slices={"a1": "s1", "a2": "s1", "b1": "s2", "b2": "s2"},
+        )
+        atoms = slice_atoms(g, {})
+        assert find_slice_reentrant_paths(g, atoms) == []
+
+    def test_two_independent_reentrant_slices_are_both_reported(self):
+        """Multiple slice-re-entrant shapes in one map are all detected
+        together, not just the first one found (R5 discipline)."""
+        g = graph(
+            "u1 u2 u3 v1 v2 v3".split(),
+            dependencies={
+                ("u1", "u2"): 1.0,
+                ("u2", "u3"): 1.0,
+                ("v1", "v2"): 1.0,
+                ("v2", "v3"): 1.0,
+            },
+            slices={"u1": "alpha", "u3": "alpha", "v1": "beta", "v3": "beta"},
+        )
+        atoms = slice_atoms(g, {})
+        results = find_slice_reentrant_paths(g, atoms)
+        assert {r.slice for r in results} == {"alpha", "beta"}
+        by_slice = {r.slice: r.path for r in results}
+        assert by_slice["alpha"] == ("u1", "u2", "u3")
+        assert by_slice["beta"] == ("v1", "v2", "v3")
+
+    def test_no_slices_returns_no_reentries(self):
+        g = graph("a b".split(), dependencies={("a", "b"): 1.0})
+        assert find_slice_reentrant_paths(g, slice_atoms(g, {})) == []
 
 
 class TestDefaultStrategyEndToEnd:
@@ -723,3 +974,125 @@ class _RecordingRecorder:
 
     def record_repair(self, *a, **k):
         pass
+
+
+class TestFillPenalty:
+    """Plan U12 (R19b): the merge key's fill/balance term.
+
+    ``target_fill_ratio=0.0`` reproduces the pre-U12 key byte-for-byte: the
+    new term becomes ``abs(merged_work - 0.0) == merged_work``, sitting right
+    next to the existing ``merged_work`` field with an identical value, so it
+    can never change the total order — that is how these tests get an "old
+    key" oracle without duplicating the merge loop.
+    """
+
+    def _pathology_graph(self):
+        """Two hubs, each independently a valid dependency for a pool of
+        eight small (0.3) and one large (2.0) shared task — modelling a
+        greedy first-fit pathology: whichever hub the loop happens to favour
+        first can keep absorbing the cheapest remaining task every round
+        (old key: plain ``merged_work`` ascending always prefers the
+        numerically smallest candidate), landing two same-sized ~2.0 lumps
+        while its sibling hub never receives a single merge. ``granularity=
+        "balanced"`` is required for more than one small task to ever join
+        the same hub (the default ``independent`` guard treats same-parent
+        siblings as parallel and refuses to merge more than one in)."""
+        nodes = ["hub_a", "hub_b"] + [f"s{i}" for i in range(1, 9)] + ["big"]
+        deps = {}
+        for n in [f"s{i}" for i in range(1, 9)] + ["big"]:
+            deps[("hub_a", n)] = 1.0
+            deps[("hub_b", n)] = 1.0
+        work = {"hub_a": 0.2, "hub_b": 0.2, "big": 2.0}
+        work.update({f"s{i}": 0.3 for i in range(1, 9)})
+        g = graph(nodes, dependencies=deps)
+        return g, work
+
+    def test_fill_term_lowers_group_size_variance_without_breaking_invariants(self):
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        cap = 2.8
+
+        def sizes_of(merged):
+            groups: dict[int, list[str]] = {}
+            for node, gid in merged.items():
+                groups.setdefault(gid, []).append(node)
+            return groups, sorted(sum(work[n] for n in members) for members in groups.values())
+
+        old = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=cap,
+            granularity="balanced",
+            target_fill_ratio=0.0,
+        )
+        new = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=cap,
+            granularity="balanced",
+            target_fill_ratio=0.75,
+        )
+        old_groups, old_sizes = sizes_of(old)
+        new_groups, new_sizes = sizes_of(new)
+
+        # Old key: greedy-cheapest-first lets hub_a's group absorb tasks one
+        # at a time until it happens to land right next to "big" in size —
+        # two ~2.0 lumps (one a single "big" task, one a pile of "small"
+        # ones) instead of one well-filled group and evenly-sized stragglers.
+        assert old_sizes == pytest.approx([0.2, 0.3, 0.3, 2.0, 2.0])
+        assert new_sizes == pytest.approx([0.2, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 2.2])
+
+        assert statistics.pvariance(new_sizes) < statistics.pvariance(old_sizes)
+        assert all(size <= cap for size in new_sizes)
+        assert build_group_dag(g, new) is not None  # raises GroupCycleError if not acyclic
+
+    def test_fill_term_is_deterministic_across_runs(self):
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        results = {
+            tuple(
+                sorted(
+                    merge_small_groups(
+                        g,
+                        dict(partition),
+                        lambda n: work[n],
+                        budget_cap=2.8,
+                        granularity="balanced",
+                        target_fill_ratio=0.75,
+                    ).items()
+                )
+            )
+            for _ in range(5)
+        }
+        assert len(results) == 1
+
+    def test_no_cap_leaves_the_term_neutral(self):
+        """No budget cap means no band to aim for (docs in partition.py): the
+        term must not change anything when the cap is absent."""
+        g, work = self._pathology_graph()
+        partition = {n: i for i, n in enumerate(sorted(work))}
+        old = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=None,
+            granularity="balanced",
+            target_fill_ratio=0.0,
+        )
+        new = merge_small_groups(
+            g,
+            dict(partition),
+            lambda n: work[n],
+            budget_cap=None,
+            granularity="balanced",
+            target_fill_ratio=0.75,
+        )
+        assert old == new
+
+    def test_target_fill_ratio_is_configurable(self):
+        assert OrchestratorConfig().partition.target_fill_ratio == pytest.approx(0.75)
+        assert OrchestratorConfig.model_validate(
+            {"partition": {"target_fill_ratio": 0.5}}
+        ).partition.target_fill_ratio == pytest.approx(0.5)

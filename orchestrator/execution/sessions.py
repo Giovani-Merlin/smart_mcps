@@ -1,12 +1,14 @@
-"""claude CLI wrapper: fork-first sessions, blocking print-mode rounds, reports.
+"""claude CLI wrapper: worker sessions, blocking print-mode rounds, reports.
 
 Mechanics pinned by the plan's Key Technical Decisions and verified by the U5 spike
 (2026-07-16, CLI 2.1.211 — docs/research/design-deviations.md):
 
-- One base session per run; every coder/reviewer session forks from it so the
-  shared prefix is byte-identical. Print-mode forking honors ``--session-id`` and
-  leaves the base reusable. Fork calls are serialized behind a lock (the session
-  store has no documented concurrency guarantees).
+- Every coder/reviewer session starts fresh with the run's base context prepended
+  to its first prompt (``start_worker``). This used to be one base session per
+  run that every worker forked, so the shared prefix was byte-identical — a
+  design the prompt cache does not actually reward, since its key embeds the cwd
+  and each group's cwd is its own worktree (ADR 0007). ``start_fork`` and its
+  serializing lock survive behind ``session.fork_base_session``, off by default.
 - Rounds are blocking ``claude -p`` calls; process exit is round completion.
 - The final message must carry a ``<run-report>`` block; a missing/invalid report
   gets a bounded re-nudge, then fails the round (CoCoder's silent-exit lesson,
@@ -420,6 +422,50 @@ class SessionRunner:
             model=self.base_model,
         )
 
+    def start_worker(
+        self,
+        *,
+        base_context: str,
+        prompt: str,
+        name: str,
+        cwd: Path,
+        session_id: str | None = None,
+        json_schema: dict | None = None,
+        on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
+    ) -> RoundResult:
+        """Start a fresh worker session and run its first round in one call.
+
+        The default launch path (see ADR 0007). The base context is prepended
+        to the worker's own prompt rather than inherited from a forked session:
+        a fork re-creates that context as input anyway (measured — it hits
+        exactly 19,968 cached tokens and pays for the remaining ~41.5k), so
+        inheriting it bought a serialized ``_fork_lock``, a run-scoped Opus
+        ``start_base`` call, an extra launch step with its own failure modes,
+        and a transcript replay that put the parent's records in every worker's
+        jsonl. This path has none of those.
+
+        Not serialized: there is no shared session store to race on — each
+        worker creates its own session id.
+
+        ``session_id`` is generated here when not given, but callers pass one
+        (plan U7): recording it in the manifest *before* this blocking call is
+        what lets a resume find a group interrupted during its very first
+        round instead of starting a brand new session.
+        """
+        session_id = session_id or str(uuid.uuid4())
+        # No preamble of its own: the base-context document already opens with
+        # its own `# Base context` heading and the worker ground rules, and the
+        # identity-block contract (AE6) is that a worker's first prompt is
+        # never fronted by injected-looking instruction text.
+        primed = f"{base_context}\n\n{prompt}" if base_context else prompt
+        return self._call(
+            primed,
+            cwd=cwd,
+            extra=["--session-id", session_id, "--name", name],
+            json_schema=json_schema,
+            on_turn=on_turn,
+        )
+
     def start_fork(
         self,
         *,
@@ -431,7 +477,19 @@ class SessionRunner:
         json_schema: dict | None = None,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        """Fork the base session and run the first round in one blocking call.
+        """LEGACY — reached only under ``session.fork_base_session`` (default
+        off); ``start_worker`` is the live path. See ADR 0007.
+
+        Kept, not deleted, because the premise is sound and only the current
+        implementation of the cache key falsifies it. On r20260828-090936 every
+        fork hit exactly 19,968 cached tokens and re-created ~41.5k more: the
+        prompt-cache key starts with the system prompt, which embeds the cwd
+        and a git snapshot, and each group's cwd is its own worktree. This
+        becomes interesting again the day a Claude Code release stops keying
+        the cache prefix on cwd — at which point flipping the flag is the whole
+        change.
+
+        Fork the base session and run the first round in one blocking call.
 
         Serialized: the session store has no documented locking (plan Key Technical
         Decisions); forking is fast, so this never serializes the groups themselves.
@@ -788,7 +846,12 @@ class SessionRunner:
 
 
 def _fork_cwd_experiment(cwd: Path, extra: list[str]) -> tuple[Path, list[str]]:
-    """W10 arm B — **experiment only, off unless explicitly armed**.
+    """W10 arm B — **experiment only, off unless explicitly armed**, and now
+    reached only from the LEGACY ``start_fork`` path (ADR 0007).
+
+    Measured and settled: arm B is a dead end on both counts — it wins no cache
+    and it commits the worker to the repo root. Kept beside ``start_fork`` for
+    the same reason ``start_fork`` itself is kept.
 
     The prompt-cache key starts with the system prompt, which embeds the working
     directory and the git snapshot, so a fork whose cwd is its worktree misses

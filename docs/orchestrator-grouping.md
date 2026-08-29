@@ -34,11 +34,15 @@ first. Those are different graphs that happen to share the same nodes.
 
 Everything else in this document is machinery serving those three rows.
 
-**At most two LLM calls; everything else is deterministic.** The model sits only
-at the two *edges* (mapper in, speccer out). The whole middle — graph building,
-partitioning, sizing, difficulty — is pure Python over codegraph data, seeded and
-byte-stable. Plans carrying an embedded [task map](orchestrator-task-map.md) skip
-the mapper entirely, so only the speccer remains.
+**At most one LLM call; everything else is deterministic** (plan U4/ADR 0006 —
+the grouping-time speccer that used to sit at the output edge is gone). The
+model sits only at the input edge: the mapper, and only as a fallback. Plans
+carrying an embedded [task map](orchestrator-task-map.md) skip the mapper
+too, so `group` on such a plan makes **zero** LLM calls end to end — naming,
+summaries, specs, and verification are all assembled from the plan's own
+unit sections. The whole pipeline — graph building, partitioning, sizing,
+difficulty, spec assembly — is pure Python over codegraph data plus the plan
+text, seeded and byte-stable.
 
 Intended authoring flow:
 `/orchestrator-brainstorm` → `/orchestrator-plan` → `group <plan> --no-spec`
@@ -72,15 +76,10 @@ flowchart TD
         partition["DefaultPartitionStrategy.partition()<br/>hub → contract → Louvain → lift<br/>→ split → merge → <b>repair</b> → renumber"]
         partition --> dag["build_group_dag()<br/><i>safety net: a cycle here is a bug</i>"]
         dag --> est["estimator + difficulty<br/>→ review intensity"]
+        est --> assemble["assemble_group_specs()<br/>name · summary · spec · verification<br/><i>from the plan's own unit sections —<br/>never moves tasks</i>"]
     end
 
-    est --> speccer
-
-    subgraph LLM2["🧠 LLM #2 — speccer"]
-        speccer["write_specs()<br/>name · summary · spec · verification<br/><i>never moves tasks</i>"]
-    end
-
-    speccer --> out["groupings/&lt;name&gt;/<br/>groups.json · base-context.md<br/>· grouping-trace.json"]
+    assemble --> out["groupings/&lt;name&gt;/<br/>groups.json · base-context.md<br/>· grouping-trace.json"]
 ```
 
 In code (`pipeline.py:189` and `:309`):
@@ -95,7 +94,7 @@ graph = build_task_graph(mapper_out.mappings, client, weights)  # codegraph + pl
 graph = _with_prose_fallback(graph, mapper_out, ...)            # region-less edges
 partition = DefaultPartitionStrategy(...).partition(graph)      # deterministic
 dag = build_group_dag(graph, partition)                         # safety net
-specs = write_specs(strip_task_map(plan_text), skeletons, ...)  # LLM #2
+specs = assemble_group_specs(inputs)                            # deterministic — zero LLM calls
 ```
 
 A malformed task map raises `GrouperError` **before any LLM call** — never a silent
@@ -393,30 +392,53 @@ or cycle a slice are structural.
 
 ______________________________________________________________________
 
-## Stage 5 — the speccer
+## Stage 5 — spec assembly
 
-[`write_specs()`](../orchestrator/grouping/speccer.py) (`speccer.py:62`) writes
-`name`, `summary` (≤120 chars), worker-facing `spec`, and `verification` items for
-each **already-decided** group. It never moves tasks or invents groups; validation
-(`speccer.py:79`) rejects an over-length summary and requires output covering
-exactly the given group ids.
+> **Removed: the grouping-time speccer.** Through plan U4 (2026-08-28, ADR
+> 0006), grouping used an LLM ("the speccer") to write each group's
+> `name`/`summary`/`spec`/`verification` from a per-group skeleton. It was
+> deleted (see the commit sha at the end of this section) in favor of the
+> deterministic assembler below — the paraphrase it added was cost and drift
+> surface, not information. The **mid-run rewrite speccer** (a separate,
+> execution-time call site, `orchestrator/cli.py`'s `_rewrite_provider`) was
+> not touched; it still runs the same kind of LLM call, one-shot, only when a
+> surprise forces a spec rewrite after launch. Recovery, if the deterministic
+> approach ever needs to be abandoned, is a cherry-pick of that commit.
 
-The mapper and speccer both run under `[session] speccer_model`, which defaults to
-Opus (`claude-opus-5`) — independent of the worker model coder/reviewer forks get
-(default Sonnet) — because a spec rewrite is one call per grouping and is the
-place the strongest model earns its cost. `--model-speccer` and
-`[session] speccer_model` in config override it; see
-[configuration reference → `[session]`](orchestrator-grouping-config.md).
+[`assemble_group_specs()`](../orchestrator/grouping/assembler.py) builds every
+group's `name`, `summary` (≤120 chars), worker-facing `spec`, and
+`verification` with **zero LLM calls**: name/summary come from the member
+plan units' titles, the spec is a generated relational header (member list,
+intra-group `depends_on` order, upstream/downstream groups with the
+contract tags exchanged) followed by the member units' plan sections
+verbatim, and verification items are the units' own Verification bullets
+with ids `<group_id>-<n>`. A lint after assembly requires every unit's
+Verification bullet to land in exactly one group, or grouping fails naming
+the unit. `groups.json` records the flag
+`specs: assembled from plan — speccer LLM skipped`.
 
-Both LLM stages go through one seam,
-[`call_llm_json()`](../orchestrator/grouping/llm.py) (`llm.py:67`) — the only place
-grouping talks to a model, which is why tests inject a stub runner and spend zero
-tokens. It validates, retries up to twice with the error appended, then raises
-`LlmError` and saves the raw output to `.orchestrator/failures/`.
+The **mapper** (Stage 1's fallback path, for a plan with no embedded task
+map) and the **mid-run rewrite speccer** (an escalation-triggered spec
+rewrite, `orchestrator/cli.py`'s `_rewrite_provider`) are the two LLM calls
+left in the grouping/execution surface. Both run under
+`[session] speccer_model`, which defaults to Opus (`claude-opus-5`) —
+independent of the worker model coder/reviewer forks get (default Sonnet).
+`--model-speccer` and `[session] speccer_model` in config override it; see
+[configuration reference → `[session]`](orchestrator-grouping-config.md). The
+run launch form still exposes this knob (labeled "rewrite speccer model");
+the grouping launch form does not, since grouping itself makes no speccer
+call to configure.
 
-> **Known gap:** the speccer can *see* cross-group ordering in its prose (in a live
-> smoke it wrote *"this group builds on the scaffold group"*), but that
-> understanding is never fed back into the DAG — `dependencies` were fixed upstream.
+Both LLM call sites go through one seam,
+[`call_llm_json()`](../orchestrator/grouping/llm.py) (`llm.py:67`) — the only
+place grouping/execution talks to a model, which is why tests inject a stub
+runner and spend zero tokens. It validates, retries up to twice with the
+error appended, then raises `LlmError` and saves the raw output to
+`.orchestrator/failures/`.
+
+**Grouping-time speccer removed:** the commit that deleted
+`orchestrator/grouping/speccer.py` and `orchestrator/prompts/speccer.md` (plan
+U4) is `d57c5cf` — recorded here for cherry-pick recovery per ADR 0006.
 
 ______________________________________________________________________
 
@@ -490,9 +512,11 @@ ______________________________________________________________________
    must-links plus matched route tags hold them together. Plans without a task map
    still have no semantic signal.
 
-3. **LLM non-determinism — ✅ resolved for pre-mapped plans.** Mapper and speccer
-   are model calls. A pre-mapped plan removes the mapper's share entirely (the
-   parse is byte-stable); the speccer still writes prose but never moves tasks.
+3. **LLM non-determinism — ✅ resolved for pre-mapped plans.** The mapper is
+   the only model call left in `group` (plan U4/ADR 0006 removed the
+   grouping-time speccer). A pre-mapped plan removes the mapper's share too —
+   the parse and the deterministic spec assembly are both byte-stable, so
+   `group` on such a plan is fully reproducible end to end.
 
 4. **Derived precedence saturated the graph — ✅ FIXED 2026-07-29.**
    `build_task_graph` turns every `callers`/`callees`/`impact` relation into a

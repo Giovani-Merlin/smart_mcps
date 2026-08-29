@@ -98,6 +98,43 @@ Unlisted keys are a hard error (they are almost always typos of the above).
 `medium` (2,000 tokens, today's flat rate) — only files whose planner-known
 size diverges from that default need a hint.
 
+## Pricing a task's node work
+
+Each task's **node work**, in tokens, is:
+
+```
+node_work = source_bytes / 4.0 × 1.3 + per-file allowance
+```
+
+- `source_bytes / 4.0` — existing files' bytes converted to tokens at
+  `bytes_per_token` (4.0).
+- `× 1.3` — `slack_multiplier`, applied to the byte-derived estimate.
+- **per-file allowance** — each existing file adds `per_file_tool_allowance`
+  (2,000 tokens, the tool-output overhead of reading it); each prospective
+  file adds its `size_hints` class price (`small` 500, `medium` 2,000,
+  `large` 5,000) or the same flat 2,000 default if unhinted.
+
+A group's (and a slice's) **budget cap** is the token budget minus a fixed
+head:
+
+```
+cap = 200,000 − head
+head = (base_tokens + spec_tokens_allowance) × 1.3 × 2.5
+```
+
+`base_tokens` is the size of the shared base context every worker forks from;
+`spec_tokens_allowance` is the assembled-spec budget; `2.5` is
+`coder_slack_multiplier`, converting read-cost tokens into the coder-session
+peak the cap actually guards (a coder iterates, so its real usage runs well
+above a single read pass). Node work is scaled by the same `2.5` before it is
+compared against the cap, so both sides of the comparison are in coder
+tokens.
+
+These are today's defaults (`orchestrator/grouping/estimator.py`,
+`orchestrator/config.py`) — check `group --price <plan>` for the actual
+resolved values and a sub-second, per-task breakdown against the cap before
+running the full pipeline.
+
 ## Validation rules
 
 **Hard errors** (`GrouperError`, zero LLM calls — the run stops):

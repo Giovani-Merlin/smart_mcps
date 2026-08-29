@@ -156,8 +156,8 @@ class ScratchWritingRunner:
         self._counter = 0
         self._roles: dict[str, str] = {}
 
-    def start_fork(
-        self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+    def start_worker(
+        self, *, base_context, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
     ) -> RoundResult:
         self._counter += 1
         sid = session_id or f"sess-{self._counter}"
@@ -202,7 +202,9 @@ def test_round_end_archives_scratch_and_worktree_stays_clean_for_merge(tmp_path,
         runner=runner,
         store=store,
         manifest=manifest,
-        base_session_id="base-0",
+        base_context="SHARED BASE CONTEXT",
+        base_session_id=None,
+        fork_base_session=False,
         breaker=BreakerConfig(),
         execution=ExecutionConfig(),
         board=SurpriseBoard(),

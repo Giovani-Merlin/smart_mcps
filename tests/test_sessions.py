@@ -51,6 +51,7 @@ from orchestrator.execution.worktrees import (
     integration_branch,
     is_denied_git_invocation,
     provision_env,
+    provision_node_env,
     remove_worktree,
     worktree_path,
 )
@@ -1095,3 +1096,86 @@ def test_the_limit_prose_reaches_the_gate_unwrapped(fake_home, tmp_path):
     with pytest.raises(UsageLimit) as caught:
         runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
     assert caught.value.detail == detail
+
+
+def test_provision_node_env_runs_npm_ci_only_when_ui_package_json_exists(tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert provision_node_env(bare, runner=fake_run) is False
+    assert calls == []
+
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    assert provision_node_env(ui_repo, runner=fake_run) is True
+    assert calls == [["npm", "ci", "--no-audit", "--fund=false"]]
+
+
+def test_provision_node_env_failure_is_non_fatal(tmp_path):
+    """A machine without npm must weaken the merge gate, never halt the run."""
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    events: list[str] = []
+
+    def missing_npm(argv, **kwargs):
+        raise FileNotFoundError("npm")
+
+    assert provision_node_env(ui_repo, runner=missing_npm, log=events.append) is False
+    assert any("npm ci failed" in event for event in events)
+
+
+def test_provision_node_env_runs_in_the_ui_subdirectory(tmp_path):
+    ui_repo = tmp_path / "ui-repo"
+    (ui_repo / "ui").mkdir(parents=True)
+    (ui_repo / "ui" / "package.json").write_text("{}")
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    states: list[tuple[str, list[str]]] = []
+    provision_node_env(ui_repo, runner=fake_run, on_state=lambda s, a: states.append((s, a)))
+    assert seen["cwd"] == ui_repo / "ui"
+    assert states == [("provisioned", ["npm", "ci", "--no-audit", "--fund=false"])]
+
+
+def test_start_worker_prepends_the_base_context_verbatim_and_never_forks(fake_home, tmp_path):
+    """ADR 0007: a worker is a fresh session whose first prompt *is* the base
+    context followed by its own prompt — no `--resume`, no `--fork-session`,
+    and no preamble in front of the context (the AE6 identity contract)."""
+    runner = make_runner(fake_home)
+    base_context = "# Base context\n\n## Worker ground rules\n\nbe careful\n"
+    result = runner.start_worker(
+        base_context=base_context,
+        prompt="<run-manifest run_id=\"r1\">…</run-manifest>",
+        name="r1-g1-coder-g1",
+        cwd=tmp_path,
+    )
+    call = calls(fake_home)[-1]
+    assert call["prompt"] == base_context + "\n\n" + "<run-manifest run_id=\"r1\">…</run-manifest>"
+    assert call["prompt"].startswith("# Base context")
+    assert "--resume" not in call["argv"]
+    assert "--fork-session" not in call["argv"]
+    assert call["argv"][call["argv"].index("--name") + 1] == "r1-g1-coder-g1"
+    assert call["argv"][call["argv"].index("--session-id") + 1] == result.session_id
+
+
+def test_start_worker_honours_a_caller_supplied_session_id(fake_home, tmp_path):
+    """Plan U7: the id is recorded in the manifest before this blocking call,
+    so a crash mid-launch still leaves a resumable entry."""
+    runner = make_runner(fake_home)
+    sid = str(uuid.uuid4())
+    result = runner.start_worker(
+        base_context="", prompt="go", name="r1-g1-coder-g1", cwd=tmp_path, session_id=sid
+    )
+    assert result.session_id == sid
+    call = calls(fake_home)[-1]
+    assert call["prompt"] == "go"  # an empty base context adds nothing at all

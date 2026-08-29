@@ -1,6 +1,7 @@
 """End-to-end grouping pipeline: plan document in → groups + DAG + base context out.
 
-LLM at the edges (mapper in, speccer out), deterministic core in between (plan U4).
+LLM only at the mapper edge (foreign plans with no embedded task map); specs are
+assembled deterministically from the plan's own unit sections (plan U2), zero LLM.
 Partition computation stays strictly separate from execution — CoCoder fused them;
 we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 """
@@ -17,7 +18,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import OrchestratorConfig
+from orchestrator.grouping.assembler import ASSEMBLED_FLAG, AssemblyInputs, assemble_group_specs
 from orchestrator.grouping.base_context import compile_base_context
+from orchestrator.grouping.errors import ErrorAccumulator
 from orchestrator.grouping.estimator import (
     DifficultySignals,
     difficulty_score,
@@ -44,16 +47,19 @@ from orchestrator.grouping.mapper import MapperOutput, map_tasks
 from orchestrator.grouping.partition import (
     LOUVAIN_SEED,
     DefaultPartitionStrategy,
+    DegenerateRepair,
+    Pair,
     Partition,
     WorkFn,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
+    find_slice_reentrant_paths,
     slice_atoms,
 )
-from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map, strip_task_map
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
+from orchestrator.grouping.plan_sections import parse_plan_sections
 from orchestrator.grouping.scorecard import compute_scorecard
-from orchestrator.grouping.speccer import write_specs
 from orchestrator.grouping.trace import (
     BudgetArithmetic,
     GroupDifficultyEntry,
@@ -217,6 +223,7 @@ def _check_slice_overflow(
     budget_cap: float,
     allow_oversized_slice: bool,
     flags: list[str],
+    coder_slack_multiplier: float,
 ) -> None:
     """R5: a slice's own summed work can exceed the cap no matter how the rest
     of the graph is partitioned — ``split_over_budget`` (U3) already keeps such
@@ -226,28 +233,97 @@ def _check_slice_overflow(
     ``--allow-oversized-slice``, config ``[partition] allow_oversized_slice`` —
     exactly equivalent) accepts the overshoot instead and records it in
     ``flags`` for the caller to surface.
+
+    Every over-cap slice is collected before raising (plan U6/C1) — a plan
+    with several oversized slices names all of them in one ``GrouperError``
+    instead of costing one ``group`` invocation per slice.
+
+    ``node_work_fn`` (and therefore ``budget_cap``) is already scaled to a
+    coder — plan U8/C2 requires the operator-facing message to distinguish
+    that "coder work" figure from the unscaled "node work" it was derived
+    from, and to state the multiplier, rather than reporting one bare "work"
+    number that could be read as either.
     """
+    errors = ErrorAccumulator()
     for label, members in sorted(atoms.items()):
-        work_by_member = {m: node_work_fn(m) for m in sorted(members)}
-        total = sum(work_by_member.values())
-        if total <= budget_cap:
+        coder_work_by_member = {m: node_work_fn(m) for m in sorted(members)}
+        node_work_by_member = {
+            m: v / coder_slack_multiplier for m, v in coder_work_by_member.items()
+        }
+        total_coder_work = sum(coder_work_by_member.values())
+        if total_coder_work <= budget_cap:
             continue
-        overshoot = total - budget_cap
-        detail = ", ".join(f"{m}={work_by_member[m]:.0f}" for m in sorted(work_by_member))
+        overshoot = total_coder_work - budget_cap
+        total_node_work = sum(node_work_by_member.values())
+        detail = ", ".join(
+            f"{m}={node_work_by_member[m]:.0f} node work / {coder_work_by_member[m]:.0f} coder work"
+            for m in sorted(coder_work_by_member)
+        )
         message = (
             f"slice {label!r} cannot fit in one group: members [{detail}] sum to "
-            f"{total:.0f} work, exceeding the {budget_cap:.0f} cap by {overshoot:.0f}"
+            f"{total_node_work:.0f} node work / {total_coder_work:.0f} coder work "
+            f"(coder_slack_multiplier={coder_slack_multiplier:g}), exceeding the "
+            f"{budget_cap:.0f} coder work cap by {overshoot:.0f}"
         )
         if not allow_oversized_slice:
-            raise GrouperError(message)
+            errors.add(message)
+            continue
         flags.append(
-            f"partition: slice {label!r} accepted {overshoot:.0f} over the "
+            f"partition: slice {label!r} accepted {overshoot:.0f} coder work over the "
             f"{budget_cap:.0f} cap (--allow-oversized-slice / allow_oversized_slice)"
         )
+    errors.raise_all(GrouperError)
+
+
+def _edge_provenance_counts(
+    graph: TaskGraph, edges: tuple[Pair, ...]
+) -> tuple[int, int, dict[str, int]]:
+    """Classify ``edges`` (a degenerate-partition SCC's task-level dependency
+    edges) as declared vs. inferred, sourced from the same per-edge ledgers
+    ``edge_provenance_document`` already walks (plan U9/C4.2) — no second
+    provenance channel. ``inferred_kinds`` counts inferred edges by their
+    ledger's signal kinds (e.g. ``"call"``, ``"call+impact"``), so the message
+    can name what they were inferred *from*.
+    """
+    provenance = graph.provenance
+    if not isinstance(provenance, EdgeProvenance):
+        return 0, len(edges), {"unknown": len(edges)} if edges else {}
+    declared = inferred = 0
+    inferred_kinds: dict[str, int] = {}
+    for key in edges:
+        if provenance.dependency_is_declared(key):
+            declared += 1
+            continue
+        inferred += 1
+        kinds = provenance.dependency_kinds(key)
+        label = "+".join(kinds) if kinds else "unknown"
+        inferred_kinds[label] = inferred_kinds.get(label, 0) + 1
+    return declared, inferred, inferred_kinds
+
+
+def _degenerate_repair_detail(graph: TaskGraph, repair: DegenerateRepair) -> str:
+    """One repaired group's overshoot message(s) plus the inferred/declared
+    provenance breakdown of the task edges that closed its cycle (plan
+    U9/C4.2, R8) — e.g. "103 of 127 dependency edges in this group are
+    inferred (103 call), 24 are declared depends_on", the sentence that would
+    have named the run-2/run-3 saturation immediately instead of a generic
+    "graph is saturated" diagnosis.
+    """
+    declared, inferred, inferred_kinds = _edge_provenance_counts(graph, repair.evidence_edges)
+    total = declared + inferred
+    provenance = "0 of 0 dependency edges recorded for this group"
+    if total:
+        kinds = ", ".join(f"{count} {kind}" for kind, count in sorted(inferred_kinds.items()))
+        provenance = (
+            f"{inferred} of {total} dependency edges in this group are inferred"
+            f"{f' ({kinds})' if kinds else ''}, {declared} are declared depends_on"
+        )
+    return "; ".join([*repair.overshoot_messages, provenance])
 
 
 def _check_degenerate_partition(
-    repair_flags: list[str],
+    graph: TaskGraph,
+    repairs: list[DegenerateRepair],
     allow_degenerate_partition: bool,
 ) -> None:
     """A cycle repair that could not re-split back under budget is a *failure*.
@@ -259,15 +335,18 @@ def _check_degenerate_partition(
     and `group` exited 0 (docs/orchestrator-grouping.md, limitation 5).
 
     Loud by default, mirroring ``_check_slice_overflow``: the overshoot is
-    reported with the partition's own message, and the escape hatch
+    reported with the partition's own message plus how many of the offending
+    SCC's edges are inferred vs. declared and what the inferred ones were
+    inferred from (plan U9/C4.2/R8) — sourced from ``graph.provenance``, the
+    same ledgers ``edge-provenance.json`` already records. The escape hatch
     (``--allow-degenerate-partition`` / ``[partition] allow_degenerate_partition``
     — exactly equivalent) accepts it instead. Unlike an oversized slice, this is
     never something the operator declared, so the default is an error rather than
     a warning.
     """
-    if not repair_flags or allow_degenerate_partition:
+    if not repairs or allow_degenerate_partition:
         return
-    detail = "\n  ".join(repair_flags)
+    detail = "\n  ".join(_degenerate_repair_detail(graph, repair) for repair in repairs)
     raise GrouperError(
         "partition is degenerate — cycle repair collapsed groups it could not "
         f"re-split back under budget:\n  {detail}\n"
@@ -275,6 +354,28 @@ def _check_degenerate_partition(
         "than the plan being too large. Inspect grouping-trace.json ('repairs') for "
         "the offending edges, or accept it with --allow-degenerate-partition."
     )
+
+
+def _check_slice_reentry(graph: TaskGraph, atoms: dict[str, list[str]]) -> None:
+    """R10/C5: before partitioning, name any dependency path that leaves a
+    declared slice and re-enters it — the exact shape that makes
+    ``_contract_slices`` close a cycle that does not exist at task level, and
+    that used to surface only as a generic degenerate-partition saturation
+    message with no actionable edit (run 10, docs/todos/grouping_improvements.md
+    C5). Every slice exhibiting the shape is collected and reported together
+    (R5 discipline), each naming the slice, the full offending path, and both
+    remedies.
+    """
+    errors = ErrorAccumulator()
+    for reentry in find_slice_reentrant_paths(graph, atoms):
+        path = reentry.path
+        bring_in = ", ".join(repr(n) for n in path[1:-1])
+        errors.add(
+            f"slice {reentry.slice!r} contracts {path[0]!r} and {path[-1]!r}, but "
+            f"{' -> '.join(path)} leaves the slice and returns — bring {bring_in} "
+            "into the slice or drop the label"
+        )
+    errors.raise_all(GrouperError)
 
 
 SELF_MODIFICATION_FLAG = (
@@ -433,36 +534,42 @@ class PartitionOutcome:
     base_tokens: int
 
 
-def compute_partition(
+@dataclass(frozen=True)
+class GraphBuildOutcome:
+    """The mapper → graph prefix of ``compute_partition`` (plan U11 seam),
+    extracted so ``--advise`` can build the task graph **once** and partition
+    it at every granularity preset, instead of repeating the mapper and
+    codegraph work per preset. ``compute_partition`` itself is just this
+    followed by one partition; nothing about its behavior changes.
+    """
+
+    plan_text: str
+    mapper_out: MapperOutput
+    graph: TaskGraph
+    quiesced_fingerprint: str
+    base_context: str
+    base_tokens: int
+    budget_cap: float
+
+
+def build_partition_graph(
     plan_path: Path,
     repo_root: Path,
-    config: OrchestratorConfig | None = None,
-    llm_runner: JsonRunner | None = None,
-    client: CodegraphClient | None = None,
+    config: OrchestratorConfig,
+    llm_runner: JsonRunner,
+    client: CodegraphClient,
     allow_unknown_symbols: bool = False,
     recorder: TraceRecorder | None = None,
     llm_recorder: LlmCallRecorder | None = None,
-    provenance_recorder: EdgeProvenanceRecorder | None = None,
     progress: ProgressFn | None = None,
-) -> PartitionOutcome:
-    """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
-    does before handing off to the speccer, callable on its own.
-
-    ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
-    fills a ``GroupingTrace`` alongside the computation without changing it —
-    every fixture partitions identically with or without one attached.
-
-    ``progress``, if given, is called with one short stage-name string as each
-    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
-    and a half minutes of silence into a streamable job log.
+) -> GraphBuildOutcome:
+    """Mapper → graph (R19/plan U11 seam): everything before a partition
+    strategy runs. Callers must have already defaulted ``config``/``llm_runner``/
+    ``client`` — this function takes them as required so it never silently
+    builds a second ``CodegraphClient`` behind a caller's back.
     """
     if not plan_path.is_file():
         raise GrouperError(f"plan document not found: {plan_path}")
-    config = config or OrchestratorConfig()
-    llm_runner = llm_runner or functools.partial(
-        claude_json_runner, model=config.session.speccer_model
-    )
-    client = client or CodegraphClient(repo_root=repo_root)
     failure_dir = repo_root / ".orchestrator" / "failures"
 
     _emit(progress, "stage: mapper")
@@ -509,9 +616,6 @@ def compute_partition(
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
     budget_cap = partition_budget_cap(base_tokens, config.estimator)
 
-    def node_work_fn(node: str) -> float:
-        return node_work(graph.metadata.get(node, {}), config.estimator)
-
     if recorder is not None:
         recorder.set_config(config.model_dump())
         recorder.set_input_graph(graph.nodes, graph.affinity, graph.dependencies)
@@ -535,25 +639,107 @@ def compute_partition(
             )
         )
 
+    return GraphBuildOutcome(
+        plan_text=plan_text,
+        mapper_out=mapper_out,
+        graph=graph,
+        quiesced_fingerprint=quiesced_fingerprint,
+        base_context=base_context,
+        base_tokens=base_tokens,
+        budget_cap=budget_cap,
+    )
+
+
+def compute_partition(
+    plan_path: Path,
+    repo_root: Path,
+    config: OrchestratorConfig | None = None,
+    llm_runner: JsonRunner | None = None,
+    client: CodegraphClient | None = None,
+    allow_unknown_symbols: bool = False,
+    recorder: TraceRecorder | None = None,
+    llm_recorder: LlmCallRecorder | None = None,
+    provenance_recorder: EdgeProvenanceRecorder | None = None,
+    progress: ProgressFn | None = None,
+) -> PartitionOutcome:
+    """Mapper → graph → partition → group DAG (R19 seam): everything ``run_grouping``
+    does before handing off to the speccer, callable on its own.
+
+    ``recorder`` is an optional, default-``None`` seam (plan U8): passing one
+    fills a ``GroupingTrace`` alongside the computation without changing it —
+    every fixture partitions identically with or without one attached.
+
+    ``progress``, if given, is called with one short stage-name string as each
+    stage of the pipeline starts (plan U24) — the CLI's seam for turning three
+    and a half minutes of silence into a streamable job log.
+    """
+    config = config or OrchestratorConfig()
+    llm_runner = llm_runner or functools.partial(
+        claude_json_runner, model=config.session.speccer_model
+    )
+    client = client or CodegraphClient(repo_root=repo_root)
+
+    build = build_partition_graph(
+        plan_path=plan_path,
+        repo_root=repo_root,
+        config=config,
+        llm_runner=llm_runner,
+        client=client,
+        allow_unknown_symbols=allow_unknown_symbols,
+        recorder=recorder,
+        llm_recorder=llm_recorder,
+        progress=progress,
+    )
+    plan_text = build.plan_text
+    mapper_out = build.mapper_out
+    graph = build.graph
+    quiesced_fingerprint = build.quiesced_fingerprint
+    base_context = build.base_context
+    base_tokens = build.base_tokens
+    budget_cap = build.budget_cap
+
+    def node_work_fn(node: str) -> float:
+        return node_work(graph.metadata.get(node, {}), config.estimator)
+
+    # Computed once, ahead of partitioning, so the slice-reentry check (R10/C5)
+    # can run on the pre-partition graph — `DefaultPartitionStrategy.partition`
+    # recomputes its own roles/atoms internally for contraction, which is fine:
+    # neither call mutates the graph, and this one only ever feeds checks.
+    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
+    atoms = slice_atoms(graph, roles)
+    _check_slice_reentry(graph, atoms)
+
+    # The mapper's own depends_on pairs (plan U10) — repair_cycles never withdraws
+    # these, even when they also carry an inferred contribution on the same edge.
+    declared_edges = frozenset(
+        (upstream, mapping.task_id)
+        for mapping in mapper_out.mappings
+        for upstream in mapping.depends_on
+    )
+
     strategy = DefaultPartitionStrategy(
         work_fn=node_work_fn,
         budget_cap=budget_cap,
         hub_threshold=config.partition.hub_threshold,
         louvain_resolution=config.partition.louvain_resolution,
         granularity=config.partition.granularity,
+        target_fill_ratio=config.partition.target_fill_ratio,
         recorder=recorder,
+        declared=declared_edges,
     )
     _emit(progress, "stage: partition")
+    # strategy.partition may withdraw inferred precedence edges from graph.dependencies
+    # in place (plan U10's cycle repair) — everything above this line has already read
+    # what it needs from `graph`, so the mutation is safe.
     partition = strategy.partition(graph)
     # Before _check_slice_overflow appends to the same list: at this point
     # strategy.flags carries only the repair-overshoot messages, which is exactly
     # what the degeneracy gate judges.
     _check_degenerate_partition(
-        repair_flags=list(strategy.flags),
+        graph=graph,
+        repairs=strategy.degenerate_repairs,
         allow_degenerate_partition=config.partition.allow_degenerate_partition,
     )
-    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
-    atoms = slice_atoms(graph, roles)
     _assert_slice_integrity(atoms, partition)
     flags = list(strategy.flags)
     _check_slice_overflow(
@@ -562,6 +748,7 @@ def compute_partition(
         budget_cap=budget_cap,
         allow_oversized_slice=config.partition.allow_oversized_slice,
         flags=flags,
+        coder_slack_multiplier=config.estimator.coder_slack_multiplier,
     )
     dag = build_group_dag(graph, partition)
 
@@ -632,13 +819,13 @@ def run_grouping(
     provenance_recorder: EdgeProvenanceRecorder | None = None,
     progress: ProgressFn | None = None,
 ) -> tuple[GroupingResult, str]:
-    """Full pipeline: mapper (LLM) → graph → partition → estimator → speccer (LLM)."""
+    """Full pipeline: mapper (LLM) → graph → partition → estimator → deterministic
+    spec assembly (zero LLM, plan U2)."""
     config = config or OrchestratorConfig()
     llm_runner = llm_runner or functools.partial(
         claude_json_runner, model=config.session.speccer_model
     )
     client = client or CodegraphClient(repo_root=repo_root)
-    failure_dir = repo_root / ".orchestrator" / "failures"
 
     outcome = compute_partition(
         plan_path=plan_path,
@@ -660,22 +847,18 @@ def run_grouping(
     for node, gid in partition.items():
         members_by_gid.setdefault(gid, []).append(node)
 
-    skeletons = {
-        group_label(gid): {
-            "tasks": sorted(members),
-            "descriptions": {t: mapper_out.descriptions.get(t, "") for t in sorted(members)},
-            "files": _union_files(graph, members),
-        }
-        for gid, members in sorted(members_by_gid.items())
-    }
-    total_specs = len(skeletons)
-    _emit(progress, f"stage: specs total={total_specs}")
-    specs = write_specs(
-        strip_task_map(outcome.plan_text),
-        skeletons,
-        llm_runner,
-        failure_dir=failure_dir,
-        recorder=llm_recorder,
+    _emit(progress, "stage: assemble")
+    plan_sections = parse_plan_sections(outcome.plan_text)
+    specs = assemble_group_specs(
+        AssemblyInputs(
+            plan_sections=plan_sections,
+            graph=graph,
+            partition=partition,
+            dag=dag,
+            members_by_gid=members_by_gid,
+            descriptions=mapper_out.descriptions,
+            group_label=group_label,
+        )
     )
 
     upstream_of: dict[int, list[int]] = {gid: [] for gid in members_by_gid}
@@ -684,9 +867,9 @@ def run_grouping(
             upstream_of[down_gid].append(up_gid)
 
     roles = outcome.hub_roles
-    flags = list(mapper_out.flags) + list(outcome.flags)
+    flags = list(mapper_out.flags) + list(outcome.flags) + [ASSEMBLED_FLAG]
     groups: list[Group] = []
-    for spec_index, (gid, members) in enumerate(sorted(members_by_gid.items()), start=1):
+    for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
@@ -749,7 +932,6 @@ def run_grouping(
                 estimated_tokens=estimated,
             )
         )
-        _emit(progress, f"spec {spec_index}/{total_specs}")
 
     result = GroupingResult(
         plan_path=_portable_path(plan_path, repo_root), groups=groups, flags=flags

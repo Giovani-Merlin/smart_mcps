@@ -1148,8 +1148,13 @@ class TestRunBanner:
 
     def test_banner_precedes_the_base_session_spawn(self, tmp_path, capsys, monkeypatch):
         fake_home = self._setup(tmp_path, monkeypatch, failures=1)
+        # `--fork-base`: these assertions key off the run's *first* CLI spawn
+        # dying, and with workers starting fresh (ADR 0007) the first spawn is
+        # a coder, whose failure lands the group INTERRUPTED instead. The base
+        # session is the stable single-spawn observable for banner ordering.
         exit_code = main(
-            ["run", "--repo", str(tmp_path), "--run-id", "r9", "--sequential", "--hitl"]
+            ["run", "--repo", str(tmp_path), "--run-id", "r9", "--sequential", "--hitl",
+             "--fork-base"]
         )
         captured = capsys.readouterr()
         assert exit_code == 1
@@ -1183,6 +1188,7 @@ class TestRunBanner:
                 "4",
                 "--intensity",
                 "autonomous",
+                "--fork-base",
             ]
         )
         assert exit_code == 1
@@ -1286,6 +1292,7 @@ class TestModelFlags:
                 "r11",
                 "--model-worker",
                 "custom-worker-model",
+                "--fork-base",
             ]
         )
         assert exit_code == 1
@@ -1348,6 +1355,7 @@ class TestReviewIntensityWarning:
                 "autonomous",
                 "--review-intensity",
                 "paired_plus",
+                "--fork-base",
             ]
         )
         assert exit_code == 1
@@ -1364,7 +1372,9 @@ class TestReviewIntensityWarning:
     ):
         self._setup(tmp_path, monkeypatch)
         before = self._groups_json(tmp_path)
-        exit_code = main(["run", "--repo", str(tmp_path), "--run-id", "r13", "--sequential"])
+        exit_code = main(
+            ["run", "--repo", str(tmp_path), "--run-id", "r13", "--sequential", "--fork-base"]
+        )
         assert exit_code == 1
         out = capsys.readouterr().out
         assert "overrides" not in out

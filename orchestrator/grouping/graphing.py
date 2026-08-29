@@ -525,6 +525,29 @@ class EdgeProvenance:
         ledger = self.dependencies.setdefault(key, EdgeLedger())
         ledger.add(contribution, self.max_contributions_per_edge)
 
+    def dependency_kinds(self, key: Pair) -> tuple[str, ...]:
+        """Signal kinds recorded for one dependency edge, e.g. ``("call",
+        "impact")`` — empty if the edge carries no ledger at all."""
+        ledger = self.dependencies.get(key)
+        if ledger is None:
+            return ()
+        return tuple(sorted({c.kind for c in ledger.contributions}))
+
+    def dependency_is_declared(self, key: Pair) -> bool:
+        """Whether ``key`` carries at least one declared (task-map
+        ``depends_on``) contribution, as opposed to being wholly inferred from
+        codegraph relations — the same per-edge ledger
+        ``edge_provenance_document`` already walks, exposed here as a reusable
+        predicate (plan U9/U10) rather than re-derived error-message text.
+        Declared and inferred contributions can coexist on one edge (a
+        depends_on pair that also happens to call each other); any declared
+        contribution is enough to call the edge declared.
+        """
+        ledger = self.dependencies.get(key)
+        if ledger is None:
+            return False
+        return any(c.declared for c in ledger.contributions)
+
     def withdraw(self, key: Pair, reason: str, cycle_members: Sequence[str] = ()) -> None:
         ledger = self.dependencies.pop(key, EdgeLedger())
         self.withdrawn.append(

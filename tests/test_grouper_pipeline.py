@@ -38,51 +38,109 @@ GREENFIELD_PLAN = """# feat: greenfield service
 
 ## Units
 
-- t1-scaffold: create the app skeleton
-- t2-items-api: items API routes
-- t3-items-ui: items admin page
-- t4-docs: usage docs
+### U1. scaffold — create the app skeleton
+
+- **Goal**: create the app skeleton
+- **Summary**: Creates the app skeleton.
+- **Files**: `app/main.py` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: —
+- **Verification**: `app/main.py` exists.
+
+### U2. items-api — items API routes
+
+- **Goal**: items API routes
+- **Summary**: Items API routes on the scaffold.
+- **Files**: `app/items.py` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: items
+- **Implements / Consumes**: implements `/api/items`
+- **Verification**: `GET /api/items` responds.
+
+### U3. items-ui — items admin page
+
+- **Goal**: items admin page
+- **Summary**: Items admin page calling the items API.
+- **Files**: `web/items.tsx` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: items
+- **Implements / Consumes**: consumes `/api/items`
+- **Verification**: the items page renders.
+
+### U4. docs — usage docs
+
+- **Goal**: usage docs
+- **Summary**: Usage docs for the service.
+- **Files**: `docs/usage.md` *(new)*
+- **Depends-on**: u1-scaffold
+- **Slice**: —
+- **Implements / Consumes**: —
+- **Verification**: `docs/usage.md` exists.
 
 ## Task Map
 
 ```yaml
 # orchestrator-task-map v1
 tasks:
-  - task_id: t1-scaffold
+  - task_id: u1-scaffold
     description: create the app skeleton
     files: [app/main.py]
-  - task_id: t2-items-api
+  - task_id: u2-items-api
     description: items API routes
     slice: items
     files: [app/items.py]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
     implements: ["/api/items"]
-  - task_id: t3-items-ui
+  - task_id: u3-items-ui
     description: items admin page
     slice: items
     files: [web/items.tsx]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
     consumes: ["/api/items"]
-  - task_id: t4-docs
+  - task_id: u4-docs
     description: usage docs
     files: [docs/usage.md]
-    depends_on: [t1-scaffold]
+    depends_on: [u1-scaffold]
 ```
 """
 
 MIXED_PLAN = """# feat: cross-stack feature on the existing server
 
+## Units
+
+### U1. api — extend the existing server with the items route
+
+- **Goal**: extend the existing server with the items route
+- **Summary**: Extends the existing server with the items route.
+- **Files**: `server.py`
+- **Symbols**: `real_fn`
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: implements `/api/items`
+- **Verification**: `GET /api/items` returns items.
+
+### U2. ui — new admin page consuming the items route
+
+- **Goal**: new admin page consuming the items route
+- **Summary**: New admin page consuming the items route.
+- **Files**: `web/items.tsx` *(new)*
+- **Depends-on**: —
+- **Slice**: —
+- **Implements / Consumes**: consumes `/api/items`
+- **Verification**: the admin page lists items.
+
 ## Task Map
 
 ```yaml
 # orchestrator-task-map v1
 tasks:
-  - task_id: t1-api
+  - task_id: u1-api
     description: extend the existing server with the items route
     files: [server.py]
     symbols: [real_fn]
     implements: ["/api/items"]
-  - task_id: t2-ui
+  - task_id: u2-ui
     description: new admin page consuming the items route
     files: [web/items.tsx]
     consumes: ["/api/items"]
@@ -157,7 +215,9 @@ MAPPER_RESPONSE = json.dumps(
 
 
 def speccer_response(prompt, schema):
-    """Echoes a valid spec for every group id present in the prompt."""
+    """Echoes a valid spec for every group id present in the prompt — only the
+    mid-run *rewrite* speccer (``execution/review.py``, kept per plan U2/ADR
+    0006) still calls this seam; grouping-time assembly never does."""
     # raw_decode tolerates the corrective nudge a retry appends after the JSON blob
     payload, _ = json.JSONDecoder().raw_decode(prompt.split("GROUPS_JSON:\n", 1)[1])
     group_ids = sorted(payload.keys())
@@ -180,7 +240,9 @@ def speccer_response(prompt, schema):
 
 
 class StubLlm:
-    """Dispatches on the JSON schema title — the pipeline's two LLM seams."""
+    """Dispatches on the JSON schema title — the mapper and the (unremoved,
+    mid-run) rewrite speccer. Grouping-time deterministic assembly (plan U2)
+    never reaches the speccer branch for a task-mapped plan."""
 
     def __init__(self, mapper=MAPPER_RESPONSE, speccer=speccer_response):
         self.mapper = mapper
@@ -350,23 +412,24 @@ class TestTaskMapRegimes:
         result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
         by_task = {task: group for group in result.groups for task in group.tasks}
         # slice-mates co-grouped (contraction + the semantic route-tag edge)
-        assert by_task["t2-items-api"].id == by_task["t3-items-ui"].id
+        assert by_task["u2-items-api"].id == by_task["u3-items-ui"].id
         # ordered groups, not N independents: everything hangs off the scaffold
         assert len(result.groups) >= 2
-        scaffold_gid = by_task["t1-scaffold"].id
+        scaffold_gid = by_task["u1-scaffold"].id
         for group in result.groups:
             if group.id != scaffold_gid:
                 assert scaffold_gid in group.dependencies
         # prospective files reach Group.files — workers must create them
-        assert "app/items.py" in by_task["t2-items-api"].files
+        assert "app/items.py" in by_task["u2-items-api"].files
         assert any("retained as prospective" in flag for flag in result.flags)
 
-    def test_premapped_plan_invokes_runner_only_for_the_speccer(self, tmp_path):
-        """Regime (d): the mapper LLM is skipped and flagged."""
+    def test_premapped_plan_never_calls_the_llm_runner(self, tmp_path):
+        """Regime (d): the mapper LLM is skipped and flagged, and deterministic
+        spec assembly (plan U2) means the run makes zero LLM calls at all."""
         result, llm = self.run_plan(tmp_path, GREENFIELD_PLAN)
         assert result.flags[0] == "task map: parsed from plan — mapper LLM skipped"
-        titles = [title for title, _ in llm.prompts]
-        assert titles and set(titles) == {"speccer_output"}
+        assert result.flags[-1] == "specs: assembled from plan — speccer LLM skipped"
+        assert llm.prompts == []
 
     def test_plan_without_task_map_keeps_the_mapper_path(self, tmp_path):
         """Regime (b): foreign plans work unchanged — mapper called, no skip flag."""
@@ -379,8 +442,8 @@ class TestTaskMapRegimes:
         route tags land in one group; structural and semantic layers coexist."""
         result, _ = self.run_plan(tmp_path, MIXED_PLAN)
         by_task = {task: group for group in result.groups for task in group.tasks}
-        assert by_task["t1-api"].id == by_task["t2-ui"].id
-        files = by_task["t1-api"].files
+        assert by_task["u1-api"].id == by_task["u2-ui"].id
+        files = by_task["u1-api"].files
         assert "server.py" in files and "web/items.tsx" in files
 
     def test_malformed_task_map_fails_loudly_with_zero_llm_calls(self, tmp_path):
@@ -431,33 +494,19 @@ class TestPipeline:
         assert group.estimated_tokens > 0
 
     def test_groups_carry_r6_contract_fields(self, tmp_path):
-        result, _ = grouping(tmp_path)
-        group = result.groups[0]
-        assert group.verification and group.verification[0].id
-        assert 0.0 <= group.difficulty <= 1.0
-        assert group.intensity is not None
-        assert group.files
-
-    def test_oversummary_rejected_at_validation_not_truncated(self, tmp_path):
-        """Plan U4 scenario: summaries over the length bound are rejected."""
-
-        def long_summary(prompt, schema):
-            payload = json.loads(speccer_response(prompt, schema))
-            for entry in payload["groups"]:
-                entry["summary"] = "x" * 200
-            return json.dumps(payload)
-
-        with pytest.raises(LlmError):
-            grouping(tmp_path, llm=StubLlm(speccer=long_summary))
-
-    def test_speccer_schema_failure_retries_then_aborts(self, tmp_path):
-        """Plan U4 scenario: invalid speccer JSON triggers a bounded retry nudge."""
-        llm = StubLlm(speccer="not json at all")
-        with pytest.raises(LlmError):
-            grouping(tmp_path, llm=llm)
-        speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
-        assert len(speccer_prompts) >= 2
-        assert "failed validation" in speccer_prompts[1]
+        """Verification is assembled from the plan's own units (plan U2), so this
+        needs a task-mapped Units plan rather than the mapper-driven PLAN_TEXT
+        fixture, whose LLM-invented task ids carry no unit section."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        for group in result.groups:
+            assert group.verification and group.verification[0].id
+            assert 0.0 <= group.difficulty <= 1.0
+            assert group.intensity is not None
+            assert group.files
 
     def test_group_estimate_counts_shared_file_once(self, tmp_path):
         """A file shared by several member tasks is sized once for the group
@@ -643,8 +692,8 @@ class TestComputePartition:
         assert outcome.dag == {0: {1}}
         assert outcome.node_work and all(v >= 0 for v in outcome.node_work.values())
         assert outcome.budget_cap > 0
-        assert outcome.hub_roles["t1-scaffold"] == "utility_hub"
-        assert outcome.slice_atoms == {"items": ["t2-items-api", "t3-items-ui"]}
+        assert outcome.hub_roles["u1-scaffold"] == "utility_hub"
+        assert outcome.slice_atoms == {"items": ["u2-items-api", "u3-items-ui"]}
         assert outcome.last_stage in {"contraction", "louvain", "lift", "split", "merge"}
         assert "greenfield service" in outcome.base_context
 
@@ -1073,8 +1122,12 @@ class TestTaskMapStripping:
         )
         assert "orchestrator-task-map v1" not in outcome.base_context
         assert "## Task Map" not in outcome.base_context
-        # the surrounding unit prose survives the strip
-        assert "t1-scaffold: create the app skeleton" in outcome.base_context
+        # plan U3: base context carries the digest (per-unit Summary lines), not
+        # the unit's full section body — the heading itself is not embedded.
+        assert "### U1. scaffold — create the app skeleton" not in outcome.base_context
+        assert "U1 (scaffold — create the app skeleton) Summary: Creates the app skeleton." in (
+            outcome.base_context
+        )
 
     def test_base_context_compilation_stays_byte_stable(self, tmp_path):
         repo, plan = make_repo(tmp_path)
@@ -1098,14 +1151,17 @@ class TestTaskMapStripping:
         assert outcome.base_tokens == expected_tokens
         assert outcome.budget_cap == partition_budget_cap(expected_tokens, config.estimator)
 
-    def test_speccer_prompt_has_no_version_marker(self, tmp_path):
+    def test_assembled_spec_has_no_version_marker(self, tmp_path):
+        """Deterministic assembly (plan U2) embeds unit sections verbatim, so the
+        stripped-marker guarantee must hold for the assembled ``spec`` field too,
+        not just the base context."""
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
-        llm = StubLlm()
-        run_grouping(plan_path=plan, repo_root=repo, llm_runner=llm, client=make_client(repo))
-        speccer_prompts = [p for title, p in llm.prompts if title == "speccer_output"]
-        assert speccer_prompts
-        assert all("orchestrator-task-map v1" not in p for p in speccer_prompts)
+        result, _ = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        assert result.groups
+        assert all("orchestrator-task-map v1" not in g.spec for g in result.groups)
 
     def test_rewrite_prompt_has_no_version_marker(self, tmp_path):
         from orchestrator.cli import _rewrite_provider
@@ -1124,7 +1180,7 @@ class TestTaskMapStripping:
             spec="old spec",
             difficulty=0.1,
             intensity=ReviewIntensity.SELF_VERIFY,
-            tasks=["t1-scaffold"],
+            tasks=["u1-scaffold"],
             files=["app/main.py"],
         )
         rewrite_spec(group, surprises=[Surprise(kind="other", description="stuck")])
@@ -1147,6 +1203,81 @@ class TestTaskMapStripping:
         assert plan.read_bytes() == before
 
 
+class TestLayeredContext:
+    """Plan U3 (R22/R23): base context carries the plan digest, not the full
+    plan; group specs carry contracts-only lines for cross-group neighbors,
+    never a neighbor's full section body."""
+
+    def test_base_context_carries_digest_not_full_sections(self, tmp_path):
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        sections = parse_plan_sections(GREENFIELD_PLAN)
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        assert sections.preamble.strip() in outcome.base_context
+        for unit in sections.units.values():
+            assert f"Summary: {unit.summary}" in outcome.base_context
+            assert unit.text not in outcome.base_context
+        assert "orchestrator-task-map v1" not in outcome.base_context
+
+    def test_group_spec_plus_base_context_covers_its_own_sections_exactly_once(self, tmp_path):
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        sections = parse_plan_sections(GREENFIELD_PLAN)
+        result, base_context = run_grouping(
+            plan_path=plan, repo_root=repo, llm_runner=StubLlm(), client=make_client(repo)
+        )
+        unit_by_task = {}
+        for unit in sections.units.values():
+            for task_id in ("u1-scaffold", "u2-items-api", "u3-items-ui", "u4-docs"):
+                if task_id.startswith(unit.unit_id + "-"):
+                    unit_by_task[task_id] = unit
+
+        for group in result.groups:
+            combined = base_context + "\n" + group.spec
+            own_units = {unit_by_task[task_id] for task_id in group.tasks}
+            for unit in own_units:
+                assert combined.count(unit.text) == 1
+            other_units = set(sections.units.values()) - own_units
+            for unit in other_units:
+                assert unit.text not in group.spec
+
+    def test_base_tokens_and_cap_derive_from_the_digest_with_no_compensation(self, tmp_path):
+        """Plan U3: the digest is smaller than the full plan it replaces, so
+        base_tokens/budget_cap shrink/grow with it — no compensating offset is
+        applied to keep the cap where it was under the old full-plan context."""
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(GREENFIELD_PLAN)
+        config = OrchestratorConfig()
+        outcome = compute_partition(
+            plan_path=plan,
+            repo_root=repo,
+            config=config,
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        expected_tokens = int(len(outcome.base_context) / config.estimator.bytes_per_token)
+        assert outcome.base_tokens == expected_tokens
+        assert outcome.budget_cap == partition_budget_cap(expected_tokens, config.estimator)
+        # the digest is strictly smaller than the full stripped plan it
+        # replaced within base context, so base_tokens/budget_cap moved with
+        # it, uncorrected — no compensating offset restores the old cap.
+        from orchestrator.grouping.plan_reader import strip_task_map
+        from orchestrator.grouping.plan_sections import parse_plan_sections
+
+        digest = parse_plan_sections(GREENFIELD_PLAN).digest
+        full_plan_text = strip_task_map(GREENFIELD_PLAN)
+        assert len(digest) < len(full_plan_text)
+
+
 class TestStageProgress:
     """Plan U24: a `group` invocation streams stage/spec lines through the
     ``progress`` seam instead of staying silent for the length of the run."""
@@ -1163,7 +1294,9 @@ class TestStageProgress:
         )
         assert lines == ["stage: mapper", "stage: quiescence", "stage: graph", "stage: partition"]
 
-    def test_full_pipeline_emits_one_spec_line_per_group(self, tmp_path):
+    def test_full_pipeline_emits_the_assemble_stage_with_no_per_spec_progress(self, tmp_path):
+        """Deterministic assembly (plan U2) is a single sub-second stage, not a
+        per-group LLM loop — no more ``spec i/N`` progress lines."""
         repo, plan = make_repo(tmp_path)
         plan.write_text(GREENFIELD_PLAN)
         lines: list[str] = []
@@ -1174,24 +1307,283 @@ class TestStageProgress:
             client=make_client(repo),
             progress=lines.append,
         )
-        total = len(result.groups)
-        assert total >= 2  # otherwise "spec i/N" is not actually exercised
-        stage_lines = [line for line in lines if line.startswith("stage:")]
-        spec_lines = [line for line in lines if line.startswith("spec ")]
-        assert stage_lines == [
+        assert len(result.groups) >= 2
+        assert lines == [
             "stage: mapper",
             "stage: quiescence",
             "stage: graph",
             "stage: partition",
-            f"stage: specs total={total}",
+            "stage: assemble",
         ]
-        assert spec_lines == [f"spec {i}/{total}" for i in range(1, total + 1)]
-        # Every progress line was emitted before the pipeline returned — the
-        # unbuffered-in-the-CLI half of the fix is exercised by the CLI-level
-        # test below; this half proves the seam actually fires per spec.
-        assert lines.index(f"stage: specs total={total}") < lines.index(f"spec 1/{total}")
 
     def test_no_recorder_and_no_progress_still_works(self, tmp_path):
         """The seam is optional — omitting ``progress`` must not raise."""
         result, _ = grouping(tmp_path)
         assert result.groups
+
+
+class TestSliceOverflowAccumulation:
+    """Plan U6/C1: every over-cap slice is named in one error, not just the
+    first one hit while iterating."""
+
+    def test_three_over_cap_slices_all_named_in_one_error(self):
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {
+            "alpha": ["a1", "a2"],
+            "beta": ["b1"],
+            "gamma": ["g1", "g2", "g3"],
+        }
+        work = {
+            "a1": 60.0,
+            "a2": 60.0,
+            "b1": 150.0,
+            "g1": 40.0,
+            "g2": 40.0,
+            "g3": 40.0,
+        }
+        with pytest.raises(GrouperError) as excinfo:
+            _check_slice_overflow(
+                atoms=atoms,
+                node_work_fn=lambda node: work[node],
+                budget_cap=100.0,
+                allow_oversized_slice=False,
+                flags=[],
+                coder_slack_multiplier=2.5,
+            )
+        message = str(excinfo.value)
+        for label in ("alpha", "beta", "gamma"):
+            assert f"slice {label!r}" in message
+        assert "cannot fit in one group" in message
+        assert message.count("exceeding the 100 coder work cap by") == 3
+        assert message.count("node work") >= 3
+        assert message.count("coder work") >= 3
+        assert "coder_slack_multiplier=2.5" in message
+
+    def test_single_over_cap_slice_wording_is_unchanged(self):
+        """Single-error behaviour keeps today's exact message, unwrapped,
+        now naming both scales (plan U8/C2) instead of one bare "work"."""
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {"alpha": ["a1", "a2"]}
+        work = {"a1": 60.0, "a2": 60.0}
+        with pytest.raises(GrouperError) as excinfo:
+            _check_slice_overflow(
+                atoms=atoms,
+                node_work_fn=lambda node: work[node],
+                budget_cap=100.0,
+                allow_oversized_slice=False,
+                flags=[],
+                coder_slack_multiplier=2.5,
+            )
+        assert str(excinfo.value) == (
+            "slice 'alpha' cannot fit in one group: members "
+            "[a1=24 node work / 60 coder work, a2=24 node work / 60 coder work] sum to "
+            "48 node work / 120 coder work (coder_slack_multiplier=2.5), "
+            "exceeding the 100 coder work cap by 20"
+        )
+
+    def test_allow_oversized_slice_still_accepts_every_offender(self):
+        from orchestrator.grouping.pipeline import _check_slice_overflow
+
+        atoms = {"alpha": ["a1", "a2"], "beta": ["b1"]}
+        work = {"a1": 60.0, "a2": 60.0, "b1": 150.0}
+        flags: list[str] = []
+        _check_slice_overflow(
+            atoms=atoms,
+            node_work_fn=lambda node: work[node],
+            budget_cap=100.0,
+            allow_oversized_slice=True,
+            flags=flags,
+            coder_slack_multiplier=2.5,
+        )
+        assert len(flags) == 2
+        assert any("alpha" in f for f in flags)
+        assert any("beta" in f for f in flags)
+        assert any("coder work" in f for f in flags)
+
+
+RUN10_SHAPE_PLAN = """# feat: run-10 slice re-entry repro
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-preflight-classification
+    description: classify preflight failures
+    slice: resilience
+    files: [a.py]
+  - task_id: u2-preflight-baseline
+    description: establish a baseline
+    files: [b.py]
+    depends_on: [u1-preflight-classification]
+  - task_id: u3-merge-gate-triage
+    description: triage the merge gate
+    slice: resilience
+    files: [c.py]
+    depends_on: [u2-preflight-baseline]
+```
+"""
+
+TWO_REENTRANT_SLICES_PLAN = """# feat: two independent slice re-entries
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v1
+tasks:
+  - task_id: u1-x
+    description: u1
+    slice: alpha
+    files: [a1.py]
+  - task_id: u2-x
+    description: u2
+    files: [a2.py]
+    depends_on: [u1-x]
+  - task_id: u3-x
+    description: u3
+    slice: alpha
+    files: [a3.py]
+    depends_on: [u2-x]
+  - task_id: v1-x
+    description: v1
+    slice: beta
+    files: [b1.py]
+  - task_id: v2-x
+    description: v2
+    files: [b2.py]
+    depends_on: [v1-x]
+  - task_id: v3-x
+    description: v3
+    slice: beta
+    files: [b3.py]
+    depends_on: [v2-x]
+```
+"""
+
+
+class TestSliceReentryPipeline:
+    """Plan U9/C5: a dependency path leaving and re-entering a slice must be
+    named specifically, not surfaced as the generic degenerate-partition
+    saturation message — this is run 10 from
+    docs/todos/grouping_improvements.md, reproduced through the full
+    ``compute_partition`` pipeline (mapper skipped: a task map is present)."""
+
+    def test_run10_shape_names_slice_path_and_both_remedies(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(RUN10_SHAPE_PLAN)
+        with pytest.raises(GrouperError) as excinfo:
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                llm_runner=_llm_must_not_be_called,
+                client=make_client(repo),
+            )
+        message = str(excinfo.value)
+        assert "slice 'resilience'" in message
+        assert "u1-preflight-classification -> u2-preflight-baseline -> u3-merge-gate-triage" in (
+            message
+        )
+        assert "bring 'u2-preflight-baseline' into the slice" in message
+        assert "or drop the label" in message
+        # Not the generic saturation diagnosis this used to fall back to.
+        assert "saturated" not in message
+        assert "degenerate" not in message
+
+    def test_two_independent_reentrant_slices_reported_together(self, tmp_path):
+        repo, plan = make_repo(tmp_path)
+        plan.write_text(TWO_REENTRANT_SLICES_PLAN)
+        with pytest.raises(GrouperError) as excinfo:
+            compute_partition(
+                plan_path=plan,
+                repo_root=repo,
+                llm_runner=_llm_must_not_be_called,
+                client=make_client(repo),
+            )
+        message = str(excinfo.value)
+        assert "slice 'alpha'" in message
+        assert "slice 'beta'" in message
+        assert "u1-x -> u2-x -> u3-x" in message
+        assert "v1-x -> v2-x -> v3-x" in message
+        assert "2 problems found" in message
+
+
+class TestDegeneratePartitionProvenance:
+    """Plan U9/C4.2/R8: the degenerate-partition error names how many of the
+    offending SCC's edges are inferred vs. declared, and what the inferred
+    ones were inferred from — sourced from the same per-edge ledgers
+    ``edge-provenance.json`` already records, not a second channel."""
+
+    def _graph_with_provenance(self):
+        from orchestrator.grouping.graphing import EdgeContribution, EdgeProvenance
+        from orchestrator.grouping.partition import TaskGraph, canonical_pair
+
+        provenance = EdgeProvenance()
+        provenance.record_dependency(
+            ("a", "b"),
+            EdgeContribution(kind="call", declared=False, scaled_weight=2.0),
+        )
+        provenance.record_dependency(
+            ("a", "b"),
+            EdgeContribution(kind="call", declared=False, scaled_weight=2.0),
+        )
+        provenance.record_dependency(
+            ("b", "c"),
+            EdgeContribution(kind="impact", declared=False, scaled_weight=1.5),
+        )
+        provenance.record_dependency(
+            ("c", "a"),
+            EdgeContribution(kind="declared_depends_on", declared=True, scaled_weight=1.0),
+        )
+        return TaskGraph(
+            nodes=frozenset({"a", "b", "c"}),
+            affinity={canonical_pair("a", "b"): 2.0, canonical_pair("b", "c"): 1.5},
+            dependencies={("a", "b"): 2.0, ("b", "c"): 1.5, ("c", "a"): 1.0},
+            provenance=provenance,
+        )
+
+    def test_edge_provenance_counts_classify_declared_vs_inferred(self):
+        from orchestrator.grouping.pipeline import _edge_provenance_counts
+
+        graph = self._graph_with_provenance()
+        declared, inferred, inferred_kinds = _edge_provenance_counts(
+            graph, (("a", "b"), ("b", "c"), ("c", "a"))
+        )
+        assert declared == 1
+        assert inferred == 2
+        assert inferred_kinds == {"call": 1, "impact": 1}
+
+    def test_degenerate_partition_error_names_counts_and_kinds(self):
+        from orchestrator.grouping.partition import DegenerateRepair
+        from orchestrator.grouping.pipeline import _check_degenerate_partition
+
+        graph = self._graph_with_provenance()
+        overshoot = "partition: group containing 'a' stays 5 over the 10 cap after cycle repair"
+        repair = DegenerateRepair(
+            cycle_groups=(0, 1),
+            evidence_edges=(("a", "b"), ("b", "c"), ("c", "a")),
+            overshoot_messages=(overshoot,),
+        )
+        with pytest.raises(GrouperError) as excinfo:
+            _check_degenerate_partition(
+                graph=graph, repairs=[repair], allow_degenerate_partition=False
+            )
+        message = str(excinfo.value)
+        assert overshoot in message
+        assert "2 of 3 dependency edges" in message
+        assert "1 call" in message
+        assert "1 impact" in message
+        assert "1 are declared depends_on" in message
+
+    def test_allow_degenerate_partition_suppresses_the_error(self):
+        from orchestrator.grouping.partition import DegenerateRepair
+        from orchestrator.grouping.pipeline import _check_degenerate_partition
+
+        graph = self._graph_with_provenance()
+        repair = DegenerateRepair(
+            cycle_groups=(0, 1),
+            evidence_edges=(("a", "b"),),
+            overshoot_messages=("partition: group containing 'a' stays 5 over the 10 cap",),
+        )
+        _check_degenerate_partition(graph=graph, repairs=[repair], allow_degenerate_partition=True)

@@ -387,3 +387,30 @@ def test_missing_run_dir_is_an_export_error(tmp_path: Path) -> None:
         assert "no run directory" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ExportError")
+
+
+def test_a_run_with_no_base_session_exports_no_base_row(tmp_path: Path) -> None:
+    """ADR 0007: workers start fresh, so there is no base session to export —
+    neither at run level nor in any group's attempt history. `export.py`
+    already typed the field `| None`; this pins the behaviour."""
+    root = tmp_path / "projects"
+    (root / "slug").mkdir(parents=True)
+    (root / "slug" / "aaa.jsonl").write_text("{}\n")
+    paths = _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="alpha",
+                summary="does alpha",
+                sessions=[_session("aaa", SessionRole.CODER)],
+            )
+        },
+        states={"g1": {"state": "completed"}},
+        base_session_id=None,
+    )
+    export = _export(paths, root)
+
+    assert export.base_session is None
+    [group] = export.groups
+    assert [session.role for session in group.sessions] == ["coder"]

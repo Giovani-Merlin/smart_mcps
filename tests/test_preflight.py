@@ -3,6 +3,7 @@ IntegrationMerger.merge_group."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
@@ -13,9 +14,13 @@ import pytest
 from orchestrator.config import PreflightConfig
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.preflight import (
+    BaselineStep,
+    CheckStep,
     PreflightBaseline,
     PreflightFailure,
+    configured_check_step,
     detect_check_command,
+    detect_check_steps,
     run_preflight,
 )
 from orchestrator.execution.review import MergeConflict
@@ -591,4 +596,294 @@ def test_a_collection_error_is_never_excused_by_the_baseline(tmp_path):
     config = PreflightConfig(check_command=["python3", "-c", script])
     with pytest.raises(PreflightFailure) as excinfo:
         run_preflight(worktree, config=config, output_dir=tmp_path / "out", baseline=baseline)
+    assert excinfo.value.kind == "env"
+
+
+# --------------------------------------------------- UI steps in the gate (A)
+
+
+def _ui_project(root: Path, *, node_modules: bool = True, dev: dict | None = None) -> None:
+    """The marker set `detect_check_steps` reads for the dashboard's suites."""
+    ui = root / "ui"
+    ui.mkdir(parents=True, exist_ok=True)
+    (ui / "package.json").write_text(
+        json.dumps({"devDependencies": dev if dev is not None else {"vitest": "^4", "typescript": "^5"}})
+    )
+    (ui / "tsconfig.json").write_text("{}")
+    if node_modules:
+        (ui / "node_modules").mkdir(exist_ok=True)
+
+
+def test_uv_and_ui_markers_detect_pytest_then_vitest_then_tsc(tmp_path):
+    """The bug this closes: marker *precedence* meant `pyproject.toml` won and
+    the UI was never checked at all. Both suites are detected now, in order."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n")
+    _ui_project(root)
+    out_dir = tmp_path / "out"
+
+    steps = detect_check_steps(root, output_dir=out_dir)
+
+    assert [step.name for step in steps] == ["pytest", "vitest", "tsc"]
+    pytest_step, vitest_step, tsc_step = steps
+    assert pytest_step.junit_path == out_dir / "preflight-junit.xml"
+    assert pytest_step.subdir == "."
+    assert vitest_step.subdir == "ui"
+    assert vitest_step.id_prefix == "ui::"
+    assert vitest_step.junit_path == out_dir / "preflight-junit-ui.xml"
+    assert f"--outputFile={out_dir / 'preflight-junit-ui.xml'}" in vitest_step.argv
+    assert tsc_step.argv == ["npx", "tsc", "--noEmit"]
+    assert tsc_step.junit_path is None
+
+
+def test_ui_steps_are_skipped_not_failed_without_node_modules(tmp_path):
+    """A missing `ui/node_modules` weakens the gate; it must never fail it — an
+    `env` preflight failure raises GroupFailure, which halts the whole run."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    _ui_project(worktree, node_modules=False)
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-m", "add ui")
+
+    assert detect_check_steps(worktree, output_dir=tmp_path / "out") == []
+
+    baseline = PreflightBaseline(
+        command=["npx", "vitest"],
+        commit_sha="deadbeef",
+        exit_code=0,
+        steps=[BaselineStep(name="vitest", command=["npx", "vitest"], exit_code=0)],
+    )
+    logged: list[str] = []
+    run_preflight(
+        worktree,
+        config=PreflightConfig(),
+        output_dir=tmp_path / "out",
+        log=logged.append,
+        baseline=baseline,
+    )
+    assert any(
+        "step 'vitest' was in the baseline but is skipped here (no ui/node_modules)" in line
+        for line in logged
+    )
+
+
+def _inject_steps(monkeypatch, steps: list[CheckStep]) -> None:
+    monkeypatch.setattr(
+        "orchestrator.execution.preflight.detect_check_steps",
+        lambda root, *, output_dir, junit_stem="preflight-junit": steps,
+    )
+
+
+def _vitest_step(out_dir: Path, results: dict[str, str]) -> CheckStep:
+    """A vitest-shaped step: writes a JUnit report with vitest's own
+    `classname="src/x.test.ts"` shape and exits 1."""
+    junit = out_dir / "preflight-junit-ui.xml"
+    cases = "".join(
+        f'<testcase classname="src/attempts.test.ts" name="{name}">'
+        + ("<failure/>" if outcome == "failed" else "")
+        + "</testcase>"
+        for name, outcome in results.items()
+    )
+    script = (
+        "import sys, pathlib\n"
+        f"xml = {'<testsuite>' + cases + '</testsuite>'!r}\n"
+        f"pathlib.Path({str(junit)!r}).parent.mkdir(parents=True, exist_ok=True)\n"
+        f"pathlib.Path({str(junit)!r}).write_text(xml)\n"
+        "print('FAIL src/attempts.test.ts')\n"
+        "sys.exit(1)\n"
+    )
+    return CheckStep(
+        name="vitest",
+        argv=["python3", "-c", script],
+        junit_path=junit,
+        id_prefix="ui::",
+    )
+
+
+def test_a_vitest_failure_blocks_the_merge_with_ui_prefixed_ids(tmp_path, monkeypatch):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    out_dir = tmp_path / "out"
+    _inject_steps(monkeypatch, [_vitest_step(out_dir, {"renders a row": "failed"})])
+    baseline = PreflightBaseline(
+        command=["npx", "vitest"],
+        commit_sha="deadbeef",
+        exit_code=0,
+        steps=[BaselineStep(name="vitest", command=["npx", "vitest"], exit_code=0)],
+    )
+
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=PreflightConfig(), output_dir=out_dir, baseline=baseline)
+
+    assert excinfo.value.kind == "regression"
+    assert excinfo.value.step_name == "vitest"
+    assert excinfo.value.comparison is not None
+    assert excinfo.value.comparison.new_failures == frozenset(
+        {"ui::src/attempts.test.ts::renders a row"}
+    )
+
+
+def _tsc_step() -> CheckStep:
+    return CheckStep(
+        name="tsc",
+        subdir=".",
+        argv=[
+            "python3",
+            "-c",
+            "import sys\nprint(\"src/types.ts(3,7): error TS2322\")\nsys.exit(1)\n",
+        ],
+    )
+
+
+def test_a_tsc_failure_blocks_when_the_baseline_step_was_clean(tmp_path, monkeypatch):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    _inject_steps(monkeypatch, [_tsc_step()])
+    baseline = PreflightBaseline(
+        command=["npx", "tsc"],
+        commit_sha="deadbeef",
+        exit_code=0,
+        steps=[BaselineStep(name="tsc", command=["npx", "tsc", "--noEmit"], exit_code=0)],
+    )
+
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(
+            worktree, config=PreflightConfig(), output_dir=tmp_path / "out", baseline=baseline
+        )
+    assert excinfo.value.kind == "regression"
+    assert excinfo.value.step_name == "tsc"
+
+
+def test_the_same_tsc_failure_is_excused_when_the_baseline_step_also_failed(tmp_path, monkeypatch):
+    """A report-less step is comparable by exit code: red at launch and red
+    here introduced nothing, so the tree merges."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    _inject_steps(monkeypatch, [_tsc_step()])
+    baseline = PreflightBaseline(
+        command=["npx", "tsc"],
+        commit_sha="deadbeef",
+        exit_code=1,
+        steps=[BaselineStep(name="tsc", command=["npx", "tsc", "--noEmit"], exit_code=1)],
+    )
+    logged: list[str] = []
+
+    run_preflight(
+        worktree,
+        config=PreflightConfig(),
+        output_dir=tmp_path / "out",
+        log=logged.append,
+        baseline=baseline,
+    )
+    assert any("exited nonzero on the launch branch too" in line for line in logged)
+
+
+def test_a_regression_with_no_junit_and_no_baseline_step_is_not_excused(tmp_path, monkeypatch):
+    """[A1] `∅ - baseline` is `∅`, which reads as "nothing new" against *every*
+    baseline — the hole that let a report-less regression merge silently. No
+    comparable evidence is no excuse."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    out_dir = tmp_path / "out"
+    # A JUnit step whose report is never written, plus a baseline that knows
+    # nothing about this step: both halves of the evidence test come up empty.
+    step = CheckStep(
+        name="vitest",
+        argv=["python3", "-c", "import sys\nprint('AssertionError: 1 != 2')\nsys.exit(1)\n"],
+        junit_path=out_dir / "preflight-junit-ui.xml",
+        id_prefix="ui::",
+    )
+    _inject_steps(monkeypatch, [step])
+    baseline = PreflightBaseline(
+        command=["uv", "run", "pytest"],
+        commit_sha="deadbeef",
+        exit_code=0,
+        steps=[BaselineStep(name="pytest", command=["uv", "run", "pytest"], exit_code=0)],
+    )
+
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=PreflightConfig(), output_dir=out_dir, baseline=baseline)
+    assert excinfo.value.kind == "regression"
+    assert excinfo.value.comparison is not None
+    assert excinfo.value.comparison.verdict == "new_failures"
+
+
+def test_a_report_less_step_is_not_excused_by_an_unrelated_baseline_step(tmp_path, monkeypatch):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    _inject_steps(monkeypatch, [_tsc_step()])
+    baseline = PreflightBaseline(
+        command=["uv", "run", "pytest"],
+        commit_sha="deadbeef",
+        exit_code=1,
+        steps=[BaselineStep(name="pytest", command=["uv", "run", "pytest"], exit_code=1)],
+    )
+    with pytest.raises(PreflightFailure):
+        run_preflight(
+            worktree, config=PreflightConfig(), output_dir=tmp_path / "out", baseline=baseline
+        )
+
+
+def test_a_configured_pytest_check_command_gets_a_junitxml(tmp_path):
+    """[A1] `config.check_command` short-circuited the `or` in front of the
+    detector, so an operator-configured pytest run produced no report — and a
+    report-less regression compared an empty set against the baseline."""
+    out_dir = tmp_path / "out"
+    step = configured_check_step(
+        ["uv", "run", "pytest"], output_dir=out_dir, junit_stem="preflight-junit"
+    )
+    assert step.argv == [
+        "uv",
+        "run",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        f"--junitxml={out_dir / 'preflight-junit.xml'}",
+    ]
+    assert step.junit_path == out_dir / "preflight-junit.xml"
+
+    # A non-pytest command is left exactly as configured, but still gets the
+    # canonical report path — it may write one itself.
+    other = configured_check_step(["make", "check"], output_dir=out_dir, junit_stem="preflight-junit")
+    assert other.argv == ["make", "check"]
+    assert other.junit_path == out_dir / "preflight-junit.xml"
+
+
+def test_a_step_failure_stops_the_run_before_later_steps(tmp_path, monkeypatch):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    marker = tmp_path / "second-ran"
+    first = CheckStep(name="pytest", argv=["python3", "-c", "import sys; sys.exit(1)"])
+    second = CheckStep(
+        name="tsc",
+        argv=["python3", "-c", f"import pathlib; pathlib.Path({str(marker)!r}).write_text('x')"],
+    )
+    _inject_steps(monkeypatch, [first, second])
+    with pytest.raises(PreflightFailure):
+        run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out")
+    assert not marker.exists()
+
+
+def test_a_non_pytest_step_exit_2_is_a_regression_not_an_env_failure(tmp_path, monkeypatch):
+    """`tsc` exits 2 on an ordinary type error. Read through pytest's exit-code
+    table that is `env` — not attributable, so no rewrite, and a halted run.
+    The table applies to the pytest step only."""
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    step = CheckStep(name="tsc", argv=["python3", "-c", "import sys; sys.exit(2)"])
+    _inject_steps(monkeypatch, [step])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out")
+    assert excinfo.value.kind == "regression"
+    assert excinfo.value.step_name == "tsc"
+
+
+def test_the_pytest_step_keeps_the_pytest_exit_code_table(tmp_path, monkeypatch):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    step = CheckStep(name="pytest", argv=["python3", "-c", "import sys; sys.exit(2)"])
+    _inject_steps(monkeypatch, [step])
+    with pytest.raises(PreflightFailure) as excinfo:
+        run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out")
     assert excinfo.value.kind == "env"

@@ -35,6 +35,17 @@ class VerificationItem(BaseModel):
     required: bool = True
 
 
+class GroupSpec(BaseModel):
+    """A group's name/summary/spec/verification, however produced — assembled
+    deterministically (plan U2) or written by the mid-run rewrite speccer."""
+
+    group_id: str
+    name: str
+    summary: str = Field(max_length=SUMMARY_MAX_CHARS)
+    spec: str
+    verification: list[VerificationItem] = Field(default_factory=list)
+
+
 class Group(BaseModel):
     """One execution group (origin R6 field contract)."""
 

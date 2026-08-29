@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
-from orchestrator.config import DifficultyConfig, EstimatorConfig
+from orchestrator.config import DifficultyConfig, EstimatorConfig, OrchestratorConfig
+from orchestrator.grouping.base_context import compile_base_context
+from orchestrator.grouping.graphing import TaskMapping, source_bytes_of
+from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map_for_pricing
 from orchestrator.model import ReviewIntensity
 
 
@@ -92,6 +96,150 @@ def partition_budget_cap(base_tokens: int, config: EstimatorConfig) -> float:
         * config.coder_slack_multiplier
     )
     return max(config.token_budget - head, 0.0)
+
+
+@dataclass(frozen=True)
+class TaskPrice:
+    """One task's priced work (plan U7), both scales named per U8's vocabulary."""
+
+    task_id: str
+    slice: str | None
+    node_work: float
+    coder_work: float
+
+
+@dataclass(frozen=True)
+class SlicePrice:
+    """A declared slice's (or an unlabeled task's own singleton atom's) summed
+    work against the cap. ``group --price`` has no graph, so it cannot detect
+    hub-isolated atoms the way the real partitioner's ``slice_atoms`` does —
+    only the plan's own ``slice:`` labels are priced as groups; every other
+    task prices alone."""
+
+    label: str
+    tasks: tuple[str, ...]
+    node_work: float
+    coder_work: float
+    over_cap: bool
+
+
+@dataclass(frozen=True)
+class PriceReport:
+    """``group --price`` output (plan U7/C3): every task's node work, every
+    slice's summed work against the cap, and the resolved budget parameters
+    that produced it — all without a graph build or a codegraph client.
+    """
+
+    tasks: tuple[TaskPrice, ...]
+    slices: tuple[SlicePrice, ...]
+    token_budget: int
+    bytes_per_token: float
+    slack_multiplier: float
+    coder_slack_multiplier: float
+    per_file_tool_allowance: int
+    base_tokens: int
+    head: float
+    budget_cap: float
+
+    @property
+    def over_cap(self) -> bool:
+        return any(slice_price.over_cap for slice_price in self.slices)
+
+
+# --price compiles its cap estimate with an empty codegraph summary (plan
+# decision, 2026-08-28): compile_base_context's "Codebase architecture" section
+# is the only piece that needs a live index, and skipping it keeps --price
+# sub-second at the cost of a cap that is only approximate — stated here so
+# every caller repeats the same wording rather than inventing their own.
+PRICE_CAP_APPROXIMATION_NOTE = (
+    "cap is approximate: compiled with an empty codegraph summary (no codegraph "
+    "client, no graph build) to stay sub-second — the real cap from `group` "
+    "typically lands within a few thousand tokens of this figure"
+)
+
+
+def price_task_mappings(
+    mappings: list[TaskMapping],
+    repo_root: Path,
+    base_tokens: int,
+    config: EstimatorConfig,
+) -> PriceReport:
+    """Price every task mapping from working-tree byte counts (plan U7), with no
+    graph and no codegraph client — ``source_bytes_of`` and ``node_work`` both
+    read only the filesystem and plain config numbers.
+    """
+    task_prices: dict[str, TaskPrice] = {}
+    for mapping in mappings:
+        metadata = {
+            "source_bytes": source_bytes_of(repo_root, mapping.files),
+            "files": mapping.files,
+            "prospective_files": mapping.prospective_files,
+            "size_hints": dict(mapping.size_hints),
+        }
+        coder_work = node_work(metadata, config)
+        task_prices[mapping.task_id] = TaskPrice(
+            task_id=mapping.task_id,
+            slice=mapping.slice,
+            node_work=coder_work / config.coder_slack_multiplier,
+            coder_work=coder_work,
+        )
+
+    budget_cap = partition_budget_cap(base_tokens, config)
+    atoms: dict[str, list[str]] = {}
+    for mapping in mappings:
+        label = mapping.slice or mapping.task_id
+        atoms.setdefault(label, []).append(mapping.task_id)
+
+    slice_prices = []
+    for label, members in sorted(atoms.items()):
+        coder_work = sum(task_prices[m].coder_work for m in members)
+        node_work_sum = sum(task_prices[m].node_work for m in members)
+        slice_prices.append(
+            SlicePrice(
+                label=label,
+                tasks=tuple(sorted(members)),
+                node_work=node_work_sum,
+                coder_work=coder_work,
+                over_cap=coder_work > budget_cap,
+            )
+        )
+
+    head = (
+        (base_tokens + config.spec_tokens_allowance)
+        * config.slack_multiplier
+        * config.coder_slack_multiplier
+    )
+    return PriceReport(
+        tasks=tuple(task_prices[m.task_id] for m in sorted(mappings, key=lambda m: m.task_id)),
+        slices=tuple(slice_prices),
+        token_budget=config.token_budget,
+        bytes_per_token=config.bytes_per_token,
+        slack_multiplier=config.slack_multiplier,
+        coder_slack_multiplier=config.coder_slack_multiplier,
+        per_file_tool_allowance=config.per_file_tool_allowance,
+        base_tokens=base_tokens,
+        head=head,
+        budget_cap=budget_cap,
+    )
+
+
+def price_plan(plan_path: Path, repo_root: Path, config: OrchestratorConfig) -> PriceReport:
+    """``group --price <plan>`` (plan U7/C3): parses the task map and prices it
+    sub-second, with zero graph build and zero codegraph client — the whole
+    point of this mode. Raises ``TaskMapError`` if the plan carries no
+    embedded task map (this mode has no LLM-mapper fallback to fall back to).
+    """
+    plan_text = plan_path.read_text()
+    mappings = parse_task_map_for_pricing(plan_text, repo_root)
+    if mappings is None:
+        raise TaskMapError(
+            "plan has no embedded orchestrator-task-map block — --price requires a "
+            "task-mapped plan (see docs/orchestrator-task-map.md); the LLM mapper "
+            "has no sub-second, zero-codegraph equivalent"
+        )
+    base_context = compile_base_context(repo_root, plan_path, "")
+    base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
+    return price_task_mappings(mappings, repo_root, base_tokens, config.estimator)
 
 
 @dataclass(frozen=True)

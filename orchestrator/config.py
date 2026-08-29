@@ -180,6 +180,22 @@ class PartitionConfig(BaseModel):
     # cap, slice must-link and cycle checks stay hard at every level. CLI
     # `--granularity` wins over this when both are set.
     granularity: Literal["independent", "balanced", "monolithic"] = "independent"
+    # Plan U12 (R19b): the merge key's fill/balance term. Candidate merges are
+    # ranked by closeness of the *resulting* group's work to
+    # ``target_fill_ratio * budget_cap`` (ranked above the plain ``merged_work``
+    # tiebreak it augments) — a merge that tops a group up near this band is
+    # preferred over one that either barely grows it or shoves it up near the
+    # hard cap. This is what stops one group from being the greedy sink for
+    # every merge until it hits ~96% of cap while sibling groups starve
+    # (measured pathology, docs/todos/grouping_improvements.md R19b).
+    #
+    # 0.75 is a deliberately generous default, not a tuned optimum (that is
+    # explicitly deferred to the post-eval-harness backlog): low enough to
+    # leave real headroom below the hard cap for a later merge or repair pass
+    # to still land, high enough that a small band doesn't reject well-fitting
+    # merges outright and start fragmenting groups that would otherwise merge
+    # cleanly. Overridable via ``[partition] target_fill_ratio``.
+    target_fill_ratio: float = 0.75
 
 
 class EstimatorConfig(BaseModel):
@@ -403,6 +419,17 @@ class SessionConfig(BaseModel):
     # ``base_model`` and ``speccer_model`` below — changing this one leaves the
     # other two at their own defaults.
     model: str | None = DEFAULT_WORKER_MODEL
+    # Whether workers fork the run's base session (legacy) or start fresh with
+    # the base context prepended to their first prompt (default).
+    #
+    # The fork's premise was "compile an expensive base context once, fork it
+    # cheaply". Measured on r20260828-090936 it does not hold: every fork hits
+    # exactly 19,968 cached tokens and re-creates the remaining ~41.5k, because
+    # Claude Code embeds the cwd and a git snapshot in the system prompt and
+    # each group's cwd is its own worktree. Off by default; the fork path is
+    # kept intact behind this flag against a release that stops keying the
+    # cache prefix on cwd. See ADR 0007.
+    fork_base_session: bool = False
     # The model behind the run's own base session (``SessionRunner.start_base``),
     # which every worker fork inherits context from but does not share a model
     # with — it is worth the stronger model because a bad base context or a bad

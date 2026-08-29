@@ -25,6 +25,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from string import Template
 
 from pydantic import ValidationError
 
@@ -111,13 +112,18 @@ from orchestrator.execution.worktrees import (
     create_worktree,
     group_branch,
     provision_env,
+    provision_node_env,
     worktree_path,
     write_provisioning_record,
 )
+from orchestrator.grouping.advisory import build_advisory_report, serialize_advisory_report
+from orchestrator.grouping.estimator import PRICE_CAP_APPROXIMATION_NOTE, PriceReport, price_plan
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
     JsonRunner,
+    LlmCallRecorder,
     LlmError,
+    call_llm_json,
     claude_json_runner,
     with_usage_limit_retry,
 )
@@ -134,14 +140,15 @@ from orchestrator.grouping.pipeline import (
     serialize_edge_provenance,
     serialize_grouping,
 )
-from orchestrator.grouping.plan_reader import strip_task_map
-from orchestrator.grouping.speccer import write_specs
+from orchestrator.grouping.plan_reader import TaskMapError, strip_task_map
 from orchestrator.grouping.llm_record import JsonlCallRecorder
 from orchestrator.grouping.trace import GroupingTrace, TraceRecorder, serialize_trace
 from orchestrator.model import (
+    SUMMARY_MAX_CHARS,
     CoderReport,
     Group,
     GroupingResult,
+    GroupSpec,
     HumanAction,
     ReviewIntensity,
     RunManifest,
@@ -149,6 +156,7 @@ from orchestrator.model import (
     SessionRole,
     Surprise,
 )
+from orchestrator.prompts import load_template
 
 # Reviewer sessions one group at a given intensity spawns (plan U8's
 # --review-intensity warning): self-verify skips the reviewer entirely,
@@ -210,6 +218,27 @@ def main(
         ),
     )
     group_cmd.add_argument(
+        "--advise",
+        action="store_true",
+        help=(
+            "build the task graph once and report every GRANULARITY_LEVELS "
+            "preset plus cohesion diagnostics (disconnection, seriality, "
+            "monolithic structure) with zero LLM calls; writes preview/advisory.json, "
+            "never touches groups.json"
+        ),
+    )
+    group_cmd.add_argument(
+        "--price",
+        action="store_true",
+        help=(
+            "parse the task map and price every task from working-tree byte counts, "
+            "sub-second, with no graph build and no codegraph client; prints per-task "
+            "and per-slice node/coder work against an approximate budget cap (compiled "
+            "with an empty codegraph summary) and exits non-zero if any slice is over "
+            "cap; writes no artifacts"
+        ),
+    )
+    group_cmd.add_argument(
         "--allow-unknown-symbols",
         action="store_true",
         help=(
@@ -251,14 +280,16 @@ def main(
             "are set."
         ),
     )
-    # F1: only the speccer knob — grouping is the one moment the speccer
-    # actually runs, and it previously had no CLI model control at all (a repo
-    # without a config.toml had no way whatsoever). Worker and base models are
-    # meaningless for `group`, so `_add_model_args` (all three) would mislead.
+    # F1: only the speccer knob — the grouping-time speccer is gone (plan U4,
+    # ADR 0006), so this now controls only the mapper, which still runs for a
+    # foreign plan with no embedded task map, and previously had no CLI model
+    # control at all (a repo without a config.toml had no way whatsoever).
+    # Worker and base models are meaningless for `group`, so `_add_model_args`
+    # (all three) would mislead.
     group_cmd.add_argument(
         "--model-speccer",
         default=None,
-        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+        help="model for the mapper's claude -p calls (default: config, else claude-opus-5)",
     )
     _add_auto_resume_arg(group_cmd)
     _add_common_args(group_cmd)
@@ -422,6 +453,22 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
         help="seconds to wait for an answer before the on_timeout fallback (default: block)",
     )
     cmd.add_argument(
+        "--fork-base",
+        dest="fork_base",
+        action="store_true",
+        default=None,
+        help=(
+            "launch workers by forking the run's base session (legacy; the fork "
+            "misses the base session's prompt cache — see ADR 0007)"
+        ),
+    )
+    cmd.add_argument(
+        "--no-fork-base",
+        dest="fork_base",
+        action="store_false",
+        help="launch workers as fresh sessions primed with the base context (default)",
+    )
+    cmd.add_argument(
         "--on-failure",
         default=None,
         choices=["halt", "overlap"],
@@ -464,7 +511,10 @@ def _add_model_args(cmd: argparse.ArgumentParser) -> None:
     cmd.add_argument(
         "--model-speccer",
         default=None,
-        help="model for the mapper/speccer's claude -p calls (default: config, else claude-opus-5)",
+        help=(
+            "model for the mapper's and mid-run rewrite speccer's claude -p calls "
+            "(default: config, else claude-opus-5)"
+        ),
     )
 
 
@@ -535,6 +585,8 @@ def apply_overrides(config: OrchestratorConfig, args: argparse.Namespace) -> Orc
         session_updates["usage_limit"] = config.session.usage_limit.model_copy(
             update={"auto_resume": auto_resume}
         )
+    if getattr(args, "fork_base", None) is not None:
+        session_updates["fork_base_session"] = args.fork_base
     if getattr(args, "model_worker", None):
         session_updates["model"] = args.model_worker
     if getattr(args, "model_base", None):
@@ -623,8 +675,8 @@ def _anchor_plan_path(plan: Path, repo_root: Path) -> Path:
 
 
 def _speccer_json_runner(llm_runner: JsonRunner | None, config: OrchestratorConfig) -> JsonRunner:
-    """The default one-shot runner for the mapper/speccer path, bound to the
-    speccer model (plan U17).
+    """The default one-shot runner for the mapper / rewrite-speccer path, bound
+    to the speccer model (plan U17).
 
     A caller-supplied ``llm_runner`` (tests, mainly) is returned untouched —
     only the production default gets the model bound, via ``functools.partial``
@@ -652,6 +704,19 @@ def _cmd_group(
     config = _load_config(args, repo_root)
     if config is None:
         return 1
+
+    # --price never touches codegraph or an LLM (plan U7/C3): dispatched before
+    # any of the usage-limit gate, run-directory, or recorder setup below, all
+    # of which exist for modes that build a real graph.
+    if getattr(args, "price", False):
+        try:
+            report = price_plan(plan_path=plan_path, repo_root=repo_root, config=config)
+        except TaskMapError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        _print_price_report(report, plan_path)
+        return 1 if report.over_cap else 0
+
     # `group` has no run directory, so its gate logs to stdout and writes no
     # state file — but it waits out a limit exactly as a run does. Grouping is a
     # handful of expensive calls; losing the last one to a reset that clears in
@@ -684,6 +749,25 @@ def _cmd_group(
         # mode when it is not a tty (plan U24) — this is the whole fix for a
         # grouping job that otherwise shows nothing for three and a half minutes.
         print(f"progress: {message}", flush=True)
+
+    if getattr(args, "advise", False):
+        try:
+            report = build_advisory_report(
+                plan_path=plan_path,
+                repo_root=repo_root,
+                config=config,
+                llm_runner=llm_runner,
+                client=client,
+                allow_unknown_symbols=allow_unknown_symbols,
+                progress=_progress,
+            )
+        except (GrouperError, GraphBuildError, GroupCycleError, LlmError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        (preview_dir / "advisory.json").write_text(serialize_advisory_report(report))
+        _print_advisory_report(report)
+        return 0
 
     if getattr(args, "no_spec", False):
         try:
@@ -813,6 +897,74 @@ def _warn_self_modification(flags: list[str]) -> None:
         print(f"warning: {SELF_MODIFICATION_FLAG}", file=sys.stderr)
 
 
+def _print_advisory_report(report) -> None:
+    """R12-R14: the human-readable rendering of ``advisory.json`` — presentable
+    as-is, since the plan-skill group hands this straight to the user for the
+    split-or-proceed question."""
+    print(f"plan: {report.plan_path}")
+    print("\ngranularity comparison:")
+    for preset in report.granularities:
+        star = " *pareto*" if preset.pareto_dominant else ""
+        print(f"\n  {preset.granularity}{star}:")
+        print(f"    groups: {preset.group_count}")
+        print(
+            "    node work fraction of cap (mean/max): "
+            f"{preset.node_work_fraction_mean:.2f} / {preset.node_work_fraction_max:.2f}"
+        )
+        print(f"    cross-group edge cut: {preset.cross_group_edge_cut}")
+        print(f"    group DAG depth: {preset.group_dag_depth}")
+        print(f"    simulated makespan: {preset.simulated_makespan:.1f}")
+        print(f"    modularity: {preset.modularity:.3f}")
+
+    print("\ncohesion diagnostics:")
+    if report.cohesion:
+        for finding in report.cohesion:
+            print(f"  [{finding.kind}] {finding.message}")
+    else:
+        print("  none")
+
+
+def _print_price_report(report: PriceReport, plan_path: Path) -> None:
+    """``group --price`` (plan U7/C3): per-task and per-slice node/coder work
+    against the cap, plus the resolved budget parameters — named per U8's
+    node-work/coder-work vocabulary throughout.
+    """
+    print(f"plan: {plan_path}")
+    print(f"note: {PRICE_CAP_APPROXIMATION_NOTE}")
+
+    print("\nper-task work:")
+    for task in report.tasks:
+        slice_note = f" (slice: {task.slice})" if task.slice else ""
+        print(
+            f"  {task.task_id}: {task.node_work:.0f} node work / "
+            f"{task.coder_work:.0f} coder work{slice_note}"
+        )
+
+    print("\nper-slice work vs. cap:")
+    for slice_price in report.slices:
+        status = "FAIL" if slice_price.over_cap else "pass"
+        print(
+            f"  {slice_price.label} [{status}]: tasks [{', '.join(slice_price.tasks)}] sum to "
+            f"{slice_price.node_work:.0f} node work / {slice_price.coder_work:.0f} coder work "
+            f"against a {report.budget_cap:.0f} coder work cap"
+        )
+        if slice_price.over_cap:
+            overshoot = slice_price.coder_work - report.budget_cap
+            print(f"    overshoot: {overshoot:.0f} coder work over cap")
+
+    print("\nbudget parameters:")
+    print(f"  token_budget: {report.token_budget}")
+    print(f"  bytes_per_token: {report.bytes_per_token:g}")
+    print(f"  slack_multiplier: {report.slack_multiplier:g}")
+    print(f"  coder_slack_multiplier: {report.coder_slack_multiplier:g}")
+    print(f"  per_file_tool_allowance: {report.per_file_tool_allowance}")
+    print(f"  base_tokens (approximate — empty codegraph summary): {report.base_tokens}")
+    print(f"  head: {report.head:.0f}")
+    print(f"  budget cap (approximate): {report.budget_cap:.0f}")
+
+    print(f"\nresult: {'FAIL — one or more slices exceed the cap' if report.over_cap else 'pass'}")
+
+
 def _print_partition_report(trace: GroupingTrace) -> None:
     """R18: the zero-LLM, sub-second answer to "how would this plan group?" —
     rendered from the trace (plan U9) rather than ``PartitionOutcome`` fields,
@@ -869,7 +1021,7 @@ def _print_partition_report(trace: GroupingTrace) -> None:
         print(f"  groups: {sc.group_count}")
         print(f"  cross-group edges: {sc.cross_group_edges}")
         print(
-            "  work fraction of cap (min/mean/max): "
+            "  node work fraction of cap (min/mean/max): "
             f"{sc.work_fraction_min:.2f} / {sc.work_fraction_mean:.2f} / {sc.work_fraction_max:.2f}"
         )
         print(f"  critical path length: {sc.critical_path_length}")
@@ -1511,9 +1663,11 @@ def _cmd_run(
                 print(f"error: no manifest at {paths.manifest_path}", file=sys.stderr)
                 return 1
             manifest = persisted_manifest
-            if not manifest.base_session_id:
+            if config.session.fork_base_session and not manifest.base_session_id:
                 print("error: manifest has no base session — start a fresh run", file=sys.stderr)
                 return 1
+            # `None` is the normal shape now: with no fork there is no base
+            # session, so a resume has nothing to reattach to (ADR 0007).
             base_session_id = manifest.base_session_id
             # Plan U19 (F20): a resume reuses the existing base session and used to
             # skip the manifest write entirely, so `/snapshot` kept serving the
@@ -1529,6 +1683,22 @@ def _cmd_run(
                 }
             )
             store.save(manifest)
+        elif not config.session.fork_base_session:
+            # No fork, no base session: every worker starts fresh with the base
+            # context in its own first prompt (ADR 0007). This skips the run's
+            # one Opus `start_base` call and the long silence it opened with.
+            base_session_id = None
+            manifest = RunManifest(
+                run_id=run_id,
+                plan_path=grouping.plan_path,
+                base_session_id=None,
+                grouping=grouping_name,
+                escalation=config.escalation,
+                usage_limit=config.session.usage_limit,
+                launch_branch=_resolve_launch_branch(repo_root),
+            )
+            store.save(manifest)
+            atomic_write_text(paths.groups_path, groups_path.read_text())
         else:
             # Establishing the base session is the *first* long silence an operator
             # meets — it precedes every group, so no group heartbeat exists yet and
@@ -1597,7 +1767,9 @@ def _cmd_run(
             runner=runner,
             store=store,
             manifest=manifest,
+            base_context=base_context_path.read_text(),
             base_session_id=base_session_id,
+            fork_base_session=config.session.fork_base_session,
             breaker=config.breaker,
             execution=config.execution,
             # groups=grouping.groups (plan U11): validates every affected_groups
@@ -1782,6 +1954,14 @@ def _workspace_seams(
             extra_args=session.provision_args,
             on_state=_record,
         )
+        # The JavaScript half of the same contract: without `ui/node_modules`
+        # the merge gate's vitest/tsc steps silently skip. No `on_state` — the
+        # provisioning record holds one command, and it is the venv's.
+        provision_node_env(
+            path,
+            log=lambda message: log_event(paths, message),
+            env=cache_env,
+        )
         return path
 
     def base_ref_for(group: Group) -> str:
@@ -1914,19 +2094,98 @@ def _resolve_deps(
     )
 
 
+_REWRITE_SPEC_SCHEMA = {
+    "title": "speccer_output",
+    "type": "object",
+    "required": ["groups"],
+    "properties": {
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["group_id", "name", "summary", "spec", "verification"],
+                "properties": {
+                    "group_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "summary": {"type": "string", "maxLength": SUMMARY_MAX_CHARS},
+                    "spec": {"type": "string"},
+                    "verification": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "description"],
+                            "properties": {
+                                "id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "required": {"type": "boolean"},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+def _rewrite_group_spec(
+    plan_text: str,
+    skeletons: dict[str, dict],
+    runner: JsonRunner,
+    max_retries: int = 2,
+    failure_dir: Path | None = None,
+    recorder: LlmCallRecorder | None = None,
+) -> dict[str, GroupSpec]:
+    """Ask the rewrite speccer LLM for a name/summary/spec/verification for every
+    skeleton group (one group, in practice — the mid-run rewrite seam).
+
+    ``skeletons`` maps group_id → {tasks, files, previous_spec, rewrite_context} —
+    the deterministic facts the prose must cover. Output must cover exactly the
+    given group ids."""
+    prompt = Template(load_template("rewrite_speccer")).substitute(
+        plan_text=plan_text,
+        groups_json=json.dumps(skeletons, indent=2, sort_keys=True),
+    )
+
+    def validate(payload: dict) -> dict[str, GroupSpec]:
+        entries = payload["groups"]
+        if not isinstance(entries, list):
+            raise ValueError("'groups' must be a list")
+        try:
+            specs = [GroupSpec.model_validate(entry) for entry in entries]
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        got = {spec.group_id for spec in specs}
+        expected = set(skeletons)
+        if got != expected:
+            raise ValueError(f"group ids mismatch: expected {sorted(expected)}, got {sorted(got)}")
+        return {spec.group_id: spec for spec in specs}
+
+    return call_llm_json(
+        runner,
+        prompt,
+        _REWRITE_SPEC_SCHEMA,
+        validate=validate,
+        max_retries=max_retries,
+        failure_dir=failure_dir,
+        recorder=recorder,
+    )
+
+
 def _rewrite_provider(
     plan_text: str,
     llm_runner: JsonRunner,
     failure_dir: Path,
     recorder: JsonlCallRecorder | None = None,
 ):
-    """rewrite_spec seam: one-group skeleton through the Phase A speccer, with the
-    surprises folded in as rewrite context (they are never empty on escalation
-    paths — Phase B synthesizes a context surprise for blocked/too_hard/etc.).
+    """rewrite_spec seam: one-group skeleton through the mid-run rewrite speccer,
+    with the surprises folded in as rewrite context (they are never empty on
+    escalation paths — Phase B synthesizes a context surprise for
+    blocked/too_hard/etc.).
 
     ``recorder``, when given, appends each rewrite speccer call to the run's own
-    ``llm/calls.json`` (plan U14) — the same record shape grouping-time speccer
-    calls already get, so a rewrite's cost, prompt and response survive."""
+    ``llm/calls.json`` (plan U14) — the same record shape mapper calls already
+    get, so a rewrite's cost, prompt and response survive."""
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
         skeleton = {
@@ -1939,7 +2198,7 @@ def _rewrite_provider(
                 ],
             }
         }
-        spec = write_specs(
+        spec = _rewrite_group_spec(
             plan_text, skeleton, llm_runner, failure_dir=failure_dir, recorder=recorder
         )[group.id]
         return group.model_copy(
@@ -2094,7 +2353,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"interrupted at {state.interrupted_at}")
     if manifest is not None:
         print(f"plan: {manifest.plan_path}")
-        print(f"base session: {manifest.base_session_id}")
+        print(f"base session: {manifest.base_session_id or '(none — workers start fresh)'}")
     for gid in sorted(state.groups):
         entry = state.groups[gid]
         line = f"\n{gid}: {entry.state.value} (generation {entry.generation})"
