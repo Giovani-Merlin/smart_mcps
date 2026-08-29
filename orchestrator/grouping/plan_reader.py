@@ -189,6 +189,17 @@ def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapp
     return mappings
 
 
+def task_map_block_span(plan_text: str) -> tuple[int, int] | None:
+    """Global ``(start, end)`` span of the plan's fenced task-map block, fences
+    included, or ``None`` if absent — the same detection ``parse_task_map`` and
+    ``strip_task_map`` use, exposed for callers doing verbatim surgery
+    (``orchestrator/grouping/plan_edit.py``) rather than semantic parsing, so
+    the fence regex stays defined in exactly one place.
+    """
+    match = _BLOCK.search(plan_text)
+    return match.span() if match else None
+
+
 def strip_task_map(plan_text: str) -> str:
     """Strip the marked task-map block (plus a directly preceding ``## Task Map``
     heading) out of plan text bound for an LLM context (R27).

@@ -141,6 +141,19 @@ a stranger unit can consume with no other context.
   single check is still one bullet, not inline prose:
   - <first observable outcome>
   - <second observable outcome, if any>>
+- **Edge cases**: — <optional; one-line entries, one per fired category, no
+  `N/A` filler — this is `/orchestrator-deepen`'s territory. A planning
+  session may leave this slot empty>
+- **Non-goals / must-not**: — <optional; same rule — deepen's territory, a
+  planning session may leave it empty>
+
+`Verification` bullets may optionally carry the `Run:`/`Pass:` convention —
+`Run:` a narrow, grounded command that proves the item (never a bare
+full-suite invocation), `Pass:` the observable condition that proves it
+passed. Both lines live inside one bullet and assemble into a single
+`VerificationItem`; this is a prose convention, not a schema change. A
+planning session may write plain behavioural sentences instead and leave the
+`Run:`/`Pass:` split to `/orchestrator-deepen`.
 
 ## Task Map
 
@@ -229,13 +242,23 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
 
   Present its diagnostics to the user as-is: the granularity comparison across
   presets, and any cohesion flags ("this reads as N separate plans", "this
-  reads as serial phases", "structurally monolithic"). Then **ask** the user
-  whether to split the plan along the reported seams or proceed as one plan —
-  proceed-as-one is an explicit option, not just the silent default. Never
-  split the plan yourself, never rewrite plan prose based on the advisory —
-  the mechanical split and a deepen command are wave-2 capability that does
-  not exist yet; if the user wants to split now, that's a manual plan edit,
-  not something this skill or `--advise` performs for them.
+  reads as serial phases", "structurally monolithic"), each printed with its
+  numbered seam. Then **ask** the user whether to split the plan along a
+  reported seam or proceed as one plan — proceed-as-one is an explicit option,
+  not just the silent default. Never rewrite plan prose based on the advisory
+  yourself — if the user chooses to split, run the mechanical, zero-LLM split
+  on their behalf and let it move the plan's text:
+
+  ```sh
+  smart-mcps-orchestrate split docs/plans/<the-plan>.md --seam <N>
+  ```
+
+  This moves unit sections and task-map entries verbatim into new documents
+  beside the original (see `docs/orchestrator-grouping.md`'s `split`/`plan-check`
+  section); it never rewrites prose and never deletes the source plan. If the
+  user disagrees with the reported seam, `--tasks u1,u2 --tasks u3,u4` takes an
+  explicit assignment instead — every task id in the plan's task map must
+  appear in exactly one `--tasks` group.
 
   Then present the plan summary + unit list to the user, and point at:
 
@@ -246,6 +269,13 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   The dry run must show `task map: parsed from plan — mapper LLM skipped` in its
   flags; if it shows mapper output instead, the map block is malformed or
   missing — fix the plan, never hand-edit `groups.json`.
+
+  Finally, print the ready-to-run enrichment command as a recommendation —
+  this skill never runs it itself:
+
+  ```sh
+  /orchestrator-deepen docs/plans/<the-plan>.md
+  ```
 
 ## Non-negotiable rules
 

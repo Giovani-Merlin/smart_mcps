@@ -29,6 +29,11 @@ _TASK_MAP_BLOCK = re.compile(
 )
 _TASK_ID_UNIT_PREFIX = re.compile(r"^u(\d+)-")
 
+# Public alias: plan_edit.py needs this exact pattern to locate unit-heading
+# positions in the *original* plan text (global offsets), not the copy
+# parse_plan_sections keeps internal to its own per-unit UnitSection.text.
+UNIT_HEADING = _UNIT_HEADING
+
 
 class PlanSectionsError(Exception):
     """The plan's ``## Units`` structure doesn't cover every declared unit-id task."""
@@ -185,6 +190,23 @@ def _build_digest(preamble: str, units: dict[str, UnitSection]) -> str:
     if not any_tags:
         lines.append("- (none)")
     return "\n".join(lines) + "\n"
+
+
+def locate_units_span(plan_text: str) -> tuple[int, int] | None:
+    """Global ``(start, end)`` span of the ``## Units`` section — the heading
+    line through the next top-level ``## `` heading, or end of text — or
+    ``None`` if the plan has no ``## Units`` heading at all.
+
+    Mirrors the span ``parse_plan_sections`` searches for unit headings, but
+    returns global offsets into ``plan_text`` rather than text already copied
+    into ``UnitSection.text``, which is what verbatim surgery
+    (``orchestrator/grouping/plan_edit.py``) needs to slice around.
+    """
+    units_match = _UNITS_HEADING.search(plan_text)
+    if units_match is None:
+        return None
+    next_h2 = _H2_HEADING.search(plan_text, units_match.end())
+    return units_match.start(), (next_h2.start() if next_h2 else len(plan_text))
 
 
 def parse_plan_sections(plan_text: str) -> PlanSections:

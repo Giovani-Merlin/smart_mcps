@@ -116,7 +116,12 @@ from orchestrator.execution.worktrees import (
     worktree_path,
     write_provisioning_record,
 )
-from orchestrator.grouping.advisory import build_advisory_report, serialize_advisory_report
+from orchestrator.grouping.advisory import (
+    AdvisoryReport,
+    build_advisory_report,
+    finding_task_groups,
+    serialize_advisory_report,
+)
 from orchestrator.grouping.estimator import PRICE_CAP_APPROXIMATION_NOTE, PriceReport, price_plan
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
@@ -139,6 +144,14 @@ from orchestrator.grouping.pipeline import (
     EdgeProvenanceRecorder,
     serialize_edge_provenance,
     serialize_grouping,
+)
+from orchestrator.grouping.plan_edit import (
+    PlanEditError,
+    add_frontmatter_field,
+    add_predecessor_note,
+    split_plan,
+    validate_plan,
+    verify_map_unchanged,
 )
 from orchestrator.grouping.plan_reader import TaskMapError, strip_task_map
 from orchestrator.grouping.llm_record import JsonlCallRecorder
@@ -312,6 +325,60 @@ def main(
     groupings_cmd = subparsers.add_parser("groupings", help="list named groupings")
     groupings_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    plan_check_cmd = subparsers.add_parser(
+        "plan-check",
+        help="validate a plan's task-map/unit-section consistency, or diff two plans' maps",
+    )
+    plan_check_cmd.add_argument("plan", type=Path, help="path to the plan document")
+    plan_check_cmd.add_argument(
+        "--against",
+        type=Path,
+        default=None,
+        help=(
+            "compare this plan's task-map entries and unit ids against another plan "
+            "document, byte-for-byte on surviving entries; exits non-zero on any drift"
+        ),
+    )
+    plan_check_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
+    split_cmd = subparsers.add_parser(
+        "split",
+        help=(
+            "split a plan document into N documents by moving unit sections and "
+            "task-map entries verbatim, at an advisory seam or an explicit assignment"
+        ),
+    )
+    split_cmd.add_argument("plan", type=Path, help="path to the plan document")
+    split_cmd.add_argument(
+        "--seam",
+        type=int,
+        default=None,
+        help=(
+            "cohesion finding number from `group --advise` (see the numbered "
+            "'cohesion diagnostics' output) whose task partition to split at"
+        ),
+    )
+    split_cmd.add_argument(
+        "--tasks",
+        action="append",
+        default=None,
+        metavar="TASK_ID,TASK_ID,...",
+        help=(
+            "one output document's comma-separated task ids; repeat once per "
+            "document. Overrides --seam when both are given. Every task id in the "
+            "plan's task map must appear in exactly one --tasks group"
+        ),
+    )
+    split_cmd.add_argument(
+        "--name",
+        default=None,
+        help=(
+            "grouping name whose preview/advisory.json to read for --seam "
+            "(default: the plan's filename stem, matching `group`'s convention)"
+        ),
+    )
+    split_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
     status_cmd = subparsers.add_parser("status", help="show run state and sessions")
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
     status_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
@@ -392,6 +459,10 @@ def main(
         return _cmd_run(args, llm_runner, client, resume=True)
     if args.command == "groupings":
         return _cmd_groupings(args)
+    if args.command == "plan-check":
+        return _cmd_plan_check(args)
+    if args.command == "split":
+        return _cmd_plan_split(args)
     if args.command == "status":
         return _cmd_status(args)
     if args.command == "answer":
@@ -918,8 +989,26 @@ def _print_advisory_report(report) -> None:
 
     print("\ncohesion diagnostics:")
     if report.cohesion:
-        for finding in report.cohesion:
-            print(f"  [{finding.kind}] {finding.message}")
+        for index, finding in enumerate(report.cohesion, start=1):
+            print(f"  [{index}] [{finding.kind}] {finding.message}")
+            if finding.task_sets:
+                for set_index, task_set in enumerate(finding.task_sets, start=1):
+                    print(f"      set {set_index}: {', '.join(task_set)}")
+            elif finding.boundary:
+                before, after = (
+                    finding.boundary.get("tasks_before"),
+                    finding.boundary.get("tasks_after"),
+                )
+                if isinstance(before, list) and isinstance(after, list):
+                    print(f"      before: {', '.join(before)}")
+                    print(f"      after: {', '.join(after)}")
+                else:
+                    print(f"      boundary: {finding.boundary}")
+            print(
+                f"      (addressable via --seam {index})"
+                if finding_task_groups(finding)
+                else "      (not directly addressable — use --tasks)"
+            )
     else:
         print("  none")
 
@@ -1180,6 +1269,136 @@ def _cmd_groupings(args: argparse.Namespace) -> int:
         return 0
     for info in infos:
         print(f"{info.name}: {info.plan_path} ({info.group_count} group(s))")
+    return 0
+
+
+def _cmd_plan_check(args: argparse.Namespace) -> int:
+    """Structural-only plan validation (or a two-document map diff), zero LLM
+    and zero codegraph — see ``orchestrator/grouping/plan_edit.py``."""
+    repo_root = args.repo.resolve()
+    plan_path = _anchor_plan_path(args.plan, repo_root)
+    if not plan_path.is_file():
+        print(f"error: plan not found: {plan_path}", file=sys.stderr)
+        return 1
+    plan_text = plan_path.read_text()
+
+    against = getattr(args, "against", None)
+    if against is not None:
+        against_path = _anchor_plan_path(against, repo_root)
+        if not against_path.is_file():
+            print(f"error: plan not found: {against_path}", file=sys.stderr)
+            return 1
+        diffs = verify_map_unchanged(plan_text, against_path.read_text())
+        if not diffs:
+            print(
+                f"plan-check: {plan_path} and {against_path} agree on surviving "
+                "map entries and unit ids"
+            )
+            return 0
+        print(f"plan-check: {len(diffs)} difference(s) between {plan_path} and {against_path}:")
+        for diff in diffs:
+            print(f"  - {diff}")
+        return 1
+
+    try:
+        problems = validate_plan(plan_text)
+    except PlanEditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not problems:
+        print(f"plan-check: {plan_path} is internally consistent")
+        return 0
+    print(f"plan-check: {len(problems)} problem(s) in {plan_path}:")
+    for problem in problems:
+        print(f"  - {problem}")
+    return 1
+
+
+def _split_output_path(plan_path: Path, part: int) -> Path:
+    """``<stem>-part<N>-plan.md`` from ``<stem>-plan.md``, keeping the
+    traceable link back to the source plan's own ``-plan`` filename
+    convention; a plan file not following that convention just gets
+    ``-part<N>`` appended to its stem."""
+    stem = plan_path.stem
+    suffix = "-plan"
+    if stem.endswith(suffix):
+        new_stem = f"{stem[: -len(suffix)]}-part{part}{suffix}"
+    else:
+        new_stem = f"{stem}-part{part}"
+    return plan_path.with_name(f"{new_stem}{plan_path.suffix}")
+
+
+def _cmd_plan_split(args: argparse.Namespace) -> int:
+    """``orchestrate split`` (plan U2): partition a plan into N documents by
+    moving unit sections and task-map entries verbatim — see
+    ``orchestrator/grouping/plan_edit.py``. Non-destructive: the source plan
+    is never modified."""
+    repo_root = args.repo.resolve()
+    plan_path = _anchor_plan_path(args.plan, repo_root)
+    if not plan_path.is_file():
+        print(f"error: plan not found: {plan_path}", file=sys.stderr)
+        return 1
+    plan_text = plan_path.read_text()
+
+    tasks_flags = getattr(args, "tasks", None)
+    is_serial_seam = False
+    if tasks_flags:
+        groups: list[list[str]] = [
+            [task_id.strip() for task_id in group.split(",") if task_id.strip()]
+            for group in tasks_flags
+        ]
+    else:
+        seam = getattr(args, "seam", None)
+        if seam is None:
+            print("error: either --seam or --tasks is required", file=sys.stderr)
+            return 1
+        name = getattr(args, "name", None) or plan_path.stem
+        advisory_path = grouping_dir(repo_root, name) / "preview" / "advisory.json"
+        if not advisory_path.is_file():
+            print(
+                f"error: no advisory report at {advisory_path} — run `group --advise` first",
+                file=sys.stderr,
+            )
+            return 1
+        report = AdvisoryReport.model_validate_json(advisory_path.read_text())
+        if not report.cohesion or not (1 <= seam <= len(report.cohesion)):
+            print(
+                f"error: --seam {seam} is out of range "
+                f"(report has {len(report.cohesion)} finding(s))",
+                file=sys.stderr,
+            )
+            return 1
+        finding = report.cohesion[seam - 1]
+        found_groups = finding_task_groups(finding)
+        if found_groups is None:
+            print(
+                f"error: finding [{seam}] ({finding.kind}) carries no directly "
+                "addressable task partition — use --tasks instead",
+                file=sys.stderr,
+            )
+            return 1
+        groups = found_groups
+        is_serial_seam = finding.kind == "serial"
+
+    try:
+        documents = split_plan(plan_text, groups)
+    except PlanEditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    output_paths = [_split_output_path(plan_path, index + 1) for index in range(len(documents))]
+    for index, (document, out_path) in enumerate(zip(documents, output_paths, strict=True)):
+        text = add_frontmatter_field(document.text, "split_from", plan_path.name)
+        if is_serial_seam and index > 0:
+            predecessor_name = output_paths[index - 1].name
+            note = f"> This part assumes `{predecessor_name}` is merged before it runs."
+            text = add_predecessor_note(text, note)
+        out_path.write_text(text)
+        print(
+            f"wrote {out_path} ({len(document.task_ids)} task(s), {len(document.unit_ids)} unit(s))"
+        )
+
+    print(f"original plan left untouched: {plan_path} — archive it once the parts are reviewed")
     return 0
 
 

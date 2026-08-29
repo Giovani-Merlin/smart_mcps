@@ -142,6 +142,29 @@ def serialize_advisory_report(report: AdvisoryReport) -> str:
     return report.model_dump_json(indent=2) + "\n"
 
 
+def finding_task_groups(finding: CohesionFinding) -> list[list[str]] | None:
+    """The task-to-document assignment implied by one cohesion finding, if it
+    carries one addressable as a seam for ``orchestrate split``: a
+    ``disconnected`` finding's ``task_sets`` directly, or a ``serial``
+    finding's ``boundary`` cut when it names ``tasks_before``/``tasks_after``
+    directly (the single critical-path-vs-widest-wave cut, not the topological
+    cut sweep's list of candidate ``valleys``).
+
+    ``None`` for a finding with no single addressable partition — a
+    ``monolithic`` finding (no task lists at all), or a ``serial`` finding
+    whose boundary is only a list of ``valleys`` candidates — the operator
+    falls back to ``--tasks``.
+    """
+    if finding.kind == "disconnected" and finding.task_sets:
+        return [list(task_set) for task_set in finding.task_sets]
+    if finding.kind == "serial":
+        before = finding.boundary.get("tasks_before")
+        after = finding.boundary.get("tasks_after")
+        if isinstance(before, list) and isinstance(after, list):
+            return [list(before), list(after)]
+    return None
+
+
 # ---------------------------------------------------------------- main entry
 
 

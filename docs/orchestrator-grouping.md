@@ -483,6 +483,44 @@ A grouping is a **named, self-contained directory**, not an overwritable slot
 
 ______________________________________________________________________
 
+## `split` and `plan-check` (plan U1/U2)
+
+Two zero-LLM, zero-codegraph commands operate directly on a **plan document**,
+not on a grouping directory — both go through one shared module,
+[`orchestrator/grouping/plan_edit.py`](../orchestrator/grouping/plan_edit.py),
+whose guarantee is byte-level: a unit section or task-map entry either moves
+verbatim, or the operation is refused naming every difference it finds.
+
+- **`split <plan> [--seam N | --tasks TASK_ID,... (repeatable)] [--name NAME] [--repo REPO]`**
+  — partitions a plan into N documents by moving unit sections and task-map
+  entries verbatim between them. `--seam N` reads the numbered cohesion
+  finding from `<name>`'s `preview/advisory.json` (written by
+  `group --advise`; `--name` defaults to the plan's filename stem); `--tasks`
+  gives an explicit, repeatable comma-separated task-id assignment that
+  overrides `--seam` when both are given, and every task id in the plan's
+  task map must land in exactly one `--tasks` group. **`split` is
+  non-destructive**: it writes `<stem>-part<N>-plan.md` documents beside the
+  original (`<stem>-plan.md`'s naming convention, extended) and never
+  modifies or deletes the source plan — it prints what it wrote and what the
+  operator may now choose to archive.
+- **`plan-check <plan> [--against OTHER_PLAN] [--repo REPO]`** — validates one
+  plan's own task-map/unit-section consistency (does the map parse, does
+  every map entry have a matching `### U<N>.` section and vice versa), or,
+  with `--against`, diffs two plans' task-map entries and unit ids
+  byte-for-byte on the ids surviving in both and reports every difference —
+  used by `/orchestrator-deepen` to guard its own enrichment writes.
+  **`plan-check` makes no LLM call and no codegraph call** — it is a pure
+  string/YAML operation over already-loaded plan text, sub-second even on the
+  repo's largest plan.
+
+`split`'s per-document plan text is built directly from `plan_edit.py`'s
+extraction primitives (`split_units`, `extract_task_map_entries`,
+`render_task_map_block`) — the same primitives `/orchestrator-deepen` uses to
+locate a unit section before enriching it, so both consumers share one
+guarantee instead of two hand-rolled parsers drifting apart.
+
+______________________________________________________________________
+
 ## Where the tokens go
 
 | Stage                               | LLM? | Count per `group`                                              |
