@@ -14,11 +14,15 @@ import pytest
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.advisory import (
+    CONTEXT_ESTIMATE_BYTES_PER_TOKEN,
     CUT_SWEEP_VALLEY_MARGIN,
+    EXPLORER_CONTEXT_TOKEN_CAP,
     MONOLITHIC_CONDUCTANCE_THRESHOLD,
     MONOLITHIC_MODULARITY_THRESHOLD,
     NEAR_DISCONNECTED_EDGE_WEIGHT_THRESHOLD,
     SERIALITY_DEPTH_WIDTH_RATIO_THRESHOLD,
+    _file_overlap_clusters,
+    _pack_explorer_batches,
     build_advisory_report,
     serialize_advisory_report,
 )
@@ -407,7 +411,6 @@ class TestThresholdsAreNamedConstants:
     def test_module_documents_each_threshold(self):
         import orchestrator.grouping.advisory as advisory_module
 
-        source = advisory_module.__doc__ or ""
         # The justification comments live above each constant in the module
         # source itself, not the module docstring — check the source file.
         import inspect
@@ -419,6 +422,9 @@ class TestThresholdsAreNamedConstants:
             "CUT_SWEEP_VALLEY_MARGIN",
             "MONOLITHIC_MODULARITY_THRESHOLD",
             "MONOLITHIC_CONDUCTANCE_THRESHOLD",
+            "CONTEXT_ESTIMATE_BYTES_PER_TOKEN",
+            "INLINE_CONTEXT_TOKEN_BUDGET",
+            "EXPLORER_CONTEXT_TOKEN_CAP",
         ):
             assert f"{name} = " in text
 
@@ -442,3 +448,111 @@ class TestFailureModes:
                 llm_runner=_raising_llm_runner,
                 client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
             )
+
+
+class TestContextBudget:
+    """`context`: the deepen-skill exploration budget — per-group file sizes,
+    overlap clusters, batch packing, and the inline/batched/per-group call."""
+
+    LADDER_FILES = ("root", "alpha1", "alpha2", "beta1", "beta2", "beta3", "gamma1", "leaf")
+
+    def _report(self, tmp_path, plan_text=LADDER_PLAN, file_names=LADDER_FILES, size=4000):
+        repo, plan = _repo(tmp_path, plan_text)
+        (repo / "app").mkdir()
+        for name in file_names:
+            (repo / "app" / f"{name}.py").write_bytes(b"x" * size)
+        return build_advisory_report(
+            plan_path=plan,
+            repo_root=repo,
+            config=OrchestratorConfig(),
+            llm_runner=_raising_llm_runner,
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+
+    def test_context_present_with_real_sizes_and_inline_recommendation(self, tmp_path):
+        report = self._report(tmp_path)
+        context = report.context
+        assert context is not None
+        assert context.granularity == OrchestratorConfig().partition.granularity
+        assert context.bytes_per_token == CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+        # Every task lands in exactly one group; every group's tokens follow
+        # bytes // bytes_per_token over its union of 4000-byte files.
+        all_tasks = sorted(t for group in context.groups for t in group.tasks)
+        assert all_tasks == sorted(self.LADDER_FILES)
+        for group in context.groups:
+            assert group.source_bytes == 4000 * len(group.files)
+            assert group.estimated_tokens == group.source_bytes // CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+        # 8 files x 1000 tokens is far under the inline budget.
+        assert context.total_estimated_tokens == 8000
+        assert context.recommendation == "inline"
+
+    def test_clusters_and_batches_partition_the_groups(self, tmp_path):
+        context = self._report(tmp_path).context
+        indexes = sorted(g.group_index for g in context.groups)
+        assert indexes == list(range(1, len(context.groups) + 1))
+        assert sorted(i for cluster in context.clusters for i in cluster) == indexes
+        assert sorted(i for batch in context.batches for i in batch.group_indexes) == indexes
+        for batch in context.batches:
+            if len(batch.group_indexes) > 1:
+                assert batch.estimated_tokens <= EXPLORER_CONTEXT_TOKEN_CAP
+
+    def test_recommendation_leaves_inline_when_budget_is_tiny(self, tmp_path, monkeypatch):
+        from orchestrator.grouping import advisory as advisory_module
+
+        monkeypatch.setattr(advisory_module, "INLINE_CONTEXT_TOKEN_BUDGET", 1)
+        context = self._report(tmp_path).context
+        assert context.recommendation in ("batched", "per-group")
+        # Fewer explorers than groups is what "batched" means; equal counts
+        # (nothing packed together) must be reported as per-group instead.
+        if context.recommendation == "batched":
+            assert len(context.batches) < len(context.groups)
+        else:
+            assert len(context.batches) == len(context.groups)
+
+    def test_missing_files_weigh_zero(self, tmp_path):
+        context = self._report(tmp_path, file_names=()).context
+        assert context.total_estimated_tokens == 0
+        assert all(group.source_bytes == 0 for group in context.groups)
+        assert context.recommendation == "inline"
+
+
+class TestContextBudgetHelpers:
+    """The pure packing/clustering primitives, pinned directly — group-to-file
+    shapes the end-to-end partitioner can't be forced to produce."""
+
+    def test_overlap_clusters_chain_through_shared_files(self):
+        clusters = _file_overlap_clusters(
+            {1: {"a.py"}, 2: {"a.py", "b.py"}, 3: {"b.py", "c.py"}, 4: {"d.py"}}
+        )
+        assert clusters == [[1, 2, 3], [4]]
+
+    def test_disjoint_groups_stay_apart(self):
+        assert _file_overlap_clusters({1: {"a.py"}, 2: {"b.py"}}) == [[1], [2]]
+
+    def test_fitting_cluster_kept_whole_and_shared_file_counted_once(self):
+        files = {1: {"a.py", "shared.py"}, 2: {"b.py", "shared.py"}}
+        file_bytes = {"a.py": 400, "b.py": 400, "shared.py": 400}
+        [batch] = _pack_explorer_batches([[1, 2]], files, file_bytes)
+        assert batch.group_indexes == [1, 2]
+        # 3 distinct files, not 4: shared.py is read once per batch.
+        assert batch.estimated_tokens == 1200 // CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+
+    def test_oversized_cluster_splits_and_singleton_over_cap_gets_own_batch(self):
+        cap_bytes = EXPLORER_CONTEXT_TOKEN_CAP * CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+        files = {1: {"big.py"}, 2: {"small1.py"}, 3: {"small2.py"}}
+        file_bytes = {"big.py": cap_bytes * 2, "small1.py": 400, "small2.py": 400}
+        batches = _pack_explorer_batches([[1], [2], [3]], files, file_bytes)
+        # big.py exceeds the cap alone -> its own over-budget batch; the two
+        # small groups pack together under the cap.
+        assert [b.group_indexes for b in batches] == [[1], [2, 3]]
+        assert batches[0].estimated_tokens > EXPLORER_CONTEXT_TOKEN_CAP
+        assert batches[1].estimated_tokens <= EXPLORER_CONTEXT_TOKEN_CAP
+
+    def test_oversized_multi_group_cluster_dissolves_into_packable_pieces(self):
+        cap_bytes = EXPLORER_CONTEXT_TOKEN_CAP * CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+        # Two groups that together exceed the cap but individually fit: the
+        # cluster dissolves and each lands in its own batch.
+        files = {1: {"one.py"}, 2: {"two.py"}}
+        file_bytes = {"one.py": cap_bytes - 400, "two.py": cap_bytes - 400}
+        batches = _pack_explorer_batches([[1, 2]], files, file_bytes)
+        assert [b.group_indexes for b in batches] == [[1], [2]]

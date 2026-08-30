@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.estimator import node_work
-from orchestrator.grouping.graphing import CodegraphClient
+from orchestrator.grouping.graphing import CodegraphClient, source_bytes_of
 from orchestrator.grouping.llm import JsonRunner, claude_json_runner
 from orchestrator.grouping.partition import (
     GRANULARITY_LEVELS,
@@ -94,6 +94,29 @@ CUT_SWEEP_VALLEY_MARGIN = 0
 MONOLITHIC_MODULARITY_THRESHOLD = 0.1
 MONOLITHIC_CONDUCTANCE_THRESHOLD = 0.6
 
+# Context budget (the `/orchestrator-deepen` exploration planner): the three
+# constants below turn per-group file sets into a spawn-or-read-inline
+# recommendation. Same tuning posture as the thresholds above — named, visible,
+# expected to move once the eval harness accumulates real runs.
+
+# The estimator convention for turning on-disk bytes into LLM context tokens.
+# 4 bytes/token is the standard rough figure for source code under the
+# Claude/BPE tokenizer families; the budget decisions below only need
+# order-of-magnitude accuracy, so a per-language refinement is not warranted.
+CONTEXT_ESTIMATE_BYTES_PER_TOKEN = 4
+
+# Below this total (union of every group's existing files, shared files
+# counted once), spawning any explorer subagent costs more than it saves —
+# a cold subagent re-derives plan context the calling session already holds,
+# so a deepen session should just read the files itself.
+INLINE_CONTEXT_TOKEN_BUDGET = 60_000
+
+# Per-explorer ceiling for batched exploration: one explorer can hold several
+# groups' file neighborhoods as long as their union stays under this. Sized
+# well below a worker's usable context so the explorer keeps room for
+# codegraph output and its own report.
+EXPLORER_CONTEXT_TOKEN_CAP = 150_000
+
 
 # -------------------------------------------------------------- report shape
 
@@ -125,15 +148,58 @@ class CohesionFinding(BaseModel):
     boundary: dict[str, object] = {}
 
 
+class GroupContext(BaseModel):
+    """One group's reading load, at the configured granularity: the union of
+    its member tasks' mapped files and what those files weigh on disk today.
+    ``prospective_files`` (files the plan will create) carry no bytes yet, so
+    they are listed but never counted."""
+
+    group_index: int
+    tasks: list[str]
+    files: list[str]
+    prospective_files: list[str]
+    source_bytes: int
+    estimated_tokens: int
+
+
+class ExplorerBatch(BaseModel):
+    """One explorer subagent's assignment: the groups it covers and the
+    estimated tokens of their *union* of files — a file shared between two
+    groups in the same batch is read (and counted) once."""
+
+    group_indexes: list[int]
+    estimated_tokens: int
+
+
+class ContextBudget(BaseModel):
+    """The exploration plan `/orchestrator-deepen` reads instead of blindly
+    spawning one explorer per group: per-group context sizes, file-overlap
+    clusters, a bin-packed batch assignment under
+    ``EXPLORER_CONTEXT_TOKEN_CAP``, and the resulting recommendation."""
+
+    granularity: Literal["independent", "balanced", "monolithic"]
+    bytes_per_token: int
+    inline_token_budget: int
+    explorer_token_cap: int
+    total_estimated_tokens: int
+    recommendation: Literal["inline", "batched", "per-group"]
+    groups: list[GroupContext]
+    clusters: list[list[int]]
+    batches: list[ExplorerBatch]
+
+
 class AdvisoryReport(BaseModel):
     """The ``advisory.json`` payload (plan U11): one entry per granularity
     preset plus the cohesion diagnostics, all derived from a single graph
-    build with zero LLM calls."""
+    build with zero LLM calls. ``context`` (additive, may be absent on
+    reports written before it existed) carries the deepen-skill exploration
+    budget at the configured granularity."""
 
     version: int = 1
     plan_path: str
     granularities: list[GranularityMetrics]
     cohesion: list[CohesionFinding]
+    context: ContextBudget | None = None
 
 
 def serialize_advisory_report(report: AdvisoryReport) -> str:
@@ -209,6 +275,7 @@ def build_advisory_report(
     _emit(progress, "stage: advise")
     presets: list[GranularityMetrics] = []
     raw_metrics: dict[Granularity, dict] = {}
+    partitions: dict[Granularity, Partition] = {}
     for level in GRANULARITY_LEVELS:
         strategy = DefaultPartitionStrategy(
             work_fn=node_work_fn,
@@ -219,6 +286,7 @@ def build_advisory_report(
             target_fill_ratio=config.partition.target_fill_ratio,
         )
         partition = strategy.partition(graph)
+        partitions[level] = partition
         dag = build_group_dag(graph, partition)
         raw_metrics[level] = _preset_metrics(graph, partition, dag, node_work_map, build.budget_cap)
 
@@ -240,6 +308,12 @@ def build_advisory_report(
         )
 
     cohesion = _cohesion_diagnostics(graph, node_work_map)
+    context = build_context_budget(
+        graph,
+        partitions[config.partition.granularity],
+        granularity=config.partition.granularity,
+        repo_root=repo_root,
+    )
 
     from orchestrator.grouping.pipeline import _portable_path
 
@@ -247,6 +321,7 @@ def build_advisory_report(
         plan_path=_portable_path(plan_path, repo_root),
         granularities=presets,
         cohesion=cohesion,
+        context=context,
     )
 
 
@@ -609,3 +684,161 @@ def _best_effort_modularity(graph: TaskGraph) -> float:
         return 0.0
     communities = nx.community.louvain_communities(g, weight="weight", seed=LOUVAIN_SEED)
     return nx.algorithms.community.quality.modularity(g, communities, weight="weight")
+
+
+# ---------------------------------------------------------- context budget
+
+
+def _group_file_sets(
+    graph: TaskGraph, partition: Partition
+) -> tuple[dict[int, list[str]], dict[int, set[str]], dict[int, set[str]]]:
+    """Members and file unions per group, renumbered deterministically: groups
+    take index 1..N in order of their smallest member task id, so the report
+    is stable across runs regardless of the partitioner's internal gids."""
+    members: dict[int, list[str]] = defaultdict(list)
+    for node, gid in partition.items():
+        members[gid].append(node)
+    ordered = sorted(members.values(), key=lambda m: min(m))
+    tasks_by_index: dict[int, list[str]] = {}
+    files_by_index: dict[int, set[str]] = {}
+    prospective_by_index: dict[int, set[str]] = {}
+    for index, group_members in enumerate(ordered, start=1):
+        files: set[str] = set()
+        prospective: set[str] = set()
+        for task in group_members:
+            meta = graph.metadata.get(task, {})
+            files.update(meta.get("files", ()) or ())
+            prospective.update(meta.get("prospective_files", ()) or ())
+        tasks_by_index[index] = sorted(group_members)
+        files_by_index[index] = files
+        prospective_by_index[index] = prospective
+    return tasks_by_index, files_by_index, prospective_by_index
+
+
+def _file_overlap_clusters(files_by_index: Mapping[int, set[str]]) -> list[list[int]]:
+    """Union-find over groups sharing at least one file: two groups whose
+    members read the same neighborhood belong with the same explorer, whatever
+    the group DAG says — exploration has no precedence, only reading cost, so
+    the only merge signal here is a shared file (existing or prospective)."""
+    parent = {index: index for index in files_by_index}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    owner: dict[str, int] = {}
+    for index in sorted(files_by_index):
+        for file in sorted(files_by_index[index]):
+            if file in owner:
+                union(owner[file], index)
+            else:
+                owner[file] = index
+    clusters: dict[int, list[int]] = defaultdict(list)
+    for index in files_by_index:
+        clusters[find(index)].append(index)
+    return sorted(sorted(cluster) for cluster in clusters.values())
+
+
+def _pack_explorer_batches(
+    clusters: list[list[int]],
+    files_by_index: Mapping[int, set[str]],
+    file_bytes: Mapping[str, int],
+) -> list[ExplorerBatch]:
+    """First-fit-decreasing bin packing under ``EXPLORER_CONTEXT_TOKEN_CAP``.
+
+    A cluster that fits the cap is kept whole (its shared files are read
+    once); one that alone exceeds the cap dissolves into per-group pieces and
+    takes its chances with the global packing — locality is a preference, not
+    a guarantee. A single group over the cap becomes its own over-budget
+    batch: it cannot be made smaller here, only regrouped upstream."""
+
+    def tokens_of(indexes: list[int]) -> int:
+        union: set[str] = set()
+        for index in indexes:
+            union.update(files_by_index[index])
+        return sum(file_bytes.get(f, 0) for f in union) // CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+
+    pieces: list[list[int]] = []
+    for cluster in clusters:
+        if len(cluster) == 1 or tokens_of(cluster) <= EXPLORER_CONTEXT_TOKEN_CAP:
+            pieces.append(list(cluster))
+        else:
+            pieces.extend([index] for index in cluster)
+
+    batches: list[list[int]] = []
+    for piece in sorted(pieces, key=lambda p: (-tokens_of(p), p)):
+        for batch in batches:
+            if tokens_of(batch + piece) <= EXPLORER_CONTEXT_TOKEN_CAP:
+                batch.extend(piece)
+                break
+        else:
+            batches.append(list(piece))
+    return [
+        ExplorerBatch(group_indexes=batch, estimated_tokens=tokens_of(batch))
+        for batch in sorted(sorted(batch) for batch in batches)
+    ]
+
+
+def build_context_budget(
+    graph: TaskGraph,
+    partition: Partition,
+    *,
+    granularity: Granularity,
+    repo_root: Path,
+) -> ContextBudget:
+    """The `/orchestrator-deepen` exploration plan: per-group reading load at
+    the configured granularity, file-overlap clusters, a batch packing, and
+    the inline/batched/per-group recommendation. Pure filesystem stats over
+    the already-built graph — no codegraph call, no LLM call."""
+    tasks_by_index, files_by_index, prospective_by_index = _group_file_sets(graph, partition)
+    all_files: set[str] = set()
+    for files in files_by_index.values():
+        all_files.update(files)
+    file_bytes = {file: source_bytes_of(repo_root, [file]) for file in all_files}
+
+    def tokens_of_files(files: set[str]) -> int:
+        return sum(file_bytes.get(f, 0) for f in files) // CONTEXT_ESTIMATE_BYTES_PER_TOKEN
+
+    groups = [
+        GroupContext(
+            group_index=index,
+            tasks=tasks_by_index[index],
+            files=sorted(files_by_index[index]),
+            prospective_files=sorted(prospective_by_index[index]),
+            source_bytes=sum(file_bytes.get(f, 0) for f in files_by_index[index]),
+            estimated_tokens=tokens_of_files(files_by_index[index]),
+        )
+        for index in sorted(tasks_by_index)
+    ]
+    # Clustering counts prospective files too: two groups about to create the
+    # same new file share a neighborhood even though it weighs nothing yet.
+    combined = {
+        index: files_by_index[index] | prospective_by_index[index] for index in files_by_index
+    }
+    clusters = _file_overlap_clusters(combined)
+    batches = _pack_explorer_batches(clusters, files_by_index, file_bytes)
+    total = tokens_of_files(all_files)
+    if total <= INLINE_CONTEXT_TOKEN_BUDGET:
+        recommendation: Literal["inline", "batched", "per-group"] = "inline"
+    elif len(batches) < len(groups):
+        recommendation = "batched"
+    else:
+        recommendation = "per-group"
+    return ContextBudget(
+        granularity=granularity,
+        bytes_per_token=CONTEXT_ESTIMATE_BYTES_PER_TOKEN,
+        inline_token_budget=INLINE_CONTEXT_TOKEN_BUDGET,
+        explorer_token_cap=EXPLORER_CONTEXT_TOKEN_CAP,
+        total_estimated_tokens=total,
+        recommendation=recommendation,
+        groups=groups,
+        clusters=clusters,
+        batches=batches,
+    )

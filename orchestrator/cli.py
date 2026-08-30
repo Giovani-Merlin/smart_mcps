@@ -236,8 +236,9 @@ def main(
         help=(
             "build the task graph once and report every GRANULARITY_LEVELS "
             "preset plus cohesion diagnostics (disconnection, seriality, "
-            "monolithic structure) with zero LLM calls; writes preview/advisory.json, "
-            "never touches groups.json"
+            "monolithic structure) and the per-group context budget (file sets, "
+            "estimated tokens, explorer batching) with zero LLM calls; writes "
+            "preview/advisory.json, never touches groups.json"
         ),
     )
     group_cmd.add_argument(
@@ -1011,6 +1012,35 @@ def _print_advisory_report(report) -> None:
             )
     else:
         print("  none")
+
+    context = getattr(report, "context", None)
+    if context is not None:
+        print(f"\ncontext budget ({context.granularity} granularity):")
+        print(
+            f"  total: ~{context.total_estimated_tokens:,} tokens across "
+            f"{len(context.groups)} group(s) "
+            f"(inline budget {context.inline_token_budget:,}, "
+            f"explorer cap {context.explorer_token_cap:,})"
+        )
+        print(f"  recommendation: {context.recommendation}")
+        for group in context.groups:
+            prospective = (
+                f" (+{len(group.prospective_files)} prospective)" if group.prospective_files else ""
+            )
+            print(
+                f"    group {group.group_index}: ~{group.estimated_tokens:,} tokens, "
+                f"{len(group.files)} file(s){prospective} — "
+                f"tasks [{', '.join(group.tasks)}]"
+            )
+        if context.batches:
+            print("  explorer batches (shared files counted once per batch):")
+            for number, batch in enumerate(context.batches, start=1):
+                over = " OVER CAP" if batch.estimated_tokens > context.explorer_token_cap else ""
+                groups_list = ", ".join(str(i) for i in batch.group_indexes)
+                print(
+                    f"    batch {number}: groups [{groups_list}] — "
+                    f"~{batch.estimated_tokens:,} tokens{over}"
+                )
 
 
 def _print_price_report(report: PriceReport, plan_path: Path) -> None:

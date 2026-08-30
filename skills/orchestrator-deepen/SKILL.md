@@ -1,6 +1,6 @@
 ---
 name: orchestrator-deepen
-description: Grills the human with codegraph-grounded, EVPI-ranked edge-case questions per group of an orchestrator plan, and writes the answers back into the plan as per-unit edge cases, non-goals, and Run:/Pass: verification items — without ever touching the task map or unit ids.
+description: Grills the human with codegraph-grounded, EVPI-ranked edge-case questions per group of an orchestrator plan, and writes the answers back into the plan as per-unit edge cases, non-goals, refined Goal/Summary prose, and Run:/Pass: verification items — without ever touching the task map or unit ids. Exploration is context-budgeted via `group --advise`: inline, batched explorers, or per-group, chosen with the human.
 user-invocable: true
 argument-hint: "<path to a plan document under docs/plans/>"
 ---
@@ -8,12 +8,16 @@ argument-hint: "<path to a plan document under docs/plans/>"
 # orchestrator-deepen
 
 You are in **enrichment mode**. No implementation code is written, and the
-plan's **task map and unit ids are never touched** — this skill only adds new
-optional bullets (`Edge cases`, `Non-goals / must-not`, and `Run:`/`Pass:`
-verification lines) inside existing unit sections, through the shared
-verbatim-surgery module (`orchestrator/grouping/plan_edit.py`, plan U1).
-Every write is followed by `plan-check --against` the pre-edit copy; a
-refusal aborts the write immediately.
+plan's **task map and unit ids are never touched** — this skill edits only
+the prose inside existing unit sections: it adds optional bullets
+(`Edge cases`, `Non-goals / must-not`, `Run:`/`Pass:` verification lines)
+and may **refine existing unit prose** (a `Goal`/`Summary` line the human's
+answer contradicts or sharpens) — always through the shared verbatim-surgery
+module (`orchestrator/grouping/plan_edit.py`, plan U1). Every write is
+followed by `plan-check --against` the pre-edit copy; a refusal aborts the
+write immediately. A refined plan is a *new* plan — after deepening, the
+grouping must be regenerated (`group <plan>`); never hand-edit an existing
+`groups.json` to match.
 
 Plan: `$ARGUMENTS`
 
@@ -21,9 +25,22 @@ ______________________________________________________________________
 
 ## Phase 1 — Load the plan and its groups
 
-- Read the plan document and, if it exists, its
+- Read the plan document and its
   `.orchestrator/groupings/<name>/preview/advisory.json` (produced by
-  `group --advise`) — this skill does not compute grouping itself.
+  `group --advise`) — this skill does not compute grouping itself. If the
+  advisory file is missing, stale against the plan, or predates the
+  `context` section, refresh it:
+
+  ```sh
+  smart-mcps-orchestrate group <plan> --advise
+  ```
+
+  The report's **`context` section is the exploration budget** for Phase 2:
+  per-group file sets and estimated tokens, file-overlap clusters, a
+  bin-packed `batches` assignment, and a `recommendation`
+  (`inline` / `batched` / `per-group`). Its `group_index` numbering is the
+  advisory's own — match advisory groups to `groups.json` groups by their
+  member `tasks` sets, never by id.
 
 - Derive group membership deterministically, with **no new code**: prefer an
   existing `.orchestrator/groupings/<name>/groups.json` if one is fresh
@@ -39,11 +56,36 @@ ______________________________________________________________________
 - Snapshot the plan's current bytes before any write — this is the "pre-edit
   copy" every `plan-check --against` call in Phase 4 compares against.
 
-## Phase 2 — Explore, one subagent per group
+## Phase 2 — Explore, at the cheapest mode that covers the context
 
-For **every group**, spawn one read-only explorer subagent using the template
-in [`explorer-prompt.md`](./explorer-prompt.md), filling in the plan path,
-the group id, and that group's member unit sections verbatim. The explorer:
+**Never default to one explorer per group.** A 20-group plan is not 20
+exploration jobs — groups exist for merge scheduling, but exploration has no
+precedence: its only cost is reading files, and groups share neighborhoods.
+The advisory `context` section already computed the right shape; confirm it
+with the human in **one** `AskUserQuestion`, quoting the real numbers, with
+the advisory `recommendation` as the first (Recommended) option:
+
+- **`inline`** — total estimated tokens fit the inline budget: spawn
+  **nothing**. Read the groups' files yourself in this session and walk the
+  explorer process (all ten categories, divergence test, scoring, `Run:`
+  grounding) directly. This is the normal case for small and medium plans —
+  a cold subagent that re-derives context you already hold is pure waste.
+- **`batched`** — one read-only explorer **per advisory batch**, each
+  covering every group in its batch (shared files read once). Say how many
+  explorers and the estimated tokens each, e.g. "3 explorers, ~90k tokens
+  each, instead of 25 spawns".
+- **`per-group`** — the legacy shape; only worth offering when the advisory
+  itself recommends it (each group is its own neighborhood near the cap).
+
+A batch whose estimate is marked over the explorer cap gets flagged to the
+human — it signals a group too fat to explore in one pass, which is a
+grouping/split problem, not a reason to shard exploration further.
+
+Each explorer (or the inline pass) uses the template in
+[`explorer-prompt.md`](./explorer-prompt.md), filling in the plan path, the
+batch's group ids, and those groups' member unit sections verbatim — one
+report section per group, so Phase 3 is identical regardless of mode. The
+explorer:
 
 - walks all ten edge-case categories internally (boundary/range,
   empty/null/missing, error/partial-failure, concurrency/ordering,
@@ -58,10 +100,10 @@ the group id, and that group's member unit sections verbatim. The explorer:
   repo actually uses **and** every path in the command appears in that unit's
   declared `Files` — otherwise the candidate carries a `Pass:` condition only.
 
-Groups with no cross-group dependency between them may be explored in
-parallel; a downstream group's explorer does not need an upstream group's
-answers, since edge cases and verification are recorded per-unit, not
-per-dependency.
+Batches may always run in parallel: a downstream group's explorer does not
+need an upstream group's answers, since edge cases and verification are
+recorded per-unit, not per-dependency — dependency order constrains the
+*run*, never the exploration.
 
 ## Phase 3 — Grill, per group, capped and always with candidates
 
@@ -93,6 +135,13 @@ tool):
   style — *"When `<trigger>`, `<unit>` shall `<response>`"*), an `Edge cases`
   entry, a `Non-goals / must-not` entry, or a verification item. Never loose
   prose appended anywhere.
+
+- **Existing unit prose may be refined, not just appended to**: when an
+  answer contradicts or sharpens a unit's current `Goal`/`Summary`/boundary
+  text, rewrite that line rather than leaving the stale sentence beside a
+  correcting bullet. Every changed line must trace to a recorded human
+  answer — never regenerate a unit's prose wholesale or "improve" text no
+  answer touched. The task map and unit ids stay immutable regardless.
 
 - **Edge cases are written only where they fire** — a unit with zero
   triggered categories gets no `Edge cases` bullet at all; never write an
@@ -132,7 +181,10 @@ still a valid `group`/`run` input, just without the extra edge-case and
 `Run:`/`Pass:` coverage. Present the human with a short summary (questions
 asked, "either is fine" answers, units enriched) and point back at
 `smart-mcps-orchestrate group <plan> --no-spec` to confirm the enriched plan
-still parses clean.
+still parses clean. If any existing prose was refined (not merely appended
+to), remind the human to regenerate the grouping with
+`smart-mcps-orchestrate group <plan>` before running — the persisted
+`groups.json` was derived from the pre-deepen plan.
 
 ## Non-negotiable rules
 
@@ -144,5 +196,10 @@ still parses clean.
 - **A `Run:` command is written only when grounded** (real runner idiom, every
   path in the unit's declared `Files`); otherwise `Pass:`-only.
 - **Edge cases only where they fire** — no `N/A` filler.
-- No implementation code. No LLM call regenerates any unit's existing prose —
-  every new bullet is a direct write of an explicit human answer.
+- **Exploration mode follows the advisory `context` budget** — inline when
+  the total fits the inline budget, batched by the advisory's packing
+  otherwise; one-explorer-per-group is never the default, only a confirmed
+  choice.
+- No implementation code. Every new bullet and every refined prose line is a
+  direct write of an explicit human answer — prose no answer touched is
+  never regenerated.

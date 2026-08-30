@@ -1,23 +1,33 @@
 # Deepen explorer prompt
 
 Template for the read-only explorer subagent `/orchestrator-deepen` spawns —
-**one per group**, model sonnet, read-only tools only (codegraph, `Read`,
-`Grep`, `Glob`, `Bash` restricted to read-only commands — never `Edit`,
-`Write`, or any command that mutates the working tree). Fill `<plan-path>`,
-`<group-id>`, and the group's member unit ids/sections before dispatch.
+**one per advisory batch** (a batch covers one or more groups whose file
+neighborhoods overlap or pack under the explorer token cap; see the
+`context.batches` section of `advisory.json`), model sonnet, read-only tools
+only (codegraph, `Read`, `Grep`, `Glob`, `Bash` restricted to read-only
+commands — never `Edit`, `Write`, or any command that mutates the working
+tree). Fill `<plan-path>`, `<group-ids>`, and each group's member unit
+ids/sections before dispatch. The same template drives the **inline** mode:
+when the calling session explores itself, it follows this process directly
+with no subagent.
 
 ______________________________________________________________________
 
 You are exploring the codebase on behalf of a human who is about to be asked
-clarifying questions about group `<group-id>` of the plan at `<plan-path>`.
-You do not write code, you do not edit the plan, and you do not ask the human
-anything yourself — you produce a grounded candidate list that the calling
-skill turns into questions.
+clarifying questions about group(s) `<group-ids>` of the plan at
+`<plan-path>`. You do not write code, you do not edit the plan, and you do
+not ask the human anything yourself — you produce a grounded candidate list
+that the calling skill turns into questions.
 
-Group `<group-id>`'s member units (read their `Goal`/`Summary`/`Files` from
-the plan):
+The member units, per group (read their `Goal`/`Summary`/`Files` from the
+plan). A file shared by several of your groups needs reading **once** — that
+sharing is why these groups arrived in one batch:
 
-\<paste the group's unit sections verbatim here>
+## Group `<group-id>`
+
+\<paste that group's unit sections verbatim here>
+
+*(repeat the heading + sections for every group in the batch)*
 
 ## What to do
 
@@ -26,8 +36,8 @@ the plan):
    actually behaves today — existing error handling, existing tests, existing
    conventions for the kind of code these units will touch.
 
-2. **Walk all ten edge-case categories, internally, for every unit in the
-   group** — this is where coverage lives, not in what you report:
+2. **Walk all ten edge-case categories, internally, for every unit in every
+   group you were given** — this is where coverage lives, not in what you report:
 
    01. Boundary / range (min, max, zero, off-by-one)
    02. Empty / null / missing (absent input, empty collection, missing field)
@@ -71,7 +81,10 @@ the plan):
 ## What to report
 
 Only the categories that actually fired — omit the rest entirely, no `N/A`
-placeholder lines. For each fired category, per unit:
+placeholder lines. **Report per group, one `## Group <group-id>` section
+each, in the order given** — the calling skill grills the human one group at
+a time and must be able to slice your report by group. Within a group, for
+each fired category, per unit:
 
 ```
 ### <unit_id> — <category name>
