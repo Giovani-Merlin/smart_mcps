@@ -246,6 +246,51 @@ def test_recording_is_inert_when_the_filesystem_refuses(tmp_path, monkeypatch):
     }
 
 
+def test_a_restarted_recorder_appends_instead_of_clobbering(tmp_path):
+    """A driver restart reset _seq to 0, so the resumed process's first rewrite
+    overwrote 01-* and rewrote calls.json down to one entry — g1's rewrite
+    record on r20260830-163212 was destroyed exactly this way."""
+    first = _recorder(tmp_path)
+    runner = lambda prompt, schema: '{"v": 1}'  # noqa: E731
+    call_llm_json(runner, "first prompt", SCHEMA, validate=lambda p: p, recorder=first)
+
+    second = _recorder(tmp_path)  # the restarted driver's fresh instance
+    call_llm_json(runner, "second prompt", SCHEMA, validate=lambda p: p, recorder=second)
+
+    calls = _index(tmp_path)["calls"]
+    assert [c["seq"] for c in calls] == [1, 2]
+    assert calls[0]["request_file"] != calls[1]["request_file"]
+    assert (tmp_path / "llm" / calls[0]["request_file"]).read_text() == "first prompt"
+    assert (tmp_path / "llm" / calls[1]["request_file"]).read_text() == "second prompt"
+
+
+def test_a_restarted_recorder_keeps_the_produced_join(tmp_path):
+    first = _recorder(tmp_path)
+    runner = lambda prompt, schema: "{}"  # noqa: E731
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=first)
+    first.link_outputs(task_ids=["t1"], group_ids=["g1"])
+
+    second = _recorder(tmp_path)
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=second)
+
+    assert _index(tmp_path)["produced"] == {"task_ids": ["t1"], "group_ids": ["g1"]}
+
+
+def test_seq_falls_back_to_filenames_when_the_index_is_unreadable(tmp_path):
+    first = _recorder(tmp_path)
+    runner = lambda prompt, schema: "{}"  # noqa: E731
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=first)
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=first)
+    (tmp_path / "llm" / "calls.json").write_text("not json {")
+
+    second = _recorder(tmp_path)
+    call_llm_json(runner, "third prompt", SCHEMA, validate=lambda p: p, recorder=second)
+
+    # Index history is lost (it was corrupt), but no filename is reused.
+    assert (tmp_path / "llm" / "03-mapper-a0.request.txt").read_text() == "third prompt"
+    assert (tmp_path / "llm" / "01-mapper-a0.request.txt").read_text() == "prompt"
+
+
 def test_no_recorder_writes_nothing(tmp_path):
     runner = lambda prompt, schema: '{"v": 1}'  # noqa: E731
     call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p)

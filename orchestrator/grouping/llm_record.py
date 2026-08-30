@@ -48,6 +48,50 @@ class JsonlCallRecorder:
         self.transcript_root = transcript_root
         self.calls: list[dict] = []
         self._seq = 0
+        # Restart-safe: a driver restart used to reset _seq to 0, so the resumed
+        # process's first call overwrote 01-*.{request,raw}.txt and rewrote
+        # calls.json down to one entry — g1's rewrite record on r20260830-163212
+        # was destroyed exactly this way. Loading the existing index (or, when
+        # it is unreadable, scanning the NN-*.request.txt filenames) makes
+        # _write_index append across restarts instead of clobbering.
+        try:
+            self._load_existing()
+        except Exception:  # noqa: BLE001 — inert by contract, like every write here
+            self.calls = []
+            try:
+                self._seq = self._seq_from_filenames()
+            except OSError:
+                self._seq = 0
+
+    def _load_existing(self) -> None:
+        index = self.dir / INDEX_NAME
+        if index.is_file():
+            payload = json.loads(index.read_text())
+            calls = payload.get("calls")
+            if isinstance(calls, list):
+                self.calls = [call for call in calls if isinstance(call, dict)]
+            produced = payload.get("produced")
+            if produced is not None:
+                # Keep the outputs join a previous process recorded — writing
+                # the index without it would clobber the join to null.
+                self._produced = produced
+        seqs = [call.get("seq") for call in self.calls]
+        self._seq = max(
+            (seq for seq in seqs if isinstance(seq, int)),
+            default=self._seq_from_filenames(),
+        )
+
+    def _seq_from_filenames(self) -> int:
+        """Highest ``NN-…`` prefix among recorded request files — the fallback
+        when ``calls.json`` is missing or unreadable but attempts left files."""
+        if not self.dir.is_dir():
+            return 0
+        best = 0
+        for path in self.dir.glob("*.request.txt"):
+            head = path.name.split("-", 1)[0]
+            if head.isdigit():
+                best = max(best, int(head))
+        return best
 
     def record_call(
         self,
