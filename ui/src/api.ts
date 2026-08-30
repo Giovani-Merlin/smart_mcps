@@ -251,6 +251,13 @@ export function getJob(project: string, jobId: string): Promise<JobInfo> {
   return request<JobInfo>(`${projectPath(project)}/jobs/${enc(jobId)}`);
 }
 
+/** Stop a running job: SIGINT to its process group (the run stamps itself
+ * interrupted and stays resumable), SIGKILL with `force`. Idempotent — an
+ * already-exited job comes back as-is. */
+export function stopJob(project: string, jobId: string, force = false): Promise<JobInfo> {
+  return post<JobInfo>(`${projectPath(project)}/jobs/${enc(jobId)}/stop`, { force });
+}
+
 export function startGroupJob(project: string, body: GroupJobBody): Promise<JobInfo> {
   return post<JobInfo>(`${projectPath(project)}/jobs/group`, body);
 }

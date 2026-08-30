@@ -46,8 +46,10 @@ with an error instead of two schedulers silently sharing one set of worktrees.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -66,7 +68,7 @@ from orchestrator.config import (
     DEFAULT_WORKER_MODEL,
     load_config,
 )
-from orchestrator.execution.driver import is_driving, read_driver_record
+from orchestrator.execution.driver import is_driving, read_driver_record, unfinished_runs
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, describe_groupings
 from orchestrator.observatory.events import tail_file
 from orchestrator.observatory.runs import resolve_repo
@@ -207,6 +209,11 @@ class RunJobBody(BaseModel):
     grouping: str | None = None
     run_id: str | None = None
     options: ExecutionOptions = Field(default_factory=ExecutionOptions)
+    # The run-vs-resume guard's acknowledgement: a fresh run is refused with
+    # 409 while unfinished (interrupted, resumable) runs exist, until the
+    # operator confirms they really want a new run rather than `resume`.
+    # Never becomes a CLI flag — build_argv ignores it.
+    confirm_new: bool = False
 
 
 class ResumeJobBody(BaseModel):
@@ -482,6 +489,24 @@ def check_not_live(repo: Path, run_id: str | None) -> None:
         )
 
 
+def check_confirm_new(repo: Path, confirm_new: bool) -> None:
+    """Refuse a fresh `run` while unfinished (resumable) runs exist, unless the
+    operator confirmed. Mirrors the CLI's own tty prompt: a new run silently
+    strands an interrupted run's in-flight work, and `resume` is almost always
+    what was meant. 409 like ``check_not_live`` — well-formed request, the
+    state says "are you sure"."""
+    if confirm_new:
+        return
+    unfinished = unfinished_runs(repo)
+    if unfinished:
+        listing = ", ".join(unfinished)
+        raise ConflictError(
+            f"unfinished run(s) exist: {listing} — a new run will NOT continue them; "
+            f"resume with `smart-mcps-orchestrate resume {unfinished[-1]}` (or the "
+            "Resume form), or confirm starting a fresh run anyway"
+        )
+
+
 # ----------------------------------------------------------------- discovery
 
 
@@ -598,6 +623,50 @@ def get_job(request: Request, project: str, job_id: str) -> JobInfo:
     return info
 
 
+class StopJobBody(BaseModel):
+    force: bool = False
+
+
+def signal_job(repo: Path, job_id: str, *, force: bool = False) -> JobInfo | None:
+    """Stop one job's process: SIGINT by default (lands as Ctrl-C, so a `run`
+    stamps ``state.json`` interrupted and stays resumable), SIGKILL on
+    ``force``. Sent to the job's whole process group (``start_new_session``
+    made the job its own group leader) so live worker subprocesses stop
+    burning tokens too, exactly as a terminal Ctrl-C would hit them.
+
+    Deliberately does NOT change the ownership model: only an explicit stop
+    request signals anything — the server shutting down still never touches a
+    job. Idempotent: an already-dead job is returned as-is; ``None`` means no
+    such job."""
+    info = read_job(repo, job_id)
+    if info is None:
+        return None
+    if not info.running or not info.pid:
+        return info
+    sig = signal.SIGKILL if force else signal.SIGINT
+    try:
+        os.killpg(info.pid, sig)
+    except ProcessLookupError:
+        pass  # exited between the read and the signal — the re-read tells the truth
+    except OSError:
+        # Group signalling unavailable (not a leader after all, permissions):
+        # fall back to the single pid rather than failing the stop outright.
+        with contextlib.suppress(OSError):
+            os.kill(info.pid, sig)
+    return read_job(repo, job_id)
+
+
+@router.post("/jobs/{job_id}/stop", response_model=JobInfo)
+def post_stop_job(
+    request: Request, project: str, job_id: str, body: StopJobBody | None = None
+) -> JobInfo:
+    repo = resolve_repo(request, project)
+    info = signal_job(repo, job_id, force=bool(body and body.force))
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+    return info
+
+
 @router.post("/jobs/group", response_model=JobInfo, status_code=201)
 def post_group_job(request: Request, project: str, body: GroupJobBody) -> JobInfo:
     repo = resolve_repo(request, project)
@@ -607,6 +676,10 @@ def post_group_job(request: Request, project: str, body: GroupJobBody) -> JobInf
 @router.post("/jobs/run", response_model=JobInfo, status_code=201)
 def post_run_job(request: Request, project: str, body: RunJobBody) -> JobInfo:
     repo = resolve_repo(request, project)
+    try:
+        check_confirm_new(repo, body.confirm_new)
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _spawn(repo, "run", body, guard=body.run_id)
 
 

@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { errorMessage, listJobs } from "../api";
+import { errorMessage, listJobs, stopJob } from "../api";
 import type { JobInfo } from "../types";
 import "./Launch.css";
 
@@ -23,6 +23,22 @@ export function Jobs() {
   const { project = "" } = useParams();
   const [jobs, setJobs] = useState<JobInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
+
+  // SIGINT lands as Ctrl-C: a `run` stamps state.json interrupted and stays
+  // resumable, so stopping here is as safe as stopping in the terminal.
+  const onStop = async (jobId: string) => {
+    setStoppingId(jobId);
+    setError(null);
+    try {
+      const stopped = await stopJob(project, jobId);
+      setJobs((prev) => prev?.map((j) => (j.job_id === jobId ? stopped : j)) ?? prev);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setStoppingId(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +92,17 @@ export function Jobs() {
                 {job.kind} · {job.job_id}
               </Link>
               <span className="run-index__meta">{job.running ? "running" : "exited"}</span>
+              {job.running && (
+                <button
+                  type="button"
+                  className="run-index__meta"
+                  disabled={stoppingId === job.job_id}
+                  onClick={() => void onStop(job.job_id)}
+                  title="Sends Ctrl-C: a run stamps itself interrupted and stays resumable"
+                >
+                  {stoppingId === job.job_id ? "Stopping…" : "Stop"}
+                </button>
+              )}
               {job.started_at && (
                 <span className="run-index__meta">started {formatStarted(job.started_at)}</span>
               )}

@@ -391,6 +391,29 @@ function RunCard({
       >
         {busy ? "Starting…" : "Start run"}
       </button>
+      {/* The run-vs-resume guard: the backend 409s a fresh run while
+        * unfinished (resumable) runs exist, and its detail names the exact
+        * `resume` command. Shown verbatim above; this button is the explicit
+        * acknowledgement that a NEW run — stranding those — is intended. */}
+      {error !== null && error.includes("unfinished run(s) exist") && (
+        <button
+          type="button"
+          className="launch__danger"
+          disabled={busy}
+          onClick={() =>
+            void launch(() =>
+              startRunJob(project, {
+                grouping: grouping || null,
+                run_id: runId.trim() || null,
+                options,
+                confirm_new: true,
+              }),
+            )
+          }
+        >
+          Start a NEW run anyway (does not continue the unfinished run)
+        </button>
+      )}
     </section>
   );
 }

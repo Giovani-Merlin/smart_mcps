@@ -92,3 +92,11 @@
   color: var(--fg);
   text-decoration: none;
 }
+
+/* The run-vs-resume guard's acknowledgement button: visually loud on purpose —
+   it strands an unfinished run's in-flight work. */
+.launch__danger {
+  border-color: var(--danger-border);
+  background-color: var(--danger-bg);
+  color: var(--danger-fg);
+}

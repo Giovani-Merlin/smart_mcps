@@ -34,6 +34,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
@@ -208,3 +209,47 @@ def _lock_fd_is_cloexec(fd: int) -> bool:
     itself — O_CLOEXEC is set at open time — this exists so a test can assert
     the property directly instead of trusting the open() flag was honoured."""
     return bool(fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC)
+
+
+# ------------------------------------------------------------ unfinished runs
+
+#: Group states that need no further scheduling — mirror of the scheduler's
+#: TERMINAL_STATES, spelled as strings so this stays a cheap JSON probe with no
+#: scheduler import (the scheduler imports nothing from here either, so a
+#: shared constant would create a cycle for three literals).
+_TERMINAL_GROUP_STATES = frozenset({"completed", "failed", "resolved"})
+
+
+def unfinished_runs(repo_root: Path) -> list[str]:
+    """Run ids under ``.orchestrator/runs/`` that look interrupted mid-flight:
+    a ``state.json`` exists, no driver currently holds the run's lock, and at
+    least one group is in a non-terminal state.
+
+    This is the `run`-vs-`resume` guard's evidence (CLI warning, Observatory
+    409): starting a *new* run over one of these silently strands its
+    in-flight work, which is almost never what the operator meant. A run whose
+    groups are all terminal (completed/failed/resolved) is genuinely over —
+    ``retry`` is its tool, not ``resume`` — and is not listed. Best-effort:
+    an unreadable ``state.json`` is skipped, never raised on.
+    """
+    directory = repo_root / ".orchestrator" / "runs"
+    if not directory.is_dir():
+        return []
+    unfinished = []
+    for entry in sorted(path for path in directory.iterdir() if path.is_dir()):
+        paths = RunPaths(repo_root, entry.name)
+        if not paths.state_path.is_file():
+            continue
+        if is_driving(paths):
+            continue  # live runs are the double-launch guard's business
+        try:
+            payload = json.loads(paths.state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        groups = payload.get("groups")
+        if not isinstance(groups, dict) or not groups:
+            continue
+        states = [group.get("state") for group in groups.values() if isinstance(group, dict)]
+        if states and any(state not in _TERMINAL_GROUP_STATES for state in states):
+            unfinished.append(paths.run_id)
+    return unfinished

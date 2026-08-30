@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, errorMessage, getJob } from "../api";
+import { ApiError, errorMessage, getJob, stopJob } from "../api";
 import JobLog from "../components/launch/JobLog";
 import type { JobInfo } from "../types";
 import "./Launch.css";
@@ -25,6 +25,21 @@ export function JobDetail() {
   const [job, setJob] = useState<JobInfo | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+
+  // SIGINT lands as Ctrl-C: a `run` stamps state.json interrupted and stays
+  // resumable, so stopping here is as safe as stopping in the terminal.
+  const onStop = async () => {
+    setStopping(true);
+    setError(null);
+    try {
+      setJob(await stopJob(project, id));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setStopping(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +85,17 @@ export function JobDetail() {
             <Link to={`/p/${encodeURIComponent(project)}/jobs`}>jobs</Link> / {id}
           </p>
         </div>
+        {job?.running && (
+          <button
+            type="button"
+            className="launch__entry"
+            disabled={stopping}
+            onClick={() => void onStop()}
+            title="Sends Ctrl-C: a run stamps itself interrupted and stays resumable"
+          >
+            {stopping ? "Stopping…" : "Stop job"}
+          </button>
+        )}
       </header>
 
       {notFound && <p className="app__empty">No job {id} was found for this project.</p>}

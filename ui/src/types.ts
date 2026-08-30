@@ -535,6 +535,9 @@ export interface RunJobBody {
   grouping?: string | null;
   run_id?: string | null;
   options: ExecutionOptions;
+  /** Acknowledges the run-vs-resume guard: without it the backend 409s a
+   * fresh run while unfinished (resumable) runs exist. */
+  confirm_new?: boolean;
 }
 
 export interface ResumeJobBody {

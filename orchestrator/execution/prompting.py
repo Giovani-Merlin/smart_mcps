@@ -10,6 +10,7 @@ the prompt is silently dropped as harness noise instead of kept as the goal.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from string import Template
 
 from orchestrator.model import Group, VerificationItem

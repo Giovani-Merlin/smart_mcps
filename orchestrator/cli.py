@@ -51,7 +51,12 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
-from orchestrator.execution.driver import DriverAlreadyRunning, DriverLock, driver_status_line
+from orchestrator.execution.driver import (
+    DriverAlreadyRunning,
+    DriverLock,
+    driver_status_line,
+    unfinished_runs,
+)
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import (
     GroupingNameError,
@@ -1594,6 +1599,29 @@ def _cmd_run(
     paths = RunPaths(repo_root, run_id)
     orch_dir = repo_root / ".orchestrator"
 
+    # A fresh `run` over an interrupted one silently strands its in-flight
+    # work — the operator almost always meant `resume`. Warn with the exact
+    # command; on a terminal, require confirmation. Non-tty launches (the
+    # Observatory's job subprocess, CI) proceed on the warning alone: the
+    # Observatory runs its own confirm dialog before ever spawning this.
+    if not resume:
+        unfinished = unfinished_runs(repo_root)
+        if unfinished:
+            print(
+                "warning: unfinished run(s) exist — a new `run` will NOT continue them:",
+                file=sys.stderr,
+            )
+            for stale_id in unfinished:
+                print(
+                    f"  {stale_id}  → smart-mcps-orchestrate resume {stale_id}",
+                    file=sys.stderr,
+                )
+            if sys.stdin.isatty():
+                answer = input("start a NEW run anyway? [y/N] ").strip().lower()
+                if answer not in ("y", "yes"):
+                    print("aborted — use `resume` to continue an existing run", file=sys.stderr)
+                    return 2
+
     # Peeked early (before config is resolved) so a resumed run's own recorded
     # escalation tier can slot into `_load_config` beneath CLI flags but above
     # the library default (plan U2) — reused below at the manifest-load site
@@ -2115,10 +2143,16 @@ def _interruptible_pause(gate: UsageLimitGate):
     except ValueError:  # not the main thread — nothing to install
         yield
         return
+    # SIGTERM gets the same treatment (Observatory Stop, plain `kill`): route
+    # it into the KeyboardInterrupt path so `mark_interrupted` stamps
+    # state.json and the run reads as resumable, instead of dying silently and
+    # looking alive until the next `resume`.
+    previous_term = signal.signal(signal.SIGTERM, _cancelling_handler(gate))
     try:
         yield
     finally:
         signal.signal(signal.SIGINT, previous)
+        signal.signal(signal.SIGTERM, previous_term)
 
 
 def _cancelling_handler(gate: UsageLimitGate):

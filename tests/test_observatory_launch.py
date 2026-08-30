@@ -501,3 +501,108 @@ def _wait_for(predicate, timeout: float = 5.0) -> None:
             pass
         time.sleep(0.02)
     raise AssertionError("condition was never met")
+
+
+# --------------------------------------------------------- run-vs-resume guard
+
+
+def write_group_states(repo: Path, run_id: str, states: dict[str, str]) -> None:
+    write_state(repo, run_id, groups={gid: {"state": state} for gid, state in states.items()})
+
+
+class TestRunVsResumeGuard:
+    """`check_confirm_new` / `unfinished_runs`: a fresh run over an interrupted
+    one strands its in-flight work, so it is refused until acknowledged."""
+
+    def test_an_interrupted_run_blocks_an_unconfirmed_fresh_run(self, repo):
+        write_group_states(repo, "r1", {"g1": "completed", "g2": "running"})
+        with pytest.raises(ConflictError) as exc:
+            launch.check_confirm_new(repo, False)
+        assert "r1" in str(exc.value)
+        assert "resume" in str(exc.value)
+
+    def test_confirmation_lets_the_fresh_run_through(self, repo):
+        write_group_states(repo, "r1", {"g1": "running"})
+        launch.check_confirm_new(repo, True)  # does not raise
+
+    def test_a_finished_run_never_blocks(self, repo):
+        write_group_states(repo, "r1", {"g1": "completed", "g2": "failed", "g3": "resolved"})
+        launch.check_confirm_new(repo, False)
+
+    def test_a_run_currently_driving_is_not_listed_as_unfinished(self, repo):
+        """The double-launch guard owns live runs; this guard only speaks for
+        interrupted ones."""
+        write_group_states(repo, "r1", {"g1": "running"})
+        lock = DriverLock(RunPaths(repo, "r1"))
+        lock.acquire()
+        try:
+            launch.check_confirm_new(repo, False)
+        finally:
+            lock.release()
+
+    def test_no_runs_at_all_never_blocks(self, repo):
+        launch.check_confirm_new(repo, False)
+
+    def test_the_endpoint_answers_409_and_confirm_new_unlocks_it(self, client, repo, monkeypatch):
+        write_group_states(repo, "r1", {"g1": "pending"})
+        monkeypatch.setattr(launch, "spawn_job", _never_spawn)
+        refused = client.post("/api/projects/proj/jobs/run", json={})
+        assert refused.status_code == 409
+        assert "unfinished run(s) exist" in refused.json()["detail"]
+        assert "resume r1" in refused.json()["detail"]
+
+        spawned: list = []
+
+        def fake_spawn(repo_, argv, kind, options=None):
+            spawned.append(argv)
+            return launch.JobInfo(job_id="j1", kind=kind, argv=argv, running=False)
+
+        monkeypatch.setattr(launch, "spawn_job", fake_spawn)
+        allowed = client.post("/api/projects/proj/jobs/run", json={"confirm_new": True})
+        assert allowed.status_code == 201
+        # The acknowledgement is protocol, not a CLI flag.
+        assert not any("confirm" in arg for arg in spawned[0])
+
+    def test_resume_is_never_gated_by_the_guard(self, client, repo, monkeypatch):
+        write_group_states(repo, "r1", {"g1": "running"})
+        spawned: list = []
+
+        def fake_spawn(repo_, argv, kind, options=None):
+            spawned.append(argv)
+            return launch.JobInfo(job_id="j1", kind=kind, argv=argv, running=False)
+
+        monkeypatch.setattr(launch, "spawn_job", fake_spawn)
+        response = client.post("/api/projects/proj/jobs/resume", json={"run_id": "r1"})
+        assert response.status_code == 201
+
+
+# ------------------------------------------------------------------- stop job
+
+
+class TestStopJob:
+    def test_stopping_an_unknown_job_is_404(self, client):
+        response = client.post("/api/projects/proj/jobs/nope/stop", json={})
+        assert response.status_code == 404
+
+    def test_stopping_an_exited_job_is_idempotent(self, client, repo):
+        job_dir = launch.jobs_dir(repo) / "j-dead"
+        job_dir.mkdir(parents=True)
+        info = launch.JobInfo(job_id="j-dead", kind="run", argv=["x"], pid=None, running=False)
+        (job_dir / "command.json").write_text(info.model_dump_json())
+        response = client.post("/api/projects/proj/jobs/j-dead/stop", json={})
+        assert response.status_code == 200
+        assert response.json()["running"] is False
+
+    def test_stopping_a_live_job_signals_its_process_group(self, repo):
+        """A real detached child: stop lands SIGINT on the group and the child
+        exits — the same shape a terminal Ctrl-C produces."""
+        argv = [sys.executable, "-u", "-c", "import time; time.sleep(60)"]
+        info = spawn_job(repo, argv, "run", options={})
+        assert info.pid is not None
+        stopped = launch.signal_job(repo, info.job_id, force=False)
+        # SIGINT with no handler kills the sleeping child; reap and re-read.
+        with contextlib.suppress(OSError):
+            os.waitpid(info.pid, 0)
+        assert stopped is not None
+        refreshed = read_job(repo, info.job_id)
+        assert refreshed is not None and refreshed.running is False
