@@ -6,9 +6,10 @@ neighborhoods overlap or pack under the explorer token cap; see the
 `context.batches` section of `advisory.json`), model sonnet, read-only tools
 only (codegraph, `Read`, `Grep`, `Glob`, `Bash` restricted to read-only
 commands — never `Edit`, `Write`, or any command that mutates the working
-tree). Fill `<plan-path>`, `<group-ids>`, `<external-research: yes|no>`
-(the human's paid-research decision from Phase 2 — omit step 3 entirely
-when filling in `no`), and each group's member unit ids/sections before
+tree). Fill `<plan-path>`, `<group-ids>`, `<research-groups: none | list>`
+(the human's paid-research decision from Phase 2: the approved groups, each
+with its `[external]`/`[research]` tag and reason — omit step 3 entirely
+when filling in `none`), and each group's member unit ids/sections before
 dispatch. The same template drives the **inline** mode: when the calling
 session explores itself, it follows this process directly with no subagent.
 
@@ -53,25 +54,30 @@ sharing is why these groups arrived in one batch:
    10. Contract compat / versioning (what breaks a caller, what's a safe
        addition)
 
-3. **(only if `<external-research: yes>`) Research external surfaces with
-   Perplexity.** For each group, check whether any member unit touches an
-   external surface — a third-party library, an OS/system API, a wire
-   protocol, an external service. If none does, fire **zero** queries for
-   that group and move on. Where one does, write a short brief (signatures
-   and prose, **never raw source code** — it makes Perplexity summarize your
-   code back at you) and query, **at most two queries per group**:
+3. **(only for groups listed in `<research-groups>`) Research with
+   Perplexity.** For each listed group, aim the queries at what earned its
+   tag: an `[external]` group's third-party library, OS/system API, wire
+   protocol, or external service; a `[research]` group's algorithm, AI/LLM
+   technique, or unfamiliar framework — known pitfalls, edge behaviors,
+   and established approaches, even when the code itself is fully internal.
+   A group not listed fires **zero** queries. Write a short brief
+   (signatures and prose, **never raw source code** — it makes Perplexity
+   summarize your code back at you) and query, **at most two queries per
+   group**:
 
    ```bash
    smart-mcps-perplexity reason "<question>" --file <brief>.md   # the default
    smart-mcps-perplexity ask "<question>" --file <brief>.md      # landscape questions
    ```
 
-   Ask for *known pitfalls and edge behaviors of that surface* relevant to
-   what the unit will do — not for how to implement the unit. Cross-check the
+   Ask for *known pitfalls, edge behaviors, and established approaches for
+   the tagged subject* relevant to what the unit will do — not for how to
+   implement the unit. Cross-check the
    answer against what you read in step 1; a recommendation that contradicts
    how this repo actually works is noted, not adopted. A finding from this
    step becomes a candidate only if it passes the same divergence test as any
-   other — tag it `[external]` in your report so the human knows its source.
+   other — carry the group's tag (`[external]` or `[research]`) on it in your
+   report so the human knows its source.
    If the CLI fails (missing `PERPLEXITY_API_KEY`, API error), report the
    error in your output and continue without external research — never
    retry-loop.

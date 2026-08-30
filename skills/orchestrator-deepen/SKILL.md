@@ -85,12 +85,26 @@ grouping/split problem, not a reason to shard exploration further.
 Perplexity research?** It is paid API spend, so it is opt-in and defaults to
 **No**. When enabled, external research is a *step inside* the explorer (or
 the inline pass) — never a second agent per group, which would re-derive the
-context the explorer already holds. Scope it honestly when asking: name
-which groups actually touch an external surface (a third-party library, an
-OS/system API, a wire protocol, an external service) — those are the only
-groups that will fire queries; a pure-internal group fires none even when
-research is enabled. If no group touches an external surface, skip the
-question entirely and note why.
+context the explorer already holds.
+
+Scope it honestly when asking: **name each research-worthy group with a tag
+and a one-phrase reason**, so the human sees exactly what the spend buys:
+
+- `[external]` — a member unit touches a third-party library, an OS/system
+  API, a wire protocol, or an external service
+  (*"g4 — calls the GitHub REST API"*);
+- `[research]` — the work is AI/LLM behavior, a non-trivial algorithm
+  (clustering, graph, scheduling, parsing…), or a framework/technique new to
+  this repo — even when the code is fully internal
+  (*"g2 — Louvain resolution tuning, internal but literature-heavy"*);
+- `[hard]` — `groups.json` marks the group's `difficulty` at or above the
+  configured `d_hard` review threshold (*"g7 — difficulty 0.81"*). A `[hard]`
+  tag alone is a nudge to say yes, not a query trigger by itself — a hard but
+  well-understood group gains nothing from the web.
+
+Queries fire for the `[external]` and `[research]` groups the human approves
+— untagged groups fire none even when research is enabled. If no group earns
+any tag, skip the question entirely and note why.
 
 Each explorer (or the inline pass) uses the template in
 [`explorer-prompt.md`](./explorer-prompt.md), filling in the plan path, the
@@ -213,8 +227,9 @@ to), remind the human to regenerate the grouping with
   choice.
 - **Perplexity research is opt-in, defaults to No, and lives inside the
   explorer** — never a separate per-group researcher; it fires only for
-  units touching an external surface, at most two queries per group, and
-  its candidates still must pass the divergence test like any other.
+  groups the human approved from the tagged `[external]`/`[research]`/`[hard]`
+  listing, at most two queries per group, and its candidates still must pass
+  the divergence test like any other.
 - No implementation code. Every new bullet and every refined prose line is a
   direct write of an explicit human answer — prose no answer touched is
   never regenerated.
