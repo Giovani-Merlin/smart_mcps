@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from orchestrator.model import GroupingResult, GroupManifestEntry, RunManifest, SessionEntry
+from orchestrator.model import Group, GroupingResult, GroupManifestEntry, RunManifest, SessionEntry
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -254,6 +254,46 @@ class RunPaths:
         """Human-readable evidence of who last held ``driver_lock_path``: pid,
         when it started, and a freshening ``updated_at`` (plan U11)."""
         return self.run_dir / "driver.json"
+
+
+_SPEC_GEN_RE = re.compile(r"^spec-gen(\d+)\.json$")
+
+
+def effective_group(paths: RunPaths, group: Group) -> Group:
+    """The group as last rewritten: highest ``groups/<gid>/spec-gen<N>.json``,
+    else the grouper's original.
+
+    ``rewrite_spec`` returns an in-memory copy carrying the speccer's new
+    ``name``/``summary``/``spec``/``verification``; ``groups.json`` deliberately
+    stays the immutable grouper output (its generation history lives in the
+    ``spec-gen<N>`` files ``_persist_rewritten_spec`` writes). Every restart
+    path — resume's worktree reuse, ``finish``/``retry`` name resolution — must
+    resolve through this overlay or it re-derives the stale grouper name and
+    collides with the worktree slugged from the rewritten one (the
+    r20260830-163212 P0).
+
+    Best-effort by contract: a missing dir, no ``spec-gen*.json``, or an
+    unparsable file returns the input group unchanged — the overlay must never
+    fail a run.
+    """
+    group_dir = paths.group_dir(group.id)
+    best: tuple[int, Path] | None = None
+    try:
+        for path in group_dir.glob("spec-gen*.json"):
+            match = _SPEC_GEN_RE.match(path.name)
+            if match is None:
+                continue
+            generation = int(match.group(1))
+            if best is None or generation > best[0]:
+                best = (generation, path)
+    except OSError:
+        return group
+    if best is None:
+        return group
+    try:
+        return Group.model_validate_json(best[1].read_text())
+    except (OSError, ValueError):
+        return group
 
 
 def log_event(paths: RunPaths, text: str) -> None:

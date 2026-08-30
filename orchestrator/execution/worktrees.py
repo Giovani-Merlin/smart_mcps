@@ -211,6 +211,20 @@ def _branch_exists(repo_root: Path, branch: str) -> bool:
     )
 
 
+def _worktree_of_branch(repo_root: Path, branch: str) -> Path | None:
+    """The registered worktree that has ``branch`` checked out, else ``None`` —
+    ``_registered_branch``'s inverse, over the same porcelain listing."""
+    out = _git_ok(repo_root, "worktree", "list", "--porcelain")
+    current: str | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current = line.removeprefix("worktree ")
+        elif line.startswith("branch ") and current is not None:
+            if line.removeprefix("branch ").removeprefix("refs/heads/") == branch:
+                return Path(current)
+    return None
+
+
 def _registered_branch(repo_root: Path, path: Path) -> str | None:
     """The branch checked out at ``path`` if it is a registered worktree, else None."""
     out = _git_ok(repo_root, "worktree", "list", "--porcelain")
@@ -273,7 +287,22 @@ def create_worktree(
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(repo_root, branch):
-        _git_ok(repo_root, "worktree", "add", str(path), branch)
+        result = _git(repo_root, "worktree", "add", str(path), branch)
+        if result.returncode != 0:
+            # Name the directory that actually holds the branch: a residual
+            # name mismatch (e.g. a rewritten group resolved through a stale
+            # name) otherwise surfaces as a bare git error with no path to act
+            # on (the r20260830-163212 resume failure mode).
+            holder = _worktree_of_branch(repo_root, branch)
+            hint = (
+                f" — {branch} is already checked out at {holder}; the run may be "
+                "resolving this group through a stale name"
+                if holder is not None
+                else ""
+            )
+            raise WorktreeError(
+                f"git worktree add {path} {branch} failed: {result.stderr.strip()[:500]}{hint}"
+            )
         _ensure_worktree_config_extension(path)
         commit_all(path, f"recover({run_id}): {group_id} work stranded by an interrupted run")
         _refresh_onto_tip(path, group_id=group_id, branch=branch, tip=start_point)

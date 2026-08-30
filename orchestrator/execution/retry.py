@@ -14,7 +14,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.execution.driver import is_driving
-from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
+from orchestrator.execution.manifest import (
+    RunPaths,
+    atomic_write_text,
+    effective_group,
+    log_event,
+)
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.execution.worktrees import (
     WorktreeError,
@@ -45,7 +50,9 @@ def _group_name(paths: RunPaths, group_id: str) -> str:
     result = GroupingResult.model_validate_json(paths.groups_path.read_text())
     for group in result.groups:
         if group.id == group_id:
-            return group.name
+            # Same overlay as resume/finish: a rewritten group's worktree lives
+            # under the speccer name, not the grouper's in groups.json.
+            return effective_group(paths, group).name
     raise RetryError(f"group {group_id} not found in {paths.groups_path}")
 
 

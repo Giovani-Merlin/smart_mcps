@@ -137,6 +137,33 @@ def test_retry_resets_failed_group_to_pending(repo):
     assert session.retirement_reason is None
 
 
+def test_retry_finds_a_rewritten_groups_worktree_via_spec_gen(repo):
+    """r20260830-163212 P0 companion: retry resolves the group name through the
+    spec-gen overlay, or it points at a worktree path that does not exist."""
+    run_id = "r1rw"
+    original = make_group("g1")
+    rewritten = original.model_copy(update={"name": "rewritten slice", "spec": "new spec"})
+    paths = RunPaths(repo, run_id)
+    write_grouping(paths, original)
+    atomic_write_text(
+        paths.group_dir("g1") / "spec-gen1.json", rewritten.model_dump_json(indent=2) + "\n"
+    )
+    make_integration_branch(repo, run_id)
+    # the worktree exists under the rewritten slug, as the live run created it
+    wt = make_group_worktree(repo, run_id, rewritten, integration_branch(run_id))
+    (wt / "g1.txt").write_text("coder work\n")
+    git(wt, "add", ".")
+    git(wt, "commit", "-m", "g1 work")
+    write_state(paths, run_id, "g1", GroupRunState(state=GroupState.FAILED, failure="boom"))
+    write_manifest(paths, run_id, rewritten)
+
+    retry_group(repo, run_id, "g1")
+
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.PENDING
+    assert wt.is_dir()
+
+
 def test_retry_refreshes_branch_onto_integration_tip(repo):
     run_id = "r2"
     group = make_group("g1")

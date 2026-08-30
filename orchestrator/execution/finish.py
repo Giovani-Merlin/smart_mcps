@@ -25,6 +25,7 @@ from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
     archive_review_scratch,
+    effective_group,
 )
 from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME
 from orchestrator.execution.review import format_residue_report, surprise_residue
@@ -328,7 +329,10 @@ def _group_name(paths: RunPaths, group_id: str) -> str:
     result = GroupingResult.model_validate_json(paths.groups_path.read_text())
     for group in result.groups:
         if group.id == group_id:
-            return group.name
+            # A speccer-rewritten group's worktree is slugged from the rewritten
+            # name; groups.json keeps the grouper's original, so resolving it
+            # bare would make teardown no-op and leak the worktree.
+            return effective_group(paths, group).name
     raise FinishError(f"group {group_id} not found in {paths.groups_path}")
 
 

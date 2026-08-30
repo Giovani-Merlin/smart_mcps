@@ -375,6 +375,28 @@ def test_teardown_removes_merged_worktree_keeps_unmerged(repo, tmp_path):
     assert git(repo, "rev-parse", "--verify", merger.branch).strip()
 
 
+def test_teardown_finds_a_rewritten_groups_worktree_via_spec_gen(repo, tmp_path):
+    """r20260830-163212 P0: a speccer-rewritten group's worktree is slugged from
+    the rewritten name while groups.json keeps the grouper's — a finish that
+    resolves the name bare no-ops on teardown and leaks the worktree."""
+    run_id = "r8rw"
+    original = make_group("g1")
+    rewritten = original.model_copy(update={"name": "rewritten slice", "spec": "new spec"})
+    paths, merger = setup_run(repo, run_id, [original], launch_branch=None)
+    atomic_write_text(
+        paths.group_dir("g1") / "spec-gen1.json", rewritten.model_dump_json(indent=2) + "\n"
+    )
+    # the worktree lands under the *rewritten* slug, as workspace_for creates it
+    rewritten_wt = merge_group_cleanly(repo, run_id, merger, rewritten)
+    write_state(paths, {"g1": GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=False)
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert not rewritten_wt.exists()
+    assert str(rewritten_wt) not in git(repo, "worktree", "list", "--porcelain")
+
+
 def test_leftover_patch_written_before_force_removal(repo, tmp_path):
     run_id = "r9"
     group = make_group("g1")

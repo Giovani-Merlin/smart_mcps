@@ -1335,7 +1335,12 @@ class _GroupExecution:
     def _persist_rewritten_spec(self) -> None:
         """Save the rewritten spec beside the group so a post-mortem can
         reconstruct what the coder was actually told (plan U14) — the group's
-        entry in ``groups.json`` only ever reflects the original spec."""
+        entry in ``groups.json`` stays the immutable grouper output and is
+        never rewritten. These ``spec-gen<N>.json`` files are the durable
+        record every restart path reads back through ``effective_group``
+        (resume, ``finish``, ``retry``), so this must run before the rewritten
+        group's next worktree is created — ``_rewrite`` calls it synchronously,
+        before any new generation launches."""
         path = self.deps.store.paths.group_dir(self.gid) / f"spec-gen{self.generation}.json"
         atomic_write_text(path, self.group.model_dump_json(indent=2) + "\n")
 

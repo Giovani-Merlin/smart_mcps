@@ -65,6 +65,7 @@ from orchestrator.execution.manifest import (
     RunPaths,
     atomic_write_text,
     describe_groupings,
+    effective_group,
     grouping_dir,
     log_event,
     snapshot_grouping,
@@ -1718,7 +1719,14 @@ def _cmd_run(
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    groups = grouping.groups
+    # A group the speccer rewrote mid-run carries a new name/spec in
+    # groups/<gid>/spec-gen<N>.json while groups.json keeps the immutable
+    # grouper original. Resolving through the overlay here — once, where the
+    # run's group list is taken — is what lets resume reuse the worktree
+    # slugged from the rewritten name instead of dying on `worktree add`
+    # against a branch already checked out under it. Fresh runs are a no-op
+    # (no spec-gen files exist yet).
+    groups = [effective_group(paths, group) for group in grouping.groups]
     intensity_override_line: str | None = None
     if getattr(args, "review_intensity", None):
         intensity = ReviewIntensity(args.review_intensity)

@@ -593,6 +593,96 @@ def test_resume_completes_interrupted_run_with_no_base_session(repo, fake_home):
     assert f"merge({run_id}): g1" in log and f"merge({run_id}): g2" in log
 
 
+def _renaming_speccer(prompt, schema):
+    """Like ``speccer_response``, but the rewritten name slugs *differently* from
+    ``make_group``'s original ("group g2" and "group-g2" share a slug, so the
+    stock stub could never surface the desync this guards against)."""
+    payload, _ = json.JSONDecoder().raw_decode(prompt.split("GROUPS_JSON:\n", 1)[1])
+    return json.dumps(
+        {
+            "groups": [
+                {
+                    "group_id": gid,
+                    "name": f"rewritten {gid} slice",
+                    "summary": f"Summary for {gid}",
+                    "spec": f"Full spec for {gid}.",
+                    "verification": [
+                        {"id": f"{gid}-v1", "description": "tests pass", "required": True}
+                    ],
+                }
+                for gid in sorted(payload)
+            ]
+        }
+    )
+
+
+def test_resume_reuses_a_rewritten_groups_worktree(repo, fake_home):
+    """r20260830-163212 P0: a rewritten group's worktree is slugged from the
+    speccer's name while groups.json keeps the grouper's. A restarted driver
+    used to re-derive the stale name and die in under a second on `git worktree
+    add` against a branch already checked out under the rewritten slug."""
+    from orchestrator.execution.worktrees import worktree_path
+
+    run_id = "r-rw"
+    write_run_artifacts(
+        repo,
+        [
+            make_group("g1", files=["g1.txt"]),
+            make_group("g2", dependencies=["g1"]),
+        ],
+    )
+    write_config(repo, fake_home)
+    surprise = {
+        "kind": "interface_mismatch",
+        "description": "g1 renamed the shared helper API",
+        "affected_groups": ["g2"],
+    }
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(surprises=[surprise], files={"g1.txt": "one\n"}, commit="g1: work"),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    # g2 is rewritten before launch (worktree slugged from the speccer name),
+    # then its coder dies at fork — interrupted, run exits 2, worktree kept
+    script_session(
+        fake_home, name_of(run_id, "g2", "coder"), {"exit_code": 1, "stderr": "worker crashed"}
+    )
+
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id],
+        llm_runner=StubLlm(speccer=_renaming_speccer),
+    )
+    assert exit_code == 2
+    assert state_of(repo, run_id)["groups"]["g2"]["state"] == "interrupted"
+    rewritten_wt = worktree_path(repo, run_id, "g2", "rewritten g2 slice")
+    stale_wt = worktree_path(repo, run_id, "g2", "group g2")
+    assert rewritten_wt.is_dir()
+    assert not stale_wt.exists()
+
+    # fresh driver over the same run dir — must reuse the rewritten worktree
+    # instead of re-deriving the grouper name and failing `worktree add`
+    script_session(
+        fake_home,
+        name_of(run_id, "g2", "coder"),
+        coder_entry(files={"g2.out": "two\n"}, commit="g2: work", verification_ids=["g2-v1"]),
+    )
+    script_session(fake_home, name_of(run_id, "g2", "reviewer"), verdict_entry("approved"))
+
+    exit_code = main(
+        ["resume", run_id, "--repo", str(repo)], llm_runner=StubLlm(speccer=_renaming_speccer)
+    )
+    assert exit_code == 0
+    state = state_of(repo, run_id)
+    assert state["groups"]["g2"]["state"] == "completed"
+    # merge-time teardown removed the rewritten worktree; the stale slug never
+    # materialized at any point
+    assert not rewritten_wt.exists()
+    assert not stale_wt.exists()
+    log = git(repo, "log", "--oneline", f"orchestrator/run-{run_id}")
+    assert f"merge({run_id}): g2" in log
+
+
 # ------------------------------------------------------------- named groupings
 
 
