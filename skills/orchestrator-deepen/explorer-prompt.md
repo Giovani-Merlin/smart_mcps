@@ -6,10 +6,11 @@ neighborhoods overlap or pack under the explorer token cap; see the
 `context.batches` section of `advisory.json`), model sonnet, read-only tools
 only (codegraph, `Read`, `Grep`, `Glob`, `Bash` restricted to read-only
 commands — never `Edit`, `Write`, or any command that mutates the working
-tree). Fill `<plan-path>`, `<group-ids>`, and each group's member unit
-ids/sections before dispatch. The same template drives the **inline** mode:
-when the calling session explores itself, it follows this process directly
-with no subagent.
+tree). Fill `<plan-path>`, `<group-ids>`, `<external-research: yes|no>`
+(the human's paid-research decision from Phase 2 — omit step 3 entirely
+when filling in `no`), and each group's member unit ids/sections before
+dispatch. The same template drives the **inline** mode: when the calling
+session explores itself, it follows this process directly with no subagent.
 
 ______________________________________________________________________
 
@@ -52,19 +53,42 @@ sharing is why these groups arrived in one batch:
    10. Contract compat / versioning (what breaks a caller, what's a safe
        addition)
 
-3. **Draft a question candidate only where the divergence test passes**: a
+3. **(only if `<external-research: yes>`) Research external surfaces with
+   Perplexity.** For each group, check whether any member unit touches an
+   external surface — a third-party library, an OS/system API, a wire
+   protocol, an external service. If none does, fire **zero** queries for
+   that group and move on. Where one does, write a short brief (signatures
+   and prose, **never raw source code** — it makes Perplexity summarize your
+   code back at you) and query, **at most two queries per group**:
+
+   ```bash
+   smart-mcps-perplexity reason "<question>" --file <brief>.md   # the default
+   smart-mcps-perplexity ask "<question>" --file <brief>.md      # landscape questions
+   ```
+
+   Ask for *known pitfalls and edge behaviors of that surface* relevant to
+   what the unit will do — not for how to implement the unit. Cross-check the
+   answer against what you read in step 1; a recommendation that contradicts
+   how this repo actually works is noted, not adopted. A finding from this
+   step becomes a candidate only if it passes the same divergence test as any
+   other — tag it `[external]` in your report so the human knows its source.
+   If the CLI fails (missing `PERPLEXITY_API_KEY`, API error), report the
+   error in your output and continue without external research — never
+   retry-loop.
+
+4. **Draft a question candidate only where the divergence test passes**: a
    category fires only if you can name two plausible readings of the unit's
    `Goal`/`Verification` that would produce genuinely different code. A
    category where the answer is obvious from the plan, the code, or the
    repo's established convention does not fire — do not manufacture a
    question to fill a quota.
 
-4. **Score every candidate** `blocking_risk × effect_size` (both rough,
+5. **Score every candidate** `blocking_risk × effect_size` (both rough,
    1–3 scale is fine) — how likely getting it wrong blocks or reverses work,
    times how much code differs between readings. Keep this score with the
    candidate; the calling skill uses it to rank and cap.
 
-5. **For every candidate, draft a `Pass:` condition** (an observable outcome
+6. **For every candidate, draft a `Pass:` condition** (an observable outcome
    that proves the chosen reading was implemented) and, only if both of these
    hold, also draft a `Run:` command:
 

@@ -81,6 +81,17 @@ A batch whose estimate is marked over the explorer cap gets flagged to the
 human — it signals a group too fat to explore in one pass, which is a
 grouping/split problem, not a reason to shard exploration further.
 
+**In the same `AskUserQuestion` call, add a second question: enable
+Perplexity research?** It is paid API spend, so it is opt-in and defaults to
+**No**. When enabled, external research is a *step inside* the explorer (or
+the inline pass) — never a second agent per group, which would re-derive the
+context the explorer already holds. Scope it honestly when asking: name
+which groups actually touch an external surface (a third-party library, an
+OS/system API, a wire protocol, an external service) — those are the only
+groups that will fire queries; a pure-internal group fires none even when
+research is enabled. If no group touches an external surface, skip the
+question entirely and note why.
+
 Each explorer (or the inline pass) uses the template in
 [`explorer-prompt.md`](./explorer-prompt.md), filling in the plan path, the
 batch's group ids, and those groups' member unit sections verbatim — one
@@ -200,6 +211,10 @@ to), remind the human to regenerate the grouping with
   the total fits the inline budget, batched by the advisory's packing
   otherwise; one-explorer-per-group is never the default, only a confirmed
   choice.
+- **Perplexity research is opt-in, defaults to No, and lives inside the
+  explorer** — never a separate per-group researcher; it fires only for
+  units touching an external surface, at most two queries per group, and
+  its candidates still must pass the divergence test like any other.
 - No implementation code. Every new bullet and every refined prose line is a
   direct write of an explicit human answer — prose no answer touched is
   never regenerated.
