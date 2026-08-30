@@ -66,6 +66,19 @@ def test_falls_back_on_an_unparsable_file(tmp_path: Path):
     assert effective_group(paths, group) is group
 
 
+def test_ignores_a_spec_gen_carrying_a_foreign_group_id(tmp_path: Path):
+    """A well-formed spec-gen restored into the wrong groups/<gid>/ dir during a
+    hand recovery must not substitute another group's name/spec/verification —
+    the resolver checks the parsed id, same best-effort ethos as the parse."""
+    paths = RunPaths(tmp_path, "r1")
+    group = make_group("g3")
+    foreign = make_group("g4").model_copy(update={"name": "g4 rewritten"})
+    atomic_write_text(
+        paths.group_dir("g3") / "spec-gen1.json", foreign.model_dump_json(indent=2) + "\n"
+    )
+    assert effective_group(paths, group) is group
+
+
 def test_ignores_files_that_do_not_match_the_convention(tmp_path: Path):
     paths = RunPaths(tmp_path, "r1")
     group = make_group()

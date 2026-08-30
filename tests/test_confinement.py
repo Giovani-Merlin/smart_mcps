@@ -505,8 +505,53 @@ def test_confined_rename_out_of_the_worktree_is_still_denied(confined, tmp_path)
     )
 
     assert result.returncode != 0
+    # EACCES, not EXDEV: the denial comes from the write mask on the unruled
+    # destination — the errno pins *which* layer of the boundary did the
+    # denying, so a REFER-grant regression cannot hide behind a generic red.
+    assert "Errno 13" in result.stderr
     assert not (outside / "f.txt").exists()
     assert (worktree / "f.txt").read_text() == "payload"
+
+
+@refer_unavailable
+def test_abi1_mask_still_confines_and_denies_sibling_renames_with_exdev(confined_root):
+    """The `abi >= 2` gate has two branches and the else-branch never runs on a
+    modern dev box. Pin the ABI-1 contract explicitly: the ruleset still
+    applies (writes outside denied) and cross-directory renames inside the
+    allowed tree fail EXDEV — the pre-fix phantom, now the *documented*
+    older-kernel behaviour. Getting the gate wrong the other way (naming REFER
+    on an ABI-1 kernel) fails ruleset creation with EINVAL and silently
+    unconfines every worker, so it must stay provably not hardcoded."""
+    from orchestrator.execution.confinement import _apply_landlock
+
+    worktree = confined_root / "worktree"
+    (worktree / "a").mkdir(parents=True)
+    (worktree / "b").mkdir()
+    (worktree / "a" / "f.txt").write_text("payload")
+    outside = confined_root / "outside"
+    outside.mkdir()
+    policy = build_policy(worktree=worktree, claude_home=confined_root / "claude", system_paths=[])
+
+    def abi1_preexec() -> None:
+        _apply_landlock(read_write=policy.read_write, read_only=policy.read_only, abi=1)
+
+    sibling = subprocess.run(
+        ["python3", "-c", f"import os; os.rename('{worktree}/a/f.txt', '{worktree}/b/f.txt')"],
+        preexec_fn=abi1_preexec,
+        capture_output=True,
+        text=True,
+    )
+    assert sibling.returncode != 0
+    assert "Errno 18" in sibling.stderr  # EXDEV — the documented ABI-1 shape
+
+    denied = subprocess.run(
+        ["python3", "-c", f"open('{outside}/w.txt', 'w')"],
+        preexec_fn=abi1_preexec,
+        capture_output=True,
+        text=True,
+    )
+    assert denied.returncode != 0  # the ABI-1 mask still confines
+    assert not (outside / "w.txt").exists()
 
 
 def test_landlock_degrades_with_one_warning_and_the_round_still_runs(tmp_path, capsys, monkeypatch):

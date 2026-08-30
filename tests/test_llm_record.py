@@ -276,6 +276,29 @@ def test_a_restarted_recorder_keeps_the_produced_join(tmp_path):
     assert _index(tmp_path)["produced"] == {"task_ids": ["t1"], "group_ids": ["g1"]}
 
 
+def test_seq_never_falls_behind_orphaned_files(tmp_path):
+    """_record writes NN-*.request.txt/raw.txt BEFORE _write_index, so a driver
+    killed in that window leaves an orphaned NN+1 on disk that calls.json does
+    not know about. A restart seeding seq from the index alone would overwrite
+    the orphan — the crashed rewrite's only record."""
+    first = _recorder(tmp_path)
+    runner = lambda prompt, schema: "{}"  # noqa: E731
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=first)
+    call_llm_json(runner, "prompt", SCHEMA, validate=lambda p: p, recorder=first)
+    # the crash window: files for call 3 exist, the index still says max seq 2
+    (tmp_path / "llm" / "03-speccer_output-a0.request.txt").write_text("orphaned rewrite")
+    (tmp_path / "llm" / "03-speccer_output-a0.raw.txt").write_text("orphaned raw")
+
+    second = _recorder(tmp_path)
+    call_llm_json(runner, "post-crash prompt", SCHEMA, validate=lambda p: p, recorder=second)
+
+    assert (tmp_path / "llm" / "03-speccer_output-a0.request.txt").read_text() == "orphaned rewrite"
+    calls = _index(tmp_path)["calls"]
+    assert [c["seq"] for c in calls] == [1, 2, 4]
+    assert calls[-1]["request_file"] == "04-mapper-a0.request.txt"
+    assert (tmp_path / "llm" / "04-mapper-a0.request.txt").read_text() == "post-crash prompt"
+
+
 def test_seq_falls_back_to_filenames_when_the_index_is_unreadable(tmp_path):
     first = _recorder(tmp_path)
     runner = lambda prompt, schema: "{}"  # noqa: E731
@@ -289,6 +312,12 @@ def test_seq_falls_back_to_filenames_when_the_index_is_unreadable(tmp_path):
     # Index history is lost (it was corrupt), but no filename is reused.
     assert (tmp_path / "llm" / "03-mapper-a0.request.txt").read_text() == "third prompt"
     assert (tmp_path / "llm" / "01-mapper-a0.request.txt").read_text() == "prompt"
+    # And the rebuilt index stays coherent with the filenames: exactly the
+    # post-restart call, numbered to match its file — a rebuilt index whose seq
+    # restarted at 1 would send a post-mortem reader to the wrong transcript.
+    calls = _index(tmp_path)["calls"]
+    assert [c["seq"] for c in calls] == [3]
+    assert calls[0]["request_file"] == "03-mapper-a0.request.txt"
 
 
 def test_no_recorder_writes_nothing(tmp_path):

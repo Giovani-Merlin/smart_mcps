@@ -76,10 +76,14 @@ class JsonlCallRecorder:
                 # the index without it would clobber the join to null.
                 self._produced = produced
         seqs = [call.get("seq") for call in self.calls]
-        self._seq = max(
-            (seq for seq in seqs if isinstance(seq, int)),
-            default=self._seq_from_filenames(),
-        )
+        index_max = max((seq for seq in seqs if isinstance(seq, int)), default=0)
+        # Never behind the files: _record writes NN-*.request.txt/raw.txt BEFORE
+        # _write_index, so a crash in that window leaves an orphaned NN+1 on
+        # disk that the index does not know about. Seeding from the index alone
+        # would make the next call overwrite the orphan — the exact clobber this
+        # loading exists to prevent, surviving through the module's own write
+        # ordering.
+        self._seq = max(index_max, self._seq_from_filenames())
 
     def _seq_from_filenames(self) -> int:
         """Highest ``NN-…`` prefix among recorded request files — the fallback

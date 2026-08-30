@@ -291,9 +291,16 @@ def effective_group(paths: RunPaths, group: Group) -> Group:
     if best is None:
         return group
     try:
-        return Group.model_validate_json(best[1].read_text())
+        parsed = Group.model_validate_json(best[1].read_text())
     except (OSError, ValueError):
         return group
+    # A well-formed file carrying a *different* group's payload (a hand
+    # recovery restoring a backup into the wrong groups/<gid>/ dir) would
+    # silently substitute that group's name/spec/verification on every
+    # restart path at once. Foreign ids are ignored, same best-effort ethos.
+    if parsed.id != group.id:
+        return group
+    return parsed
 
 
 def log_event(paths: RunPaths, text: str) -> None:

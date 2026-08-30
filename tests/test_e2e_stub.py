@@ -675,6 +675,15 @@ def test_resume_reuses_a_rewritten_groups_worktree(repo, fake_home):
     assert exit_code == 0
     state = state_of(repo, run_id)
     assert state["groups"]["g2"]["state"] == "completed"
+    # The worktree slug alone is not enough — effective_group replaces the whole
+    # Group, so the resumed coder must be briefed with the *rewritten* spec (not
+    # the grouper original) and run inside the rewritten worktree. A regression
+    # that resolves only the name would reuse the worktree while re-briefing the
+    # stale spec, and the run would still "complete".
+    g2_call = named_calls(fake_home, name_of(run_id, "g2", "coder"))[-1]
+    assert "Full spec for g2." in g2_call["prompt"]
+    assert "Spec g2" not in g2_call["prompt"]  # make_group's grouper-original spec
+    assert g2_call["cwd"] == str(rewritten_wt)
     # merge-time teardown removed the rewritten worktree; the stale slug never
     # materialized at any point
     assert not rewritten_wt.exists()

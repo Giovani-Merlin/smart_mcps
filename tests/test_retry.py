@@ -154,6 +154,17 @@ def test_retry_finds_a_rewritten_groups_worktree_via_spec_gen(repo):
     (wt / "g1.txt").write_text("coder work\n")
     git(wt, "add", ".")
     git(wt, "commit", "-m", "g1 work")
+    # advance the integration tip so the refresh has observable work to do —
+    # "did not raise" alone cannot tell a real refresh from a silent no-op
+    # against a wrong path
+    git(repo, "checkout", "-q", integration_branch(run_id))
+    (repo / "landed.txt").write_text("sibling merge\n")
+    # only the file — `add .` would sweep the untracked .orchestrator/ run dir
+    # into the integration branch and lose it on the checkout back to main
+    git(repo, "add", "landed.txt")
+    git(repo, "commit", "-m", "sibling work landed on integration")
+    tip = git(repo, "rev-parse", integration_branch(run_id)).strip()
+    git(repo, "checkout", "-q", "main")
     write_state(paths, run_id, "g1", GroupRunState(state=GroupState.FAILED, failure="boom"))
     write_manifest(paths, run_id, rewritten)
 
@@ -162,6 +173,13 @@ def test_retry_finds_a_rewritten_groups_worktree_via_spec_gen(repo):
     persisted = RunState.model_validate_json(paths.state_path.read_text())
     assert persisted.groups["g1"].state == GroupState.PENDING
     assert wt.is_dir()
+    # the refresh really ran against the *rewritten* worktree: its branch now
+    # contains the integration tip that landed while the group was down
+    merge_check = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", tip, "HEAD"], cwd=wt, capture_output=True
+    )
+    assert merge_check.returncode == 0
+    assert (wt / "landed.txt").is_file()
 
 
 def test_retry_refreshes_branch_onto_integration_tip(repo):
