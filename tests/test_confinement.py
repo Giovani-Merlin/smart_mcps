@@ -42,6 +42,10 @@ landlock_unavailable = pytest.mark.skipif(
     landlock_abi_version() <= 0, reason="Landlock is unavailable on this kernel"
 )
 
+refer_unavailable = pytest.mark.skipif(
+    landlock_abi_version() < 2, reason="Landlock REFER needs ABI >= 2"
+)
+
 
 @pytest.fixture
 def confined_root():
@@ -462,6 +466,47 @@ def test_confined_subprocess_cannot_write_outside_its_worktree(confined, tmp_pat
     assert _run(preexec_fn := confined[2], f"echo x > {outside}/stolen.txt").returncode != 0
     assert not (outside / "stolen.txt").exists()
     assert preexec_fn is not None
+
+
+@refer_unavailable
+def test_confined_rename_between_sibling_dirs_inside_the_worktree_succeeds(confined):
+    """Without REFER handled+granted (ABI >= 2), Landlock denies *every*
+    cross-directory rename with EXDEV, even on one filesystem — which is what
+    made every `uv` install impossible in worker worktrees (findings §5) and
+    produced test_finish's phantom 'cross-device link' failures under a
+    confined run."""
+    worktree, _, preexec_fn = confined
+    (worktree / "a").mkdir()
+    (worktree / "b").mkdir()
+    (worktree / "a" / "f.txt").write_text("payload")
+
+    result = _run(
+        preexec_fn,
+        f"python3 -c \"import os; os.rename('{worktree}/a/f.txt', '{worktree}/b/f.txt')\"",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (worktree / "b" / "f.txt").read_text() == "payload"
+
+
+@refer_unavailable
+def test_confined_rename_out_of_the_worktree_is_still_denied(confined, tmp_path):
+    """REFER must be granted on *both* parent directories, so granting it only
+    on the allowed trees keeps renames out of them denied — the confinement
+    boundary this module exists for."""
+    worktree, _, preexec_fn = confined
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (worktree / "f.txt").write_text("payload")
+
+    result = _run(
+        preexec_fn,
+        f"python3 -c \"import os; os.rename('{worktree}/f.txt', '{outside}/f.txt')\"",
+    )
+
+    assert result.returncode != 0
+    assert not (outside / "f.txt").exists()
+    assert (worktree / "f.txt").read_text() == "payload"
 
 
 def test_landlock_degrades_with_one_warning_and_the_round_still_runs(tmp_path, capsys, monkeypatch):

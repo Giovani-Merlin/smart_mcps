@@ -47,9 +47,14 @@ _PR_SET_NO_NEW_PRIVS = 38
 _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
 _LANDLOCK_RULE_PATH_BENEATH = 1
 
-# ABI 1 filesystem access rights. Deliberately capped here — ABI 2+ adds bits
-# (REFER, TRUNCATE, ...) that are additive; their absence on an ABI-1-only
-# kernel just leaves those specific operations ungoverned, never a crash.
+# ABI 1 filesystem access rights, deliberately capped at ABI 1 *except* REFER
+# (below). ABI 2+ bits (TRUNCATE, ...) are additive; their absence on an
+# ABI-1-only kernel just leaves those specific operations ungoverned, never a
+# crash. REFER is the exception because it inverts that rule: under Landlock,
+# a confined process whose ruleset does not handle+grant REFER has every
+# cross-directory rename/link denied with EXDEV — even within one filesystem —
+# so *omitting* it restricts more, not less (uv installs, `os.rename` into a
+# sibling dir, and git's rename-based moves all break inside the worktree).
 _ACCESS_FS_EXECUTE = 1 << 0
 _ACCESS_FS_WRITE_FILE = 1 << 1
 _ACCESS_FS_READ_FILE = 1 << 2
@@ -63,6 +68,11 @@ _ACCESS_FS_MAKE_SOCK = 1 << 9
 _ACCESS_FS_MAKE_FIFO = 1 << 10
 _ACCESS_FS_MAKE_BLOCK = 1 << 11
 _ACCESS_FS_MAKE_SYM = 1 << 12
+
+# ABI 2. Handled and granted only when the kernel's probed ABI is >= 2: a
+# ruleset naming a right the kernel does not know is rejected outright
+# (EINVAL), which would silently drop confinement entirely.
+_ACCESS_FS_REFER = 1 << 13
 
 # Only the write-class rights are ever put in a ruleset's handled_access_fs
 # (plan U2's title: "deny writes outside the worktree" — not reads). Landlock
@@ -461,7 +471,7 @@ def landlock_preexec(
     read_only = list(policy.read_only)
 
     def _restrict() -> None:
-        _apply_landlock(read_write=read_write, read_only=read_only)
+        _apply_landlock(read_write=read_write, read_only=read_only, abi=abi)
 
     return _restrict, ConfinementResult(applied=True, abi_version=abi, warning=None)
 
@@ -476,7 +486,7 @@ def warn_once(result: ConfinementResult, *, already_warned: bool) -> bool:
     return already_warned
 
 
-def _apply_landlock(*, read_write: Sequence[Path], read_only: Sequence[Path]) -> None:
+def _apply_landlock(*, read_write: Sequence[Path], read_only: Sequence[Path], abi: int = 1) -> None:
     """Runs inside the forked child (via ``preexec_fn``), before ``exec()``.
     Best-effort and silent on internal failure: the parent already decided
     Landlock is available before wiring this in, and there is no good channel
@@ -490,7 +500,13 @@ def _apply_landlock(*, read_write: Sequence[Path], read_only: Sequence[Path]) ->
     field still documents what was probed and is available to callers that
     want to record or assert on it.
     """
-    ruleset_attr = _RulesetAttr(handled_access_fs=_WRITE_ACCESS_FS, handled_access_net=0)
+    # REFER (ABI >= 2) is handled *and* granted on the read_write trees: a
+    # ruleset that handles renames/links without granting REFER denies every
+    # cross-directory rename with EXDEV, even inside an allowed tree. Granting
+    # it only on the allowed trees preserves the boundary — a rename *out of*
+    # them still fails, because REFER must be granted on both parent dirs.
+    access = _WRITE_ACCESS_FS | (_ACCESS_FS_REFER if abi >= 2 else 0)
+    ruleset_attr = _RulesetAttr(handled_access_fs=access, handled_access_net=0)
     ruleset_fd = _LIBC.syscall(
         _SYS_LANDLOCK_CREATE_RULESET,
         ctypes.byref(ruleset_attr),
@@ -501,7 +517,7 @@ def _apply_landlock(*, read_write: Sequence[Path], read_only: Sequence[Path]) ->
         return
     try:
         for path in read_write:
-            _add_rule(ruleset_fd, path, _WRITE_ACCESS_FS)
+            _add_rule(ruleset_fd, path, access)
         _LIBC.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
         _LIBC.syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0)
     finally:
