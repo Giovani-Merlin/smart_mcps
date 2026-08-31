@@ -56,6 +56,14 @@ Run every check; report each as **BLOCKING** (the plan must not ship) or
    path and the two fixes (commit it if small; add its directory to
    `data_dirs` if it is data).
 
+10. **Real oracle per unit** — every unit has at least one verification item
+    whose pass condition depends on something the worker does not write
+    itself: the real dependency installed and invoked, a real input file, a
+    real command's observable output. A unit whose items all reduce to "the
+    unit tests pass" → ADVISORY, naming the unit and proposing one concrete
+    real-oracle item (run r20260830-211717: every group passed its own
+    mocked tests while the real TTS library never installed).
+
 ## Calibration
 
 Block **only on real problems** — things that would make the parser hard-error,

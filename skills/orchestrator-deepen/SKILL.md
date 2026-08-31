@@ -221,6 +221,12 @@ to), remind the human to regenerate the grouping with
 - **A `Run:` command is written only when grounded** (real runner idiom, every
   path in the unit's declared `Files`); otherwise `Pass:`-only.
 - **Edge cases only where they fire** — no `N/A` filler.
+- **At least one real-oracle verification item per unit.** When a unit's
+  items all reduce to "the worker's own tests pass", the explorer proposes —
+  and the human confirms — one `Pass:` condition that exercises the real
+  dependency, input file, or command output (a real model rendering real
+  audio, a real PDF yielding N chapters). Mocks are how r20260830-211717's
+  four groups passed everything with no working environment.
 - **Exploration mode follows the advisory `context` budget** — inline when
   the total fits the inline budget, batched by the advisory's packing
   otherwise; one-explorer-per-group is never the default, only a confirmed

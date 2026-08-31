@@ -205,6 +205,17 @@ committed. An untracked file at the repo root is invisible to every worker.
 The verifier flags such paths (check 9); prefer fixing them in the plan or
 the config before the run rather than discovering it four groups in.
 
+- **Every unit gets at least one external-oracle item.** An item whose only
+  oracle is the tests the worker will write ("`pytest tests/test_tts.py`
+  passes") is self-referential: a worker who mocks the library under test
+  satisfies it honestly and the run learns nothing. Pair such items with one
+  that touches the real thing — the actual library installed and called, a
+  real input file from a data dir, a real command's output ("`gab render
+  data/sample.txt` produces a WAV ≥ 2 s using the installed `piper` model").
+  If no real oracle exists yet because the data or model is not available,
+  say so in the item and route the input through `[workspace] data_dirs`
+  rather than accepting a mock as the oracle.
+
 ### No-placeholder rules
 
 No TODO/TBD, no "figure out later", no unresolved `<angle-bracket>` stubs, no
@@ -217,8 +228,9 @@ Spawn **one** verifier subagent — **sonnet** — with the prompt template in
 origin doc path. It checks origin coverage, placeholders, prose↔map 1:1
 consistency, codegraph existence of files/symbols, prospective markers,
 `depends_on` resolvability and acyclicity (including inter-slice), slice caps,
-route-tag consistency, and whether referenced input files are visible to
-workers (tracked, or under a configured data dir).
+route-tag consistency, whether referenced input files are visible to workers
+(tracked, or under a configured data dir), and whether every unit has at
+least one verification item with a real oracle rather than "my tests pass".
 
 **Fix every blocking finding inline and re-check.** Advisory findings are
 judgment calls — apply or consciously decline them. Do not re-spawn the

@@ -36,12 +36,35 @@ follows it.
   another interpreter, and `subprocess.run` substitution for the same command
   are all banned — they route around the sandbox instead of reporting the block.
 - Verify your work against the verification items you will be given before
-  reporting.
+  reporting — **for real**. A verification item is `pass` only if you ran it
+  in this worktree against the actual dependency, data, or service it names:
+  a mock, a stub backend, a lazily-imported library that was never installed,
+  or "the unit tests I wrote pass" does not make an item about that library
+  `pass`. If you could not run an item for real, report it `skipped` with the
+  reason in its notes — a `skipped` is honest and recoverable; a false `pass`
+  is the single worst report you can make, because nothing downstream will
+  ever look again.
+- Your environment is part of your work. If `uv sync` (with the project's
+  extras) fails, or a dependency the spec relies on cannot be installed or
+  imported in this worktree, first try to fix it (pin, alternative build,
+  version constraint) and commit that fix. If you cannot make the real
+  dependency work, do **not** design around it and report `completed`: report
+  status `blocked` with the exact error in `summary`. The orchestrator
+  resolves a `blocked` report (spec rewrite, or a human when one is
+  configured); a silent `completed` on a fake environment resolves nothing.
 
 ### For reviewers
 
 - Compute the diff yourself from git rather than trusting the coder's report:
   verify claims against the actual code and run the tests the spec calls for.
+- Check the environment before you check the code: confirm `uv sync` with the
+  project's extras succeeds in this worktree and that every dependency the
+  spec names actually imports here. Then check that at least one verification
+  item exercised the *real* dependency, data, or service — not a mock or a
+  stub. A report whose every `pass` rests on mocks of the thing under test is
+  `changes_required` ("exercise the real X in item N"); a dependency that
+  cannot be made to work at all in this environment is `too_hard`, stated
+  plainly, never `approved`.
 - If you need scratch space, use only the directory the round names for it, and
   do not leave scratch files anywhere else in the worktree — the merge gate
   requires a clean tree.
