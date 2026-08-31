@@ -600,10 +600,22 @@ Rules for the block:
       <h2><span class="num">07</span>Escalation / human-in-the-loop</h2>
       <p class="section-dek">Headless <code>claude -p</code> workers cannot pause mid-turn to ask a question. The only channel is <b>report-then-resume</b>: a coder ends its turn with a status the orchestrator recognizes as stuck, the review loop escalates and blocks that group's coroutine — sibling groups keep running — and resumes it once you answer.</p>
 
-      <div class="callout info"><span class="label">On by default</span><p>HITL is <b>enabled</b> at intensity <code>on_stuck</code> out of the box. An unattended run needs <code>--intensity autonomous</code> (or <code>[escalation] intensity = "autonomous"</code>) explicitly — otherwise a run can block indefinitely on an unanswered escalation, since <code>timeout_s</code> defaults to blocking forever.</p></div>
+      <div class="callout info"><span class="label">Off by default (since 2026-08-20)</span><p>HITL is <b>disabled</b> out of the box: <code>[escalation] enabled = false</code>, <code>intensity = "autonomous"</code> (<code>orchestrator/config.py</code>). Turn it on per run with <code>--hitl</code> (tier <code>on_stuck</code>) or <code>--intensity &lt;tier&gt;</code>, or persistently with <code>[escalation] enabled = true</code>. Why off: plan U3's <code>on_group_failure = halt</code> admission made unattended runs safe to leave alone, whereas a blocked escalation wait with <code>timeout_s = null</code> is <i>forever</i> — an "on by default" HITL wedged every run whose operator walked away. Earlier revisions of this page and the README said the opposite; that was drift, not a change of behaviour.</p></div>
 
-      <h3>The ten escalation kinds</h3>
-      <p><code>EscalationKind</code> (<code>orchestrator/model.py:171-188</code>): six are decision points that would otherwise auto-resolve; three (<code>GROUP_START</code>, <code>RESPAWN</code>, <code>MERGE_APPROVE</code>) are approval gates only the <code>interactive</code> tier raises.</p>
+      <h3>Who resolves a stuck group — three resolvers</h3>
+      <p>Every escalation kind below is a moment the review loop cannot decide on its own. Exactly three things can decide it:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Resolver</th><th>When</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><b>1. Autonomous</b> — the speccer rewrite ladder</td><td>HITL off, or an escalation timed out with <code>on_timeout = autonomous</code></td><td><code>_rewrite()</code> folds the surprises into a speccer call and relaunches on the rewritten spec, bounded by <code>[execution] max_rewrites</code>; then <code>caps_exhausted</code>, then the group FAILS and <code>on_group_failure = halt</code> stops admitting dependents.</td></tr>
+          <tr><td><b>2. The run-driver session</b> — <code>/orchestrator-run</code></td><td>HITL on; a Claude session launched the run and watches its <code>escalations/</code> directory</td><td>Reads the request, the report/verdict and the worktree; fixes environment / config / data / plan defects itself and answers <code>retry</code> (relaunch the same spec — no rewrite); answers <code>answer</code> from the docs when the spec was wrong; asks the human only for product decisions. Playbook: <code>skills/orchestrator-run/triage-guide.md</code>.</td></tr>
+          <tr><td><b>3. The human</b></td><td>Asked by resolver 2 for a scope or product call — or driving by hand via <code>smart-mcps-orchestrate answer</code> / the Observatory</td><td>Types the decision; it flows through the same <code>answer</code> path.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Until plugin 0.14.0 resolver 2 existed only as a sentence in three docstrings ("the main session tails <code>run.log</code> and watches pending escalations" — <code>manifest.py</code>, <code>escalation.py</code>, <code>cli.py</code>). No such session was ever defined as a workflow, so a stuck group had exactly two outcomes: a speccer rewrite or a paused run waiting for a human to type a command. Run r20260830-211717 surfaced this: four groups blocked on one missing extra, each answer cost a rewrite generation, and nothing in between could simply fix <code>pyproject.toml</code> and say "go again".</p>
+
+      <h3>The eleven escalation kinds</h3>
+      <p><code>EscalationKind</code> (<code>orchestrator/model.py</code>): eight are decision points that would otherwise auto-resolve; three (<code>GROUP_START</code>, <code>RESPAWN</code>, <code>MERGE_APPROVE</code>) are approval gates only the <code>interactive</code> tier raises.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>Kind</th><th>Raised when</th><th>Lowest tier that escalates it</th></tr></thead>
         <tbody>
@@ -614,6 +626,7 @@ Rules for the block:
           <tr><td><code>reviewer_too_hard</code></td><td>Reviewer verdict <code>too_hard</code>.</td><td><code>on_stuck</code></td></tr>
           <tr><td><code>reviewer_structural</code></td><td>Reviewer verdict <code>structural</code> — the group boundaries themselves are wrong.</td><td><code>on_stuck</code></td></tr>
           <tr><td><code>merge_conflict</code></td><td>Integration merge conflicted (after resolve-in-place attempts, if any).</td><td><code>on_stuck</code></td></tr>
+          <tr><td><code>preflight_failed</code></td><td>The merge gate's check command failed on the merged result and the failure is attributable to the diff (plan U3). Env/timeout failures and tests already red on the launch branch fail the group without escalating.</td><td><code>on_stuck</code></td></tr>
           <tr><td><code>group_start</code></td><td>Approve before a group's worktree/session launches.</td><td><code>interactive</code></td></tr>
           <tr><td><code>respawn</code></td><td>Approve a breaker respawn to the next generation.</td><td><code>interactive</code></td></tr>
           <tr><td><code>merge_approve</code></td><td>Approve before an approved group actually merges.</td><td><code>interactive</code></td></tr>
@@ -624,9 +637,9 @@ Rules for the block:
       <div class="table-wrap"><table>
         <thead><tr><th>Tier</th><th>Escalates</th></tr></thead>
         <tbody>
-          <tr><td><code>autonomous</code></td><td>nothing — run unattended (must be passed explicitly)</td></tr>
-          <tr><td><code>on_failure</code></td><td>only a generation/rewrite cap about to fail a group</td></tr>
-          <tr><td><code>on_stuck</code> <i>(default)</i></td><td>+ coder blocked/needs_input, reviewer too_hard/structural, merge conflict</td></tr>
+          <tr><td><code>autonomous</code> <i>(default)</i></td><td>nothing — run unattended</td></tr>
+          <tr><td><code>on_failure</code></td><td>only a generation/rewrite cap about to fail a group, and a failed group's <code>group_resolve</code></td></tr>
+          <tr><td><code>on_stuck</code> <i>(what <code>--hitl</code> selects)</i></td><td>+ coder blocked/needs_input, reviewer too_hard/structural, merge conflict, preflight failed</td></tr>
           <tr><td><code>interactive</code></td><td>+ approve before group launch, before each respawn, and before each merge</td></tr>
         </tbody>
       </table></div>
@@ -636,9 +649,35 @@ Rules for the block:
       <p><code>--escalation-source workers_via_orchestrator</code> (default) surfaces a coder's <code>needs_input</code> question to you as-is. <code>orchestrator_only</code> downgrades it: <code>EscalationPolicy.should_escalate()</code> refuses <code>coder_question</code> outright when the source is <code>orchestrator_only</code>, and the review loop routes the same moment through <code>coder_blocked</code> instead — no direct worker→human channel, just the existing blocked/rewrite path.</p>
 
       <h3>The request/response file protocol</h3>
-      <p>Deliberately boring: <code>EscalationBroker.raise_escalation()</code> writes <code>escalations/request-&lt;id&gt;.json</code>, logs a loud line to <code>run.log</code>, then polls (<code>poll_interval_s</code>, default <code>1.0</code>s) for a matching <code>response-&lt;id&gt;.json</code> — from a worker thread via <code>asyncio.to_thread</code>, so the event loop and sibling groups are never blocked. <code>smart-mcps-orchestrate answer &lt;run_id&gt; &lt;esc_id&gt; --action answer|skip|abort</code> writes that response file; the blocked group's coroutine picks it up by correlation id.</p>
+      <p>Deliberately boring: <code>EscalationBroker.raise_escalation()</code> writes <code>escalations/request-&lt;id&gt;.json</code>, logs a loud line to <code>run.log</code>, then polls (<code>poll_interval_s</code>, default <code>1.0</code>s) for a matching <code>response-&lt;id&gt;.json</code> — from a worker thread via <code>asyncio.to_thread</code>, so the event loop and sibling groups are never blocked. <code>smart-mcps-orchestrate answer &lt;run_id&gt; &lt;esc_id&gt; --action answer|retry|skip|abort --text …</code> writes that response file (so does the Observatory's answer endpoint — same function); the blocked group's coroutine picks it up by correlation id. A response is write-once: a second answer for the same id is refused.</p>
+
+      <h4 style="margin:.6rem 0 .3rem">The four actions</h4>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Action</th><th>Semantics</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr><td><code>answer</code></td><td>Free-text guidance. On <code>coder_question</code> it warm-resumes the same coder session with the text as its next prompt. On every other kind it is folded into a <b>speccer rewrite</b> as an <code>[operator]</code> surprise (blocked / too_hard / structural / merge conflict / preflight), or grants one more generation/rewrite (<code>caps_exhausted</code>), or means "proceed" (<code>group_resolve</code>, the interactive gates).</td><td>one rewrite + one speccer call, except <code>coder_question</code></td></tr>
+          <tr><td><code>retry</code> <i>(0.14.0)</i></td><td>"The cause was fixed outside the worker." On <code>coder_blocked</code>, <code>reviewer_too_hard</code>, <code>reviewer_structural</code> and a downgraded <code>coder_question</code>, relaunches a <b>fresh coder on the same spec</b>, with the text appended to its prompt as <code>## Operator note</code>; <code>rewrite_spec</code> is never called and <code>rewrites</code> is unchanged. Everywhere else it behaves exactly as <code>answer</code>.</td><td>one generation, no rewrite, no speccer</td></tr>
+          <tr><td><code>skip</code></td><td>Fail this group now (<code>GroupFailure</code>); dependents strand; the run continues.</td><td>—</td></tr>
+          <tr><td><code>abort</code></td><td>Stop the whole run cleanly (<code>RunAbort</code>, every sibling waiter released); state stays resumable.</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+      <p>Not to be confused with the <code>retry</code> <b>subcommand</b> (<code>smart-mcps-orchestrate retry &lt;run&gt; &lt;group&gt;</code>), which releases a terminally failed or quarantined group so a later <code>resume</code> re-enters it.</p>
+
+      <h4 style="margin:.6rem 0 .3rem"><code>run.log</code> anchors — the run-driver session's contract</h4>
+      <p>These lines are what <code>/orchestrator-run</code> watches for; keep them stable.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Event</th><th>Line</th></tr></thead>
+        <tbody>
+          <tr><td>escalation raised</td><td><code>ESCALATION &lt;id&gt; [&lt;kind&gt;] group &lt;gid&gt;</code> (+ <code>blocks …</code> when dependents wait)</td></tr>
+          <tr><td>escalation answered / timed out</td><td><code>ESCALATION &lt;id&gt; answered: &lt;action&gt;</code> / <code>ESCALATION &lt;id&gt; timed out → &lt;on_timeout&gt;</code></td></tr>
+          <tr><td>retry relaunch</td><td><code>group &lt;gid&gt; generation &lt;n&gt;: relaunching on the same spec (operator retry: …)</code></td></tr>
+          <tr><td>spec rewrite</td><td><code>group &lt;gid&gt; generation &lt;n&gt;: rewriting spec (&lt;why&gt;); surprises consumed: …</code></td></tr>
+          <tr><td>group terminal</td><td><code>group &lt;gid&gt;: completed</code> / <code>group &lt;gid&gt;: failed (…)</code> / <code>group &lt;gid&gt;: resolved (…)</code> / <code>group &lt;gid&gt;: terminal failed — … retry with: …</code></td></tr>
+          <tr><td>run ends early</td><td><code>run &lt;id&gt; aborted by operator: …</code> / <code>run &lt;id&gt; interrupted (SIGINT)</code></td></tr>
+        </tbody>
+      </table></div>
       <div class="grid-2">
-        <div><h4 style="margin:0 0 .3rem">Unanswered, no timeout set</h4><p style="max-width:none">Blocks indefinitely — a live operator is expected. This is the default (<code>timeout_s = null</code>).</p></div>
+        <div><h4 style="margin:0 0 .3rem">Unanswered, no timeout set</h4><p style="max-width:none">Blocks indefinitely — a live operator is expected. This is the default (<code>timeout_s = null</code>), which is why <code>/orchestrator-run</code> always passes <code>--escalation-timeout</code>: a driver session that dies must not wedge the run.</p></div>
         <div><h4 style="margin:0 0 .3rem">Unanswered, timeout set</h4><p style="max-width:none">Falls back per <code>on_timeout</code>: <code>autonomous</code> (default), <code>skip</code>, or <code>abort</code>.</p></div>
       </div>
 
@@ -749,7 +788,7 @@ Rules for the block:
 
     <section id="cli">
       <h2><span class="num">11</span>CLI reference</h2>
-      <p class="section-dek">Six subcommands, captured from <code>smart-mcps-orchestrate &lt;cmd&gt; --help</code> on this branch.</p>
+      <p class="section-dek">Fourteen subcommands (<code>group</code>, <code>plan-check</code>, <code>split</code>, <code>groupings</code>, <code>run</code>, <code>resume</code>, <code>status</code>, <code>answer</code>, <code>retry</code>, <code>finish</code>, <code>export</code>, <code>calibrate</code>, <code>ui</code>, and the deprecated aliases), captured from <code>smart-mcps-orchestrate &lt;cmd&gt; --help</code>. Out of scope by decision: a <code>stop</code> subcommand — stopping a run is signalling its process group (<code>kill -INT -&lt;pgid&gt;</code>, logged as <code>interrupted (SIGINT)</code>, resumable), or the Observatory's stop endpoint.</p>
 
       <h3><code>group &lt;plan.md&gt;</code> — compute groups from a plan</h3>
       <div class="table-wrap"><table>
@@ -768,7 +807,7 @@ Rules for the block:
       </table></div>
 
       <h3><code>run</code> / <code>resume &lt;run_id&gt;</code> — execute (or re-enter) a run</h3>
-      <p><code>resume</code> takes every execution flag <code>run</code> does, plus the positional <code>run_id</code>.</p>
+      <p><code>resume</code> takes every execution flag <code>run</code> does, plus the positional <code>run_id</code>. Both <b>block</b> until the run ends; to drive a run from a session, launch detached — <code>setsid nohup python -u -m orchestrator.cli run --run-id &lt;id&gt; … &gt; .orchestrator/runs/&lt;id&gt;/logs/driver.log 2&gt;&amp;1 &amp;</code> — which is what <code>/orchestrator-run</code> and the Observatory both do. On a terminal, <code>run</code> asks <code>[y/N]</code> before starting a new run while an unfinished one exists; a non-tty launch proceeds on the warning alone.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
         <tbody>
@@ -778,10 +817,10 @@ Rules for the block:
           <tr><td><code>--concurrency N</code></td><td>Max parallel groups (default <code>1</code>).</td></tr>
           <tr><td><code>--permission-mode MODE</code></td><td><code>claude</code> CLI permission mode for workers (default <code>acceptEdits</code>).</td></tr>
           <tr><td><code>--review-intensity {self_verify,paired,paired_plus}</code></td><td>Overrides the computed tier for every group.</td></tr>
-          <tr><td><code>--hitl</code></td><td>Enable HITL escalation at <code>on_stuck</code>. Redundant against the default; documents intent.</td></tr>
+          <tr><td><code>--hitl</code></td><td>Enable HITL escalation at <code>on_stuck</code> (HITL is <b>off</b> by default).</td></tr>
           <tr><td><code>--intensity {autonomous,on_failure,on_stuck,interactive}</code></td><td>Escalation tier; any non-<code>autonomous</code> value implies <code>--hitl</code>.</td></tr>
           <tr><td><code>--escalation-source {orchestrator_only,workers_via_orchestrator}</code></td><td>Who may request escalation (default <code>workers_via_orchestrator</code>).</td></tr>
-          <tr><td><code>--escalation-timeout S</code></td><td>Seconds to wait for an answer before <code>on_timeout</code> fires (default: block).</td></tr>
+          <tr><td><code>--escalation-timeout S</code></td><td>Seconds to wait for an answer before <code>on_timeout</code> fires (default: block forever — always set it when a session, not a person, is the operator).</td></tr>
           <tr><td><code>--model-worker MODEL</code></td><td>Overrides the coder/reviewer fork model (default: Sonnet). Overrides the config file.</td></tr>
           <tr><td><code>--model-base MODEL</code></td><td>Overrides the run's own base session model (default: Opus). Overrides the config file.</td></tr>
           <tr><td><code>--model-speccer MODEL</code></td><td>Overrides the mapper/speccer model (default: Opus). Overrides the config file.</td></tr>
@@ -795,8 +834,15 @@ Rules for the block:
         <thead><tr><th>Command</th><th>Effect</th></tr></thead>
         <tbody>
           <tr><td><code>groupings [--repo DIR]</code></td><td>Lists every named grouping with its plan path and group count.</td></tr>
-          <tr><td><code>status [RUN_ID] [--repo DIR]</code></td><td>No <code>run_id</code>: lists runs. With one: per-group state, generations, failures, sessions, and pending escalations.</td></tr>
-          <tr><td><code>answer RUN_ID ESC_ID [--action answer|skip|abort] [--text ...] [--repo DIR]</code></td><td>Resolves a pending escalation by writing its response file.</td></tr>
+          <tr><td><code>plan-check PLAN [--against OLD]</code></td><td>Zero-LLM structural check of a plan's task map (and its drift against a previous copy).</td></tr>
+          <tr><td><code>split PLAN --seam N | --tasks …</code></td><td>Mechanically splits a plan along an advisory seam into sibling documents; never rewrites prose.</td></tr>
+          <tr><td><code>status [RUN_ID] [--repo DIR]</code></td><td>No <code>run_id</code>: shows the single unfinished run (else the newest; lists ids only when several are unfinished). With one: driver liveness + heartbeat age, per-group state, generations, failures, holds, sessions, and pending escalations.</td></tr>
+          <tr><td><code>answer RUN_ID ESC_ID [--action answer|retry|skip|abort] [--text ...] [--repo DIR]</code></td><td>Resolves a pending escalation by writing its response file (write-once). <code>retry</code> relaunches the same spec; see §07.</td></tr>
+          <tr><td><code>retry RUN_ID GROUP_ID [--repo DIR]</code></td><td>Operator override: releases a terminally failed or quarantined group so the next <code>resume</code> re-enters it. Distinct from <code>answer --action retry</code>.</td></tr>
+          <tr><td><code>finish RUN_ID [--repo DIR]</code></td><td>Pushes the integration branch, opens a PR, and tears down merged groups' worktrees.</td></tr>
+          <tr><td><code>export RUN_ID [--out PATH] [--project NAME]</code></td><td>Writes the run's framework-agnostic <code>ingest.json</code> bundle for external analyzers.</td></tr>
+          <tr><td><code>calibrate RUN_ID</code></td><td>Compares a finished run's token estimates against what it actually cost.</td></tr>
+          <tr><td><code>ui [--registry PATH] …</code></td><td>Serves the Observatory web UI (local, no auth).</td></tr>
         </tbody>
       </table></div>
     </section>
@@ -923,8 +969,8 @@ Rules for the block:
       <div class="table-wrap"><table>
         <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
         <tbody>
-          <tr><td><code>enabled</code></td><td class="num">true</td><td><code>--intensity autonomous</code> to disable</td></tr>
-          <tr><td><code>intensity</code></td><td class="num">"on_stuck"</td><td><code>--intensity</code></td></tr>
+          <tr><td><code>enabled</code></td><td class="num">false</td><td><code>--hitl</code> (or any non-autonomous <code>--intensity</code>) to enable</td></tr>
+          <tr><td><code>intensity</code></td><td class="num">"autonomous"</td><td><code>--intensity</code></td></tr>
           <tr><td><code>source</code></td><td class="num">"workers_via_orchestrator"</td><td><code>--escalation-source</code></td></tr>
           <tr><td><code>timeout_s</code></td><td class="num">null (block forever)</td><td><code>--escalation-timeout</code></td></tr>
           <tr><td><code>on_timeout</code></td><td class="num">"autonomous"</td><td>—</td></tr>

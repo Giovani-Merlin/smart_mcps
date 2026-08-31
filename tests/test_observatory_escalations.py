@@ -155,7 +155,7 @@ class TestAnswer:
     def test_an_unknown_action_is_422_and_writes_nothing(self, client, repo):
         raise_escalation(repo, "e1")
         response = client.post(
-            f"{RUN}/escalations/e1/answer", json={"action": "retry", "text": "nope"}
+            f"{RUN}/escalations/e1/answer", json={"action": "rewind", "text": "nope"}
         )
         assert response.status_code == 422
         paths = RunPaths(repo, "smoke1")

@@ -881,6 +881,100 @@ def test_hitl_answer_a_question_then_skip_a_too_hard_group(repo, fake_home):
     assert "ESCALATION" in run_log and "answered" in run_log
 
 
+def test_hitl_retry_relaunches_the_same_spec_through_the_file_broker(repo, fake_home):
+    """0.14.0 `retry` end to end through the real CLI and the file-based broker:
+    a coder reports `blocked`, the operator answers `retry` (the cause was fixed
+    outside the worker), and the group relaunches on the SAME spec — no speccer
+    rewrite — with the operator's note in the next coder's prompt."""
+    run_id = "rr"
+    write_run_artifacts(repo, [make_group("g1")])
+    write_config(repo, fake_home, "[escalation]\npoll_interval_s = 0.02\n")
+    # generation 1 blocks; generation 2 (the relaunch) completes and is approved
+    script_session(fake_home, name_of(run_id, "g1", "coder"), coder_entry(status="blocked"))
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder", generation=2),
+        coder_entry(files={"g1.out": "done\n"}, commit="g1: work"),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g1", "reviewer", generation=2), verdict_entry("approved")
+    )
+
+    paths = RunPaths(repo, run_id)
+    outcome: dict = {}
+    llm = StubLlm()  # records every mapper/speccer prompt it is asked for
+
+    def run() -> None:
+        outcome["code"] = main(
+            ["run", "--repo", str(repo), "--run-id", run_id, "--hitl", "--sequential"],
+            llm_runner=llm,
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    handled = _drive_escalations(
+        paths, thread, {"coder_blocked": ("retry", "fixed: the missing extra is installed")}
+    )
+    thread.join(timeout=25)
+    assert not thread.is_alive()
+
+    assert outcome["code"] == 0
+    assert handled == ["coder_blocked"]
+    assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    assert "ESCALATION" in run_log and "answered: retry" in run_log
+    assert "relaunching on the same spec (operator retry: coder reported status blocked)" in run_log
+    assert "rewriting spec" not in run_log
+    assert llm.prompts == []  # no speccer call — the spec was never rewritten
+    # the relaunched coder's prompt carries the operator note
+    g2_calls = [c for c in calls_of(fake_home) if name_of(run_id, "g1", "coder", 2) in c["argv"]]
+    assert g2_calls and "## Operator note" in g2_calls[0]["prompt"]
+    assert "fixed: the missing extra is installed" in g2_calls[0]["prompt"]
+
+
+def test_hitl_escalation_timeout_releases_the_wait_when_no_operator_answers(repo, fake_home):
+    """The run-driver session's safety net: with `--escalation-timeout` set and
+    nobody answering (the driver session died), the wait releases per
+    `on_timeout = autonomous` and the group takes the speccer-rewrite path
+    instead of blocking forever."""
+    run_id = "rt"
+    write_run_artifacts(repo, [make_group("g1")])
+    write_config(repo, fake_home, "[escalation]\npoll_interval_s = 0.02\n")
+    script_session(fake_home, name_of(run_id, "g1", "coder"), coder_entry(status="blocked"))
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder", generation=2),
+        coder_entry(files={"g1.out": "done\n"}, commit="g1: work", verification_ids=["g1-v1"]),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g1", "reviewer", generation=2), verdict_entry("approved")
+    )
+    stub = StubLlm()
+    exit_code = main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-id",
+            run_id,
+            "--hitl",
+            "--sequential",
+            "--escalation-timeout",
+            "0.2",
+        ],
+        llm_runner=stub,
+    )
+    assert exit_code == 0
+    assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    assert "timed out → autonomous" in run_log
+    assert "rewriting spec (coder reported status blocked)" in run_log
+    assert [title for title, _ in stub.prompts] == ["speccer_output"]
+    # nothing answered it — the request file stands alone
+    esc_dir = repo / ".orchestrator" / "runs" / run_id / "escalations"
+    assert list(esc_dir.glob("request-*.json")) and not list(esc_dir.glob("response-*.json"))
+
+
 def test_intensity_autonomous_flag_stays_headless(repo, fake_home):
     """`--intensity autonomous` runs exactly like a no-flag run: no *escalation*
     artifacts — the injected seam is fully absent. The lifecycle log is always

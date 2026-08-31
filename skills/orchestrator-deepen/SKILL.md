@@ -209,7 +209,9 @@ asked, "either is fine" answers, units enriched) and point back at
 still parses clean. If any existing prose was refined (not merely appended
 to), remind the human to regenerate the grouping with
 `smart-mcps-orchestrate group <plan>` before running — the persisted
-`groups.json` was derived from the pre-deepen plan.
+`groups.json` was derived from the pre-deepen plan. The next step is
+`/orchestrator-run <plan>` (it regenerates a stale grouping itself in its
+preflight), not a bare `smart-mcps-orchestrate run`.
 
 ## Non-negotiable rules
 

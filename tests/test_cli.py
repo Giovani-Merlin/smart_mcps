@@ -720,6 +720,14 @@ class TestAnswerCommand:
         )
         assert response.action == HumanAction.SKIP
 
+    def test_retry_action_round_trips(self, tmp_path):
+        paths = self._write_request(tmp_path, esc_id="e4", kind="coder_blocked")
+        argv = ["answer", "r1", "e4", "--action", "retry", "--text", "env fixed"]
+        assert main([*argv, "--repo", str(tmp_path)]) == 0
+        raw = json.loads((paths.escalations_dir / "response-e4.json").read_text())
+        assert raw["action"] == "retry" and raw["answer"] == "env fixed"
+        assert EscalationResponse.model_validate(raw).action == HumanAction.RETRY
+
     def test_answer_rejects_an_already_answered_escalation(self, tmp_path, capsys):
         """The stale check `_cmd_answer` gained by delegating to answer_escalation:
         a second answer must not race the waiting group against a new decision."""

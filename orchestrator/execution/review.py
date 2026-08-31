@@ -363,6 +363,10 @@ class _GroupExecution:
         # the next prompt this generation builds, then cleared — never spent as a
         # rewrite, never sent to the speccer.
         self._briefing_notes: list[str] = []
+        # An operator `retry` note: what they fixed outside the worker. Folded
+        # into the next coder prompt as an "Operator note", one-shot — never
+        # spent as a rewrite, never sent to the speccer.
+        self._operator_notes: list[str] = []
         self._env_failure: str | None = None
         # Re-entry discovery (R4): a live coder entry at the persisted generation
         # can only pre-exist the executor on a resumed run — fresh runs start with
@@ -433,6 +437,7 @@ class _GroupExecution:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
+            prompt = self._apply_operator_note(prompt)
             self.handoff_prompt = None
             # The session id is generated and recorded *before* the blocking fork
             # call, not after (plan U7): a crash mid-call would otherwise leave no
@@ -976,6 +981,8 @@ class _GroupExecution:
                     prompt=f"merge conflict for {self.gid}: {exc}",
                     surprises=[conflict],
                 )
+                # An operator `retry` here means the same as `answer`: the text
+                # guides the rewrite (a conflict is evidence about the diff).
                 extra = [conflict]
                 if response is not None:
                     extra.append(_operator_surprise(self.gid, response.answer))
@@ -999,6 +1006,7 @@ class _GroupExecution:
                         prompt=f"preflight failed for {self.gid}: {exc}",
                         surprises=[surprise],
                     )
+                    # `retry` behaves as `answer` here (guides the rewrite).
                     extra = [surprise]
                     if response is not None:
                         extra.append(_operator_surprise(self.gid, response.answer))
@@ -1141,6 +1149,7 @@ class _GroupExecution:
                 raise GroupFailure(
                     f"rewrite cap ({self.deps.execution.max_rewrites}) exhausted: {why}"
                 )
+            # `answer` and `retry` alike grant the one extra rewrite.
             extra.append(_operator_surprise(self.gid, response.answer))
         surprises = self.deps.board.consume(self.gid) + extra
         self._log(
@@ -1154,6 +1163,20 @@ class _GroupExecution:
         if self.sessions_spawned:
             self._advance_generation()
         self._persist_rewritten_spec()
+
+    async def _relaunch(self, note: str, why: str) -> None:
+        """Operator ``retry``: the cause was fixed outside the worker, so relaunch a
+        fresh coder on the *same* spec — no rewrite spent, no speccer call. The
+        note rides along as an ``## Operator note`` in the next prompt."""
+        self._log(
+            f"group {self.gid} generation {self.generation}: relaunching on the same spec "
+            f"(operator retry: {why})"
+        )
+        if note:
+            self._operator_notes.append(note)
+        self.handoff_prompt = None  # the fresh session gets the unchanged spec
+        if self.sessions_spawned:
+            self._advance_generation()
 
     def _breaker_reason(self, rounds: int) -> str | None:
         if rounds >= self.deps.breaker.max_rounds_per_generation:
@@ -1185,6 +1208,7 @@ class _GroupExecution:
                 raise GroupFailure(
                     f"generation cap ({self.deps.breaker.max_generations}) exhausted: {reason}"
                 )
+            # `answer` and `retry` alike grant the one extra generation.
             self._grant_notes.append(f"[operator] {response.answer}")
         else:
             # interactive tier only: approve the breaker respawn.
@@ -1242,6 +1266,9 @@ class _GroupExecution:
                 cwd=self.workspace,
                 on_turn=self._make_coder_on_turn(self.coder_entry),
             )
+        if _is_retry(response):
+            await self._relaunch(response.answer, f"coder needs input: {question}")
+            return None
         extra = [_context_surprise(self.gid, f"coder needs_input: {question}")]
         if response is not None:
             extra.append(_operator_surprise(self.gid, response.answer))
@@ -1249,20 +1276,25 @@ class _GroupExecution:
         return None
 
     async def _on_coder_stuck(self, report: CoderReport, report_path: Path) -> None:
-        """A blocked/failed coder report: escalate, then rewrite (guided if answered)."""
+        """A blocked/failed coder report: escalate, then rewrite (guided if answered)
+        — or relaunch the same spec when the operator says ``retry``."""
         response = await self._escalate(
             EscalationKind.CODER_BLOCKED,
             prompt=f"coder for {self.gid} reported {report.status}: {report.summary}",
             report_path=str(report_path),
             want_diff=True,
         )
+        if _is_retry(response):
+            await self._relaunch(response.answer, f"coder reported status {report.status}")
+            return
         extra = [_context_surprise(self.gid, f"coder {report.status}: {report.summary}")]
         if response is not None:
             extra.append(_operator_surprise(self.gid, response.answer))
         await self._rewrite(f"coder reported status {report.status}", extra=extra)
 
     async def _on_reviewer_hard(self, verdict: ReviewerVerdict, verdict_path: Path | None) -> None:
-        """A too_hard/structural verdict: escalate, then rewrite (guided if answered)."""
+        """A too_hard/structural verdict: escalate, then rewrite (guided if answered)
+        — or relaunch the same spec when the operator says ``retry``."""
         kind = (
             EscalationKind.REVIEWER_TOO_HARD
             if verdict.status == "too_hard"
@@ -1274,6 +1306,9 @@ class _GroupExecution:
             verdict_path=str(verdict_path) if verdict_path is not None else None,
             want_diff=True,
         )
+        if _is_retry(response):
+            await self._relaunch(response.answer, f"reviewer verdict: {verdict.status}")
+            return
         extra = [_context_surprise(self.gid, f"reviewer {verdict.status}: {verdict.notes}")]
         if response is not None:
             extra.append(_operator_surprise(self.gid, response.answer))
@@ -1291,10 +1326,12 @@ class _GroupExecution:
     ) -> EscalationResponse | None:
         """Escalate ``kind`` to the operator if the policy dictates.
 
-        Returns the operator's ``answer`` response, or ``None`` when the caller must
-        run its autonomous path — escalation is off for this kind, or a timeout with
-        ``on_timeout = autonomous`` fired. ``skip`` (→ GroupFailure) and ``abort``
-        (→ RunAbort) are raised here and never returned. When broker/policy are
+        Returns the operator's ``answer`` or ``retry`` response (callers that can
+        relaunch the same spec check ``_is_retry``; every other site treats the two
+        alike), or ``None`` when the caller must run its autonomous path —
+        escalation is off for this kind, or a timeout with ``on_timeout =
+        autonomous`` fired. ``skip`` (→ GroupFailure) and ``abort`` (→ RunAbort)
+        are raised here and never returned. When broker/policy are
         absent the check short-circuits with zero side effects, so an autonomous run
         is byte-identical to pre-Phase-D."""
         policy, broker = self.deps.policy, self.deps.broker
@@ -1326,8 +1363,9 @@ class _GroupExecution:
         return response
 
     async def _approve_gate(self, kind: EscalationKind, prompt: str) -> None:
-        """Interactive-tier approval gate: an ``answer`` (or a non-escalating tier)
-        means proceed; ``skip``/``abort`` raise inside ``_escalate``."""
+        """Interactive-tier approval gate: an ``answer`` or ``retry`` (or a
+        non-escalating tier) means proceed; ``skip``/``abort`` raise inside
+        ``_escalate``."""
         await self._escalate(kind, prompt=prompt)
 
     def _diff(self) -> str:
@@ -1421,6 +1459,21 @@ class _GroupExecution:
             "environment, report status `blocked` and say so.\n"
         )
 
+    def _apply_operator_note(self, prompt: str) -> str:
+        """Fold an operator's ``retry`` note into the coder prompt about to be
+        sent, once: what was fixed outside the worker and why it should go again
+        on the unchanged spec."""
+        if not self._operator_notes:
+            return prompt
+        notes = "\n".join(f"- {note}" for note in self._operator_notes)
+        self._operator_notes = []
+        return (
+            f"{prompt}\n\n## Operator note\n"
+            "The previous attempt at this spec stopped; the operator fixed the cause "
+            "outside your session and relaunched you on the same spec:\n"
+            f"{notes}\n"
+        )
+
     def _advance_generation(self) -> None:
         self.generation += 1
         self.ctx.set_generation(self.generation)
@@ -1475,6 +1528,10 @@ def _context_surprise(group_id: str, description: str) -> Surprise:
     """Escalation context handed to the speccer when the group itself triggered
     the rewrite (blocked/too_hard/structural) and no upstream surprise exists."""
     return Surprise(kind="other", description=description, affected_groups=[group_id])
+
+
+def _is_retry(response: EscalationResponse | None) -> bool:
+    return response is not None and response.action == HumanAction.RETRY
 
 
 def _operator_surprise(group_id: str, answer: str) -> Surprise:

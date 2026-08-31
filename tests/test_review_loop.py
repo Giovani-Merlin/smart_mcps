@@ -236,6 +236,10 @@ def answer(text: str = "") -> EscalationResponse:
     return EscalationResponse(id="x", action=HumanAction.ANSWER, answer=text)
 
 
+def retry(text: str = "") -> EscalationResponse:
+    return EscalationResponse(id="x", action=HumanAction.RETRY, answer=text)
+
+
 def skip() -> EscalationResponse:
     return EscalationResponse(id="x", action=HumanAction.SKIP)
 
@@ -871,6 +875,102 @@ async def test_orchestrator_only_downgrades_needs_input_to_the_rewrite_path(tmp_
     assert len(harness.rewritten) == 1
     descriptions = [s.description for s in harness.rewritten[0]]
     assert any("[operator] use the LRU" in d for d in descriptions)
+
+
+# ------------------------------------------------------------ operator retry (0.14.0)
+
+
+@pytest.mark.asyncio
+async def test_blocked_coder_retry_relaunches_the_same_spec_without_a_rewrite(tmp_path):
+    # `retry` = the cause was fixed outside the worker: a fresh coder on the SAME
+    # spec, briefed with the operator's note — no speccer call, no rewrite spent.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report("blocked")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CODER_BLOCKED: retry("fixed: pyproject extras")})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert [req.kind for req in broker.raised] == [EscalationKind.CODER_BLOCKED]
+    assert harness.rewritten == []  # rewrite_spec never called
+    assert harness.generations == [2]  # a fresh generation, not a warm resume
+    second_prompt = runner.prompts[runner.session_ids["r1-g1-coder-g2"]][0]
+    assert "## Operator note" in second_prompt
+    assert "fixed: pyproject extras" in second_prompt
+    # the spec the second coder saw is the unchanged v1 spec
+    assert "v2" not in second_prompt
+    log = harness.store.paths.event_log_path.read_text()
+    assert "relaunching on the same spec (operator retry: coder reported status blocked)" in log
+    assert "rewriting spec" not in log
+
+
+@pytest.mark.asyncio
+async def test_operator_note_is_one_shot(tmp_path):
+    # The note briefs the relaunched coder once; a later handoff prompt in the
+    # same group does not carry it again.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report("blocked")],
+            "r1-g1-coder-g2": [coder_report("blocked")],
+            "r1-g1-coder-g3": [coder_report()],
+            "r1-g1-reviewer-g3": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.CODER_BLOCKED: retry("env fixed")})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    assert await harness.run(make_group()) == GroupState.COMPLETED
+    assert harness.rewritten == []
+    prompts = [runner.prompts[runner.session_ids[f"r1-g1-coder-g{n}"]][0] for n in (1, 2, 3)]
+    assert "## Operator note" not in prompts[0]
+    assert prompts[1].count("## Operator note") == 1
+    assert prompts[2].count("## Operator note") == 1  # the second retry's note, once
+
+
+@pytest.mark.asyncio
+async def test_reviewer_too_hard_retry_relaunches_without_a_rewrite(tmp_path):
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("too_hard")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.REVIEWER_TOO_HARD: retry("added the missing fixture")})
+    harness = Harness(tmp_path, runner, broker=broker, policy=on_stuck())
+    assert await harness.run(make_group()) == GroupState.COMPLETED
+    assert harness.rewritten == []
+    assert "added the missing fixture" in runner.prompts[runner.session_ids["r1-g1-coder-g2"]][0]
+
+
+@pytest.mark.asyncio
+async def test_merge_conflict_retry_behaves_as_answer(tmp_path):
+    # Every site that cannot relaunch the same spec treats retry as answer: the
+    # text guides the rewrite exactly as an `answer` would.
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict("approved")],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict("approved")],
+        }
+    )
+    broker = StubBroker({EscalationKind.MERGE_CONFLICT: retry("take theirs")})
+    harness = Harness(
+        tmp_path,
+        runner,
+        broker=broker,
+        policy=on_stuck(),
+        execution=ExecutionConfig(max_conflict_resolve_attempts=0),
+    )
+    harness.merge_failures.append(MergeConflict("g1 conflicts with g0", ["g0"]))
+    assert await harness.run(make_group()) == GroupState.COMPLETED
+    assert len(harness.rewritten) == 1
+    assert any("[operator] take theirs" in s.description for s in harness.rewritten[0])
 
 
 # ------------------------------------------------------------ lifecycle log (R10–R12)

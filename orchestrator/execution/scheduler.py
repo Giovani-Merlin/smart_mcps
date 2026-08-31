@@ -725,9 +725,10 @@ class Scheduler:
         if response.action == HumanAction.SKIP:
             log_event(self.paths, f"group {gid}: operator declined to resolve — left failed")
             return GroupState.FAILED
-        # ANSWER: the operator says proceed — either they fixed and merged by
-        # hand (commits_ahead already reads 0, so this is a no-op that reports
-        # nothing lost) or they are delegating the resolve; either way
+        # ANSWER (or RETRY — the same here): the operator says proceed — either
+        # they fixed and merged by hand (commits_ahead already reads 0, so this is
+        # a no-op that reports nothing lost) or they are delegating the resolve;
+        # either way
         # _resolve_autonomously verifies containment via the same commit-count
         # gate U1 uses, never taking the operator's word for it. A real
         # conflict still raises ResolveConflict and stops the run rather than

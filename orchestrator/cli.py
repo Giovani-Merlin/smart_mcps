@@ -399,9 +399,17 @@ def main(
         "--action",
         default="answer",
         choices=[action.value for action in HumanAction],
-        help="answer (resume/guide) | skip (fail the group) | abort (stop the run)",
+        help=(
+            "answer (resume/guide — a rewrite for blocked/too_hard) | "
+            "retry (cause fixed outside the worker: relaunch the SAME spec, no rewrite) | "
+            "skip (fail the group) | abort (stop the run)"
+        ),
     )
-    answer_cmd.add_argument("--text", default="", help="free-text guidance for --action answer")
+    answer_cmd.add_argument(
+        "--text",
+        default="",
+        help="free-text guidance for --action answer / what you fixed for retry",
+    )
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
     retry_cmd = subparsers.add_parser(

@@ -102,49 +102,84 @@ log lines and the UI banner are what tell you it is safe to type again.
 
 ## Human-in-the-loop (HITL)
 
-By default a `run` has HITL escalation **on**, at the `on_stuck` intensity tier:
-every hard moment (a coder reporting `blocked`, a reviewer `too_hard`/`structural`,
-a merge conflict, an exhausted generation/rewrite cap) pauses and escalates to
-**you** instead of auto-resolving. Pass `--hitl` to be explicit about this (it's
-redundant against the default but documents intent), or `--intensity autonomous`
-to run unattended and auto-resolve/fail everything instead.
+By default a `run` is **autonomous** — HITL escalation is **off**
+(`[escalation] enabled = false`, `intensity = "autonomous"`, since
+2026-08-20). Every hard moment (a coder reporting `blocked`, a reviewer
+`too_hard`/`structural`, a merge conflict, an exhausted generation/rewrite
+cap) is then resolved by the speccer-rewrite ladder, bounded by
+`max_rewrites`, after which the group fails and `on_group_failure = halt`
+stops admitting its dependents. That is what made unattended runs safe to
+leave alone — a blocked escalation wait with no timeout is forever.
 
-Because headless `claude -p` workers cannot pause mid-turn to ask a question, the
-only channel is **report-then-resume**: a coder that needs a human decision ends
-its turn with `status: needs_input` + a `question`; the orchestrator escalates,
-blocks that group, and resumes it with your answer — sibling groups keep running.
+Pass `--hitl` (tier `on_stuck`) or `--intensity <tier>` to turn escalation
+on for a run, or set `[escalation] enabled = true` in config. Earlier versions
+of this README said HITL was on by default; that was drift.
 
-**How you drive it.** Launch `run --hitl` in the background with its output going
-to a log you tail; watch `escalations/request-*.json` for a request with no
-matching `response-*.json`; answer with `smart-mcps-orchestrate answer <run_id> <esc_id> ...` (or `status <run_id>`, which lists pending escalations). The
-orchestrator process stays alive the whole time — a pause is just an `await`.
+Because headless `claude -p` workers cannot pause mid-turn to ask a question,
+the only channel is **report-then-resume**: a coder that needs a human decision
+ends its turn with `status: needs_input` + a `question`; the orchestrator
+escalates, blocks that group, and resumes it with the answer — sibling groups
+keep running.
+
+**Who resolves a stuck group.** Three resolvers, and only three:
+
+1. **Autonomous** — the speccer rewrite ladder above (HITL off, or an
+   escalation that timed out with `on_timeout = autonomous`).
+2. **The run-driver session** — `/orchestrator-run`. A Claude session that
+   preflights the repo, launches the run detached with `--hitl --intensity
+   on_stuck --escalation-timeout <s>`, watches `escalations/` event-driven,
+   and triages each request itself: environment / config / data / plan
+   defects it fixes (in the group's worktree *and* on the integration branch)
+   and answers `--action retry`; spec ambiguities it answers from the docs
+   (`--action answer`, which costs a rewrite by design); product decisions it
+   asks the human, with candidate answers. Playbook:
+   `skills/orchestrator-run/triage-guide.md`.
+3. **The human**, asked by the driver session — or driving by hand (below).
+
+Until 0.14.0 resolver 2 was named in three docstrings and existed nowhere.
+
+**How you drive it.** Prefer `/orchestrator-run <plan>`. The manual fallback
+is the same thing by hand: launch `run --hitl --escalation-timeout <s>` in the
+background with its output going to a log; watch `escalations/request-*.json`
+for a request with no matching `response-*.json` (or `status <run_id>`, which
+lists them); answer with
+`smart-mcps-orchestrate answer <run_id> <esc_id> --action <a> --text "…"`.
+The orchestrator process stays alive the whole time — a pause is just an
+`await`. Stopping a run is signalling its process group (there is no `stop`
+subcommand; the Observatory's stop endpoint does the same).
+
+**Actions** (`answer --action`):
+
+| Action   | Meaning                                                                                                                                                                                        |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `answer` | Guidance. Warm-resumes the coder on `coder_question`; on every other kind it is folded into a **speccer rewrite** as an `[operator]` surprise (or grants one more generation/rewrite on `caps_exhausted`, or means "proceed" on `group_resolve`). |
+| `retry`  | *(0.14.0)* "The cause was fixed outside the worker." On `coder_blocked` / `reviewer_too_hard` / `reviewer_structural` relaunches a fresh coder on the **same spec** with the text as an `## Operator note` — no rewrite spent, no speccer call. Elsewhere it behaves as `answer`. Not the `retry` *subcommand*, which releases a terminally failed group. |
+| `skip`   | Fail this group; dependents strand; the run continues.                                                                                                                                         |
+| `abort`  | Stop the whole run cleanly; state stays resumable.                                                                                                                                             |
+
+A response is write-once — a second `answer` for the same id is refused.
 
 **Intensity tiers** (`--intensity`, or `[escalation] intensity`):
 
-| Tier          | Escalates                                                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `autonomous`  | nothing — run unattended (pass `--intensity autonomous` explicitly to get this)                                   |
-| `on_failure`  | only a generation/rewrite cap about to fail a group                                                               |
-| `on_stuck`    | *(the run default)* coder `blocked`/`needs_input`, reviewer `too_hard`/`structural`, merge conflict, terminal cap |
-| `interactive` | additionally approve before group launch, before each respawn, and before each merge                              |
+| Tier          | Escalates                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `autonomous`  | *(the default)* nothing — run unattended                                                                           |
+| `on_failure`  | only a generation/rewrite cap about to fail a group, and a failed group's `group_resolve`                           |
+| `on_stuck`    | *(what `--hitl` selects)* + coder `blocked`/`needs_input`, reviewer `too_hard`/`structural`, merge conflict, preflight failed |
+| `interactive` | + approve before group launch, before each respawn, and before each merge                                          |
 
 Routine `changes_required` review rounds and routine breaker respawns stay
 autonomous under `on_stuck` — only genuinely stuck moments pause.
 
 **Escalation source** (`--escalation-source`): `workers_via_orchestrator`
 (default) surfaces a coder's `needs_input` question to you; `orchestrator_only`
-downgrades it to a blocked-style rewrite (no direct worker→human channel).
+downgrades it to a blocked-style escalation (no direct worker→human channel).
 
 **Unanswered escalations** block indefinitely by default (a live operator is
-expected). Set `--escalation-timeout <s>` (or `[escalation] timeout_s`) to fall
-back after a wait — per `[escalation] on_timeout` = `autonomous` | `skip` |
-`abort`.
-
-HITL is **on by default** (`enabled = true`, `on_stuck`) — an unattended run
-needs `--intensity autonomous` (or `[escalation] intensity = "autonomous"` in
-config) to opt back out, otherwise it can block indefinitely on an unanswered
-escalation. `--hitl` alone is a no-op against the default; it only matters
-when a config file has turned escalation off.
+expected once HITL is on). Set `--escalation-timeout <s>` (or `[escalation]
+timeout_s`) to fall back after a wait — per `[escalation] on_timeout` =
+`autonomous` | `skip` | `abort`. `/orchestrator-run` always sets it, so a
+driver session that dies cannot wedge the run.
 
 ## Configuration
 
@@ -191,9 +226,9 @@ fallback_poll_s = 900         # used only when the prose carries no parseable re
 d_review = 0.35               # below: self_verify (no reviewer session)
 d_hard = 0.65                 # above: paired_plus (mandatory extra pass)
 
-[escalation]                  # human-in-the-loop (on by default)
-enabled = true                 # false to run unattended, or pass --intensity autonomous
-intensity = "on_stuck"        # autonomous | on_failure | on_stuck | interactive
+[escalation]                  # human-in-the-loop (OFF by default; /orchestrator-run turns it on per run)
+enabled = false               # true (or --hitl / a non-autonomous --intensity) to escalate
+intensity = "autonomous"      # autonomous | on_failure | on_stuck | interactive
 source = "workers_via_orchestrator"  # or orchestrator_only
 # timeout_s = 30.0            # omit to block indefinitely; else on_timeout fires
 on_timeout = "autonomous"     # autonomous | skip | abort (when timeout_s is set)

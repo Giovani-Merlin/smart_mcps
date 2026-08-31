@@ -30,7 +30,16 @@ const KIND_LABELS: Record<EscalationKind, string> = {
   merge_approve: "Merge approve",
 };
 
-const ACTIONS: readonly HumanAction[] = ["answer", "skip", "abort"];
+const ACTIONS: readonly HumanAction[] = ["answer", "retry", "skip", "abort"];
+
+// What the text box means per action — `answer` guides a rewrite / warm
+// resume, `retry` relaunches the same spec after an out-of-band fix.
+const TEXT_HINTS: Record<HumanAction, string> = {
+  answer: "Guidance for the agent (folds into a spec rewrite, or a warm resume for a question)",
+  retry: "retry: relaunch the same spec — say what you fixed",
+  skip: "Optional note (the group fails; dependents strand)",
+  abort: "Optional note (the whole run stops, resumable)",
+};
 
 function formatCreated(iso: string): string {
   const time = new Date(iso);
@@ -175,7 +184,7 @@ function EscalationEntry({ project, runId, escalation, onConflict }: EscalationE
             className="escalation-card__text"
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder="Guidance for the agent (optional for skip / abort)"
+            placeholder={TEXT_HINTS[action]}
             rows={3}
             aria-label="Response text"
           />

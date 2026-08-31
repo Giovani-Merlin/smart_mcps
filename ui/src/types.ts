@@ -229,7 +229,7 @@ export type EscalationKind =
   | "merge_approve";
 
 // HumanAction — the operator's decision (model.py:164).
-export type HumanAction = "answer" | "skip" | "abort";
+export type HumanAction = "answer" | "retry" | "skip" | "abort";
 
 export interface EscalationContext {
   report_path?: string | null;

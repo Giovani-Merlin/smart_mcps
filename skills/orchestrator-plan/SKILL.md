@@ -309,6 +309,11 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   /orchestrator-deepen docs/plans/<the-plan>.md
   ```
 
+  And the step after that: the run is driven by `/orchestrator-run
+  docs/plans/<the-plan>.md`, not by a bare `smart-mcps-orchestrate run` — the
+  run-driver session preflights the environment, launches detached with HITL
+  on, and triages escalations itself.
+
 ## Non-negotiable rules
 
 - The task map is generated **from the units, 1:1** — never written first, never

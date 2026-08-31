@@ -338,6 +338,10 @@ class HumanAction(StrEnum):
     """What the operator decides for an escalation (plan Phase D v1 action set)."""
 
     ANSWER = "answer"  # free-text guidance: resume/rewrite guided by it, or "proceed"
+    # The cause was fixed outside the worker (env/config/data/hand-committed patch):
+    # relaunch a fresh coder on the SAME spec with the text as a briefing — no
+    # rewrite budget spent, no speccer call. Elsewhere it behaves as `answer`.
+    RETRY = "retry"
     SKIP = "skip"  # fail this group; dependents strand, the run continues
     ABORT = "abort"  # stop the whole run cleanly; state stays resumable
 
