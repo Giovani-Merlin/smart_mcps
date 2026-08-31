@@ -2,7 +2,7 @@
 name: orchestrator-run
 description: Launch, watch, and resolve an orchestrator run as the run-driver session — preflight the repo, start `smart-mcps-orchestrate run` detached with HITL on, triage every escalation yourself (fix env/config/plan and `retry`, `answer` from the docs, ask the human only for product decisions), and write up the outcome. Use when the user wants to run, resume, drive, or babysit an orchestrator run.
 user-invocable: true
-argument-hint: "[plan path | run id to resume] [--concurrency N] [--grouping NAME]"
+argument-hint: "[plan path | run id to resume] [--grouping NAME] [--concurrency N]"
 ---
 
 # orchestrator-run
@@ -81,12 +81,23 @@ Pick the run id up front so every path is known before the process exists:
 mkdir -p .orchestrator/runs/$RUN/logs
 setsid nohup python -u -m orchestrator.cli run --repo "$(pwd)" --run-id $RUN \
   --hitl --intensity on_stuck --escalation-timeout 14400 \
-  [--concurrency N] [--grouping NAME] \
+  [--grouping NAME] \
   > .orchestrator/runs/$RUN/logs/driver.log 2>&1 < /dev/null &
 echo $!
 ```
 
 For a resume: the same, with `resume <run_id>` in place of `run … --run-id`.
+
+- **Serial is the default — do not pass `--concurrency`.** Omitting it leaves
+  the config default of 1: each group's worktree is cut from the integration
+  tip at its ready→running transition, so groups stack on merged work,
+  cross-group merge conflicts stay rare, and a usage-limit hit costs at most
+  one in-flight group. If the grouping looks like it would parallelise well
+  (independent groups in the same wave, and the human is not rate-limited),
+  **ask the human** before raising it — say how many groups could run at once
+  and what it buys — and pass `--concurrency N` only on an explicit yes. A
+  concurrency in `$ARGUMENTS` or already set in `.orchestrator/config.toml`
+  counts as that yes; use it as given.
 
 - `run` **blocks** until the run ends; there is no `stop` subcommand.
   Stopping = `kill -INT -<pgid>` (the process group `setsid` created), which
