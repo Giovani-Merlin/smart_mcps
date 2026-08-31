@@ -45,6 +45,17 @@ Run every check; report each as **BLOCKING** (the plan must not ship) or
    check the code); tags that can never match (typos, near-duplicates like
    `/api/user` vs `/api/users`) → BLOCKING.
 
+9. **Referenced inputs are visible to workers** — every data/input path the
+   plan names (files units read or verification items open: corpora, PDFs,
+   archives, fixtures, model files) must be either tracked by git on the
+   current branch (`git ls-files --error-unmatch <path>`) or live under a
+   directory listed in `.orchestrator/config.toml` `[workspace] data_dirs`.
+   Workers see only committed files plus those data dirs; an untracked input
+   at the repo root is invisible in every worktree and fails every unit that
+   needs it, late. Untracked and not under a data dir → ADVISORY, naming the
+   path and the two fixes (commit it if small; add its directory to
+   `data_dirs` if it is data).
+
 ## Calibration
 
 Block **only on real problems** — things that would make the parser hard-error,

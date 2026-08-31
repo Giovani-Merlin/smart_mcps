@@ -325,6 +325,10 @@ class ReviewDeps:
     # from) degrades to "no_baseline", which never attributes a failure as
     # new — the same conservative default `compare_to_baseline` documents.
     preflight_baseline: PreflightBaseline | None = None
+    # `provision_on_failure = "warn"`: the sync failure text for a group whose
+    # worktree launched without a working environment, folded into its first
+    # coder prompt. None (or a None result) means the environment is fine.
+    provisioning_failure_for: Callable[[Group], str | None] | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -359,6 +363,7 @@ class _GroupExecution:
         # the next prompt this generation builds, then cleared — never spent as a
         # rewrite, never sent to the speccer.
         self._briefing_notes: list[str] = []
+        self._env_failure: str | None = None
         # Re-entry discovery (R4): a live coder entry at the persisted generation
         # can only pre-exist the executor on a resumed run — fresh runs start with
         # an empty group entry. One-shot: consumed by the first generation.
@@ -376,6 +381,8 @@ class _GroupExecution:
         await self._handle_pending_surprises("upstream surprise named this group before launch")
         self.workspace = self.deps.workspace_for(self.group)
         self._log(f"group {self.gid}: worktree ready at {self.workspace}")
+        if self.deps.provisioning_failure_for is not None:
+            self._env_failure = self.deps.provisioning_failure_for(self.group)
         self._heartbeat.start()
         # A usage-limit pause is announced on this group's heartbeat for as long
         # as the group is live (see `UsageLimitGate.watch`) — a run that has
@@ -425,6 +432,7 @@ class _GroupExecution:
         if first is None:
             prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
             prompt = self._apply_briefing(prompt)
+            prompt = self._apply_env_notice(prompt)
             self.handoff_prompt = None
             # The session id is generated and recorded *before* the blocking fork
             # call, not after (plan U7): a crash mid-call would otherwise leave no
@@ -1392,6 +1400,26 @@ class _GroupExecution:
         notes = "\n".join(f"- {note}" for note in self._briefing_notes)
         self._briefing_notes = []
         return f"{prompt}\n\n## Informational updates from other groups\n{notes}\n"
+
+    def _apply_env_notice(self, prompt: str) -> str:
+        """Tell a coder whose worktree failed to provision (warn mode) exactly
+        what failed, once. Silent completion with a green self-verification
+        against a missing environment is the worst of the three outcomes;
+        this is the least the worker must know to avoid it."""
+        if not self._env_failure:
+            return prompt
+        notice = self._env_failure
+        self._env_failure = None
+        return (
+            f"{prompt}\n\n## Environment warning\n"
+            "Provisioning this worktree's environment FAILED before you started, "
+            "so nothing here has a working venv yet:\n\n```\n"
+            f"{notice}\n```\n\n"
+            "Fix the dependency spec if the cause is in this repo, re-run `uv sync` "
+            "in the worktree, and do not report any verification item as passed "
+            "unless it ran in a working environment. If you cannot repair the "
+            "environment, report status `blocked` and say so.\n"
+        )
 
     def _advance_generation(self) -> None:
         self.generation += 1

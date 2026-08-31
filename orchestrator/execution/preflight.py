@@ -157,6 +157,7 @@ def detect_check_steps(
     *,
     output_dir: Path,
     junit_stem: str = "preflight-junit",
+    uv_run_args: Sequence[str] = (),
 ) -> list[CheckStep]:
     """Resolve every check step this checkout's own markers imply (plan R7).
 
@@ -181,10 +182,24 @@ def detect_check_steps(
     has_uv = any((root / marker).is_file() for marker in ("pyproject.toml", "uv.lock"))
     if has_uv:
         junit = output_dir / f"{junit_stem}.xml"
+        # ``uv_run_args`` are the run's ``provision_args`` (``--all-extras``):
+        # the gate must test the environment the worktree was provisioned
+        # with. Without them a bare ``uv run`` syncs core deps only — on
+        # r20260830-211717 ``uv sync --all-extras`` failed on the TTS extra in
+        # every worktree while plain ``uv run pytest`` built a core-only venv
+        # and passed 16 tests that never imported the library under test.
         steps.append(
             CheckStep(
                 name="pytest",
-                argv=["uv", "run", "pytest", "-p", "no:cacheprovider", f"--junitxml={junit}"],
+                argv=[
+                    "uv",
+                    "run",
+                    *uv_run_args,
+                    "pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    f"--junitxml={junit}",
+                ],
                 junit_path=junit,
             )
         )
@@ -263,6 +278,7 @@ def _resolve_steps(
     config: PreflightConfig,
     output_dir: Path,
     junit_stem: str,
+    uv_run_args: Sequence[str] = (),
 ) -> list[CheckStep]:
     if config.check_command:
         return [
@@ -270,6 +286,13 @@ def _resolve_steps(
                 config.check_command, output_dir=output_dir, junit_stem=junit_stem
             )
         ]
+    if uv_run_args:
+        return detect_check_steps(
+            root, output_dir=output_dir, junit_stem=junit_stem, uv_run_args=uv_run_args
+        )
+    # Kept as the exact pre-existing call when there is nothing to pass: tests
+    # (and any caller) that stand in for ``detect_check_steps`` with a
+    # two-keyword double keep working.
     return detect_check_steps(root, output_dir=output_dir, junit_stem=junit_stem)
 
 
@@ -284,6 +307,7 @@ def run_preflight(
     log: Callable[[str], None] | None = None,
     declared_files: Sequence[str] = (),
     baseline: "PreflightBaseline | None" = None,
+    uv_run_args: Sequence[str] = (),
 ) -> None:
     """Run Preflight's checks against ``worktree``, in order.
 
@@ -338,7 +362,11 @@ def run_preflight(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     steps = _resolve_steps(
-        worktree, config=config, output_dir=output_dir, junit_stem="preflight-junit"
+        worktree,
+        config=config,
+        output_dir=output_dir,
+        junit_stem="preflight-junit",
+        uv_run_args=uv_run_args,
     )
     # Before the empty-list early return: a checkout where *every* step went
     # missing is the loudest case of the gate being weaker than it was at
@@ -627,6 +655,7 @@ def capture_preflight_baseline(
     output_dir: Path,
     commit_sha: str,
     log: Callable[[str], None] | None = None,
+    uv_run_args: Sequence[str] = (),
 ) -> PreflightBaseline:
     """Run every check step once on the launch branch and record its result
     (plan U2).
@@ -643,7 +672,11 @@ def capture_preflight_baseline(
     _log = log or (lambda _text: None)
     output_dir.mkdir(parents=True, exist_ok=True)
     steps = _resolve_steps(
-        repo_root, config=config, output_dir=output_dir, junit_stem="preflight-baseline-junit"
+        repo_root,
+        config=config,
+        output_dir=output_dir,
+        junit_stem="preflight-baseline-junit",
+        uv_run_args=uv_run_args,
     )
     if not steps:
         _log("preflight baseline: no check command configured or detected — baseline is empty")

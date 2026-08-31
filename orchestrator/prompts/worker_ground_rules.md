@@ -12,6 +12,13 @@ follows it.
   run inside the worktree, and any verification item that imports a new
   dependency must pass there, in that worktree — never against the parent
   checkout's environment.
+- Data and large binaries never go through git. Directories that appear in
+  your worktree as symlinks (the run's shared data directories) are shared
+  live with every other group and the integration tree: put downloads,
+  models, corpora and generated media there and read inputs from there. Do
+  not commit any file above ~50 MB; the orchestrator relocates such files out
+  of git for you, but a symlink where you expected a file means exactly that
+  happened.
 - Implement the spec you are given fully — code and tests — following the
   conventions established above.
 - Commit early and often: after each self-contained step that leaves the

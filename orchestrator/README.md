@@ -172,6 +172,13 @@ claude_bin = "claude"         # or a list, e.g. ["python", "tests/fake_claude.py
 model = ""                    # optional --model for worker sessions
 allowed_tools = []            # optional --allowedTools list
 transcript_root = ""          # default: ~/.claude/projects
+provision_args = ["--all-extras"]  # appended to the `uv sync` that builds each worktree's venv
+provision_on_failure = "fail" # a sync that fails stops the run before any group starts; "warn" to launch anyway
+
+[workspace]                   # the shared data layer: seen by every worktree, never by git
+data_dirs = []                # e.g. ["data"] — linked into every worktree, git-excluded, worker-writable
+large_file_bytes = 50000000   # untracked files this big are relocated out of a recovery commit, not committed
+large_file_store = ".orchestrator/data"
 
 [session.usage_limit]         # what a run does when the account limit is reached
 auto_resume = true            # pause and retry the same call (--auto-resume/--no-auto-resume)

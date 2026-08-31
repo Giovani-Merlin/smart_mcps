@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from orchestrator.config import WorkspaceConfig
 from orchestrator.execution.manifest import atomic_write_text
 
 #: Where a worktree's provisioning outcome is recorded (plan U32): a plain JSON
@@ -82,6 +83,17 @@ def read_provisioning_record(group_dir: Path) -> dict | None:
 
 class WorktreeError(Exception):
     """A git worktree operation failed or was refused."""
+
+
+class ProvisioningError(WorktreeError):
+    """``uv sync`` failed and ``provision_on_failure`` is ``"fail"``.
+
+    A WorktreeError so the scheduler classifies it INTERRUPTED (resumable),
+    never terminal FAILED: the failure is the project's dependency spec, not
+    the group's work, and ``on_group_failure="halt"`` then keeps every
+    not-yet-started group out of a worktree that cannot be built either. The
+    operator fixes ``pyproject.toml`` once and ``resume``s.
+    """
 
 
 class WorktreeRefreshConflict(WorktreeError):
@@ -239,7 +251,15 @@ def _registered_branch(repo_root: Path, path: Path) -> str | None:
 
 
 def create_worktree(
-    repo_root: Path, *, run_id: str, group_id: str, name: str, branch: str, start_point: str
+    repo_root: Path,
+    *,
+    run_id: str,
+    group_id: str,
+    name: str,
+    branch: str,
+    start_point: str,
+    workspace: WorkspaceConfig | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> Path:
     """Create (or reuse) the group's worktree. Idempotent: an existing worktree
     already on ``branch`` is returned as-is; an existing branch without a worktree
@@ -254,8 +274,14 @@ def create_worktree(
     group's branch is otherwise never brought up to date with work merged while
     it was down, and worktrees are not removed on interrupt, so the
     existing-worktree path is the *more* common resume case, not an edge one.
+
+    ``workspace`` wires the shared data layer: the stranded-work commits above
+    relocate large untracked files instead of committing them, and every
+    returned worktree has the data directories and registered large files
+    linked in (``materialize_data_layer``).
     """
     path = worktree_path(repo_root, run_id, group_id, name)
+    recover_message = f"recover({run_id}): {group_id} work stranded by an interrupted run"
     if not path.exists():
         legacy = _legacy_worktree_path(repo_root, group_id, name)
         if legacy.exists() and legacy != path and _registered_branch(repo_root, legacy) == branch:
@@ -278,8 +304,9 @@ def create_worktree(
         existing = _registered_branch(repo_root, path)
         if existing == branch:
             _ensure_worktree_config_extension(path)
-            commit_all(path, f"recover({run_id}): {group_id} work stranded by an interrupted run")
+            commit_all(path, recover_message, repo_root=repo_root, workspace=workspace, log=log)
             _refresh_onto_tip(path, group_id=group_id, branch=branch, tip=start_point)
+            materialize_data_layer(path, repo_root, workspace, log=log)
             return path
         raise WorktreeError(
             f"{path} exists but is not a worktree on {branch}"
@@ -304,11 +331,12 @@ def create_worktree(
                 f"git worktree add {path} {branch} failed: {result.stderr.strip()[:500]}{hint}"
             )
         _ensure_worktree_config_extension(path)
-        commit_all(path, f"recover({run_id}): {group_id} work stranded by an interrupted run")
+        commit_all(path, recover_message, repo_root=repo_root, workspace=workspace, log=log)
         _refresh_onto_tip(path, group_id=group_id, branch=branch, tip=start_point)
     else:
         _git_ok(repo_root, "worktree", "add", "-b", branch, str(path), start_point)
         _ensure_worktree_config_extension(path)
+    materialize_data_layer(path, repo_root, workspace, log=log)
     return path
 
 
@@ -363,14 +391,25 @@ def provision_env(
     env: dict[str, str] | None = None,
     extra_args: Sequence[str] | None = None,
     on_state: Callable[[str, list[str]], None] | None = None,
+    on_detail: Callable[[str], None] | None = None,
+    strict: bool = False,
 ) -> bool:
     """Provision the worktree's own venv via ``uv sync`` (plan U6, R16, U32).
 
+    ``strict`` (``provision_on_failure = "fail"``) turns a failed sync into
+    ``ProvisioningError`` *after* the record and log line are written, so the
+    failure is both persisted and fatal. ``on_detail`` receives the failure
+    text — the **tail** of uv's stderr, where ``x Failed to build ...`` lives.
+    The log used to print the first 500 characters, which for a real failure
+    was ``Using CPython 3.12.13 / Creating virtual environment / Resolved 190
+    packages / Building pandas`` and never the cause.
+
     Runs only when the worktree root carries ``pyproject.toml`` or ``uv.lock``
     (a uv-managed checkout); anything else is skipped silently. A failing sync
-    is non-fatal — the worker can re-sync per its guidance, so a fixable env
-    hiccup must never kill the group: log the lifecycle event, warn on stderr,
-    move on. ``runner`` is the injectable subprocess seam for offline tests.
+    is fatal when ``strict`` (the default policy, ``provision_on_failure =
+    "fail"``) and a logged warning otherwise — see ``strict`` below for why
+    "non-fatal, the worker can re-sync" turned out to be the worst option.
+    ``runner`` is the injectable subprocess seam for offline tests.
 
     ``env`` is overlaid on the current environment and exists for cache
     *locality*, not permission — this runs in the orchestrator process, entirely
@@ -405,16 +444,16 @@ def provision_env(
             text=True,
             env={**os.environ, **env} if env else None,
         )
-    except OSError as exc:  # uv missing entirely — same non-fatal contract
-        _report_sync_failure(f"uv sync failed in {worktree}: {exc}", log)
-        if on_state is not None:
-            on_state("failed", argv)
-        return False
+    except OSError as exc:  # uv missing entirely — same contract as a failed sync
+        detail = str(exc)
+        return _provision_failed(
+            worktree, argv, detail, log=log, on_state=on_state, on_detail=on_detail, strict=strict
+        )
     if result.returncode != 0:
-        _report_sync_failure(f"uv sync failed in {worktree}: {result.stderr.strip()[:500]}", log)
-        if on_state is not None:
-            on_state("failed", argv)
-        return False
+        detail = _failure_tail(result)
+        return _provision_failed(
+            worktree, argv, detail, log=log, on_state=on_state, on_detail=on_detail, strict=strict
+        )
     if log is not None:
         # The line an operator needs by itself (plan U32): which worktree, the
         # exact command, and when — no need to cross-reference a separate
@@ -486,6 +525,52 @@ def _report_sync_failure(message: str, log: Callable[[str], None] | None) -> Non
         log(message)
 
 
+#: How much of a failed toolchain command's output the log keeps — from the
+#: *end*, where the cause is. 1500 characters covers uv's ``x Failed to build``
+#: block plus the build backend's own last lines.
+FAILURE_TAIL_CHARS = 1500
+
+
+def _failure_tail(result: subprocess.CompletedProcess[str]) -> str:
+    """The last ``FAILURE_TAIL_CHARS`` of stderr (falling back to stdout), with
+    the exit code — the part of a toolchain's output that says *why*."""
+    text = (result.stderr or "").strip() or (result.stdout or "").strip()
+    if len(text) > FAILURE_TAIL_CHARS:
+        text = "…" + text[-FAILURE_TAIL_CHARS:]
+    return f"exit {result.returncode}\n{text}" if text else f"exit {result.returncode}"
+
+
+def _provision_failed(
+    worktree: Path,
+    argv: list[str],
+    detail: str,
+    *,
+    log: Callable[[str], None] | None,
+    on_state: Callable[[str, list[str]], None] | None,
+    on_detail: Callable[[str], None] | None,
+    strict: bool,
+) -> bool:
+    """The one exit path for a failed ``provision_env``: detail to the sink,
+    record, log, then raise (strict) or return False (warn)."""
+    if on_detail is not None:
+        on_detail(detail)
+    if on_state is not None:
+        on_state("failed", argv)
+    message = f"{' '.join(argv)} failed in {worktree}: {detail}"
+    if strict:
+        if log is not None:
+            log(f"provisioning failed — {message}")
+        raise ProvisioningError(
+            f"environment provisioning failed in {worktree} — {detail}\n"
+            "This is the project's dependency spec, so it fails the same way in every "
+            "worktree: fix it (pyproject.toml / uv.lock) on the launch branch, then "
+            '`resume` the run. Set session.provision_on_failure = "warn" to launch '
+            "workers without an environment anyway."
+        )
+    _report_sync_failure(message, log)
+    return False
+
+
 def ensure_excluded(worktree: Path, relative_path: str) -> None:
     """Add ``relative_path`` to this worktree's local exclude file (plan U6),
     never the target repo's tracked ``.gitignore``.
@@ -516,15 +601,193 @@ def is_dirty(worktree: Path) -> bool:
     return bool(_git_ok(worktree, "status", "--porcelain").strip())
 
 
-def commit_all(worktree: Path, message: str) -> bool:
+def commit_all(
+    worktree: Path,
+    message: str,
+    *,
+    repo_root: Path | None = None,
+    workspace: WorkspaceConfig | None = None,
+    log: Callable[[str], None] | None = None,
+) -> bool:
     """Commit every uncommitted change (tracked and untracked) in ``worktree``.
     False — a no-op — when the worktree is missing or already clean: the
-    resolve routine's "nothing lost" case (plan U2)."""
+    resolve routine's "nothing lost" case (plan U2).
+
+    With ``workspace`` (and ``repo_root``), untracked files at or above
+    ``large_file_bytes`` are first moved out to the large-file store and
+    symlinked back (``relocate_large_files``) — this is the path that put a
+    raw 143 MB PDF on run r20260830-211717's integration branch. What was
+    committed is logged: ``git add -A`` is exactly the command that should
+    never run silently over an unknown set of files.
+    """
     if not worktree.is_dir() or not is_dirty(worktree):
         return False
+    if workspace is not None and repo_root is not None:
+        relocate_large_files(worktree, repo_root, workspace, log=log)
+        if not is_dirty(worktree):
+            return False
     _git_ok(worktree, "add", "-A")
     _git_ok(worktree, "commit", "-m", message)
+    if log is not None:
+        summary = _git(worktree, "show", "--stat", "--format=", "HEAD").stdout.strip()
+        tail = summary.splitlines()[-1] if summary else "(empty)"
+        log(f"committed stranded work in {worktree}: {tail}")
     return True
+
+
+# ---------------------------------------------------------- shared data layer
+#
+# Workers only see committed files, and data does not belong in git history.
+# The data layer is the answer for both directions: configured `data_dirs` are
+# symlinked into every worktree from the single copy under the repo root
+# (excluded from git, writable under Landlock), so a file a group downloads
+# into `data/` is already where the integration worktree — and every other
+# group — reads it; and any oversized untracked file the orchestrator would
+# otherwise commit is relocated into the store and symlinked back.
+
+REGISTRY_NAME = ".registry.json"
+
+
+def _store_root(repo_root: Path, workspace: WorkspaceConfig) -> Path:
+    return repo_root / workspace.large_file_store
+
+
+def _registry_path(repo_root: Path, workspace: WorkspaceConfig) -> Path:
+    return _store_root(repo_root, workspace) / REGISTRY_NAME
+
+
+def read_large_file_registry(repo_root: Path, workspace: WorkspaceConfig) -> list[str]:
+    """Repo-relative paths relocated into the store so far, oldest first."""
+    try:
+        payload = json.loads(_registry_path(repo_root, workspace).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [p for p in payload if isinstance(p, str)] if isinstance(payload, list) else []
+
+
+def _register_large_file(repo_root: Path, workspace: WorkspaceConfig, rel: str) -> None:
+    entries = read_large_file_registry(repo_root, workspace)
+    if rel in entries:
+        return
+    entries.append(rel)
+    path = _registry_path(repo_root, workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(entries, indent=2) + "\n")
+
+
+def data_layer_write_paths(repo_root: Path, workspace: WorkspaceConfig) -> list[Path]:
+    """The real directories behind the links — what a confined worker must be
+    granted, created here because Landlock rules address existing paths only."""
+    roots = [repo_root / rel for rel in workspace.data_dirs]
+    roots.append(_store_root(repo_root, workspace))
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+    return roots
+
+
+def _place_link(
+    worktree: Path, rel: str, target: Path, *, log: Callable[[str], None] | None
+) -> bool:
+    """Make ``worktree/rel`` a symlink to ``target``; never destroys content.
+
+    An existing symlink is repointed; an empty directory is replaced; anything
+    else (a real file, a populated directory — the worktree already carries
+    content at that path) is left alone and logged, because replacing it would
+    be exactly the data loss this layer exists to prevent.
+    """
+    link = worktree / rel
+    if link.is_symlink():
+        if link.resolve() == target.resolve():
+            return True
+        link.unlink()
+    elif link.is_dir():
+        try:
+            link.rmdir()  # empty only
+        except OSError:
+            if log is not None:
+                log(f"data layer: {link} already holds content; not linking {rel}")
+            return False
+    elif link.exists():
+        if log is not None:
+            log(f"data layer: {link} exists as a regular file; not linking {rel}")
+        return False
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=target.is_dir())
+    return True
+
+
+def materialize_data_layer(
+    worktree: Path,
+    repo_root: Path,
+    workspace: WorkspaceConfig | None,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Link every data dir and every registered large file into ``worktree``
+    and exclude them from git there. Idempotent; a no-op without ``workspace``.
+    Called for every worktree the run creates or re-enters, group and
+    integration alike, and again for integration after each merge (a group may
+    have registered a new large file in the meantime)."""
+    if workspace is None or not worktree.is_dir():
+        return
+    if not workspace.data_dirs and not read_large_file_registry(repo_root, workspace):
+        return
+    targets = data_layer_write_paths(repo_root, workspace)
+    for rel, target in zip(workspace.data_dirs, targets[:-1], strict=True):
+        if _place_link(worktree, rel, target, log=log):
+            ensure_excluded(worktree, f"/{rel.strip('/')}")
+    store = targets[-1]
+    for rel in read_large_file_registry(repo_root, workspace):
+        target = store / rel
+        if not target.exists():
+            continue
+        if _place_link(worktree, rel, target, log=log):
+            ensure_excluded(worktree, f"/{rel}")
+
+
+def relocate_large_files(
+    worktree: Path,
+    repo_root: Path,
+    workspace: WorkspaceConfig,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Move untracked files of ``large_file_bytes`` or more out of ``worktree``
+    into the store, leave a symlink, exclude and register the path. Returns
+    the relocated repo-relative paths.
+
+    Only *untracked* files: a tracked large file was the repo's own decision.
+    A file already present in the store is replaced only when the worktree's
+    copy is newer — two groups producing the same artifact keep the later one.
+    """
+    if not worktree.is_dir():
+        return []
+    listing = _git_ok(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    relocated: list[str] = []
+    store = _store_root(repo_root, workspace)
+    for rel in filter(None, listing.split("\0")):
+        source = worktree / rel
+        if source.is_symlink() or not source.is_file():
+            continue
+        size = source.stat().st_size
+        if size < workspace.large_file_bytes:
+            continue
+        target = store / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+            source.unlink()
+        else:
+            shutil.move(str(source), str(target))
+        source.symlink_to(target)
+        ensure_excluded(worktree, f"/{rel}")
+        _register_large_file(repo_root, workspace, rel)
+        relocated.append(rel)
+        if log is not None:
+            log(
+                f"data layer: relocated {rel} ({size / 1_000_000:.0f} MB) out of "
+                f"{worktree.name} into {store} — large files are never committed"
+            )
+    return relocated
 
 
 def diff_stat(worktree: Path, base_ref: str) -> str:

@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from orchestrator.config import EscalationConfig, UsageLimitConfig
+from orchestrator.config import EscalationConfig, ExecutionConfig, UsageLimitConfig
 
 # Downstream session titles derived from summaries cap at 120 chars
 # (docs/research/infinity-skills-analysis.md); validated here, never truncated later.
@@ -151,6 +151,11 @@ class RunManifest(BaseModel):
     # `finish`'s PR base has to be persisted separately rather than re-derived
     # from a moving HEAD. None for a detached-HEAD launch — `finish` then still
     # pushes the integration branch but skips opening a PR.
+    # The resolved execution config at launch (concurrency, permission mode,
+    # admission policy): a `resume` without flags restores these instead of
+    # falling back to the library defaults — a run launched with
+    # `--concurrency 4` used to resume at 1, silently.
+    execution: ExecutionConfig | None = None
     launch_branch: str | None = None
     groups: dict[str, GroupManifestEntry] = Field(default_factory=dict)
 

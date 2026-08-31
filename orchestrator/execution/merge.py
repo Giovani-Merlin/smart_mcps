@@ -16,7 +16,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from orchestrator.config import PreflightConfig
+from orchestrator.config import PreflightConfig, WorkspaceConfig
 from orchestrator.execution.preflight import PreflightBaseline, run_preflight
 from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
@@ -27,6 +27,7 @@ from orchestrator.execution.worktrees import (
     _refresh_onto_tip,
     create_worktree,
     integration_branch,
+    materialize_data_layer,
     provision_env,
     provision_node_env,
     remove_worktree,
@@ -64,6 +65,8 @@ class IntegrationMerger:
         log: Callable[[str], None] | None = None,
         provision_args: list[str] | None = None,
         provision_env_vars: dict[str, str] | None = None,
+        provision_strict: bool = False,
+        workspace: WorkspaceConfig | None = None,
     ):
         self.repo_root = repo_root
         self.run_id = run_id
@@ -92,6 +95,11 @@ class IntegrationMerger:
         self._provision_env_vars = provision_env_vars
         self._provisioned = False
         self._provision_lock = threading.Lock()
+        # `provision_on_failure = "fail"`: a sync failure here raises out of
+        # `ensure()` at run start — the earliest possible moment, before any
+        # group has a worktree — instead of being a warning nobody reads.
+        self._provision_strict = provision_strict
+        self._workspace = workspace
 
     def ensure(self) -> Path:
         """Create (or reuse) the integration branch and its worktree. Idempotent."""
@@ -102,6 +110,8 @@ class IntegrationMerger:
             name="integration",
             branch=self.branch,
             start_point=self.launch_ref,
+            workspace=self._workspace,
+            log=self._log,
         )
         self._provision_once(path)
         return path
@@ -119,8 +129,12 @@ class IntegrationMerger:
             self._provisioned = True
         group_dir = self._preflight_output_dir("integration")
 
+        detail: dict[str, str] = {}
+
         def _record(state: str, argv: list[str]) -> None:
-            write_provisioning_record(group_dir, worktree=path, command=argv, state=state)
+            write_provisioning_record(
+                group_dir, worktree=path, command=argv, state=state, detail=detail.get("text", "")
+            )
 
         provision_env(
             path,
@@ -128,6 +142,8 @@ class IntegrationMerger:
             env=self._provision_env_vars,
             extra_args=self._provision_args,
             on_state=_record,
+            on_detail=lambda text: detail.__setitem__("text", text),
+            strict=self._provision_strict,
         )
         # The JavaScript half: the integration worktree runs the same merge
         # gate a group's does, and its UI steps need `ui/node_modules` too. No
@@ -179,6 +195,7 @@ class IntegrationMerger:
                 log=self._log,
                 declared_files=group.files,
                 baseline=self._preflight_baseline,
+                uv_run_args=self._provision_args,
             )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
@@ -193,6 +210,9 @@ class IntegrationMerger:
                     affected_groups=[group.id, *self._groups_owning(conflicted)],
                 )
             self.merged.append(group)
+            # A group may have registered a new large file mid-run; the
+            # integration tree gets its link now rather than at the next ensure().
+            materialize_data_layer(integration_wt, self.repo_root, self._workspace, log=self._log)
             try:
                 # Cleanup only after a clean merge; a dirty worktree (uncommitted
                 # leftovers) is left in place for inspection rather than forced.

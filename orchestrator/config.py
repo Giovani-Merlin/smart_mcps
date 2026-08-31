@@ -515,6 +515,16 @@ class SessionConfig(BaseModel):
     # regression. It can be heavy on projects with large optional extras — set
     # this to `[]` to opt out.
     provision_args: list[str] = Field(default_factory=lambda: ["--all-extras"])
+    # What a failed `uv sync` means. "fail" (default): the worktree is not
+    # launched — a group that cannot build its environment verifies itself
+    # against nothing, and its tests "pass" by never importing the library
+    # under test (run r20260830-211717: every group's sync died on the same
+    # `tts` build, all four reported completed, the merged code crashed on
+    # first call). Provisioning failures are project-level — the same
+    # `pyproject.toml` fails in every worktree — so the operator fixes it
+    # once and `resume`s. "warn": the old behaviour, plus the failure text is
+    # placed in the worker's first prompt so it at least knows to re-sync.
+    provision_on_failure: Literal["fail", "warn"] = "fail"
     # What to do when the account's usage limit is reached mid-run: by default,
     # pause in place and retry the identical call once the limit releases.
     usage_limit: UsageLimitConfig = Field(default_factory=UsageLimitConfig)
@@ -559,6 +569,32 @@ class EscalationConfig(BaseModel):
     poll_interval_s: float = 1.0
 
 
+class WorkspaceConfig(BaseModel):
+    """The shared data layer every worktree sees but git never does.
+
+    Workers only see what is committed, and data does not belong in git
+    history (a 137 MB PDF, a 12 MB archive, a 5 GB download a worker makes
+    mid-run). ``data_dirs`` are repo-relative directories that are
+    materialised into every worktree — group and integration alike — as a
+    symlink to the one copy under the repo root, excluded from git via the
+    common ``info/exclude``, and granted to workers under Landlock. Traffic
+    flows both ways by construction: a group's download lands in the same
+    directory the integration worktree reads, without a merge.
+
+    The large-file safety net covers files written *outside* those
+    directories: any untracked file at or above ``large_file_bytes`` that the
+    orchestrator is about to commit (stranded-work recovery, resolve) is moved
+    into ``large_file_store`` and replaced by a symlink instead — run
+    r20260830-211717's recovery commit put a raw 143 MB blob on the
+    integration branch this way. Relocated paths are registered so every
+    worktree created afterwards gets the same link.
+    """
+
+    data_dirs: list[str] = Field(default_factory=list)
+    large_file_bytes: int = 50_000_000
+    large_file_store: str = ".orchestrator/data"
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -569,6 +605,7 @@ class OrchestratorConfig(BaseModel):
     preflight: PreflightConfig = Field(default_factory=PreflightConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:

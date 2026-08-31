@@ -36,6 +36,7 @@ from orchestrator.config import (
     OrchestratorConfig,
     SessionConfig,
     UsageLimitConfig,
+    WorkspaceConfig,
     load_config,
 )
 from orchestrator.execution.auth import AuthLadder
@@ -116,6 +117,7 @@ from orchestrator.execution.worktrees import (
     _git_ok,
     commit_all,
     create_worktree,
+    data_layer_write_paths,
     group_branch,
     provision_env,
     provision_node_env,
@@ -691,6 +693,7 @@ def _load_config(
     *,
     persisted_escalation: EscalationConfig | None = None,
     persisted_usage_limit: UsageLimitConfig | None = None,
+    persisted_execution: ExecutionConfig | None = None,
 ) -> OrchestratorConfig | None:
     """Load config.toml, then layer CLI flags on top (flag > config-file > default).
 
@@ -703,6 +706,9 @@ def _load_config(
     ``persisted_usage_limit`` slots in at the same rung for the same reason: a
     run started with ``--no-auto-resume`` must not silently regain auto-resume
     when it is resumed without the flag.
+
+    ``persisted_execution`` likewise: a run launched with ``--concurrency 4``
+    resumed at the default of 1 until this rung existed.
     """
     config_path = args.config or repo_root / ".orchestrator" / "config.toml"
     try:
@@ -717,6 +723,8 @@ def _load_config(
                     )
                 }
             )
+        if persisted_execution is not None:
+            loaded = loaded.model_copy(update={"execution": persisted_execution})
         return apply_overrides(loaded, args)
     except (ValidationError, tomllib.TOMLDecodeError) as exc:
         print(f"error: invalid config {config_path}: {exc}", file=sys.stderr)
@@ -1536,8 +1544,14 @@ def build_session_runner(
     *,
     auth_ladder: AuthLadder | None = None,
     auth_gate: UsageLimitGate | None = None,
+    repo_root: Path | None = None,
 ) -> SessionRunner:
     """The one place a production ``SessionRunner`` is built.
+
+    ``repo_root`` lets the shared data layer's real directories join the
+    Landlock allowlist: a worker writes through ``<worktree>/data`` (a symlink)
+    into ``<repo>/data``, which is outside its worktree and would otherwise be
+    denied.
 
     Extracted from ``_cmd_run`` so the wiring is assertable. It was inline, and
     it silently omitted ``confine``/``disallowed_tools``/``settings`` — leaving
@@ -1561,7 +1575,10 @@ def build_session_runner(
         settings=session.settings,
         confine=session.confine,
         cache_root=_cache_root(session),
-        extra_write_paths=[Path(p).expanduser() for p in session.extra_write_paths],
+        extra_write_paths=[
+            *(Path(p).expanduser() for p in session.extra_write_paths),
+            *(data_layer_write_paths(repo_root, config.workspace) if repo_root else []),
+        ],
         gate=gate,
         auth_ladder=auth_ladder,
         auth_gate=auth_gate,
@@ -1640,6 +1657,9 @@ def _cmd_run(
         ),
         persisted_usage_limit=(
             persisted_manifest.usage_limit if persisted_manifest is not None else None
+        ),
+        persisted_execution=(
+            persisted_manifest.execution if persisted_manifest is not None else None
         ),
     )
     if config is None:
@@ -1808,7 +1828,9 @@ def _cmd_run(
             config.session.auth, log=lambda message: log_event(paths, message)
         )
         auth_gate = build_auth_gate(config, auth_ladder, paths)
-        runner = build_session_runner(config, gate, auth_ladder=auth_ladder, auth_gate=auth_gate)
+        runner = build_session_runner(
+            config, gate, auth_ladder=auth_ladder, auth_gate=auth_gate, repo_root=repo_root
+        )
         try:
             runner.preflight()
         except SessionError as exc:
@@ -1842,6 +1864,14 @@ def _cmd_run(
         # able to rewrite a finished run's history. Done only after preflight
         # succeeds, so a dead worker CLI never leaves a run directory behind.
         if not resume:
+            # A repo with no commits has no HEAD to cut the integration branch
+            # from; git's own `fatal: invalid reference: HEAD` names neither.
+            if _git(repo_root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
+                print(
+                    f"error: {repo_root} has no commits — create an initial commit before running",
+                    file=sys.stderr,
+                )
+                return 1
             snapshot_grouping(source_grouping_dir, paths.run_dir)
             # Plan U2: what was already red on the launch branch, captured once
             # before any group worktree exists — a resumed run reuses it rather
@@ -1853,6 +1883,7 @@ def _cmd_run(
                 output_dir=paths.run_dir,
                 commit_sha=launch_commit_sha,
                 log=lambda message: log_event(paths, message),
+                uv_run_args=config.session.provision_args,
             )
             save_baseline(paths.preflight_baseline_path, baseline)
         # Plan U3/R41: the resolved admission policy, recorded once — an operator
@@ -1876,10 +1907,15 @@ def _cmd_run(
             # operator's own `~/.cache/uv`, see `_workspace_seams`).
             provision_args=config.session.provision_args,
             provision_env_vars=worker_cache_env(_cache_root(config.session), base=dict(os.environ)),
+            provision_strict=config.session.provision_on_failure == "fail",
+            workspace=config.workspace,
         )
         try:
             merger.ensure()
         except WorktreeError as exc:
+            # ProvisioningError lands here too: with provision_on_failure="fail"
+            # a dependency spec that cannot build stops the run before any
+            # group starts, with uv's actual error in the message.
             print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
             return 1
 
@@ -1911,6 +1947,7 @@ def _cmd_run(
             store=store,
             execution=config.execution,
             paths=paths,
+            workspace=config.workspace,
         )
 
         # Construction is circular on paper (scheduler → executor → deps → runner →
@@ -1980,6 +2017,7 @@ def _cmd_run(
                 grouping=grouping_name,
                 escalation=config.escalation,
                 usage_limit=config.session.usage_limit,
+                execution=config.execution,
                 launch_branch=_resolve_launch_branch(repo_root),
             )
             store.save(manifest)
@@ -2035,6 +2073,7 @@ def _cmd_run(
                 grouping=grouping_name,
                 escalation=config.escalation,
                 usage_limit=config.session.usage_limit,
+                execution=config.execution,
                 launch_branch=_resolve_launch_branch(repo_root),
             )
             store.save(manifest)
@@ -2044,8 +2083,8 @@ def _cmd_run(
             # (ADR 0002). Resume keeps the snapshot its run started with.
             atomic_write_text(paths.groups_path, groups_path.read_text())
 
-        workspace_for, base_ref_for = _workspace_seams(
-            repo_root, run_id, merger, paths, config.session
+        workspace_for, base_ref_for, provisioning_failure_for = _workspace_seams(
+            repo_root, run_id, merger, paths, config.session, config.workspace
         )
         deps = ReviewDeps(
             run_id=run_id,
@@ -2074,6 +2113,7 @@ def _cmd_run(
                 recorder=JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
             ),
             base_ref_for=base_ref_for,
+            provisioning_failure_for=provisioning_failure_for,
             broker=broker,
             policy=policy,
             # plan U3: read back regardless of resume, so a resumed run's merge
@@ -2192,8 +2232,10 @@ def _workspace_seams(
     merger: IntegrationMerger,
     paths: RunPaths,
     session: SessionConfig,
+    workspace: WorkspaceConfig | None = None,
 ):
-    """The workspace_for / base_ref_for pair, sharing one tip capture per group.
+    """The workspace_for / base_ref_for / provisioning_failure_for triple,
+    sharing one tip capture per group.
 
     The integration tip is read once per group at its ready→running transition —
     an interleaved sibling merge must not move a group's diff base between the
@@ -2202,6 +2244,7 @@ def _workspace_seams(
     tip.
     """
     tips: dict[str, str] = {}
+    env_failures: dict[str, str] = {}
     # The same cache root the workers get. `provision_env` runs unconfined in this
     # process, so this is about cache *locality*, not permission: without it the
     # sync warms the operator's `~/.cache/uv` and every worker then rebuilds the
@@ -2218,6 +2261,8 @@ def _workspace_seams(
             name=group.name,
             branch=branch,
             start_point=tip,
+            workspace=workspace,
+            log=lambda message: log_event(paths, message),
         )
 
         # Captured before provisioning (which never commits) so `_record` can
@@ -2233,17 +2278,23 @@ def _workspace_seams(
                 worktree=path,
                 command=argv,
                 state=state,
+                detail=env_failures.get(group.id, ""),
                 base_ref=tips[group.id],
             )
 
-        # U6/R16: the worktree owns its environment — provision after creation,
-        # non-fatally (a failed sync logs and lets the worker re-sync itself).
+        # U6/R16: the worktree owns its environment — provision after creation.
+        # `provision_on_failure = "fail"` (default) raises ProvisioningError
+        # here, which the scheduler classifies INTERRUPTED and `halt` admission
+        # turns into a stopped run; "warn" records the failure for the coder's
+        # first prompt instead.
         provision_env(
             path,
             log=lambda message: log_event(paths, message),
             env=cache_env,
             extra_args=session.provision_args,
             on_state=_record,
+            on_detail=lambda text: env_failures.__setitem__(group.id, text),
+            strict=session.provision_on_failure == "fail",
         )
         # The JavaScript half of the same contract: without `ui/node_modules`
         # the merge gate's vitest/tsc steps silently skip. No `on_state` — the
@@ -2258,7 +2309,10 @@ def _workspace_seams(
     def base_ref_for(group: Group) -> str:
         return tips[group.id]
 
-    return workspace_for, base_ref_for
+    def provisioning_failure_for(group: Group) -> str | None:
+        return env_failures.get(group.id)
+
+    return workspace_for, base_ref_for, provisioning_failure_for
 
 
 def _resolve_deps(
@@ -2270,6 +2324,7 @@ def _resolve_deps(
     store: ManifestStore,
     execution: ExecutionConfig,
     paths: RunPaths,
+    workspace: WorkspaceConfig | None = None,
 ) -> ResolveDeps:
     """Wires the scheduler's resolve routine (plan U2) to real git, translating
     ``MergeConflict`` into the scheduler's own ``ResolveConflict`` so scheduler.py
@@ -2295,7 +2350,13 @@ def _resolve_deps(
         return worktree_path(repo_root, run_id, group.id, group.name)
 
     def commit_stranded(group: Group) -> bool:
-        return commit_all(worktree_for(group), f"resolve({run_id}): {group.id} stranded work")
+        return commit_all(
+            worktree_for(group),
+            f"resolve({run_id}): {group.id} stranded work",
+            repo_root=repo_root,
+            workspace=workspace,
+            log=lambda message: log_event(paths, message),
+        )
 
     def commits_ahead_fn(group: Group) -> int:
         return commits_ahead(merger.ensure(), merger.branch, branch_for(group))
@@ -2614,9 +2675,20 @@ def _cmd_status(args: argparse.Namespace) -> int:
         if not runs:
             print("no runs found")
             return 0
-        for run_id in runs:
-            print(run_id)
-        return 0
+        # Default to the run an operator most likely means: the single
+        # unfinished one, else the newest. A bare id list is only the right
+        # answer when several runs are unfinished at once.
+        unfinished = unfinished_runs(repo_root)
+        if len(unfinished) > 1:
+            print("several unfinished runs — pass one:")
+            for run_id in runs:
+                print(f"{run_id}{'  (unfinished)' if run_id in unfinished else ''}")
+            return 0
+        args.run_id = unfinished[0] if unfinished else runs[-1]
+        others = [run_id for run_id in runs if run_id != args.run_id]
+        print(f"(showing {args.run_id}; `status <run_id>` for another)")
+        if others:
+            print(f"known runs: {', '.join(runs)}")
 
     paths = RunPaths(repo_root, args.run_id)
     if not paths.state_path.is_file():

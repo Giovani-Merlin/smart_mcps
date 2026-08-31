@@ -194,6 +194,17 @@ Any divergence is a bug the verifier will catch.>
   phrased as *"`GET /openapi.json` lists these paths"* is both stronger and
   version-proof.
 
+### Inputs workers can actually see
+
+Workers run in git worktrees and see only **committed** files. If a unit or a
+verification item reads a data file (a PDF, an archive, a corpus, a model),
+say where it comes from: either it is tracked on the branch, or it lives
+under a directory the operator has listed in `.orchestrator/config.toml`
+`[workspace] data_dirs` — those are shared into every worktree without being
+committed. An untracked file at the repo root is invisible to every worker.
+The verifier flags such paths (check 9); prefer fixing them in the plan or
+the config before the run rather than discovering it four groups in.
+
 ### No-placeholder rules
 
 No TODO/TBD, no "figure out later", no unresolved `<angle-bracket>` stubs, no
@@ -206,7 +217,8 @@ Spawn **one** verifier subagent — **sonnet** — with the prompt template in
 origin doc path. It checks origin coverage, placeholders, prose↔map 1:1
 consistency, codegraph existence of files/symbols, prospective markers,
 `depends_on` resolvability and acyclicity (including inter-slice), slice caps,
-and route-tag consistency.
+route-tag consistency, and whether referenced input files are visible to
+workers (tracked, or under a configured data dir).
 
 **Fix every blocking finding inline and re-check.** Advisory findings are
 judgment calls — apply or consciously decline them. Do not re-spawn the

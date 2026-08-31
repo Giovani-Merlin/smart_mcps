@@ -1425,7 +1425,7 @@ class TestWorkspaceForFreshCut:
             )
         merger.merge_group(upstream, wt0)
 
-        workspace_for, _ = _workspace_seams(
+        workspace_for, _, _ = _workspace_seams(
             repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
         )
         path = workspace_for(make_group("g1"))
@@ -1824,7 +1824,7 @@ class TestWorkspaceProvisioning:
             "orchestrator.cli.provision_env",
             lambda path, **kwargs: recorded.append((path, path.is_dir())),
         )
-        workspace_for, base_ref_for = _workspace_seams(
+        workspace_for, base_ref_for, _ = _workspace_seams(
             repo, "r1", merger, RunPaths(repo, "r1"), SessionConfig()
         )
         group = make_group("g1")

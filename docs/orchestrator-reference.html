@@ -694,10 +694,15 @@ Rules for the block:
       <h3>Conflict handling</h3>
       <p>A conflicted <code>git merge --no-ff</code> is aborted cleanly (<code>git merge --abort</code>) — the integration branch is left exactly where it was — and raises <code>MergeConflict</code>, naming the conflicted files, the incoming group, and every already-merged group whose declared files collide. The review loop turns that into a <code>Surprise</code> (<code>kind: "merge_conflict"</code>) fanned out to every named group, then tries the resolve-in-place step (§05) before falling back to a full spec rewrite.</p>
 
+      <h3>The shared data layer: files every worktree sees and git never does</h3>
+      <p>Workers see only committed files, and data does not belong in git history. <code>[workspace] data_dirs</code> names repo-relative directories that are materialised into every worktree — group and integration alike — as a symlink to the single copy under the repo root, excluded from git via the common <code>info/exclude</code>, and added to the Landlock write allowlist. Traffic flows both ways by construction: a 5&nbsp;GB download a group makes into <code>data/</code> is already where the integration tree and every sibling read it, with no merge and no commit. Reads are never restricted under Landlock, so the link needs no special casing.</p>
+      <p>The large-file safety net covers files written elsewhere: whenever the orchestrator is about to commit on a worker's behalf (stranded-work recovery on re-entry, the resolve routine), any <b>untracked</b> file at or above <code>large_file_bytes</code> (50&nbsp;MB) is moved into <code>large_file_store</code> (<code>.orchestrator/data/</code>), replaced by a symlink, excluded, and registered so every later worktree gets the same link. What was committed is logged. Tracked large files are left alone — that was the repo's own decision. Before this, the recovery commit of an interrupted run put a raw 143&nbsp;MB PDF on the integration branch.</p>
+
       <h3>Worktree cleanup</h3>
       <p>A clean merge removes the group's worktree. A merge that fails leaves the worktree in place, uncommitted leftovers and all, for inspection — cleanup is never forced on a dirty tree.</p>
 
-      <h3>Provisioning: group and integration worktrees alike</h3>
+      <h3>Provisioning: group and integration worktrees alike — and fatal when it fails</h3>
+      <p>A failed <code>uv sync</code> is fatal by default (<code>session.provision_on_failure = "fail"</code>). The integration worktree is provisioned first, at run start, so a dependency spec that cannot build stops the run before any group has a worktree, with the <b>tail</b> of uv's stderr (the <code>x Failed to build …</code> line) in the error. The failure is the project's, not a group's, so it recurs in every worktree: fix <code>pyproject.toml</code> once and <code>resume</code>. Run r20260830-211717 is why: every group's sync died on the same build, the warning printed the head of the output, all four groups reported completed, and the merged code crashed on first call — their tests had passed in a venv that never installed the library under test. <code>"warn"</code> restores the old behaviour, but the failure text is then placed in the coder's first prompt. The merge gate's <code>uv run pytest</code> also carries the same <code>provision_args</code>, so it tests the environment the worktree was provisioned with rather than a core-only one.</p>
       <p>Every group worktree is provisioned with the run's <code>provision_args</code> (typically <code>uv sync --all-extras</code>) right after creation. <code>IntegrationMerger.ensure()</code> provisions the <b>integration worktree</b> the same way, once, the first time it is created — it is the tree that represents the run's actual output, so an operator going there to run what was just built finds a working environment rather than a bare checkout. Each worktree's provisioning is logged with the exact command used.</p>
     </section>
 
@@ -894,8 +899,23 @@ Rules for the block:
           <tr><td><code>transcript_root</code></td><td class="num">null</td><td>—</td></tr>
           <tr><td><code>max_thinking_tokens</code></td><td class="num">4,000</td><td>—</td></tr>
           <tr><td><code>thinking</code></td><td class="num">"adaptive"</td><td>—</td></tr>
+          <tr><td><code>cache_root</code></td><td class="num">null (<code>~/.cache/smart-mcps-orchestrator</code>)</td><td>—</td></tr>
+          <tr><td><code>extra_write_paths</code></td><td class="num">[]</td><td>—</td></tr>
+          <tr><td><code>provision_args</code></td><td class="num">["--all-extras"]</td><td>—</td></tr>
+          <tr><td><code>provision_on_failure</code></td><td class="num">"fail"</td><td>—</td></tr>
         </tbody>
       </table></div>
+
+      <h3><code>[workspace]</code></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th class="num">Default</th><th>CLI</th></tr></thead>
+        <tbody>
+          <tr><td><code>data_dirs</code></td><td class="num">[]</td><td>—</td></tr>
+          <tr><td><code>large_file_bytes</code></td><td class="num">50,000,000</td><td>—</td></tr>
+          <tr><td><code>large_file_store</code></td><td class="num">".orchestrator/data"</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+      <p>The shared data layer (§09). <code>data_dirs</code> are repo-relative; each is linked into every worktree, git-excluded, and worker-writable. The other two configure the large-file safety net.</p>
       <p>The thinking pair is a real cost lever, not a cosmetic one: thinking tokens count as <i>output</i> tokens. <code>adaptive</code> (model decides whether to think) measured cheapest and correct against <code>enabled</code>/<code>disabled</code> on one probe; paired with the <code>medium</code> (4,000) budget it reads as "think only when it helps, never more than medium." <code>--max-thinking-tokens</code> is hidden from <code>claude --help</code>, so it's deliberately excluded from preflight's required-flags check.</p>
       <p><code>model</code>, <code>base_model</code> and <code>speccer_model</code> are three independently settable knobs (plan U17): workers (coder and reviewer forks) default to the cheaper Sonnet model since their work is mostly mechanical; the run's own base session and the mapper/speccer default to Opus, since a bad base context or a bad spec rewrite costs every worker downstream. Measured on an earlier live run before this defaulting existed: Opus everywhere, which is what the session limits were paying for.</p>
 
