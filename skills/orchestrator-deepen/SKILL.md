@@ -221,6 +221,12 @@ to), remind the human to regenerate the grouping with
 - **A `Run:` command is written only when grounded** (real runner idiom, every
   path in the unit's declared `Files`); otherwise `Pass:`-only.
 - **Edge cases only where they fire** — no `N/A` filler.
+- **Data inputs go through the data layer.** Before drafting any `Run:`/`Pass:`
+  that opens a data file (corpus, PDF, model, archive), check
+  `.orchestrator/config.toml` has `[workspace] data_dirs` covering it and
+  write the path under that directory (`data/…`); if the block is missing,
+  ask the human to add it rather than pointing a verification item at a file
+  workers will never see.
 - **At least one real-oracle verification item per unit.** When a unit's
   items all reduce to "the worker's own tests pass", the explorer proposes —
   and the human confirms — one `Pass:` condition that exercises the real

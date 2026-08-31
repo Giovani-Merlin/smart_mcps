@@ -205,6 +205,14 @@ committed. An untracked file at the repo root is invisible to every worker.
 The verifier flags such paths (check 9); prefer fixing them in the plan or
 the config before the run rather than discovering it four groups in.
 
+**Check the config while planning, not after.** If any unit reads or produces
+data files, open `.orchestrator/config.toml` and confirm `[workspace]
+data_dirs` exists and names the directory those files live in (create the
+block with the human if it does not — e.g. `data_dirs = ["data"]`), then
+write every such path in the plan relative to that directory (`data/…`), so
+the units, the verification items, and the workers all point at the shared,
+uncommitted copy.
+
 - **Every unit gets at least one external-oracle item.** An item whose only
   oracle is the tests the worker will write ("`pytest tests/test_tts.py`
   passes") is self-referential: a worker who mocks the library under test
