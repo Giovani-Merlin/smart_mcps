@@ -74,6 +74,13 @@ _BASE_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(curl *)",
     "Bash(pkill *)",
     "Bash(agent-browser *)",
+    # A headless browser is the only way to verify "renders with a clean console"
+    # for generated HTML. g2 (r20260902-132128) was refused `google-chrome
+    # --headless … --dump-dom` on every attempt and the group died on the item.
+    "Bash(google-chrome *)",
+    "Bash(google-chrome-stable *)",
+    "Bash(chromium *)",
+    "Bash(chromium-browser *)",
 )
 
 
