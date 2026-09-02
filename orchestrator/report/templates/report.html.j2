@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run report — {{ facts.run_id }}</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --border: #d9dde3;
+    --card-bg: #f7f8fa;
+    --pass: #2f9e44;
+    --fail: #c92a2a;
+    --unverified: #e8a400;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e7e9ec;
+      --muted: #9aa1ac;
+      --border: #33373f;
+      --card-bg: #1c1f24;
+    }
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    line-height: 1.5;
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  table { border-collapse: collapse; width: 100%; margin: 0.75rem 0 1.5rem; }
+  th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: var(--card-bg); }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .badge-trouble { background: var(--fail); color: #fff; }
+  .badge-clean { background: var(--pass); color: #fff; }
+  .cell-pass { color: var(--pass); }
+  .cell-fail { color: var(--fail); font-weight: 600; }
+  .cell-unverified { color: var(--unverified); }
+  .card { border: 1px solid var(--border); background: var(--card-bg); border-radius: 8px; padding: 1rem; margin: 0.75rem 0; }
+  pre.mermaid { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; }
+  .one-pager { border-left: 4px solid var(--pass); padding-left: 1rem; white-space: pre-wrap; }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{ facts.plan_title or facts.run_id }}</h1>
+  <p>
+    {% if trouble %}<span class="badge badge-trouble">trouble</span>{% else %}<span class="badge badge-clean">clean</span>{% endif %}
+    run <code>{{ facts.run_id }}</code>
+    &middot; git range <code>{{ base_short }}..{{ tip_short }}</code>
+    {% if facts.pr_url %}&middot; <a href="{{ facts.pr_url }}">pull request</a>{% endif %}
+  </p>
+  {% if facts.plan_objective %}<p class="muted">{{ facts.plan_objective }}</p>{% endif %}
+</header>
+
+{% if one_pager %}
+<section>
+  <h2>Summary</h2>
+  <div class="one-pager">{{ one_pager }}</div>
+</section>
+{% endif %}
+
+<section>
+  <h2>Evidence matrix</h2>
+  <table>
+    <thead><tr><th>Group</th><th>State</th><th>Verification items</th></tr></thead>
+    <tbody>
+    {% for row in evidence_rows %}
+      <tr>
+        <td>{{ row.group.id }}: {{ row.group.name }}</td>
+        <td>{{ row.group.state }}</td>
+        <td>
+        {% for item in row.verification %}
+          <details class="cell-{{ item.status }}">
+            <summary>{{ item.item_id }}: {{ item.status }}</summary>
+            <p>{{ item.description }}</p>
+            {% if item.evidence %}<p class="muted">{{ item.evidence }}</p>{% endif %}
+          </details>
+        {% else %}
+          <span class="muted">no verification items</span>
+        {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Requirement traceability</h2>
+  <table>
+    <thead><tr><th>Requirement</th><th>Units</th><th>Landed</th></tr></thead>
+    <tbody>
+    {% for rid in facts.rids %}
+      <tr>
+        <td>{{ rid.rid }}</td>
+        <td>{{ rid.units | join(', ') }}</td>
+        <td class="{{ 'cell-pass' if rid.landed else 'cell-fail' }}">{{ 'landed' if rid.landed else 'not landed' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted">no requirement-coverage lines found in this plan</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Groups</h2>
+  {% for group in facts.groups %}
+  <div class="card">
+    <h3>{{ group.id }}: {{ group.name }}</h3>
+    {% for unit in facts.units if unit.group_id == group.id %}
+    <p><strong>{{ unit.unit_id }}</strong>: {{ unit.summary or unit.goal }}</p>
+    {% endfor %}
+    <p class="muted">state: {{ group.state }}{% if group.verdict_status %} &middot; verdict: {{ group.verdict_status }}{% endif %}{% if group.failure %} &middot; failure: {{ group.failure }}{% endif %}</p>
+    <p><strong>Planned files</strong>: {{ group.planned_files | join(', ') if group.planned_files else 'none declared' }}</p>
+    <p><strong>Touched files</strong>: {{ group.touched_files | join(', ') if group.touched_files else 'none' }}</p>
+    {% if group.required_changes %}
+    <p><strong>Required changes</strong>: {{ group.required_changes | join('; ') }}</p>
+    {% endif %}
+    {% if group.surprises %}
+    <p><strong>Surprises</strong>: {{ group.surprises | length }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<section>
+  <h2>Architecture delta</h2>
+  <pre class="mermaid">{{ diagrams.architecture_delta }}</pre>
+</section>
+
+<section>
+  <h2>How-to-use sequences</h2>
+  {% if diagrams.howto_sequences %}
+    {% for sequence in diagrams.howto_sequences %}
+    <pre class="mermaid">{{ sequence }}</pre>
+    {% endfor %}
+  {% else %}
+    <pre class="mermaid">{{ '%% ' + (diagrams.howto_note or 'no how-to-use sequences for this run') }}</pre>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Run timeline</h2>
+  <pre class="mermaid">{{ diagrams.timeline }}</pre>
+</section>
+
+<section>
+  <h2>Plan → outcome</h2>
+  <pre class="mermaid">{{ diagrams.plan_outcome }}</pre>
+</section>
+
+<section>
+  <h2>Group cost</h2>
+  <table>
+    <thead><tr><th>Group</th><th>Sessions</th><th>Tokens</th></tr></thead>
+    <tbody>
+    {% for group in facts.groups %}
+      <tr>
+        <td>{{ group.id }}: {{ group.name }}</td>
+        <td>{{ group.sessions | length }}</td>
+        <td>{{ '{:,}'.format(group_tokens[group.id]) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script type="module">
+  try {
+    const mermaidModule = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.js');
+    mermaidModule.default.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  } catch (err) {
+    console.warn('mermaid failed to load from the CDN; showing raw diagram source', err);
+  }
+</script>
+
+</body>
+</html>
