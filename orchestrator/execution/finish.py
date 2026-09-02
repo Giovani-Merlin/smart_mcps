@@ -12,8 +12,6 @@ branch's own history, and the worktree is safe to remove. ``git branch -d``
 
 from __future__ import annotations
 
-import json
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -204,40 +202,6 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
 # ----------------------------------------------------------------------- PR
 
 
-# Deliberately does not match `verdict-g<N>-r<M>-extra.json` — the mandatory
-# second pass a `paired_plus` group earns above `d_hard` (plan U28). A group
-# with such a pass therefore reports its first-pass verdict here; benign today
-# (the Observatory drill-in labels the `-extra` file so an operator can find it),
-# left unchanged rather than widened.
-_VERDICT_RE = re.compile(r"^verdict-g(\d+)-r(\d+)\.json$")
-
-
-def _latest_verdict_status(paths: RunPaths, gid: str) -> str | None:
-    """The most recent reviewer verdict's status for ``gid``, or None when no
-    reviewer round ever ran (e.g. a self_verify group)."""
-    group_dir = paths.group_dir(gid)
-    best_path: Path | None = None
-    best_key = (-1, -1)
-    if not group_dir.is_dir():
-        return None
-    for path in group_dir.glob("verdict-g*-r*.json"):
-        match = _VERDICT_RE.match(path.name)
-        if match is None:
-            continue
-        key = (int(match.group(1)), int(match.group(2)))
-        if key > best_key:
-            best_key = key
-            best_path = path
-    if best_path is None:
-        return None
-    try:
-        payload = json.loads(best_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    status = payload.get("status")
-    return status if isinstance(status, str) else None
-
-
 def _render_pr_body(
     repo_root: Path,
     run_id: str,
@@ -246,24 +210,14 @@ def _render_pr_body(
     manifest: RunManifest | None,
     paths: RunPaths,
 ) -> str:
-    lines = [f"Orchestrator run `{run_id}`, integration tip `{tip[:12]}`.", ""]
-    unmerged: list[str] = []
-    for gid in sorted(state.groups):
-        entry = state.groups[gid]
-        group_entry = manifest.groups.get(gid) if manifest is not None else None
-        summary = group_entry.summary if group_entry is not None else "(no summary recorded)"
-        sessions = len(group_entry.sessions) if group_entry is not None else 0
-        verdict = _latest_verdict_status(paths, gid)
-        verdict_text = f", reviewer verdict: {verdict}" if verdict else ""
-        lines.append(
-            f"- **{gid}** ({entry.state.value}{verdict_text}, {sessions} session(s)): {summary}"
-        )
-        if not _group_is_merged(repo_root, run_id, tip, gid, entry):
-            unmerged.append(gid)
-    if unmerged:
-        lines.append("")
-        lines.append(f"**Unmerged groups:** {', '.join(unmerged)}")
-    return "\n".join(lines) + "\n"
+    """The PR body, rendered from ``RunFacts`` via ``report.markdown`` (plan
+    U3) — fixed headings (Motivation/Changes/Risks/Testing/Handoff, plus a
+    Postmortem when the run had trouble), never free narrative."""
+    from orchestrator.report.facts import build_facts
+    from orchestrator.report.markdown import render_pr_body
+
+    facts = build_facts(repo_root, run_id, run_dir=paths.run_dir)
+    return render_pr_body(facts)
 
 
 def _open_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) -> tuple[bool, str]:

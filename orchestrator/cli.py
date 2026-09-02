@@ -465,7 +465,7 @@ def main(
     report_cmd.add_argument(
         "--format",
         default="facts",
-        choices=["facts", "html", "all"],
+        choices=["facts", "html", "changelog", "pr-body", "all"],
         help="report format to render ('all' runs every registered format)",
     )
 
@@ -2897,11 +2897,37 @@ def _write_html_format(facts, out_dir: Path, repo_root: Path) -> Path:
     return destination
 
 
+def _write_changelog_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.markdown import render_changelog_entry, update_runlog
+
+    diagrams = render_all(facts, repo_root)
+    entry = render_changelog_entry(facts, diagrams)
+    destination = out_dir / "CHANGELOG-entry.md"
+    atomic_write_text(destination, entry)
+
+    runlog_path = repo_root / "docs" / "RUNLOG.md"
+    atomic_write_text(runlog_path, update_runlog(runlog_path, facts.run_id, entry))
+    return destination
+
+
+def _write_pr_body_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.markdown import render_pr_body
+
+    destination = out_dir / "pr-body.md"
+    atomic_write_text(destination, render_pr_body(facts))
+    return destination
+
+
 #: format name -> renderer; ``all`` runs every one of these (report U4). New
 #: formats (markdown, one-pager) register themselves here as their groups land.
 _REPORT_FORMATS = {
     "facts": _write_facts_format,
     "html": _write_html_format,
+    "changelog": _write_changelog_format,
+    "pr-body": _write_pr_body_format,
 }
 
 

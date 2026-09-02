@@ -77,6 +77,12 @@ class TestFacts(BaseModel):
 class GroupFacts(BaseModel):
     id: str
     name: str = ""
+    #: The manifest's design summary for the group (always available); not
+    #: the coder's completion report, which is ``report_summary`` below.
+    summary: str = ""
+    #: The latest coder report's own ``summary`` field, when one exists
+    #: (report U3's per-group fragments trim this to ~20 words).
+    report_summary: str | None = None
     state: str = "pending"
     verdict_status: str | None = None
     failure: str | None = None
@@ -88,6 +94,9 @@ class GroupFacts(BaseModel):
     escalations: list[dict] = Field(default_factory=list)
     surprises: list[dict] = Field(default_factory=list)
     required_changes: list[str] = Field(default_factory=list)
+    #: Parallel to ``required_changes`` — the artifact path (relative to the
+    #: run dir) each entry was read from, so a consumer can cite the source.
+    required_change_paths: list[str] = Field(default_factory=list)
     tests: TestFacts = Field(default_factory=TestFacts)
 
 
@@ -522,15 +531,22 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
 
         surprises = []
         required_changes: list[str] = []
+        required_change_paths: list[str] = []
         verdict_status: str | None = None
         for artifact in export_group.artifacts:
             surprises.extend(
-                {"kind": s.kind, "description": s.description, "affected_groups": s.affected_groups}
+                {
+                    "kind": s.kind,
+                    "description": s.description,
+                    "affected_groups": s.affected_groups,
+                    "path": artifact.path,
+                }
                 for s in artifact.surprises
             )
             for change in artifact.required_changes:
                 if change not in required_changes:
                     required_changes.append(change)
+                    required_change_paths.append(artifact.path)
             if artifact.kind == "reviewer_verdict" and artifact.status is not None:
                 verdict_status = artifact.status
 
@@ -546,6 +562,12 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
             )
 
         tests = _group_tests(paths, export_group.id)
+        latest_report = _latest_report(paths, export_group.id)
+        report_summary = None
+        if latest_report is not None:
+            raw_summary = latest_report.get("summary")
+            if isinstance(raw_summary, str) and raw_summary.strip():
+                report_summary = raw_summary.strip()
 
         real_failure = export_group.failure if not export_group.stale_failure else None
         if (
@@ -561,6 +583,8 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
             GroupFacts(
                 id=export_group.id,
                 name=export_group.name,
+                summary=export_group.summary,
+                report_summary=report_summary,
                 state=export_group.final_state,
                 verdict_status=verdict_status,
                 failure=real_failure,
@@ -574,6 +598,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                 escalations=escalations,
                 surprises=surprises,
                 required_changes=required_changes,
+                required_change_paths=required_change_paths,
                 tests=tests,
             )
         )
