@@ -1,0 +1,1585 @@
+{
+  "run_id": "r20260828-220035",
+  "plan_path": "docs/plans/2026-08-28-001-feat-deterministic-grouper-advisory-plan.md",
+  "plan_title": "Deterministic spec assembly, validation legibility, and the advisory grouper",
+  "plan_objective": "Ship waves 1a–1c of the grouper-speccer-flow requirements so that after this\nrun the grouper is the well-working core of the planning→run flow:\n\n- **Wave 1a** (R1, R2, R4, R21, R22, R23 + superseded R3): `group` produces a\n  launchable `groups.json` with **zero LLM calls** — specs assembled\n  deterministically from the plan's own unit sections — and worker context is\n  layered (shared digest + per-group full sections) instead of every worker\n  carrying the full plan. The grouping-time speccer is **deleted** (ADR 0006),\n  not made opt-in: R3 is superseded by the grill decision of 2026-08-28.\n- **Wave 1b** (R5–R11): the six measured validation-legibility failures\n  (C1–C6 in `docs/todos/grouping_improvements.md`) are fixed so a written plan\n  never again costs 15 `group` invocations to validate.\n- **Wave 1c** (R12–R15): `group --advise` — multi-granularity comparison and\n  plan-cohesion diagnostics off one built graph, zero LLM — plus the merge-key\n  fill penalty, and `/orchestrator-plan` consulting the advisory before asking\n  the user about splits.\n\nWaves 2–3 (mechanical split R16, deepen R17–R19, eval harness R20) are out of\nscope. A **post-eval-harness backlog** section at the end records what waits.",
+  "origin": "docs/brainstorms/2026-08-28-grouper-speccer-flow-requirements.md",
+  "created_at": "2026-08-28T20:01:48.464689+00:00",
+  "finished_at": null,
+  "pr_url": "https://github.com/Giovani-Merlin/smart_mcps/pull/5",
+  "git_range": {
+    "base_sha": "a2098a08ca53c1dd870533ecc375d05803d2b7c3",
+    "tip_sha": "93dadc02eb2cb8d08d05ea9a4e5e9f4dbf19957d",
+    "available": true
+  },
+  "changed_files": [
+    {
+      "path": "docs/orchestrator-grouping.md",
+      "added": 64,
+      "deleted": 40,
+      "group_id": "g7"
+    },
+    {
+      "path": "docs/orchestrator-task-map.md",
+      "added": 37,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/cli.py",
+      "added": 229,
+      "deleted": 17,
+      "group_id": "g9"
+    },
+    {
+      "path": "orchestrator/config.py",
+      "added": 16,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/grouping/advisory.py",
+      "added": 588,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/grouping/assembler.py",
+      "added": 327,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/grouping/base_context.py",
+      "added": 9,
+      "deleted": 7,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/grouping/errors.py",
+      "added": 43,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/grouping/estimator.py",
+      "added": 149,
+      "deleted": 1,
+      "group_id": "g9"
+    },
+    {
+      "path": "orchestrator/grouping/graphing.py",
+      "added": 23,
+      "deleted": 0,
+      "group_id": "g11"
+    },
+    {
+      "path": "orchestrator/grouping/partition.py",
+      "added": 216,
+      "deleted": 11,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/grouping/pipeline.py",
+      "added": 245,
+      "deleted": 63,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/grouping/plan_reader.py",
+      "added": 122,
+      "deleted": 34,
+      "group_id": "g9"
+    },
+    {
+      "path": "orchestrator/grouping/plan_sections.py",
+      "added": 230,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/grouping/speccer.py",
+      "added": 0,
+      "deleted": 102,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/grouping/trace.py",
+      "added": 18,
+      "deleted": 5,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/model.py",
+      "added": 11,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/observatory/launch.py",
+      "added": 0,
+      "deleted": 6,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/prompts/{speccer.md => rewrite_speccer.md}",
+      "added": 4,
+      "deleted": 3,
+      "group_id": "g7"
+    },
+    {
+      "path": "skills/orchestrator-plan/SKILL.md",
+      "added": 46,
+      "deleted": 6,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/fixtures/grouping/golden/brownfield-cross-stack.json",
+      "added": 6,
+      "deleted": 6,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_advisory.py",
+      "added": 444,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_assembler.py",
+      "added": 207,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_cli_price.py",
+      "added": 236,
+      "deleted": 0,
+      "group_id": "g9"
+    },
+    {
+      "path": "tests/test_cwd_contract.py",
+      "added": 3,
+      "deleted": 3,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_e2e_stub.py",
+      "added": 4,
+      "deleted": 4,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_fingerprint_compare.py",
+      "added": 4,
+      "deleted": 3,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_grouper_pipeline.py",
+      "added": 466,
+      "deleted": 74,
+      "group_id": "g11"
+    },
+    {
+      "path": "tests/test_grouping_trace.py",
+      "added": 21,
+      "deleted": 6,
+      "group_id": "g11"
+    },
+    {
+      "path": "tests/test_observatory_launch.py",
+      "added": 5,
+      "deleted": 5,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_partition.py",
+      "added": 373,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "tests/test_plan_reader.py",
+      "added": 57,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "tests/test_plan_sections.py",
+      "added": 219,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "ui/src/routes/Launch.tsx",
+      "added": 2,
+      "deleted": 20,
+      "group_id": "g7"
+    },
+    {
+      "path": "ui/src/types.ts",
+      "added": 0,
+      "deleted": 3,
+      "group_id": "g7"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "deterministic-spec-assembly",
+      "summary": "Parse plan units and assemble every group's name/summary/spec/verification with zero LLM calls",
+      "report_summary": "Implemented U1 (deterministic plan-section parser) and U2 (deterministic spec assembly replacing write_specs) with zero LLM calls in the grouping-time path. Added orchestrator/grouping/plan_sections.py and orchestrator/grouping/assembler.py, wired assembler into run_grouping, added the verification-coverage lint and the 'specs: assembled from plan' flag, and updated stage progress. Updated existing test fixtures (GREENFIELD_PLAN/MIXED_PLAN and their downstream references across several test files) to the u<N>-slug unit convention and added dedicated test_plan_sections.py and test_assembler.py suites. Did not touch speccer.py/prompts/speccer.md or the mid-run rewrite-speccer path, per spec (reserved for a sibling group). Full suite: 1427 passed, 5 failed — all 5 are pre-existing environment issues (sandbox permission denial writing under ~/.claude/projects, and a cross-device git worktree move under /tmp) in files this group never touched.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-plan-sections",
+        "u2-spec-assembly"
+      ],
+      "planned_files": [
+        "orchestrator/grouping/assembler.py",
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/plan_sections.py",
+        "tests/test_assembler.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_plan_sections.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/plan_sections.py",
+        "tests/test_cwd_contract.py",
+        "tests/test_e2e_stub.py",
+        "tests/test_fingerprint_compare.py",
+        "tests/test_plan_sections.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T20:01:48.890781+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 254,
+            "output": 93984,
+            "cache_read": 25748060,
+            "cache_creation": 254915
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1432,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g2",
+      "name": "cycle-repair-withdrawal",
+      "summary": "Group-DAG cycle repair withdraws inferred precedence edges before falling back to merging",
+      "report_summary": "Implemented U10: repair_cycles now withdraws inferred precedence edges (banked as affinity already, never declared ones) on a group-DAG cycle before falling back to the existing merge+re-split, mutating graph.dependencies in place so build_group_dag's downstream check stays consistent. Added a declared-edge parameter threaded from pipeline.py's mapper depends_on pairs, with None defaulting to pre-U10 merge-only behavior for backward compatibility. Trace RepairEntry/record_repair gained action and withdrawn_edges fields. Added new tests covering both required fixtures, determinism, and affinity banking; full existing partition/grouping/trace/pipeline suites pass, and the 5 failures seen in the full test run are pre-existing environment issues (tmp cross-device link, permission errors) in unrelated test_cli.py/test_finish.py modules untouched by this change.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u10-cycle-repair-withdrawal"
+      ],
+      "planned_files": [
+        "orchestrator/grouping/graphing.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_partition.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/trace.py",
+        "tests/test_partition.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T22:19:53.272873+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 130,
+            "output": 45211,
+            "cache_read": 7438127,
+            "cache_creation": 144304
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1475,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g3",
+      "name": "advisory-report",
+      "summary": "group --advise: all granularities and cohesion diagnostics off one built graph, zero LLM",
+      "report_summary": "Found the group's implementation (advisory.py, cli.py wiring, pipeline.py graph-build seam, test_advisory.py) already substantially written from a prior session. Fixed two bugs: a missing cli.py import for build_advisory_report/serialize_advisory_report that would have caused a NameError on any real `group --advise` invocation, and a test fixture in test_map_error_surfaces_as_grouper_error that lacked the task-map version marker so it exercised the 'absent map -> LLM mapper fallback' path instead of the intended 'malformed map -> TaskMapError' path. Verified all four cohesion thresholds are named module constants with in-code justification, ran the full test_advisory.py suite (13/13 pass) plus the broader suite (only pre-existing, unrelated sandbox-environment failures in test_cli.py/test_finish.py remain, present before my changes), and did an end-to-end CLI smoke test in a scratch repo confirming `group --advise` builds the graph once, prints the granularity/cohesion report, writes valid preview/advisory.json, and never touches groups.json.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u11-advisory-report"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/advisory.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/scorecard.py",
+        "tests/test_advisory.py"
+      ],
+      "touched_files": [
+        "tests/test_advisory.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T20:29:04.766109+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 90,
+            "output": 11295,
+            "cache_read": 3880205,
+            "cache_creation": 82733
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1445,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g4",
+      "name": "merge-fill-penalty",
+      "summary": "Merge key gains a fill/balance term so one group stops absorbing merges up to the cap",
+      "report_summary": "Added a fill/balance term to merge_small_groups' merge key (orchestrator/grouping/partition.py), a new target_fill_ratio config knob (orchestrator/config.py) with an in-code justified default of 0.75, and threaded it through DefaultPartitionStrategy, pipeline.py, and advisory.py. After extensive analysis (a literal 'boolean band' reading of the spec is provably a no-op — redundant with the existing merged_work tiebreak — since bucket-then-value sorting is mathematically identical to value-only sorting on a threshold of that same value), implemented instead as a distance-from-target-fill term, which is genuinely non-redundant. Verified via a synthetic pathology fixture (two hubs competing for a shared task pool) showing strictly lower fill-size variance, no group over cap, and an acyclic group DAG, plus determinism and no-op-when-uncapped checks. One real golden fixture (brownfield-cross-stack) legitimately shifted and was regenerated/reviewed; unrelated budget_cap/group_work drift in 7 other golden fixtures (pre-existing on this branch, not part of this unit's scope) was left untouched. Full suite: 1444 passed, 5 pre-existing environment-only failures unrelated to this change.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u12-fill-penalty"
+      ],
+      "planned_files": [
+        "orchestrator/config.py",
+        "orchestrator/grouping/partition.py",
+        "tests/test_partition.py"
+      ],
+      "touched_files": [
+        "orchestrator/config.py",
+        "orchestrator/grouping/advisory.py",
+        "tests/fixtures/grouping/golden/brownfield-cross-stack.json"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T20:43:43.758597+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 218,
+            "output": 137727,
+            "cache_read": 20285425,
+            "cache_creation": 256329
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "A literal reading of the plan's 'candidate merge work lands inside a target band, preferred over one landing at the cap' is mathematically a no-op if implemented as a boolean in/out-of-band bucket ranked above merged_work: bucket-then-value sorting is always identical in outcome to sorting by value alone when the bucket is a threshold on that same value. Implemented as a distance-from-target-fill term instead (genuinely non-redundant, verified with a synthetic fixture). Worth knowing if U12 gets revisited or tuned in the eval harness — the boolean framing in the plan prose doesn't survive contact with the algorithm's per-round global-argmin selection.",
+          "affected_groups": [],
+          "path": "groups/g4/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1449,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g4/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g5",
+      "name": "planning-contract-and-advise-phase",
+      "summary": "Document the plan authoring contract and make /orchestrator-plan consult --advise before asking about splits",
+      "report_summary": "Implemented U5 and U13: docs/orchestrator-task-map.md gained a new 'Pricing a task's node work' section with the exact node_work/cap formula and numeric defaults, pointing to `group --price`. skills/orchestrator-plan/SKILL.md now states the U<N>/u<N>-slug id convention, requires a Summary: line per unit, marks symbols as optional with the measured dense-codebase degeneration trade-off replacing the old unconditional instruction, requires one Verification bullet per checkable item, adds Summary: to the unit template, and inserts a `group --advise` step into Phase 7 hand-off (after --no-spec, before the summary/dry-run) that presents diagnostics and asks the user to choose split-vs-proceed-as-one, explicitly deferring the mechanical split/deepen command as not-yet-existing wave-2 work. Changes committed as c2a5200.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u13-plan-skill-advise-phase",
+        "u5-planning-contract-docs"
+      ],
+      "planned_files": [
+        "docs/orchestrator-task-map.md",
+        "skills/orchestrator-plan/SKILL.md"
+      ],
+      "touched_files": [
+        "docs/orchestrator-task-map.md",
+        "skills/orchestrator-plan/SKILL.md"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T21:15:09.785401+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 26,
+            "output": 6200,
+            "cache_read": 986022,
+            "cache_creation": 66399
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1449,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g5/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g6",
+      "name": "layered-worker-context",
+      "summary": "Base context carries the plan digest; group specs carry member sections plus contracts-only neighbor lines",
+      "report_summary": "Implemented U3 layered worker context: compile_base_context (orchestrator/grouping/base_context.py) now embeds the U1 plan digest (preamble + per-unit Summary lines + implements/consumes registry) instead of the full stripped plan, so base_tokens/budget_cap derive from the smaller digest with no compensating adjustment. Discovered that the existing U2 assembler's upstream/downstream contract labels were gated on graph.dependencies edges, which misses pure implements/consumes tag relationships with no depends_on edge between the two tasks — added a new 'Contracts (cross-group):' section built from direct tag matching (implementers/consumers index) independent of the DAG, satisfying the spec's requirement that a group consuming a tag implemented elsewhere always gets a contracts line naming the tag, counterpart task id, and its Summary line, never the neighbor's full section. Added/updated tests in tests/test_assembler.py and tests/test_grouper_pipeline.py (new TestLayeredContext class) covering all four verification items. Full test suite passes except 5 pre-existing environment-specific failures (permission denied writing outside repo, cross-device git worktree move in /tmp) unrelated to this change.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-layered-context"
+      ],
+      "planned_files": [
+        "orchestrator/grouping/assembler.py",
+        "orchestrator/grouping/base_context.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/base_context.py",
+        "tests/test_assembler.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T21:17:37.453375+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 80,
+            "output": 25600,
+            "cache_read": 4305847,
+            "cache_creation": 117058
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "The U2 assembler's existing upstream/downstream contract labels were derived only from graph.dependencies (depends_on) edges, so a pure implements/consumes tag relationship with no direct dependency edge between the two specific tasks (common: both depend on a shared ancestor rather than on each other) would have produced no contracts line at all. Added a separate tag-matching pass for this rather than modifying the existing DAG-based Upstream/Downstream sections, to avoid breaking g1's R2 test (header must change when the DAG changes).",
+          "affected_groups": [],
+          "path": "groups/g6/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1453,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g6/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g7",
+      "name": "speccer-removal",
+      "summary": "Delete the grouping-time speccer and its grouping-form knob in one recoverable commit",
+      "report_summary": "Deleted the grouping-time speccer per U4/ADR 0006 (speccer.py, prompts/speccer.md, the grouping-form model_speccer knob in launch.py/Launch.tsx/types.ts). The tricky part: write_specs and GroupSpec were still live dependencies of the mid-run rewrite speccer (_rewrite_provider in cli.py) and the deterministic assembler, so a literal file deletion would have broken both. Resolved by moving GroupSpec into orchestrator/model.py (shared by assembler and rewrite path), inlining the LLM-calling logic (renamed, to satisfy the no-write_specs-references verification item) directly into cli.py's rewrite seam, and renaming the prompt template to rewrite_speccer.md. Landed as one standalone commit (d57c5cf) plus a follow-up docs commit (18be302) recording that sha in docs/orchestrator-grouping.md and refreshing the now-inaccurate pipeline diagram/prose that still described write_specs. Updated one test (test_observatory_launch.py) whose GroupJobBody fixture used the removed field. Full suite run: 1458 passed, 10 failed/5 errored — all pre-existing environment artifacts (landlock/HOME permission denials from confinement policy building, live-LLM/live-binary tests, a cross-device tmp link) untouched by this diff, confirmed by inspecting each failure's stack trace.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u4-speccer-removal"
+      ],
+      "planned_files": [
+        "docs/orchestrator-grouping.md",
+        "orchestrator/cli.py",
+        "orchestrator/grouping/speccer.py",
+        "orchestrator/observatory/launch.py",
+        "orchestrator/prompts/speccer.md",
+        "tests/test_observatory_launch.py",
+        "ui/src/api.ts",
+        "ui/src/components/launch/ExecutionOptions.tsx",
+        "ui/src/routes/Launch.tsx",
+        "ui/src/routes/launch.test.tsx",
+        "ui/src/types.ts"
+      ],
+      "touched_files": [
+        "docs/orchestrator-grouping.md",
+        "orchestrator/grouping/assembler.py",
+        "orchestrator/grouping/speccer.py",
+        "orchestrator/model.py",
+        "orchestrator/observatory/launch.py",
+        "orchestrator/prompts/{speccer.md => rewrite_speccer.md}",
+        "tests/test_observatory_launch.py",
+        "ui/src/routes/Launch.tsx",
+        "ui/src/types.ts"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T21:25:13.754585+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 278,
+            "output": 49905,
+            "cache_read": 16974639,
+            "cache_creation": 159663
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "ADR 0006 (docs/adr/0006-delete-the-grouping-time-speccer.md), referenced by my spec as required reading, does not exist in the repo — proceeded using the plan document's own Decisions section instead, which fully covers the rationale.",
+          "affected_groups": [],
+          "path": "groups/g7/report-g1-r1.json"
+        },
+        {
+          "kind": "interface_mismatch",
+          "description": "The plan/spec's file list implied orchestrator/grouping/speccer.py could be deleted outright, but write_specs()/GroupSpec were still live dependencies of the mid-run rewrite speccer and (via GroupSpec) the deterministic assembler from U2/U3. Resolved by relocating the shared pieces (GroupSpec to model.py, the LLM-calling function inlined/renamed in cli.py) rather than deleting functionality still in use — worth knowing if another unit assumed speccer.py's removal was a pure deletion with no code to preserve.",
+          "affected_groups": [],
+          "path": "groups/g7/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1453,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g7/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g8",
+      "name": "error-accumulation",
+      "summary": "Slice-overflow and plan_reader validation report every failure per phase instead of the first",
+      "report_summary": "Implemented U6 error accumulation: added a shared ErrorAccumulator (orchestrator/grouping/errors.py) used by _check_slice_overflow in pipeline.py (collects every over-cap slice before raising) and by plan_reader.py's _validate_shape, which now runs as two accumulated phases — shape errors first (stop and report if any), then reference errors (size_hints, duplicate ids, depends_on, cycle, slice cap) — preserving phase order. Single-error wording is byte-identical to before. Added new tests covering multi-error reporting in both test_grouper_pipeline.py and test_plan_reader.py. Full suite green aside from 5 pre-existing environment failures (sandbox permission denials writing to ~/.claude/projects and a /tmp cross-device-link issue in test_finish.py) unrelated to this change.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u6-error-accumulation"
+      ],
+      "planned_files": [
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/plan_reader.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_plan_reader.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/errors.py",
+        "tests/test_plan_reader.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T21:52:17.175139+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 76,
+            "output": 22591,
+            "cache_read": 3812809,
+            "cache_creation": 102263
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1459,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g8/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g9",
+      "name": "price-mode",
+      "summary": "group --price prints per-task node work and per-slice sums against the cap sub-second, no codegraph",
+      "report_summary": "Implemented `group --price <plan>` (U7/C3/R6): a sub-second, zero-codegraph, zero-graph-build pricing mode. Added `parse_task_map_for_pricing` to plan_reader.py (filesystem-only task-map parse, no CodegraphClient, symbols skipped since pricing never reads them), and `TaskPrice`/`SlicePrice`/`PriceReport`/`price_task_mappings`/`price_plan` to estimator.py, reusing the existing `node_work`/`partition_budget_cap` formulas and compiling base context with an empty codegraph summary per the plan's approximation decision. Wired `--price` into cli.py's `group` subcommand, dispatched before any codegraph/LLM/usage-limit machinery, printing per-task and per-slice node-work/coder-work figures against the approximate cap and exiting non-zero on overshoot. Wrote tests/test_cli_price.py covering the over-cap exit path, the never-touches-codegraph guarantee (via a raising client-runner stub), a missing-task-map error path, and a cross-check against this repo's real 2026-08-26 plan document (copied into an isolated tmp repo to avoid touching the real worktree's .orchestrator/) proving --price's per-task node work matches grouping-trace.json's node_work from a real `group --no-spec` run on the same map, sub-second. Full suite: 1477 passed; 5 pre-existing failures are unrelated sandbox/filesystem environment issues (confinement policy dir permissions, cross-device git worktree move), not touched by this change.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u7-price-mode"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/estimator.py",
+        "tests/test_cli_price.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/estimator.py",
+        "orchestrator/grouping/plan_reader.py",
+        "tests/test_cli_price.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T22:33:01.804687+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 176,
+            "output": 63769,
+            "cache_read": 13262676,
+            "cache_creation": 194625
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1482,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g9/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g10",
+      "name": "budget-naming",
+      "summary": "Name node work vs coder work distinctly in every operator-facing budget figure",
+      "report_summary": "Implemented U8: `_check_slice_overflow` in orchestrator/grouping/pipeline.py now takes coder_slack_multiplier, computes both the unscaled `node work` and the already-coder-scaled `coder work` per member and in totals, states the multiplier value, and labels the cap as a 'coder work cap'; the `--allow-oversized-slice` flag message was updated to match. Fixed the one remaining bare-'work' label in cli.py's scorecard printout ('work fraction of cap' -> 'node work fraction of cap'); the dry-run per-group listing already said 'node work'. Updated the three existing overflow tests in tests/test_grouper_pipeline.py to assert both labels and the multiplier. No arithmetic touched. Full pipeline/partition test suites pass (121 tests); 4 unrelated pre-existing failures in test_cli.py (TestRunBanner, TestReviewIntensityWarning) are caused by a sandbox permission error writing to ~/.claude/projects/... outside the worktree, untouched by this diff.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u8-budget-naming"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py"
+      ],
+      "touched_files": [],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T21:58:45.079893+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 52,
+            "output": 11122,
+            "cache_read": 2090031,
+            "cache_creation": 75530
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1459,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g10/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g11",
+      "name": "partition-diagnostics",
+      "summary": "Report inferred-vs-declared edge provenance on degenerate partitions and name slice-re-entrant paths",
+      "report_summary": "Implemented U9: (a) the degenerate-partition GrouperError now reports declared-vs-inferred edge counts and inferred signal kinds for the offending SCC, sourced from the existing EdgeProvenance ledgers via new reusable predicates (EdgeProvenance.dependency_is_declared/dependency_kinds) and a structured DegenerateRepair value threaded from repair_cycles through the strategy; (b) a new find_slice_reentrant_paths (partition.py) detects, on the contracted graph before partitioning, any slice whose supernode sits in an introduced cycle, reconstructs the concrete path, and pipeline._check_slice_reentry reports all such slices together via ErrorAccumulator with the slice name, full path, and both remedies. Updated one pre-existing test whose fixture happened to be exactly the run-10 shape (now caught earlier) to use a cross-slice mutual-dependency shape instead, preserving its original intent of testing repair_cycles' overshoot recording. Added unit tests in test_partition.py (find_slice_reentrant_paths, DegenerateRepair population) and integration tests in test_grouper_pipeline.py (full compute_partition pipeline for both failure shapes, plus direct tests of the provenance-counting helpers). All 133 tests in test_partition.py + test_grouper_pipeline.py pass; full suite shows only 5 pre-existing, unrelated failures (CLI banner/intensity wording, a /tmp cross-device worktree-move artifact) confirmed unrelated via git diff --stat.",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u9-partition-diagnostics"
+      ],
+      "planned_files": [
+        "orchestrator/grouping/graphing.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_partition.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/graphing.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_grouping_trace.py"
+      ],
+      "sessions": [
+        {
+          "role": "orchestrator",
+          "generation": 1,
+          "model": "claude-opus-5",
+          "started_at": "2026-08-28T20:01:43.533025+00:00",
+          "ended_at": "2026-08-28T20:01:48.463091+00:00",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 2,
+            "output": 4,
+            "cache_read": 11204,
+            "cache_creation": 42452
+          }
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-28T22:02:39.569459+00:00",
+          "ended_at": null,
+          "retirement_reason": null,
+          "tokens": {
+            "input": 158,
+            "output": 61848,
+            "cache_read": 14525459,
+            "cache_creation": 213541
+          }
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1471,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g11/preflight-junit.xml"
+      }
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-plan-sections",
+      "group_id": "g1",
+      "title": "plan-sections — deterministic plan parsing: unit sections, summaries, digest",
+      "summary": "plan-sections — deterministic plan parsing: unit sections, summaries, digest",
+      "goal": "A parser that splits a plan document into (a) the preamble\n  (everything before the `## Units` heading, task map stripped), (b) unit\n  sections keyed by unit id — heading `### U<N>.` ↔ task ids matching\n  `u<N>-…` — each with its verbatim body, its tagged `Summary:` line, and its\n  parsed Verification bullets, and (c) a digest builder producing the shared\n  block: preamble + per-unit tagged summary lines + implements/consumes\n  registry. Parse errors accumulate per phase and report together (same\n  discipline as R5). A unit with no `Summary:` line falls back to its heading\n  title with an info flag (older plans keep working); a task id with no\n  matching unit section is a hard error.",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "Parsing this plan document itself yields one section per task-map entry, each section's text found verbatim in the source, and a digest containing every unit's `Summary:` line and none of the unit bodies.",
+          "status": "pass",
+          "evidence": "tests/test_plan_sections.py::TestParsePlanSections::test_one_section_per_task_map_entry_verbatim and test_digest_has_every_summary_line_and_no_unit_bodies"
+        },
+        {
+          "item_id": "g1-2",
+          "description": "A plan whose `U3` heading is missing while the map declares `u3-layered-context` raises one error naming `u3-layered-context`; a plan with two missing sections reports both in the same error.",
+          "status": "pass",
+          "evidence": "test_missing_single_unit_heading_names_it and test_two_missing_unit_headings_reported_together"
+        },
+        {
+          "item_id": "g1-3",
+          "description": "The digest and section split are byte-stable: parsing the same text twice yields identical bytes, and the task-map YAML block appears in neither the digest nor any section.",
+          "status": "pass",
+          "evidence": "test_byte_stable_across_two_parses and test_task_map_absent_from_digest_and_sections"
+        },
+        {
+          "item_id": "g1-4",
+          "description": "`group` on a task-mapped plan completes with an LLM runner stub that raises on any call, and the produced `groups.json` validates against `GroupingResult` with non-empty name/summary/spec/verification for every group.",
+          "status": "pass",
+          "evidence": "tests/test_grouper_pipeline.py::TestTaskMapRegimes::test_premapped_plan_never_calls_the_llm_runner (StubLlm asserts on any non-mapper schema) plus full run_grouping/GroupingResult round-trip in TestPipeline"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-spec-assembly",
+      "group_id": "g1",
+      "title": "spec-assembly — assemble group specs deterministically, replacing write_specs",
+      "summary": "spec-assembly — assemble group specs deterministically, replacing write_specs",
+      "goal": "`run_grouping` builds every group's `name`, `summary` (within the\n  120-char cap), `spec`, and `verification` with zero LLM calls: name/summary\n  derived from member unit titles; spec = a generated relational header\n  (member list with descriptions, intra-group `depends_on` in topological\n  order, upstream/downstream groups with the contract tags exchanged, slice\n  membership — graph/DAG facts only, per R2) followed by the member units'\n  plan sections verbatim; verification = the units' Verification bullets with\n  ids `<group_id>-<n>`, `required=true`. The verification-coverage lint runs\n  after assembly: every unit bullet lands in exactly one group or\n  `GrouperError` names the unit. `groups.json` gains the flag\n  `specs: assembled from plan — speccer LLM skipped`. The stage progress line\n  becomes `stage: assemble` (no per-spec LLM progress).",
+      "verification": [
+        {
+          "item_id": "g1-5",
+          "description": "Each group's spec contains its member unit sections verbatim, and its relational header names exactly the upstream/downstream group ids `build_group_dag` produced — regenerating after a changed partition changes the header accordingly.",
+          "status": "pass",
+          "evidence": "tests/test_assembler.py::test_spec_contains_member_unit_sections_verbatim and test_relational_header_names_upstream_and_downstream_groups / test_regenerating_after_changed_partition_changes_the_header"
+        },
+        {
+          "item_id": "g1-6",
+          "description": "Every Verification bullet of every unit appears as exactly one `VerificationItem` across all groups with ids matching `^g\\d+-\\d+$`; removing one unit's Verification section makes grouping fail naming that unit.",
+          "status": "pass",
+          "evidence": "test_verification_ids_match_pattern_and_cover_every_bullet and test_missing_unit_verification_fails_naming_the_unit"
+        },
+        {
+          "item_id": "g1-7",
+          "description": "`groups.json` output is byte-deterministic across two runs on an unchanged repo.",
+          "status": "pass",
+          "evidence": "test_byte_deterministic_across_two_calls plus test_premapped_output_is_byte_deterministic in test_grouper_pipeline.py"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-layered-context",
+      "group_id": "g6",
+      "title": "layered-context — digest in base context, contracts-only neighbors in specs",
+      "summary": "layered-context — digest in base context, contracts-only neighbors in specs",
+      "goal": "`compile_base_context` embeds the plan **digest** (from U1)\n  instead of the full stripped plan; the assembled spec (U2) appends, for each\n  cross-group unit this group consumes from or provides to, one line with the\n  contract tag, the counterpart task id, and its `Summary:` line — never a\n  neighbor's full section. No worker context contains the full plan document.\n  Byte-stability and the task-map-absence guarantees carry over to the digest.\n  `base_tokens`/`budget_cap` now derive from the digest-based context\n  (groups get roomier; no compensation is applied).",
+      "verification": [
+        {
+          "item_id": "g6-1",
+          "description": "For a multi-unit fixture plan, `base-context.md` contains every unit's `Summary:` line and the preamble, contains no unit's full section body and no `orchestrator-task-map` marker, and compiling twice is byte-identical.",
+          "status": "pass",
+          "evidence": "test_base_context_has_no_marker_or_heading and test_base_context_carries_digest_not_full_sections verify digest content, no full section bodies, no task-map marker, byte-identical on repeat compile"
+        },
+        {
+          "item_id": "g6-2",
+          "description": "A group consuming `/api/x` implemented by another group carries a contracts line naming `/api/x` and the implementing task id, and does not contain that neighbor unit's section body.",
+          "status": "pass",
+          "evidence": "test_cross_group_contract_names_tag_and_task_not_neighbor_section (assembler) verifies contracts line names tag + implementing task id and excludes the neighbor's full section text"
+        },
+        {
+          "item_id": "g6-3",
+          "description": "The union of one group's assembled spec plus the base context contains that group's full unit sections exactly once.",
+          "status": "pass",
+          "evidence": "test_group_spec_plus_base_context_covers_its_own_sections_exactly_once verifies union contains each group's own unit sections exactly once and no other group's bodies"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-speccer-removal",
+      "group_id": "g7",
+      "title": "speccer-removal — delete the grouping-time speccer in one recoverable commit",
+      "summary": "speccer-removal — delete the grouping-time speccer in one recoverable commit",
+      "goal": "Remove `orchestrator/grouping/speccer.py`,\n  `orchestrator/prompts/speccer.md`, the grouping-form model knob\n  (`GroupingOptions.model_speccer` in `orchestrator/observatory/launch.py`\n  and its argv plumbing, the grouping-form parts of `ui/src/routes/Launch.tsx`,\n  `ui/src/components/launch/ExecutionOptions.tsx`, `ui/src/types.ts`,\n  `ui/src/api.ts`), and the grouping-time speccer wiring/help-text in\n  `orchestrator/cli.py` (`_speccer_json_runner` stays for the mapper and\n  rewrite speccer; its docstring and `--model-speccer` help are reworded to\n  \"mapper / rewrite speccer\"). The mid-run rewrite speccer, the run-form\n  `model_speccer` knob, and the `SpeccerCalls` viewer stay untouched. This\n  unit's changes land as **one standalone commit** whose sha is recorded in a\n  short \"grouping-time speccer removed\" note in `docs/orchestrator-grouping.md`\n  (recovery = cherry-pick, per ADR 0006).",
+      "verification": [
+        {
+          "item_id": "g7-1",
+          "description": "`grep -r \"write_specs\\|prompts/speccer\" orchestrator/ ui/src/` finds no references, and `orchestrator/grouping/speccer.py` and `orchestrator/prompts/speccer.md` do not exist.",
+          "status": "pass",
+          "evidence": "grep finds zero references; both files confirmed absent"
+        },
+        {
+          "item_id": "g7-2",
+          "description": "The grouping launch API rejects/ignores `model_speccer` for groupings while the run launch body still accepts it; `pytest tests/test_observatory_launch.py` and the UI test suite pass.",
+          "status": "pass",
+          "evidence": "GroupJobBody has no model_speccer field/argv; ExecutionOptions (run) keeps it; test_observatory_launch.py (33 tests) and full UI vitest suite (199 tests) green"
+        },
+        {
+          "item_id": "g7-3",
+          "description": "The rewrite-speccer path still works: `orchestrator/execution/review.py`'s rewrite flow and its tests are unchanged and green, and the run-form `model_speccer` knob plus the `SpeccerCalls` viewer are untouched.",
+          "status": "pass",
+          "evidence": "test_review_loop.py + test_rewrite_observability.py green (100 tests total with test_observatory_launch.py); run-form model_speccer knob and SpeccerCalls viewer untouched"
+        },
+        {
+          "item_id": "g7-4",
+          "description": "`docs/orchestrator-grouping.md` contains a removal note carrying the sha of the single standalone commit that made this change.",
+          "status": "pass",
+          "evidence": "docs/orchestrator-grouping.md records commit d57c5cf as the removal commit"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u5",
+      "task_id": "u5-planning-contract-docs",
+      "group_id": "g5",
+      "title": "planning-contract-docs — Summary field, conventions, budget formula in the contracts",
+      "summary": "planning-contract-docs — Summary field, conventions, budget formula in the contracts",
+      "goal": "`skills/orchestrator-plan/SKILL.md` and\n  `docs/orchestrator-task-map.md` document the new authoring contract: the\n  required per-unit `Summary:` tagged line (R21) and the `### U<N>.` ↔\n  `u<N>-…` id convention; Verification written as a bulleted list (one item\n  per bullet; a single-line Verification is one item); `symbols` is optional,\n  contributes derived precedence, and on a dense codebase omitting it may give\n  a better partition (R9, replacing the unconditional \"record exact symbols\");\n  the pricing formula, multipliers, and cap documented next to `size_hints`\n  with a pointer to `group --price` (doc half of R6); the plan-template unit\n  skeleton gains the `Summary:` field.",
+      "verification": [
+        {
+          "item_id": "g5-3",
+          "description": "The skill's hand-off phase contains the `--advise` invocation after `--no-spec` validation, instructs presenting its diagnostics, and phrases the split strictly as a question to the user with proceed-as-one as an explicit option.",
+          "status": "pass",
+          "evidence": "Phase 7 runs --advise after --no-spec, instructs presenting diagnostics, and phrases the choice as a question with proceed-as-one as an explicit option"
+        },
+        {
+          "item_id": "g5-4",
+          "description": "The skill contains no instruction to auto-split or regenerate plan prose, and no reference to a deepen command as currently runnable.",
+          "status": "pass",
+          "evidence": "No auto-split/regenerate instruction added; the single 'deepen command' mention only states it doesn't exist yet, not that it's runnable"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u6",
+      "task_id": "u6-error-accumulation",
+      "group_id": "g8",
+      "title": "error-accumulation — every validation phase reports all its failures (C1/R5)",
+      "summary": "error-accumulation — every validation phase reports all its failures (C1/R5)",
+      "goal": "`_check_slice_overflow` collects every over-cap slice and raises\n  once listing all of them; `plan_reader` accumulates shape errors and reports\n  them together, then accumulates reference errors (unknown `depends_on`,\n  bad `size_hints`, duplicate ids) and reports them together — phase order\n  preserved, first failing phase reports its full set then stops. Error text\n  keeps naming each problem exactly as today (one line per problem).",
+      "verification": [
+        {
+          "item_id": "g8-1",
+          "description": "A map with three over-cap slices fails with one `GrouperError` naming all three slices with their sums and overshoots.",
+          "status": "pass",
+          "evidence": "test_three_over_cap_slices_all_named_in_one_error asserts all three slice labels, sums, and overshoots appear in one GrouperError"
+        },
+        {
+          "item_id": "g8-2",
+          "description": "A map with two unknown-key tasks and two bad `size_hints` entries reports both unknown-key problems in one error; fixing those then reports both `size_hints` problems in one error.",
+          "status": "pass",
+          "evidence": "test_two_unknown_key_tasks_reported_together and test_fixing_unknown_keys_then_reveals_both_size_hints_problems_together verify the two-phase behavior"
+        },
+        {
+          "item_id": "g8-3",
+          "description": "Single-error behavior is unchanged in wording, and existing tests asserting on error messages pass without modification.",
+          "status": "pass",
+          "evidence": "existing tests/test_plan_reader.py and tests/test_grouper_pipeline.py pass unmodified; added test_single_over_cap_slice_wording_is_unchanged asserts exact original message text"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u7",
+      "task_id": "u7-price-mode",
+      "group_id": "g9",
+      "title": "price-mode — `group --price` prints the budget arithmetic sub-second (C3/R6)",
+      "summary": "price-mode — `group --price` prints the budget arithmetic sub-second (C3/R6)",
+      "goal": "`group --price <plan>` parses the task map (no graph build, no\n  codegraph client, no quiescence), prices every task's node work from working\n  tree byte counts + `size_hints`, and prints: per-task node work, per-slice\n  sums against the cap with pass/fail, and the resolved budget parameters\n  (token_budget, multipliers, per-file allowance, head, cap) — with the cap\n  labeled approximate (compiled with an empty codegraph summary) and the\n  approximation stated. Exits non-zero if any slice exceeds the cap. Runs\n  sub-second.",
+      "verification": [
+        {
+          "item_id": "g9-1",
+          "description": "On a fixture plan with one over-cap slice, `--price` exits non-zero and prints that slice's member-by-member node work, sum, cap, and overshoot.",
+          "status": "pass",
+          "evidence": "TestOverCapSliceCli.test_exits_nonzero_and_prints_member_detail"
+        },
+        {
+          "item_id": "g9-2",
+          "description": "`--price` never invokes codegraph — asserted via a client stub that raises on any call — and states in its output that the cap is approximate because the codegraph summary was empty.",
+          "status": "pass",
+          "evidence": "TestPriceNeverTouchesCodegraph — raising-runner stub never invoked; output states cap approximation"
+        },
+        {
+          "item_id": "g9-3",
+          "description": "On this repo's 2026-08-26 plan document, `--price` completes in under one second and its per-task figures match `grouping-trace.json` `node_work` for the same map within the stated cap approximation.",
+          "status": "pass",
+          "evidence": "TestRealPlanCrossCheck.test_price_is_subsecond_and_matches_the_real_trace against docs/plans/2026-08-26-...-plan.md"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u8",
+      "task_id": "u8-budget-naming",
+      "group_id": "g10",
+      "title": "budget-naming — one vocabulary for node work vs coder work (C2/R7)",
+      "summary": "budget-naming — one vocabulary for node work vs coder work (C2/R7)",
+      "goal": "Everywhere an operator sees a budget figure — the slice-overflow\n  error, the dry-run/group report listing, `--price` output — the two\n  quantities are named distinctly: `node work` (unscaled) and `coder work`\n  (× `coder_slack_multiplier`). The slice-overflow error prints both figures\n  and states the multiplier. No arithmetic changes.",
+      "verification": [
+        {
+          "item_id": "g10-1",
+          "description": "The slice-overflow error message contains both a `node work` and a `coder work` figure for each offending slice, plus the literal multiplier value in use.",
+          "status": "pass",
+          "evidence": "overflow message now includes 'node work', 'coder work', and 'coder_slack_multiplier=<value>' per offending slice; verified in tests/test_grouper_pipeline.py::TestSliceOverflowAccumulation"
+        },
+        {
+          "item_id": "g10-2",
+          "description": "`group --dry-run`'s per-group listing labels its figure `node work`, and no user-facing output says bare \"work\" for either quantity.",
+          "status": "pass",
+          "evidence": "dry-run listing already said 'node work'; fixed the remaining bare 'work fraction of cap' in cli.py's scorecard print to 'node work fraction of cap'"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u9",
+      "task_id": "u9-partition-diagnostics",
+      "group_id": "g11",
+      "title": "partition-diagnostics — inferred/declared provenance and slice-re-entry named (C4.2+C5 / R8+R10)",
+      "summary": "partition-diagnostics — inferred/declared provenance and slice-re-entry named (C4.2+C5 / R8+R10)",
+      "goal": "(a) The degenerate-partition error reports how many of the edges\n  inside the offending SCC are inferred vs declared, with provenance — e.g.\n  \"103 of 127 dependency edges are inferred from `symbols`\" — sourced from\n  the same contribution data `edge_provenance_document` records. (b) A\n  dependency path that leaves and re-enters a slice is detected on the\n  contracted graph before partitioning and reported by name with the exact\n  edit: \"slice `resilience` contracts `u1` and `u3`, but `u1 → u2 → u3`\n  leaves the slice and returns — bring `u2` into the slice or drop the\n  label\"; all such shapes are reported together (R5 discipline).",
+      "verification": [
+        {
+          "item_id": "g11-1",
+          "description": "A fixture reproducing the run-10 shape (u1→u2→u3 with u1/u3 slice-mates) fails naming the slice, the full path, and both remedies — not with the generic saturation message.",
+          "status": "pass",
+          "evidence": "test_run10_shape_names_slice_path_and_both_remedies in test_grouper_pipeline.py reproduces u1->u2->u3 with u1/u3 slice-mates through compute_partition and asserts the slice name, full path, both remedies, and absence of 'saturated'/'degenerate' generic wording."
+        },
+        {
+          "item_id": "g11-2",
+          "description": "Multiple slice-re-entrant shapes in one map are all reported together in a single error.",
+          "status": "pass",
+          "evidence": "test_two_independent_reentrant_slices_reported_together asserts both slice names and both paths appear in one GrouperError ('2 problems found')."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u10",
+      "task_id": "u10-cycle-repair-withdrawal",
+      "group_id": "g2",
+      "title": "cycle-repair-withdrawal — group-DAG repair withdraws inferred edges before merging (C4.1/R11)",
+      "summary": "cycle-repair-withdrawal — group-DAG repair withdraws inferred edges before merging (C4.1/R11)",
+      "goal": "`repair_cycles` receives the declared-edge set (the mapper's\n  `depends_on` pairs) and, when a group-SCC cycle forms, first withdraws\n  inferred precedence edges (banking their weight as affinity, as\n  `_drop_inferred_cycles` already does at task level) until the group DAG is\n  acyclic — falling back to the existing merge+re-split only if withdrawal\n  alone cannot break the cycle. Declared edges are never withdrawn.\n  Withdrawals are recorded in the trace `repairs` with the edges named.",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "A fixture whose group cycle is closed only by an inferred edge partitions cleanly with no merge, the withdrawal recorded in the trace `repairs` with the edge named, and the final group count unchanged from the pre-cycle expectation.",
+          "status": "pass",
+          "evidence": "test_cycle_closed_only_by_an_inferred_edge_withdraws_instead_of_merging: group count unchanged, withdrawal recorded in trace repairs with action=withdraw and edge named"
+        },
+        {
+          "item_id": "g2-2",
+          "description": "A fixture whose cycle consists solely of declared edges still takes the merge + re-split path, and declared edges never appear as withdrawn in any trace.",
+          "status": "pass",
+          "evidence": "test_cycle_of_solely_declared_edges_still_merges_and_never_withdraws: merge+re-split path taken, declared edges never withdrawn"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u11",
+      "task_id": "u11-advisory-report",
+      "group_id": "g3",
+      "title": "advisory-report — `group --advise`: one graph, all granularities, cohesion diagnostics (R12–R14)",
+      "summary": "advisory-report — `group --advise`: one graph, all granularities, cohesion diagnostics (R12–R14)",
+      "goal": "`group --advise <plan>` builds the task graph **once** (reusing\n  the `compute_partition` prefix refactored into a graph-building seam), runs\n  the partition at every `GRANULARITY_LEVELS` preset off that cached graph,\n  and writes an Advisory Report — JSON artifact in the grouping's `preview/`\n  dir plus a human-readable rendering — containing per preset: group count,\n  per-group node work and budget utilization (mean/max), cross-group edge\n  cut, group-DAG depth, simulated makespan (`_simulate_makespan`), modularity\n  (`scorecard._modularity`), with Pareto-dominant presets flagged. Cohesion\n  diagnostics, zero LLM: weakly-connected components computed before Louvain\n  (a multi-component or near-disconnected plan is flagged \"this reads as N\n  separate plans\", naming the task sets); a seriality signal (critical path /\n  max wave width via `_compute_waves`) plus a topological-order cut sweep\n  whose valleys name candidate phase boundaries (\"this reads as serial\n  phases\"); and a \"structurally monolithic\" report when modularity is low and\n  every cut has high conductance. Thresholds are named module constants.\n  `--advise` follows preview semantics: never touches a persisted\n  `groups.json`.",
+      "verification": [
+        {
+          "item_id": "g3-1",
+          "description": "`group --advise` on a fixture plan performs exactly one graph build (asserted via a counting client stub) and emits a report with one entry per granularity preset, each carrying group count, utilization, edge cut, DAG depth, makespan, and modularity, with Pareto-dominant presets flagged.",
+          "status": "pass",
+          "evidence": "TestOneGraphBuild covers single-build call counting and full per-preset metric+Pareto coverage; confirmed live via CLI smoke test"
+        },
+        {
+          "item_id": "g3-2",
+          "description": "A fixture of two disjoint task sets is flagged \"reads as 2 separate plans\" naming both sets; a pure chain fixture is flagged serial with the boundary between its widest-gap waves; a clique fixture reports \"structurally monolithic\".",
+          "status": "pass",
+          "evidence": "TestCohesionShapes covers disjoint sets, pure chain, and clique fixtures"
+        },
+        {
+          "item_id": "g3-3",
+          "description": "After `--advise`, a pre-existing `groups.json` in the same grouping dir is byte-identical, and `advisory.json` lives under `preview/`.",
+          "status": "pass",
+          "evidence": "TestPreviewIsolation + live smoke test confirm advisory.json under preview/ and groups.json untouched"
+        },
+        {
+          "item_id": "g3-4",
+          "description": "The report is byte-deterministic across two runs on an unchanged repo, and no LLM call occurs (runner stub raises on any call).",
+          "status": "pass",
+          "evidence": "TestDeterminism (two-run byte-identical) and TestOneGraphBuild.test_zero_llm_calls (raising runner stub)"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u12",
+      "task_id": "u12-fill-penalty",
+      "group_id": "g4",
+      "title": "fill-penalty — merge key prefers balanced fills over cap-filling (R19b experiment)",
+      "summary": "fill-penalty — merge key prefers balanced fills over cap-filling (R19b experiment)",
+      "goal": "The merge key in `merge_small_groups` gains a fill/balance term\n  ranked above `merged_work`'s current 5th place: candidate merges whose\n  merged work lands inside a target band (config knob\n  `[partition] target_fill_ratio`, default chosen and justified in-code) are\n  preferred over ones landing at the cap, so one group no longer absorbs\n  merges until it hits the cap. Determinism discipline preserved (sorted\n  iteration, full ordering). The granularity-ladder and hub tests are updated\n  where the expected partitions legitimately change; any change is explained\n  in the test.",
+      "verification": [
+        {
+          "item_id": "g4-1",
+          "description": "A synthetic fixture reproducing the greedy pathology (one group absorbing every merge to ~96% of cap while siblings starve) yields a partition with strictly lower per-group fill variance, no group over cap, and an acyclic group DAG.",
+          "status": "pass",
+          "evidence": "TestFillPenalty.test_fill_term_lowers_group_size_variance_without_breaking_invariants in tests/test_partition.py: synthetic two-hub fixture shows strictly lower pvariance under the new key, no group over cap, acyclic DAG (build_group_dag succeeds)."
+        },
+        {
+          "item_id": "g4-2",
+          "description": "Partitions remain byte-deterministic across runs, and slice must-link and budget-cap invariants hold across the whole existing test suite.",
+          "status": "pass",
+          "evidence": "test_fill_term_is_deterministic_across_runs (5 runs, identical); full suite run twice (1444 passed) confirms no invariant regressions across existing slice/budget-cap tests."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u13",
+      "task_id": "u13-plan-skill-advise-phase",
+      "group_id": "g5",
+      "title": "plan-skill-advise-phase — /orchestrator-plan consults the advisory and asks (R15)",
+      "summary": "plan-skill-advise-phase — /orchestrator-plan consults the advisory and asks (R15)",
+      "goal": "`skills/orchestrator-plan/SKILL.md`'s hand-off phase runs\n  `smart-mcps-orchestrate group <plan> --advise` after the `--no-spec`\n  validation, presents the Advisory Report's diagnostics (granularity\n  comparison, \"reads as N plans\", \"reads as serial phases\"), and **asks the\n  user** whether to split along the reported seams or proceed as one plan —\n  never splitting silently, never rewriting the plan. The mechanical split and\n  the deepen-command reminder are noted as arriving with wave 2 (R16/R17),\n  not fabricated now.",
+      "verification": [
+        {
+          "item_id": "g5-1",
+          "description": "`docs/orchestrator-task-map.md` states the node-work formula with numeric defaults (bytes/4 × 1.3 + 2000/file, cap = 200,000 − head) and names `group --price`.",
+          "status": "pass",
+          "evidence": "docs/orchestrator-task-map.md states node_work = source_bytes/4.0 × 1.3 + per-file allowance, cap = 200,000 − head, names all multipliers, and points at group --price"
+        },
+        {
+          "item_id": "g5-2",
+          "description": "`SKILL.md` no longer instructs \"Record exact existing symbols\" without qualification; it states the dense-codebase trade-off and the `Summary:`/Verification-bullet conventions, and the unit template shows `Summary:`.",
+          "status": "pass",
+          "evidence": "SKILL.md Phase 2 replaces the unconditional symbols instruction with the dense-codebase trade-off; Units section states Summary: requirement and Verification-bullet convention; template shows Summary: field"
+        }
+      ],
+      "landed": true
+    }
+  ],
+  "rids": [
+    {
+      "rid": "R1",
+      "units": [
+        "u1",
+        "u2",
+        "u4"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R5",
+      "units": [
+        "u6",
+        "u7",
+        "u5",
+        "u8",
+        "u9"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R9",
+      "units": [
+        "u5",
+        "u9",
+        "u10",
+        "u11",
+        "u13",
+        "u1"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R22",
+      "units": [
+        "u3"
+      ],
+      "landed": true
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g9",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g10",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:43.533025+00:00",
+      "kind": "session_start",
+      "group_id": "g11",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g6",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g8",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g9",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g10",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.463091+00:00",
+      "kind": "session_end",
+      "group_id": "g11",
+      "label": "orchestrator"
+    },
+    {
+      "at": "2026-08-28T20:01:48.890781+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T20:29:04.766109+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T20:43:43.758597+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T21:15:09.785401+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T21:17:37.453375+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T21:25:13.754585+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T21:52:17.175139+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T21:58:45.079893+00:00",
+      "kind": "session_start",
+      "group_id": "g10",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T22:02:39.569459+00:00",
+      "kind": "session_start",
+      "group_id": "g11",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T22:19:53.272873+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-28T22:33:01.804687+00:00",
+      "kind": "session_start",
+      "group_id": "g9",
+      "label": "coder"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": true
+}

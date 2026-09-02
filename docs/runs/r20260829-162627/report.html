@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run report — r20260829-162627</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --border: #d9dde3;
+    --card-bg: #f7f8fa;
+    --pass: #2f9e44;
+    --fail: #c92a2a;
+    --unverified: #e8a400;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e7e9ec;
+      --muted: #9aa1ac;
+      --border: #33373f;
+      --card-bg: #1c1f24;
+    }
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    line-height: 1.5;
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  table { border-collapse: collapse; width: 100%; margin: 0.75rem 0 1.5rem; }
+  th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: var(--card-bg); }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .badge-trouble { background: var(--fail); color: #fff; }
+  .badge-clean { background: var(--pass); color: #fff; }
+  .cell-pass { color: var(--pass); }
+  .cell-fail { color: var(--fail); font-weight: 600; }
+  .cell-unverified { color: var(--unverified); }
+  .card { border: 1px solid var(--border); background: var(--card-bg); border-radius: 8px; padding: 1rem; margin: 0.75rem 0; }
+  pre.mermaid { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; }
+  .one-pager { border-left: 4px solid var(--pass); padding-left: 1rem; white-space: pre-wrap; }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Mechanical plan split and the deepen skill</h1>
+  <p>
+    <span class="badge badge-clean">clean</span>
+    run <code>r20260829-162627</code>
+    &middot; git range <code>5eca4f14..a76fec68</code>
+    &middot; <a href="https://github.com/Giovani-Merlin/smart_mcps/pull/6">pull request</a>
+  </p>
+  <p class="muted">Ship wave 2 of the grouper-speccer-flow requirements — R16 (mechanical plan
+split), R17 (`/orchestrator-deepen`), and R18 (its question policy and
+enrichment template, grounded in the R19 research already received) — so that
+the advisory grouper shipped in wave 1 has somewhere to lead:
+
+- **R16**: `smart-mcps-orchestrate split` turns a chosen seam into N plan
+  documents by moving unit sections and task-map entries **verbatim**, with no
+  LLM regeneration of any prose.
+- **R17/R18**: `/orchestrator-deepen <plan>` is a standalone interactive skill
+  that spawns read-only explorers, grills the human with a capped, EVPI-ranked
+  question set, and writes the answers back into the plan as per-unit
+  enrichment — edge cases, non-goals, and sharpened `Run:`/`Pass:` verification
+  items.
+
+Both commands write into a plan document, which is the fingerprint-drift bug
+class this repo has been bitten by before. So both go through **one shared,
+tested plan-surgery module** whose guarantee is byte-level: the task map and
+unit ids either survive a rewrite untouched, or the rewrite is refused.
+
+R19 is already satisfied — both Perplexity reports were received 2026-08-28 and
+their findings are folded into the origin brainstorm; this plan consumes them
+rather than re-commissioning them. R20 (the eval harness) stays out of scope,
+blocked on Infinity Skills ingestion.</p>
+</header>
+
+
+
+<section>
+  <h2>Evidence matrix</h2>
+  <table>
+    <thead><tr><th>Group</th><th>State</th><th>Verification items</th></tr></thead>
+    <tbody>
+    
+      <tr>
+        <td>g1: plan-edit — verbatim plan surgery and the `plan-check` guard</td>
+        <td>completed</td>
+        <td>
+        
+          <details class="cell-pass">
+            <summary>g1-1: pass</summary>
+            <p>Extracting all units from a plan and reassembling them into one document yields a file whose task-map block and every `### U<N>` section are byte-identical to the original.</p>
+            <p class="muted">test_all_units_reassembled_yield_byte_identical_map_and_sections + test_real_plan_round_trips_byte_identical (36-unit real plan)</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g1-2: pass</summary>
+            <p>`verify_map_unchanged` accepts a rewrite that only adds new bullets inside a unit body, and rejects a rewrite that alters a `depends_on` list, a `size_hints` value, or a `task_id`, naming each altered entry.</p>
+            <p class="muted">test_accepts_added_bullets_inside_a_unit_body, test_rejects_and_names_altered_depends_on_size_hints_and_task_id</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g1-3: pass</summary>
+            <p>`verify_map_unchanged` reports **all** differences in one report, not the first — a document with three altered entries names three.</p>
+            <p class="muted">test_reports_all_three_altered_entries_in_one_call, test_reports_three_separately_altered_entries</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g1-4: pass</summary>
+            <p>`orchestrate plan-check <plan>` exits 0 on a well-formed plan and non-zero with a message naming the offending unit when a map task has no `### U<N>` section, and again when a section has no map entry.</p>
+            <p class="muted">test_exits_zero_on_well_formed_plan, test_exits_nonzero_naming_offending_unit_missing_section, test_exits_nonzero_naming_offending_unit_missing_map_entry</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g1-5: pass</summary>
+            <p>`plan-check` completes in under a second on this repo's largest plan and makes no codegraph or LLM call (a stub runner that raises on any call is not invoked).</p>
+            <p class="muted">test_completes_under_a_second_on_the_repos_largest_plan (~0.8ms), test_never_touches_codegraph_or_llm</p>
+          </details>
+        
+        </td>
+      </tr>
+    
+      <tr>
+        <td>g2: plan-split — `orchestrate split`, seam-addressable and overridable</td>
+        <td>completed</td>
+        <td>
+        
+          <details class="cell-pass">
+            <summary>g2-1: pass</summary>
+            <p>`group --advise` output numbers every cohesion finding and prints its task sets (disconnected) or boundary cut (serial), and the numbering is stable across two runs on an unchanged plan.</p>
+            <p class="muted">Manually verified _print_advisory_report numbers every finding stably across two calls on the same report and prints task_sets (disconnected) or the tasks_before/tasks_after cut (serial).</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-2: pass</summary>
+            <p>Splitting a fixture plan with `--seam 1` produces documents whose combined unit sections and task-map entries equal the original's, byte-for-byte, with no unit lost or duplicated.</p>
+            <p class="muted">tests/test_plan_split.py::TestSplitPlan::test_two_way_split_is_byte_identical_combined and test_no_unit_lost_or_duplicated verify combined task ids/unit ids equal the original's with no loss/duplication, and each entry's/section's bytes are found verbatim in its document.</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-3: pass</summary>
+            <p>`--tasks` overrides the seam: given both flags, the assignment used is the one from `--tasks`.</p>
+            <p class="muted">test_tasks_overrides_seam_when_both_given confirms --tasks wins when both flags are given.</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-4: pass</summary>
+            <p>A task assigned to no document, and a task assigned to two, are each rejected with a message naming every offending task.</p>
+            <p class="muted">assign_tasks raises naming every unassigned and doubly-assigned task id in one error; test_missing_or_double_assigned_tasks_named_and_rejected and TestAssignTasks cover both cases plus combined.</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-5: pass</summary>
+            <p>Each produced document passes `plan-check`, and running `group --price` on each succeeds with every slice under cap.</p>
+            <p class="muted">test_produced_documents_pass_plan_check and test_produced_documents_price_under_cap run `plan-check` and `group --price` against split output documents.</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-6: pass</summary>
+            <p>Splitting at a `serial` seam writes the predecessor note into the downstream document and not into the first.</p>
+            <p class="muted">test_serial_seam_writes_predecessor_note_only_on_downstream confirms the note appears only in part2, referencing part1's filename.</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g2-7: pass</summary>
+            <p>The source plan file is unmodified after a split (byte-identical).</p>
+            <p class="muted">test_original_plan_text_is_never_mutated and the CLI tests assert the source plan's bytes are unchanged after a split.</p>
+          </details>
+        
+        </td>
+      </tr>
+    
+      <tr>
+        <td>g3: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2</td>
+        <td>completed</td>
+        <td>
+        
+          <details class="cell-pass">
+            <summary>g3-1: pass</summary>
+            <p>A unit section carrying `Edge cases`, `Non-goals / must-not`, and `Run:`/`Pass:` verification bullets parses without error, and its `summary`, `verification`, `implements`, and `consumes` fields are unchanged from the same section without those bullets.</p>
+            <p class="muted">test_known_fields_unchanged_by_new_bullets in tests/test_plan_sections.py</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-2: pass</summary>
+            <p>The new bullets appear verbatim in the assembled group spec for that unit, and the shared digest still contains only the tagged summary lines — no edge-case text leaks into the digest every worker pays for.</p>
+            <p class="muted">test_digest_carries_only_tagged_summary_no_edge_case_text and test_new_bullets_appear_verbatim_in_assembled_group_spec</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-3: pass</summary>
+            <p>A `Run:`/`Pass:` verification bullet becomes exactly one `VerificationItem` whose `description` carries both lines, and the coverage lint still maps it to exactly one group.</p>
+            <p class="muted">TestRunPassVerificationBullet in tests/test_plan_sections.py</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-4: pass</summary>
+            <p>`SKILL.md` states the per-group cap of 3–5 questions as dominant over any plan-global figure, and states that candidate answers are always offered.</p>
+            <p class="muted">SKILL.md Phase 3 + Non-negotiable rules</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-5: pass</summary>
+            <p>`SKILL.md` states the two grounding checks a `Run:` command must pass and the `Pass:`-only fallback when either fails.</p>
+            <p class="muted">SKILL.md Phase 4 + explorer-prompt.md step 5</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-6: pass</summary>
+            <p>`SKILL.md` requires every write to go through `plan_edit` followed by `plan-check --against` the pre-edit copy, and forbids editing the task map or unit ids.</p>
+            <p class="muted">SKILL.md Phase 4 + Non-negotiable rules</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-7: pass</summary>
+            <p>`explorer-prompt.md` names all ten taxonomy categories and instructs the explorer to report only categories that fire.</p>
+            <p class="muted">explorer-prompt.md step 2 lists all ten categories; step 3 restricts reporting to fired ones</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-8: pass</summary>
+            <p>`skills/orchestrator-plan/SKILL.md` no longer contains the sentence declaring the mechanical split and deepen unavailable, and its Phase 7 describes offering `split` after the advisory and printing the deepen command at the end.</p>
+            <p class="muted">grep confirms 'wave-2'/'does not exist yet' sentence removed; Phase 7 now offers split and prints deepen command</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-9: pass</summary>
+            <p>The skill's unit template lists `Edge cases` and `Non-goals / must-not` as optional slots and describes the `Run:`/`Pass:` verification convention, stating that a planning session may leave them empty.</p>
+            <p class="muted">unit template gains optional Edge cases / Non-goals slots and Run:/Pass: convention note</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-10: pass</summary>
+            <p>`docs/orchestrator-grouping.md` documents both `split` and `plan-check` with their flags, and states that `split` is non-destructive and `plan-check` makes no LLM or codegraph call.</p>
+            <p class="muted">new 'split and plan-check' section in docs/orchestrator-grouping.md</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-11: pass</summary>
+            <p>`docs/orchestrator-task-map.md` states what a mechanical split preserves byte-for-byte and that no map field is rewritten by it.</p>
+            <p class="muted">new 'Mechanical split' section in docs/orchestrator-task-map.md</p>
+          </details>
+        
+          <details class="cell-pass">
+            <summary>g3-12: pass</summary>
+            <p>Every command and flag named in the three documents exists in `orchestrate --help` output.</p>
+            <p class="muted">verified group/run/split/plan-check --help output matches every command/flag named in the three docs</p>
+          </details>
+        
+        </td>
+      </tr>
+    
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Requirement traceability</h2>
+  <table>
+    <thead><tr><th>Requirement</th><th>Units</th><th>Landed</th></tr></thead>
+    <tbody>
+    
+      <tr>
+        <td>R16</td>
+        <td>u1, u2</td>
+        <td class="cell-pass">landed</td>
+      </tr>
+    
+      <tr>
+        <td>R17</td>
+        <td>u3, u4</td>
+        <td class="cell-pass">landed</td>
+      </tr>
+    
+      <tr>
+        <td>R18</td>
+        <td>u3</td>
+        <td class="cell-pass">landed</td>
+      </tr>
+    
+      <tr>
+        <td>R19</td>
+        <td></td>
+        <td class="cell-fail">not landed</td>
+      </tr>
+    
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Groups</h2>
+  
+  <div class="card">
+    <h3>g1: plan-edit — verbatim plan surgery and the `plan-check` guard</h3>
+    
+    <p><strong>u1</strong>: A shared `plan_edit` module that extracts and reassembles unit
+  sections and task-map entries byte-verbatim and refuses any rewrite that
+  perturbs the map or unit ids, exposed as `orchestrate plan-check`.</p>
+    
+    <p class="muted">state: completed &middot; verdict: approved</p>
+    <p><strong>Planned files</strong>: orchestrator/cli.py, orchestrator/grouping/plan_edit.py, orchestrator/grouping/plan_reader.py, tests/test_plan_edit.py</p>
+    <p><strong>Touched files</strong>: orchestrator/grouping/plan_reader.py, orchestrator/grouping/plan_sections.py, tests/test_plan_edit.py</p>
+    
+    
+  </div>
+  
+  <div class="card">
+    <h3>g2: plan-split — `orchestrate split`, seam-addressable and overridable</h3>
+    
+    <p><strong>u2</strong>: `orchestrate split` partitions a plan into N documents by moving
+  unit sections and task-map entries verbatim, taking its assignment either
+  from a numbered advisory seam or from explicit `--tasks` groups.</p>
+    
+    <p class="muted">state: completed</p>
+    <p><strong>Planned files</strong>: orchestrator/cli.py, orchestrator/grouping/advisory.py, orchestrator/grouping/plan_edit.py, tests/test_advisory.py, tests/test_plan_split.py</p>
+    <p><strong>Touched files</strong>: orchestrator/cli.py, orchestrator/grouping/advisory.py, orchestrator/grouping/plan_edit.py, tests/test_plan_split.py</p>
+    
+    
+  </div>
+  
+  <div class="card">
+    <h3>g3: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2</h3>
+    
+    <p><strong>u3</strong>: A standalone interactive skill that explores the codebase
+  read-only per group, grills the human with 3–5 EVPI-ranked questions per
+  group, and writes the answers back into the plan as per-unit edge cases,
+  non-goals, and `Run:`/`Pass:` verification items.</p>
+    
+    <p><strong>u4</strong>: `/orchestrator-plan`'s advisory phase can now invoke `split`,
+  and the task-map and grouping contracts document the new unit slots, the
+  `Run:`/`Pass:` convention, and the two new commands.</p>
+    
+    <p class="muted">state: completed &middot; verdict: approved</p>
+    <p><strong>Planned files</strong>: docs/orchestrator-grouping.md, docs/orchestrator-task-map.md, orchestrator/grouping/plan_sections.py, skills/orchestrator-deepen/SKILL.md, skills/orchestrator-deepen/explorer-prompt.md, skills/orchestrator-plan/SKILL.md, tests/test_plan_sections.py</p>
+    <p><strong>Touched files</strong>: docs/orchestrator-grouping.md, docs/orchestrator-task-map.md, skills/orchestrator-deepen/SKILL.md, skills/orchestrator-deepen/explorer-prompt.md, skills/orchestrator-plan/SKILL.md, tests/test_plan_sections.py</p>
+    
+    
+  </div>
+  
+</section>
+
+<section>
+  <h2>Architecture delta</h2>
+  <pre class="mermaid">flowchart LR
+    classDef added fill:#d1f5d3,stroke:#2f9e44;
+    classDef removed fill:#ffd6d6,stroke:#c92a2a;
+    classDef kept fill:#e7e7e7,stroke:#868e96;
+    orchestrator_cli["orchestrator.cli"]:::kept
+    orchestrator_config["orchestrator.config"]:::kept
+    orchestrator_execution_auth["orchestrator.execution.auth"]:::kept
+    orchestrator_execution_calibrate["orchestrator.execution.calibrate"]:::kept
+    orchestrator_execution_confinement["orchestrator.execution.confinement"]:::kept
+    orchestrator_execution_driver["orchestrator.execution.driver"]:::kept
+    orchestrator_execution_escalation["orchestrator.execution.escalation"]:::kept
+    orchestrator_execution_export["orchestrator.execution.export"]:::kept
+    orchestrator_execution_finish["orchestrator.execution.finish"]:::kept
+    orchestrator_execution_heartbeat["orchestrator.execution.heartbeat"]:::kept
+    orchestrator_execution_manifest["orchestrator.execution.manifest"]:::kept
+    orchestrator_execution_merge["orchestrator.execution.merge"]:::kept
+    orchestrator_execution_preflight["orchestrator.execution.preflight"]:::kept
+    orchestrator_execution_prompting["orchestrator.execution.prompting"]:::kept
+    orchestrator_execution_ratelimit["orchestrator.execution.ratelimit"]:::kept
+    orchestrator_execution_retry["orchestrator.execution.retry"]:::kept
+    orchestrator_execution_review["orchestrator.execution.review"]:::kept
+    orchestrator_execution_scheduler["orchestrator.execution.scheduler"]:::kept
+    orchestrator_execution_sessions["orchestrator.execution.sessions"]:::kept
+    orchestrator_execution_worktrees["orchestrator.execution.worktrees"]:::kept
+    orchestrator_grouping_advisory["orchestrator.grouping.advisory"]:::kept
+    orchestrator_grouping_assembler["orchestrator.grouping.assembler"]:::kept
+    orchestrator_grouping_errors["orchestrator.grouping.errors"]:::kept
+    orchestrator_grouping_estimator["orchestrator.grouping.estimator"]:::kept
+    orchestrator_grouping_graphing["orchestrator.grouping.graphing"]:::kept
+    orchestrator_grouping_llm["orchestrator.grouping.llm"]:::kept
+    orchestrator_grouping_llm_record["orchestrator.grouping.llm_record"]:::kept
+    orchestrator_grouping_mapper["orchestrator.grouping.mapper"]:::kept
+    orchestrator_grouping_partition["orchestrator.grouping.partition"]:::kept
+    orchestrator_grouping_pipeline["orchestrator.grouping.pipeline"]:::kept
+    orchestrator_grouping_plan_edit["orchestrator.grouping.plan_edit"]:::added
+    orchestrator_grouping_plan_reader["orchestrator.grouping.plan_reader"]:::kept
+    orchestrator_grouping_plan_sections["orchestrator.grouping.plan_sections"]:::kept
+    orchestrator_grouping_scorecard["orchestrator.grouping.scorecard"]:::kept
+    orchestrator_grouping_trace["orchestrator.grouping.trace"]:::kept
+    orchestrator_model["orchestrator.model"]:::kept
+    orchestrator_observatory_app["orchestrator.observatory.app"]:::kept
+    orchestrator_observatory_registry["orchestrator.observatory.registry"]:::kept
+    orchestrator_prompts["orchestrator.prompts"]:::kept
+    tests_test_plan_edit["tests.test_plan_edit"]:::added
+    tests_test_plan_sections["tests.test_plan_sections"]:::kept
+    tests_test_plan_split["tests.test_plan_split"]:::added
+    orchestrator_cli --> orchestrator_config
+    orchestrator_cli --> orchestrator_execution_auth
+    orchestrator_cli --> orchestrator_execution_calibrate
+    orchestrator_cli --> orchestrator_execution_confinement
+    orchestrator_cli --> orchestrator_execution_driver
+    orchestrator_cli --> orchestrator_execution_escalation
+    orchestrator_cli --> orchestrator_execution_export
+    orchestrator_cli --> orchestrator_execution_finish
+    orchestrator_cli --> orchestrator_execution_heartbeat
+    orchestrator_cli --> orchestrator_execution_manifest
+    orchestrator_cli --> orchestrator_execution_merge
+    orchestrator_cli --> orchestrator_execution_preflight
+    orchestrator_cli --> orchestrator_execution_prompting
+    orchestrator_cli --> orchestrator_execution_ratelimit
+    orchestrator_cli --> orchestrator_execution_retry
+    orchestrator_cli --> orchestrator_execution_review
+    orchestrator_cli --> orchestrator_execution_scheduler
+    orchestrator_cli --> orchestrator_execution_sessions
+    orchestrator_cli --> orchestrator_execution_worktrees
+    orchestrator_cli --> orchestrator_grouping_advisory
+    orchestrator_cli --> orchestrator_grouping_estimator
+    orchestrator_cli --> orchestrator_grouping_graphing
+    orchestrator_cli --> orchestrator_grouping_llm
+    orchestrator_cli --> orchestrator_grouping_llm_record
+    orchestrator_cli --> orchestrator_grouping_partition
+    orchestrator_cli --> orchestrator_grouping_pipeline
+    orchestrator_cli --> orchestrator_grouping_plan_edit
+    orchestrator_cli --> orchestrator_grouping_plan_reader
+    orchestrator_cli --> orchestrator_grouping_trace
+    orchestrator_cli --> orchestrator_model
+    orchestrator_cli --> orchestrator_observatory_app
+    orchestrator_cli --> orchestrator_observatory_registry
+    orchestrator_cli --> orchestrator_prompts
+    orchestrator_grouping_advisory --> orchestrator_config
+    orchestrator_grouping_advisory --> orchestrator_grouping_estimator
+    orchestrator_grouping_advisory --> orchestrator_grouping_graphing
+    orchestrator_grouping_advisory --> orchestrator_grouping_llm
+    orchestrator_grouping_advisory --> orchestrator_grouping_partition
+    orchestrator_grouping_advisory --> orchestrator_grouping_pipeline
+    orchestrator_grouping_advisory --> orchestrator_grouping_scorecard
+    orchestrator_grouping_plan_edit --> orchestrator_grouping_plan_reader
+    orchestrator_grouping_plan_edit --> orchestrator_grouping_plan_sections
+    orchestrator_grouping_plan_reader --> orchestrator_grouping_errors
+    orchestrator_grouping_plan_reader --> orchestrator_grouping_graphing
+    orchestrator_grouping_plan_reader --> orchestrator_grouping_mapper
+    orchestrator_grouping_plan_sections --> orchestrator_grouping_plan_reader
+    tests_test_plan_edit --> orchestrator_cli
+    tests_test_plan_edit --> orchestrator_grouping_plan_edit
+    tests_test_plan_edit --> orchestrator_grouping_plan_reader
+    tests_test_plan_sections --> orchestrator_grouping_assembler
+    tests_test_plan_sections --> orchestrator_grouping_graphing
+    tests_test_plan_sections --> orchestrator_grouping_plan_sections
+    tests_test_plan_split --> orchestrator_cli
+    tests_test_plan_split --> orchestrator_grouping_advisory
+    tests_test_plan_split --> orchestrator_grouping_plan_edit</pre>
+</section>
+
+<section>
+  <h2>How-to-use sequences</h2>
+  
+    
+    <pre class="mermaid">sequenceDiagram
+    participant plan_check as plan-check
+    participant _anchor_plan_path as _anchor_plan_path
+    participant verify_map_unchanged as verify_map_unchanged
+    participant extract_task_map_entries as extract_task_map_entries
+    participant _describe_entry_diff as _describe_entry_diff
+    participant _safe_split_units as _safe_split_units
+    participant validate_plan as validate_plan
+    participant _unit_key_for_task as _unit_key_for_task
+    plan_check->>_anchor_plan_path: calls
+    plan_check->>verify_map_unchanged: calls
+    verify_map_unchanged->>extract_task_map_entries: calls
+    verify_map_unchanged->>_describe_entry_diff: calls
+    verify_map_unchanged->>_safe_split_units: calls
+    plan_check->>validate_plan: calls
+    validate_plan->>extract_task_map_entries: calls
+    validate_plan->>_safe_split_units: calls
+    validate_plan->>_unit_key_for_task: calls</pre>
+    
+    <pre class="mermaid">sequenceDiagram
+    participant split as split
+    participant _anchor_plan_path as _anchor_plan_path
+    participant grouping_dir as grouping_dir
+    participant validate_grouping_name as validate_grouping_name
+    participant groupings_root as groupings_root
+    participant finding_task_groups as finding_task_groups
+    participant split_plan as split_plan
+    participant extract_task_map_entries as extract_task_map_entries
+    participant assign_tasks as assign_tasks
+    participant _unit_key_for_task as _unit_key_for_task
+    participant split_units as split_units
+    participant _split_output_path as _split_output_path
+    participant add_frontmatter_field as add_frontmatter_field
+    split->>_anchor_plan_path: calls
+    split->>grouping_dir: calls
+    grouping_dir->>validate_grouping_name: calls
+    grouping_dir->>groupings_root: calls
+    split->>finding_task_groups: calls
+    split->>split_plan: calls
+    split_plan->>extract_task_map_entries: calls
+    split_plan->>assign_tasks: calls
+    split_plan->>_unit_key_for_task: calls
+    split_plan->>split_units: calls
+    split->>_split_output_path: calls
+    split->>add_frontmatter_field: calls</pre>
+    
+    <pre class="mermaid">sequenceDiagram
+    participant extract_task_map_entries as extract_task_map_entries
+    participant task_map_block_span as task_map_block_span
+    participant start as start
+    participant write_once as write_once
+    participant spawned as spawned
+    participant _write_message as _write_message
+    extract_task_map_entries->>task_map_block_span: calls
+    extract_task_map_entries->>start: calls
+    start->>write_once: calls
+    start->>spawned: calls
+    start->>_write_message: calls</pre>
+    
+    <pre class="mermaid">sequenceDiagram
+    participant split_units as split_units
+    participant locate_units_span as locate_units_span
+    participant start as start
+    participant write_once as write_once
+    participant spawned as spawned
+    participant _write_message as _write_message
+    split_units->>locate_units_span: calls
+    split_units->>start: calls
+    start->>write_once: calls
+    start->>spawned: calls
+    start->>_write_message: calls</pre>
+    
+    <pre class="mermaid">sequenceDiagram
+    participant validate_plan as validate_plan
+    participant extract_task_map_entries as extract_task_map_entries
+    participant task_map_block_span as task_map_block_span
+    participant start as start
+    participant _safe_split_units as _safe_split_units
+    participant split_units as split_units
+    participant _unit_key_for_task as _unit_key_for_task
+    validate_plan->>extract_task_map_entries: calls
+    extract_task_map_entries->>task_map_block_span: calls
+    extract_task_map_entries->>start: calls
+    validate_plan->>_safe_split_units: calls
+    _safe_split_units->>split_units: calls
+    validate_plan->>_unit_key_for_task: calls</pre>
+    
+    <pre class="mermaid">sequenceDiagram
+    participant verify_map_unchanged as verify_map_unchanged
+    participant extract_task_map_entries as extract_task_map_entries
+    participant task_map_block_span as task_map_block_span
+    participant start as start
+    participant _describe_entry_diff as _describe_entry_diff
+    participant _parse_entry_fields as _parse_entry_fields
+    participant _safe_split_units as _safe_split_units
+    participant split_units as split_units
+    verify_map_unchanged->>extract_task_map_entries: calls
+    extract_task_map_entries->>task_map_block_span: calls
+    extract_task_map_entries->>start: calls
+    verify_map_unchanged->>_describe_entry_diff: calls
+    _describe_entry_diff->>_parse_entry_fields: calls
+    verify_map_unchanged->>_safe_split_units: calls
+    _safe_split_units->>split_units: calls</pre>
+    
+  
+</section>
+
+<section>
+  <h2>Run timeline</h2>
+  <pre class="mermaid">gantt
+    title Run timeline — r20260829-162627
+    dateFormat YYYY-MM-DDTHH:mm:ss
+    axisFormat %H:%M
+    section g1- plan-edit — verbatim plan surgery and the `plan-check` guard
+    coder gen1 :done, g1_coder_1_1, 2026-08-29T16:27:57, 2026-08-29T16:28:57
+    reviewer gen1 :done, g1_reviewer_1_2, 2026-08-29T16:38:56, 2026-08-29T16:39:56
+    state- completed :milestone, g1_state, 2026-08-29T16:39:56, 0d
+    section g2- plan-split — `orchestrate split`; seam-addressable and overridable
+    coder gen1 :done, g2_coder_1_1, 2026-08-29T16:40:16, 2026-08-29T16:41:16
+    state- completed :milestone, g2_state, 2026-08-29T16:41:16, 0d
+    section g3- deepen-skill — `/orchestrator-deepen`; explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2
+    coder gen1 :done, g3_coder_1_1, 2026-08-29T16:50:46, 2026-08-29T16:51:46
+    reviewer gen1 :done, g3_reviewer_1_2, 2026-08-29T16:59:07, 2026-08-29T17:00:07
+    state- completed :milestone, g3_state, 2026-08-29T17:00:07, 0d</pre>
+</section>
+
+<section>
+  <h2>Plan → outcome</h2>
+  <pre class="mermaid">flowchart LR
+    classDef ok fill:#d1f5d3,stroke:#2f9e44;
+    classDef fail fill:#ffd6d6,stroke:#c92a2a;
+    classDef resolved fill:#fff3bf,stroke:#e8a400;
+    u_u1["u1- plan-edit — verbatim plan surgery and the `plan-check` guard"]
+    grp_g1["g1- plan-edit — verbatim plan surgery and the `plan-check` guard"]
+    u_u1 -->|approved| grp_g1
+    u_u2["u2- plan-split — `orchestrate split`; seam-addressable and overridable"]
+    grp_g2["g2- plan-split — `orchestrate split`; seam-addressable and overridable"]
+    u_u2 --> grp_g2
+    u_u3["u3- deepen-skill — `/orchestrator-deepen`; explorer-grounded and capped"]
+    grp_g3["g3- deepen-skill — `/orchestrator-deepen`; explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2"]
+    u_u3 -->|approved| grp_g3
+    u_u4["u4- planning-contract — the plan skill and the contracts learn about wave 2"]
+    u_u4 -->|approved| grp_g3
+    grp_g1:::ok
+    grp_g2:::ok
+    grp_g3:::ok</pre>
+</section>
+
+<section>
+  <h2>Group cost</h2>
+  <table>
+    <thead><tr><th>Group</th><th>Sessions</th><th>Tokens</th></tr></thead>
+    <tbody>
+    
+      <tr>
+        <td>g1: plan-edit — verbatim plan surgery and the `plan-check` guard</td>
+        <td>2</td>
+        <td>6,369,936</td>
+      </tr>
+    
+      <tr>
+        <td>g2: plan-split — `orchestrate split`, seam-addressable and overridable</td>
+        <td>1</td>
+        <td>8,187,634</td>
+      </tr>
+    
+      <tr>
+        <td>g3: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2</td>
+        <td>2</td>
+        <td>6,820,329</td>
+      </tr>
+    
+    </tbody>
+  </table>
+</section>
+
+<script type="module">
+  try {
+    const mermaidModule = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+    const mermaid = mermaidModule.default;
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+    await mermaid.run({ querySelector: '.mermaid' });
+  } catch (err) {
+    console.warn('mermaid failed to load from the CDN; showing raw diagram source', err);
+  }
+</script>
+
+</body>
+</html>
