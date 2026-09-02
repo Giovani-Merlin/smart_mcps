@@ -66,20 +66,22 @@ def _recorded_fingerprint(target_repo: Path, name: str = "plan") -> str:
     return trace.provenance.index_fingerprint
 
 
-class TestResumeMismatchFails:
-    def test_resume_with_a_different_index_exits_nonzero_naming_both_fingerprints(
+class TestResumeWarnsOnDrift:
+    def test_resume_with_a_different_index_warns_naming_both_and_executes_the_snapshot(
         self,
         repo,  # noqa: F811 -- pytest fixture imported from test_e2e_stub
         fake_home,  # noqa: F811 -- pytest fixture imported from test_e2e_stub
         capsys,
     ):
+        """A run's grouping is frozen once groups executed against it, and the
+        index drifts *because* the run merges work — so a resume must warn and
+        carry on with its snapshot, never refuse (r20260902-132128 was stranded
+        by the old hard failure after three merges)."""
         gid = _group(repo)
         recorded_fp = _recorded_fingerprint(repo)
         write_config(repo, fake_home)
 
         run_id = "r-mismatch"
-        # g's coder crashes at fork so the run stops interrupted (non-terminal)
-        # rather than needing to actually complete for this test's purpose.
         script_session(
             fake_home, name_of(run_id, gid, "coder"), {"exit_code": 1, "stderr": "worker crashed"}
         )
@@ -88,23 +90,37 @@ class TestResumeMismatchFails:
             llm_runner=StubLlm(),
             client=CodegraphClient(repo_root=repo, runner=codegraph_response),
         )
-        assert exit_code == 2  # interrupted, not the mismatch under test yet
+        assert exit_code == 2  # interrupted, not the drift under test yet
+        capsys.readouterr()
 
-        # resume against a drifted index (no --allow-index-drift): hard failure
+        stub = StubLlm()
+        script_session(
+            fake_home,
+            name_of(run_id, gid, "coder"),
+            coder_entry(files={f"{gid}.out": "done\n"}, commit=f"{gid}: work"),
+        )
+        script_session(fake_home, name_of(run_id, gid, "reviewer"), verdict_entry("approved"))
         exit_code = main(
             ["resume", run_id, "--repo", str(repo)],
-            llm_runner=StubLlm(),
+            llm_runner=stub,
             client=CodegraphClient(repo_root=repo, runner=_drifted_response),
         )
-        assert exit_code == 1
+        assert exit_code == 0
         err = capsys.readouterr().err
+        assert "warning: codegraph index drifted" in err
         assert recorded_fp in err
         assert _fingerprint_of(_drifted_response) in err
-        assert "--allow-index-drift" in err
+        # no re-partition: the mapper was never invoked and the snapshot is intact
+        assert not any(title == "mapper_output" for title, _ in stub.prompts)
+        trace = GroupingTrace.model_validate_json(
+            (repo / ".orchestrator" / "runs" / run_id / "grouping-trace.json").read_text()
+        )
+        assert trace.provenance is not None
+        assert trace.provenance.index_fingerprint == recorded_fp
 
 
-class TestAllowDriftRepartitions:
-    def test_allow_index_drift_warns_and_repartitions_instead_of_reusing(
+class TestAllowDriftNeverRepartitionsAResume:
+    def test_allow_index_drift_on_resume_is_inert(
         self,
         repo,  # noqa: F811 -- pytest fixture imported from test_e2e_stub
         fake_home,  # noqa: F811 -- pytest fixture imported from test_e2e_stub
@@ -124,6 +140,7 @@ class TestAllowDriftRepartitions:
             client=CodegraphClient(repo_root=repo, runner=codegraph_response),
         )
         assert exit_code == 2
+        capsys.readouterr()
 
         stub = StubLlm()
         script_session(
@@ -139,23 +156,17 @@ class TestAllowDriftRepartitions:
         )
         assert exit_code == 0
         err = capsys.readouterr().err
-        assert "warning: index drift" in err
-        assert recorded_fp in err
-        assert "not reproducible" in err  # the mapper-is-unseeded-LLM residual note
-
-        # a real re-partition ran: the mapper LLM was invoked again for this
-        # resume, not skipped in favour of the stale groups.json — specs are
-        # assembled deterministically (plan U2), so the speccer is never called.
-        assert any(title == "mapper_output" for title, _ in stub.prompts)
+        assert "never re-partitions a resume" in err
+        # the flag re-partitions a `run`; on `resume` the half-executed DAG is
+        # the only DAG — the mapper stays silent and the snapshot keeps its
+        # recorded fingerprint
+        assert not any(title == "mapper_output" for title, _ in stub.prompts)
         assert not any(title == "speccer_output" for title, _ in stub.prompts)
-
-        # the run's own frozen snapshot now carries the new fingerprint, not the
-        # stale recorded one — proof it was overwritten, not silently reused
         new_trace = GroupingTrace.model_validate_json(
             (repo / ".orchestrator" / "runs" / run_id / "grouping-trace.json").read_text()
         )
         assert new_trace.provenance is not None
-        assert new_trace.provenance.index_fingerprint != recorded_fp
+        assert new_trace.provenance.index_fingerprint == recorded_fp
 
 
 class TestFreshGroupUnaffected:
