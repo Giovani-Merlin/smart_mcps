@@ -190,6 +190,22 @@ def existing_worktree_path(repo_root: Path, run_id: str, group_id: str, name: st
     return legacy if legacy.is_dir() else None
 
 
+def find_group_worktree(repo_root: Path, run_id: str, group_id: str, name: str) -> Path | None:
+    """Where a group's worktree actually is, found by its *branch* first.
+
+    A spec rewrite may rename the group, so a slug recomputed from the current
+    name can miss the directory created under the launch-time name: the resolve
+    step of g3 (r20260902-132128) crashed on ``git branch --show-current`` in a
+    path that never existed. The branch (``group_branch``) never changes, so the
+    registered worktree that has it checked out is authoritative; the
+    name-derived layouts are only the fallback for an unregistered directory.
+    """
+    found = _worktree_of_branch(repo_root, group_branch(run_id, group_id))
+    if found is not None and found.is_dir():
+        return found
+    return existing_worktree_path(repo_root, run_id, group_id, name)
+
+
 def group_branch(run_id: str, group_id: str) -> str:
     """Branch a group's worktree lives on. Deliberately not nested under the
     integration branch name (``orchestrator/run-<run_id>``): git refuses a ref that
