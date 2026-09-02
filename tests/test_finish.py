@@ -240,7 +240,9 @@ def test_finish_opens_a_ready_for_review_pr_against_the_launch_branch(repo, tmp_
     assert argv[argv.index("--head") + 1] == integration_branch(run_id)
 
 
-def test_pr_body_lists_groups_state_summary_sessions_and_unmerged(repo, tmp_path, monkeypatch):
+def test_pr_body_has_the_five_headings_in_order_and_lists_groups_and_unmerged(
+    repo, tmp_path, monkeypatch
+):
     run_id = "r3"
     merged = make_group("g1")
     unmerged = make_group("g2")
@@ -271,9 +273,33 @@ def test_pr_body_lists_groups_state_summary_sessions_and_unmerged(repo, tmp_path
     finish_run(repo, run_id, announce=lambda _m: None)
 
     body = body_capture.read_text()
-    assert "g1" in body and "did g1" in body and "completed" in body
-    assert "g2" in body and "did g2" in body and "failed" in body
-    assert "Unmerged groups:" in body and "g2" in body.split("Unmerged groups:")[1]
+    headings = ["## Motivation", "## Changes", "## Risks", "## Testing", "## Handoff"]
+    positions = [body.index(h) for h in headings]
+    assert positions == sorted(positions)
+    assert "g1" in body and "g2" in body
+    assert "Unmerged group" in body and "g2" in body.split("Unmerged group")[1]
+    # g2's real (non-stale) failure landed the run in trouble, so the body
+    # carries a postmortem naming the failure verbatim.
+    assert "## Postmortem" in body
+    assert "boom" in body
+
+
+def test_pr_body_with_no_trouble_omits_postmortem(repo, tmp_path, monkeypatch):
+    run_id = "r3b"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch="main")
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=True)
+    bin_dir = tmp_path / "fakebin"
+    body_capture = tmp_path / "pr-body.txt"
+    write_fake_gh(bin_dir, body_capture=body_capture)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    body = body_capture.read_text()
+    assert "## Postmortem" not in body
 
 
 def test_detached_head_run_still_pushes_and_skips_pr(repo, tmp_path, monkeypatch):
