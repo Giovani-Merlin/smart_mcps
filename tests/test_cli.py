@@ -1137,6 +1137,7 @@ class TestRunBanner:
         (fake_home / "sessions").mkdir(parents=True)
         (tmp_path / ".orchestrator" / "config.toml").write_text(
             f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
         )
         monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
         monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
@@ -1343,6 +1344,7 @@ class TestReviewIntensityWarning:
         (fake_home / "sessions").mkdir(parents=True)
         (tmp_path / ".orchestrator" / "config.toml").write_text(
             f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
         )
         monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
         monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
