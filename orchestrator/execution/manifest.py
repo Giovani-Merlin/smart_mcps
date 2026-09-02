@@ -162,12 +162,18 @@ def archive_review_scratch(
 class RunPaths:
     """The one place the run-directory layout is spelled out."""
 
-    def __init__(self, repo_root: Path, run_id: str):
+    def __init__(self, repo_root: Path, run_id: str, *, run_dir: Path | None = None):
         self.repo_root = repo_root
         self.run_id = run_id
+        #: Fixture stand-in for the conventional `.orchestrator/runs/<id>/`
+        #: location (report U1) — every other property derives from `run_dir`,
+        #: so overriding it here is enough to point the whole layout elsewhere.
+        self._run_dir_override = run_dir
 
     @property
     def run_dir(self) -> Path:
+        if self._run_dir_override is not None:
+            return self._run_dir_override
         return self.repo_root / ".orchestrator" / "runs" / self.run_id
 
     @property

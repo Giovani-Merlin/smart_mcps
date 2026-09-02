@@ -595,6 +595,15 @@ class WorkspaceConfig(BaseModel):
     large_file_store: str = ".orchestrator/data"
 
 
+class DocsConfig(BaseModel):
+    """Which human-facing run-report formats `finish` generates and commits
+    (plan U1). Empty by default — opt-in, since a run against a foreign repo
+    should not gain a `docs/runs/` commit unless asked for."""
+
+    formats: list[str] = Field(default_factory=list)
+    out_dir: str = "docs/runs"
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -606,6 +615,7 @@ class OrchestratorConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
+    docs: DocsConfig = Field(default_factory=DocsConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:
