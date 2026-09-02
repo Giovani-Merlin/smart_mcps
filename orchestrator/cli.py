@@ -468,6 +468,19 @@ def main(
         choices=["facts", "html", "changelog", "pr-body", "all"],
         help="report format to render ('all' runs every registered format)",
     )
+    report_cmd.add_argument(
+        "--scaffold",
+        choices=["one-pager"],
+        default=None,
+        help="write the one-pager scaffold (trial D) under --out instead of rendering a format",
+    )
+    report_cmd.add_argument(
+        "--validate",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="validate a filled-in one-pager against this run's facts; exit 1 if any rule fails",
+    )
 
     calibrate_cmd = subparsers.add_parser(
         "calibrate", help="compare a finished run's token estimates against what it actually cost"
@@ -2985,6 +2998,23 @@ def _cmd_report(args: argparse.Namespace) -> int:
     except ExportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    if args.validate is not None:
+        from orchestrator.report.onepager import validate
+
+        violations = validate(args.validate.read_text(), facts)
+        for violation in violations:
+            print(violation)
+        return 1 if violations else 0
+
+    if args.scaffold is not None:
+        from orchestrator.execution.manifest import atomic_write_text
+        from orchestrator.report.onepager import scaffold
+
+        destination = out_dir / "one-pager.md"
+        atomic_write_text(destination, scaffold(facts))
+        print(f"wrote {destination}")
+        return 0
 
     formats = _REPORT_FORMATS.keys() if args.format == "all" else [args.format]
     for name in formats:

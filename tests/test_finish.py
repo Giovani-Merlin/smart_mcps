@@ -730,3 +730,103 @@ def test_finish_reports_none_pending_for_an_empty_board(repo, tmp_path):
 
     residue = next(m for m in messages if "surprises pending" in m)
     assert "none pending" in residue
+
+
+# ------------------------------------------------------------------- docs (U5)
+
+
+def write_docs_config(repo: Path, formats: list[str]) -> None:
+    config_dir = repo / ".orchestrator"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    formats_str = ", ".join(f'"{f}"' for f in formats)
+    (config_dir / "config.toml").write_text(f"[docs]\nformats = [{formats_str}]\n")
+
+
+def test_finish_commits_docs_report_before_push_when_formats_configured(
+    repo, tmp_path, monkeypatch
+):
+    run_id = "r-docs-1"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["changelog"])
+
+    branch = integration_branch(run_id)
+    pushed_shas: list[str] = []
+
+    def fake_push(repo_root, run_id):
+        # Captured at the moment `finish` would push — proves the docs commit
+        # already landed on the branch before this call, not after.
+        pushed_shas.append(git(repo_root, "rev-parse", branch).strip())
+
+    monkeypatch.setattr(finish_module, "_push_integration_branch", fake_push)
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    docs_sha, subject = git(repo, "log", "-1", "--format=%H%x1f%s", branch).strip().split("\x1f")
+    assert subject == f"docs(run): report for {run_id}", subject
+    assert pushed_shas == [docs_sha]
+
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    changed = git(integration_wt, "show", "--name-only", "--format=", docs_sha).strip().splitlines()
+    assert changed, "docs commit touched no files"
+    for path in changed:
+        assert path.startswith(f"docs/runs/{run_id}/"), path
+
+
+def test_finish_creates_no_docs_commit_when_formats_empty(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-2"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    # No `.orchestrator/config.toml` at all — `[docs] formats` defaults to [].
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert not subject.startswith("docs(run):")
+
+
+def test_finish_aborts_before_push_on_a_failing_one_pager(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-3"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["facts"])
+
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    out_dir = integration_wt / "docs" / "runs" / run_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "one-pager.md").write_text("# not a valid one-pager\n")
+
+    pushed: list[str] = []
+    monkeypatch.setattr(
+        finish_module, "_push_integration_branch", lambda repo_root, run_id: pushed.append(run_id)
+    )
+
+    with pytest.raises(FinishError, match="one-pager.md failed validation"):
+        finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert pushed == []
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert not subject.startswith("docs(run):")
+
+
+def test_finish_does_not_abort_when_one_pager_is_absent(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-4"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["facts"])
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert subject == f"docs(run): report for {run_id}"
