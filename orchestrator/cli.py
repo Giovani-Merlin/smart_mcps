@@ -1260,6 +1260,29 @@ def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
     )
 
 
+def _warn_index_drift_on_resume(
+    repo_root: Path, groups_path: Path, client: CodegraphClient | None
+) -> None:
+    """The `resume` counterpart of ``_verify_grouping_index_fingerprint``:
+    report drift, never act on it — a resumed run executes its snapshot."""
+    trace_path = groups_path.parent / "grouping-trace.json"
+    if not trace_path.is_file():
+        return
+    recorded_trace = GroupingTrace.model_validate_json(trace_path.read_text())
+    if recorded_trace.provenance is None:
+        return
+    fp_client = client or CodegraphClient(repo_root=repo_root)
+    recorded = recorded_trace.provenance.index_fingerprint
+    current, matched = verify_index_fingerprint(recorded, fp_client, allow_drift=True)
+    if not matched:
+        print(
+            f"warning: codegraph index drifted since this run was grouped (recorded "
+            f"{recorded}, current {current}) — resuming against the run's recorded "
+            "grouping regardless; --allow-index-drift never re-partitions a resume",
+            file=sys.stderr,
+        )
+
+
 def _verify_grouping_index_fingerprint(
     *,
     repo_root: Path,
@@ -1758,21 +1781,34 @@ def _cmd_run(
     # back). A mismatch here means `groups_path` was built against an index
     # that no longer describes the repo `run`/`resume` is about to execute
     # against.
-    try:
-        grouping = _verify_grouping_index_fingerprint(
-            repo_root=repo_root,
-            groups_path=groups_path,
-            base_context_path=base_context_path,
-            grouping=grouping,
-            plan_path=plan_path,
-            config=config,
-            llm_runner=llm_runner,
-            client=client,
-            allow_drift=getattr(args, "allow_index_drift", False),
-        )
-    except IndexFingerprintMismatch as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    #
+    # Never on `resume`: the run's own `groups.json` snapshot is immutable once
+    # groups have executed against it, and the index drifts *because* the run
+    # merged work (every merge re-syncs codegraph). Re-partitioning here would
+    # execute a different DAG than the one half the groups already completed;
+    # refusing would strand the run (r20260902-132128 hit exactly this after
+    # three merges). The mismatch is worth a line, not a stop.
+    if resume:
+        try:
+            _warn_index_drift_on_resume(repo_root, groups_path, client)
+        except GraphBuildError:
+            pass
+    else:
+        try:
+            grouping = _verify_grouping_index_fingerprint(
+                repo_root=repo_root,
+                groups_path=groups_path,
+                base_context_path=base_context_path,
+                grouping=grouping,
+                plan_path=plan_path,
+                config=config,
+                llm_runner=llm_runner,
+                client=client,
+                allow_drift=getattr(args, "allow_index_drift", False),
+            )
+        except IndexFingerprintMismatch as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     # A group the speccer rewrote mid-run carries a new name/spec in
     # groups/<gid>/spec-gen<N>.json while groups.json keeps the immutable
