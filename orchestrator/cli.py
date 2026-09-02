@@ -121,6 +121,7 @@ from orchestrator.execution.worktrees import (
     group_branch,
     provision_env,
     provision_node_env,
+    find_group_worktree,
     worktree_path,
     write_provisioning_record,
 )
@@ -2355,7 +2356,11 @@ def _resolve_deps(
         return group_branch(run_id, group.id)
 
     def worktree_for(group: Group) -> Path:
-        return worktree_path(repo_root, run_id, group.id, group.name)
+        # By branch, not by name: a rewrite may have renamed the group since its
+        # worktree was cut (see ``find_group_worktree``).
+        return find_group_worktree(repo_root, run_id, group.id, group.name) or worktree_path(
+            repo_root, run_id, group.id, group.name
+        )
 
     def commit_stranded(group: Group) -> bool:
         return commit_all(
