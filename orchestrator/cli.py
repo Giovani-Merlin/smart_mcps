@@ -464,8 +464,8 @@ def main(
     report_cmd.add_argument(
         "--format",
         default="facts",
-        choices=["facts"],
-        help="report format to render (only 'facts' so far)",
+        choices=["facts", "html", "all"],
+        help="report format to render ('all' runs every registered format)",
     )
 
     calibrate_cmd = subparsers.add_parser(
@@ -2873,6 +2873,33 @@ def _cmd_export(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- report
 
 
+def _write_facts_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+
+    destination = out_dir / "facts.json"
+    atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+    return destination
+
+
+def _write_html_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.html import render_html
+
+    diagrams = render_all(facts, repo_root)
+    destination = out_dir / "report.html"
+    atomic_write_text(destination, render_html(facts, diagrams))
+    return destination
+
+
+#: format name -> renderer; ``all`` runs every one of these (report U4). New
+#: formats (markdown, one-pager) register themselves here as their groups land.
+_REPORT_FORMATS = {
+    "facts": _write_facts_format,
+    "html": _write_html_format,
+}
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     """Render a human-facing report format from a finished run's artifacts.
     Pure read of the run directory, the plan, junit, and git → one atomic
@@ -2880,7 +2907,6 @@ def _cmd_report(args: argparse.Namespace) -> int:
     # Local import: export (pulled in by build_facts) needs the Observatory's
     # snapshot composer (fastapi), which no other CLI path needs.
     from orchestrator.execution.export import ExportError
-    from orchestrator.execution.manifest import atomic_write_text
     from orchestrator.report.facts import build_facts
 
     repo_root = args.repo.resolve()
@@ -2893,13 +2919,15 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.format == "facts":
-        destination = out_dir / "facts.json"
-        atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+    formats = _REPORT_FORMATS.keys() if args.format == "all" else [args.format]
+    for name in formats:
+        renderer = _REPORT_FORMATS.get(name)
+        if renderer is None:
+            print(f"error: unknown format {name!r}", file=sys.stderr)
+            return 2
+        destination = renderer(facts, out_dir, repo_root)
         print(f"wrote {destination}")
-        return 0
-    print(f"error: unknown format {args.format!r}", file=sys.stderr)
-    return 2
+    return 0
 
 
 # -------------------------------------------------------------------- calibrate
