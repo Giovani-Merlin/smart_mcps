@@ -444,6 +444,30 @@ def main(
         help="project label recorded in the bundle (default: the repo directory name)",
     )
 
+    report_cmd = subparsers.add_parser(
+        "report", help="render a human-facing report from a finished run's artifacts"
+    )
+    report_cmd.add_argument("run_id", help="the run to report on")
+    report_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+    report_cmd.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="run directory to read (default: <repo>/.orchestrator/runs/<run_id>); a fixture stand-in",
+    )
+    report_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output directory (default: <repo>/<[docs] out_dir>/<run_id>/)",
+    )
+    report_cmd.add_argument(
+        "--format",
+        default="facts",
+        choices=["facts"],
+        help="report format to render (only 'facts' so far)",
+    )
+
     calibrate_cmd = subparsers.add_parser(
         "calibrate", help="compare a finished run's token estimates against what it actually cost"
     )
@@ -490,6 +514,8 @@ def main(
         return _cmd_finish(args)
     if args.command == "export":
         return _cmd_export(args)
+    if args.command == "report":
+        return _cmd_report(args)
     if args.command == "calibrate":
         return _cmd_calibrate(args)
     if args.command == "ui":
@@ -2842,6 +2868,38 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
     print(f"wrote {destination}")
     return 0
+
+
+# --------------------------------------------------------------------- report
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    """Render a human-facing report format from a finished run's artifacts.
+    Pure read of the run directory, the plan, junit, and git → one atomic
+    write; never an LLM call (plan U1)."""
+    # Local import: export (pulled in by build_facts) needs the Observatory's
+    # snapshot composer (fastapi), which no other CLI path needs.
+    from orchestrator.execution.export import ExportError
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.facts import build_facts
+
+    repo_root = args.repo.resolve()
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    out_dir = args.out or (repo_root / config.docs.out_dir / args.run_id)
+
+    try:
+        facts = build_facts(repo_root, args.run_id, run_dir=args.run_dir)
+    except ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.format == "facts":
+        destination = out_dir / "facts.json"
+        atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+        print(f"wrote {destination}")
+        return 0
+    print(f"error: unknown format {args.format!r}", file=sys.stderr)
+    return 2
 
 
 # -------------------------------------------------------------------- calibrate
