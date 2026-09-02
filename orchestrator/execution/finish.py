@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from orchestrator.config import ExecutionConfig
+from orchestrator.config import ExecutionConfig, load_config
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
@@ -111,6 +111,20 @@ def finish_run(
     manifest = store.load() if store.exists() else None
 
     branch = integration_branch(run_id)
+    # Resolved, not constructed: a run started before U2's run-scoping has its
+    # integration worktree at the legacy path, and `git branch -d` has to run
+    # with HEAD at the integration tip for its merge check to mean anything —
+    # the repo root would check against the launch branch and refuse everything.
+    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
+    if integration_wt is None:
+        raise FinishError(
+            f"integration worktree for {run_id} not found at "
+            f"{worktree_path(repo_root, run_id, 'integration', 'integration')} "
+            "or its legacy path; branch teardown needs it to verify merges"
+        )
+
+    _generate_and_commit_docs(repo_root, run_id, integration_wt, paths, log)
+
     tip = _git_ok(repo_root, "rev-parse", branch).strip()
     _push_integration_branch(repo_root, run_id)
     log(f"finish {run_id}: pushed {branch} to origin at {tip}")
@@ -140,17 +154,6 @@ def finish_run(
 
     unmerged: list[str] = []
     kept_branches: list[str] = []
-    # Resolved, not constructed: a run started before U2's run-scoping has its
-    # integration worktree at the legacy path, and `git branch -d` has to run
-    # with HEAD at the integration tip for its merge check to mean anything —
-    # the repo root would check against the launch branch and refuse everything.
-    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
-    if integration_wt is None:
-        raise FinishError(
-            f"integration worktree for {run_id} not found at "
-            f"{worktree_path(repo_root, run_id, 'integration', 'integration')} "
-            "or its legacy path; branch teardown needs it to verify merges"
-        )
     for gid in sorted(state.groups):
         entry = state.groups[gid]
         if not _group_is_merged(repo_root, run_id, tip, gid, entry):
@@ -197,6 +200,107 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
     )
     if result.returncode != 0:
         raise FinishError(f"push of {branch} to origin failed: {result.stderr.strip()[:500]}")
+
+
+# -------------------------------------------------------------------- docs
+
+
+def _render_facts_doc(facts, out_dir: Path) -> None:
+    from orchestrator.execution.manifest import atomic_write_text
+
+    atomic_write_text(out_dir / "facts.json", facts.model_dump_json(indent=2) + "\n")
+
+
+def _render_html_doc(facts, out_dir: Path, repo_root: Path) -> None:
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.html import render_html
+
+    diagrams = render_all(facts, repo_root)
+    atomic_write_text(out_dir / "report.html", render_html(facts, diagrams))
+
+
+def _render_changelog_doc(facts, out_dir: Path, repo_root: Path) -> None:
+    # Deliberately not `render.markdown`'s `update_runlog` side effect: that
+    # writes `docs/RUNLOG.md`, outside `docs/runs/<run_id>/`, and `finish`
+    # must never commit anything outside that directory (plan U5 constraint).
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.markdown import render_changelog_entry
+
+    diagrams = render_all(facts, repo_root)
+    atomic_write_text(out_dir / "CHANGELOG-entry.md", render_changelog_entry(facts, diagrams))
+
+
+def _render_pr_body_doc(facts, out_dir: Path) -> None:
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.markdown import render_pr_body
+
+    atomic_write_text(out_dir / "pr-body.md", render_pr_body(facts))
+
+
+#: format name -> renderer, scoped to writing only inside `docs/runs/<run_id>/`
+#: — the subset of the CLI's report formats that have no side effect outside
+#: that directory (plan U5; `report.render`-style registry, kept local here
+#: rather than shared with the CLI's `_REPORT_FORMATS` because the CLI's
+#: `changelog` renderer intentionally also updates `docs/RUNLOG.md`).
+_DOCS_FORMATS: dict[str, Callable] = {
+    "facts": lambda facts, out_dir, repo_root: _render_facts_doc(facts, out_dir),
+    "html": _render_html_doc,
+    "changelog": _render_changelog_doc,
+    "pr-body": lambda facts, out_dir, repo_root: _render_pr_body_doc(facts, out_dir),
+}
+
+
+def _generate_and_commit_docs(
+    repo_root: Path,
+    run_id: str,
+    integration_wt: Path,
+    paths: RunPaths,
+    log: Callable[[str], None],
+) -> None:
+    """Render every ``[docs] formats`` entry into ``docs/runs/<run_id>/`` on
+    the integration worktree, validate a present ``one-pager.md`` against
+    this run's facts, then commit — all before `finish` pushes, so the pushed
+    tip already carries the report (plan U5). A config with no formats is a
+    no-op: a run against a foreign repo gets no unsolicited `docs/` commit.
+    """
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    if not config.docs.formats:
+        return
+
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(repo_root, run_id, run_dir=paths.run_dir)
+    out_dir = integration_wt / config.docs.out_dir / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in config.docs.formats:
+        renderer = _DOCS_FORMATS.get(name)
+        if renderer is None:
+            raise FinishError(
+                f"unknown [docs] format {name!r}; expected one of {sorted(_DOCS_FORMATS)}"
+            )
+        renderer(facts, out_dir, repo_root)
+
+    one_pager_path = out_dir / "one-pager.md"
+    if one_pager_path.is_file():
+        from orchestrator.report.onepager import validate
+
+        violations = validate(one_pager_path.read_text(), facts)
+        if violations:
+            raise FinishError(
+                f"one-pager.md failed validation for {run_id}:\n"
+                + "\n".join(f"- {v}" for v in violations)
+            )
+
+    rel_out_dir = out_dir.relative_to(integration_wt).as_posix()
+    _git_ok(integration_wt, "add", rel_out_dir)
+    status = _git_ok(integration_wt, "status", "--porcelain", "--", rel_out_dir)
+    if not status.strip():
+        return
+    _git_ok(integration_wt, "commit", "-m", f"docs(run): report for {run_id}")
+    log(f"finish {run_id}: committed {rel_out_dir}")
 
 
 # ----------------------------------------------------------------------- PR
