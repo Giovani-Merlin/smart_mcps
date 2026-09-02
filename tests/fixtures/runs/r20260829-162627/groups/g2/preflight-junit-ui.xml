@@ -1,0 +1,439 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="199" failures="0" errors="0" time="4.708002398">
+    <testsuite name="src/attempts.test.ts" timestamp="2026-08-29T16:50:40.342Z" hostname="Giovani" tests="21" failures="0" errors="0" skipped="0" time="0.010616885">
+        <testcase classname="src/attempts.test.ts" name="manifest.json is the ground truth for what attempts existed &gt; renders every generation in the session list, not the state&apos;s number" time="0.001956813">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="manifest.json is the ground truth for what attempts existed &gt; keeps a current generation that has no session written yet" time="0.000262207">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="manifest.json is the ground truth for what attempts existed &gt; colours only the current generation from the state; earlier ones are superseded" time="0.000237572">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the stale-failure case, on real r20260726-grouping data &gt; is not hypothetical: three of the seven groups look like this" time="0.000485539">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the stale-failure case, on real r20260726-grouping data &gt; renders a stale-failure note and a completed colour, never a failure" time="0.001164705">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the stale-failure case, on real r20260726-grouping data &gt; keeps g2&apos;s four sessions across two generations" time="0.00063031">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the stale-failure case, on real r20260726-grouping data &gt; keeps gen-1&apos;s retirement reason intact" time="0.000328116">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 1 — breaker retirement is a property of the conversation, not a verdict" time="0.000418413">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 2 — a usage-limit outage is an outage, not a fault in the work" time="0.000607206">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 2b — a stale outage string is history, so it stays under the stale chip" time="0.000608079">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 3 — escalation-blocked is orthogonal to state" time="0.000277428">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 4 — an earlier generation is superseded by a respawn, not failed" time="0.000148934">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 5 — a self_verify group with no reviewer session is correct, not missing data" time="0.000159424">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 6 — an interrupted group is resumable, and the command is text" time="0.000133185">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the seven special cases &gt; 7 — a lost round record reads as lost bookkeeping, not as an idle session" time="0.000368251">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="stalled is an inference &gt; states the elapsed fact and never claims the group is hung" time="0.000279542">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="stalled is an inference &gt; is not inferred for a group waiting on the operator" time="0.000146918">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="stalled is an inference &gt; is not inferred for a finished group, however long ago it wrote" time="0.000099029">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="stalled is an inference &gt; reads the heartbeat and the transcript mtimes, and takes the latest" time="0.000107872">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the board-level signal &gt; stays quiet for a group with one clean attempt" time="0.000144218">
+        </testcase>
+        <testcase classname="src/attempts.test.ts" name="the board-level signal &gt; counts generations and retired sessions from the manifest" time="0.000111361">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/cost.test.ts" timestamp="2026-08-29T16:50:40.349Z" hostname="Giovani" tests="14" failures="0" errors="0" skipped="0" time="0.00711087">
+        <testcase classname="src/cost.test.ts" name="cumulative figures are sums of per-round values &gt; sums a session&apos;s `rounds` list rather than reading any session total" time="0.001702958">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="cumulative figures are sums of per-round values &gt; never lets `last_context_tokens` into a cumulative figure" time="0.000316914">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="cumulative figures are sums of per-round values &gt; falls back to the cumulative counters, which are themselves round sums" time="0.000204023">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="the four token classes split by role &gt; keeps the coder and reviewer totals apart and classed" time="0.000515945">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="intensity says how many reviewer sessions to expect &gt; self_verify expects zero, and zero observed is expected, not missing" time="0.000214705">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="intensity says how many reviewer sessions to expect &gt; paired and paired_plus both expect one session; paired_plus adds a round" time="0.000155691">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="intensity says how many reviewer sessions to expect &gt; absent intensity is unknown, never a default" time="0.000179672">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="prediction compares one quantity with itself &gt; uses the coder session&apos;s occupancy, not any total" time="0.000324328">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="prediction compares one quantity with itself &gt; does not compare a group that recorded no coder occupancy" time="0.000305064">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="the run-level calibration rollup &gt; compares like with like and names what it skipped" time="0.000710283">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="the run-level calibration rollup &gt; reports a multi-generation group&apos;s last and peak ratios and excludes it from the median" time="0.000322071">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="the run-level calibration rollup &gt; reports no median rather than a median over zero rows when every group is multi-generation" time="0.000204599">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="the run-level calibration rollup &gt; returns an empty rollup rather than inventing one for a legacy run" time="0.000134666">
+        </testcase>
+        <testcase classname="src/cost.test.ts" name="a legacy run has no actuals, which is not the same as zero spend &gt; marks the real r20260726-grouping run as unrecorded" time="0.000340779">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/routes.test.tsx" timestamp="2026-08-29T16:50:40.353Z" hostname="Giovani" tests="16" failures="0" errors="0" skipped="0" time="0.415893597">
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches Board at /p/proj/r/run1/board" time="0.074702632">
+            <system-err>
+⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+
+            </system-err>
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches History at /p/proj/r/run1/history" time="0.020124116">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches Grouping at /p/proj/r/run1/grouping" time="0.01758049">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches Escalations at /p/proj/r/run1/escalations" time="0.010718719">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches Log at /p/proj/r/run1/log" time="0.016950396">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; reaches Cost at /p/proj/r/run1/cost" time="0.010760921">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; sends a bare run URL to the Board rather than nowhere" time="0.016137874">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="run tabs &gt; keeps the session viewer addressable without making it a tab" time="0.022216955">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="the run index &gt; lists every run instead of jumping to the newest" time="0.046389894">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="query params &gt; round-trips ?group=, ?stage=, ?edge= and ?seq= through navigation" time="0.013615224">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="query params &gt; survives a reload of a deep link — the backend serves index.html for it" time="0.007081051">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="non-goals &gt; offers no run-control affordance anywhere in the shell" time="0.011892612">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="job routes (U23) &gt; lists the project&apos;s jobs with kind, status and start time at /p/:project/jobs" time="0.007121414">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="job routes (U23) &gt; renders a job&apos;s log, streaming, at /p/:project/jobs/:id" time="0.121672242">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="job routes (U23) &gt; resumes streaming on a cold reload of a still-running job" time="0.009234995">
+        </testcase>
+        <testcase classname="src/routes.test.tsx" name="job routes (U23) &gt; renders a not-found state for a job id that does not exist" time="0.007188977">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/status.test.ts" timestamp="2026-08-29T16:50:40.358Z" hostname="Giovani" tests="17" failures="0" errors="0" skipped="0" time="0.021066981">
+        <testcase classname="src/status.test.ts" name="status map &gt; styles every state the orchestrator can produce" time="0.00182331">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="status map &gt; gives a state from a newer backend a visible badge, not a blank one" time="0.000258442">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="status map &gt; keeps resolved distinct from completed and from failed" time="0.00028879">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="status map &gt; marks interrupted as unfinished without marking it wrong" time="0.000118609">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="status map &gt; collapses the four busy states to one hue told apart by glyph" time="0.000130087">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stale failure text &gt; does not treat a resolved group&apos;s leftover failure as current" time="0.000168116">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stale failure text &gt; does treat an interrupted group&apos;s failure as current" time="0.000143896">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stall inference &gt; says nothing about a group that is not active" time="0.011391703">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stall inference &gt; calls a long-quiet active group stalled, as an observation" time="0.001249171">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stall inference &gt; does not call a group waiting on the operator stalled" time="0.000462026">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stall inference &gt; stays quiet below the threshold" time="0.000260165">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="stall inference &gt; formats hours as well as minutes" time="0.000160513">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="the token layer behind the status map &gt; defines every token the status map names" time="0.000862377">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="the token layer behind the status map &gt; keeps amber to the one meaning it is allowed to have" time="0.000383341">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="the token layer as a whole &gt; defines every token a module references" time="0.000325634">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="the token layer as a whole &gt; defines every token a stylesheet references" time="0.000821149">
+        </testcase>
+        <testcase classname="src/status.test.ts" name="the token layer as a whole &gt; leaves no `var(--token, #fallback)` pair anywhere" time="0.000570319">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/AttemptGrid.test.tsx" timestamp="2026-08-29T16:50:40.362Z" hostname="Giovani" tests="18" failures="0" errors="0" skipped="0" time="0.700353586">
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the grid renders every attempt from real manifest data &gt; gives g2 a cell in both generations, with two sessions each" time="0.174534382">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the grid renders every attempt from real manifest data &gt; shows gen-1&apos;s retirement reason from the grid" time="0.071116542">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the grid renders every attempt from real manifest data &gt; links a cell&apos;s session to the route-addressable session viewer" time="0.052830436">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="session generation naming and timestamps (U35) &gt; labels a session id ending -coder-g3 as gen 3 in the attempt grid, distinct from a group g3" time="0.028233802">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="session generation naming and timestamps (U35) &gt; renders no generation label for a session with no generation suffix" time="0.018681813">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the stale failure never renders as a failure &gt; paints g3&apos;s completed cell with the completed colour and a stale chip" time="0.039755067">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the seven special cases, rendered &gt; escalation-blocked is an overlay, not the cell&apos;s colour" time="0.038840234">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the seven special cases, rendered &gt; stalled is a ? overlay stating elapsed time, never a colour and never &apos;hung&apos;" time="0.014970406">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the seven special cases, rendered &gt; interrupted shows the resume command as copyable text, not a button" time="0.037492118">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="the seven special cases, rendered &gt; names the remaining cases on their cells" time="0.104242811">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="orchestrator sessions on the board (U30) &gt; [g19-base-session-exposed] exposes the run&apos;s base session with an orchestrator role" time="0.000442736">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="orchestrator sessions on the board (U30) &gt; [f8-base-session-rendered] renders the run-level base session as a clickable row" time="0.009371939">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="orchestrator sessions on the board (U30) &gt; [g19-rewrite-before-generation] positions a rewrite before the generation it produced" time="0.043378581">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="orchestrator sessions on the board (U30) &gt; [g19-visually-distinct] gives orchestrator sessions their own role class, distinct from coder/reviewer" time="0.022478426">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="orchestrator sessions on the board (U30) &gt; [g19-no-spurious-rows] a group never re-specced shows no orchestrator rows beyond the base session" time="0.027961674">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="panel contract &gt; carries exactly one PathChip, pointing at the manifest it reads" time="0.012379412">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="panel contract &gt; takes no colour of its own — every hue comes from status.ts" time="0.000643651">
+        </testcase>
+        <testcase classname="src/components/AttemptGrid.test.tsx" name="panel contract &gt; never consults live_pids" time="0.000560326">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/CostPanel.test.tsx" timestamp="2026-08-29T16:50:40.366Z" hostname="Giovani" tests="19" failures="0" errors="0" skipped="0" time="0.795805772">
+        <testcase classname="src/components/CostPanel.test.tsx" name="the two quantities live in two panels &gt; renders prediction and cumulative spend as separate sections" time="0.126934379">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="the two quantities live in two panels &gt; compares the estimate only against the coder&apos;s context occupancy" time="0.033348452">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="per-group bars are four classes split by role &gt; draws a coder bar and a reviewer bar, each with all four classes" time="0.045609523">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="per-group bars are four classes split by role &gt; draws the per-round sparkline when the manifest carried rounds" time="0.032042874">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="cache reads are visually subordinate &gt; marks only the cache-read figure as muted" time="0.030467015">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="cache reads are visually subordinate &gt; states each role&apos;s total excluding cache reads, so the cheap class cannot inflate it" time="0.035977122">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="intensity and the expected reviewer count are stated &gt; reads a self_verify group&apos;s zero reviewer sessions as expected" time="0.047184176">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="intensity and the expected reviewer count are stated &gt; says unknown when groups.json carried no intensity" time="0.059283825">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="intensity and the expected reviewer count are stated &gt; shows paired_plus as one session plus a mandatory extra round" time="0.039571963">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="the run-level calibration rollup &gt; summarises predicted against observed occupancy and names the exclusions" time="0.035255488">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="a real historical run degrades honestly &gt; says actuals are not recorded and offers the manifest path" time="0.175758219">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="a real historical run degrades honestly &gt; shows no spend bars for a legacy group, only the estimate note" time="0.005240653">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="a real historical run degrades honestly &gt; still compares nothing dishonestly: no ratio without an occupancy pair" time="0.015051278">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="the turn-1 inherited cache read is its own figure (U9) &gt; shows it distinct from the total cache-read segment" time="0.031225115">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="the turn-1 inherited cache read is its own figure (U9) &gt; renders nothing when no inherited figure was recorded" time="0.021217425">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="spend sums every turn of a round, not just the last (U9) &gt; renders a cache-creation figure that scales with the round&apos;s turn count" time="0.005185138">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="calibration reports both a last-generation and a peak ratio (U10) &gt; includes a single-generation group in the median with one ratio" time="0.018060067">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="calibration reports both a last-generation and a peak ratio (U10) &gt; shows a multi-generation group&apos;s last and peak ratios, labelled with its generation count and retirement reasons, and excludes it from the median" time="0.027969215">
+        </testcase>
+        <testcase classname="src/components/CostPanel.test.tsx" name="calibration reports both a last-generation and a peak ratio (U10) &gt; reports no median, not a median over zero rows, when every group is multi-generation" time="0.008143194">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/DiffView.test.tsx" timestamp="2026-08-29T16:50:40.369Z" hostname="Giovani" tests="9" failures="0" errors="0" skipped="0" time="0.055004788">
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; shows a loading state while result is null" time="0.019776454">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; surfaces a request error distinctly from an unavailable result" time="0.002497889">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; renders the backend&apos;s reason for an unavailable diff rather than an error" time="0.002198649">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; renders one header per file and does not merge their hunks" time="0.00750621">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; color-codes added and removed lines distinctly" time="0.004156177">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; states a truncation rather than silently sending a partial diff" time="0.010784936">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; renders no truncation notice for a diff under the threshold" time="0.002432573">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; reports no changes for an available but empty diff" time="0.001212776">
+        </testcase>
+        <testcase classname="src/components/DiffView.test.tsx" name="DiffView &gt; omits the heading when no title is given" time="0.003103164">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/GroupBoard.test.tsx" timestamp="2026-08-29T16:50:40.371Z" hostname="Giovani" tests="6" failures="0" errors="0" skipped="0" time="0.089771148">
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board signals that earlier attempts exist &gt; says so on g2, which has two generations and a retired session" time="0.041347907">
+        </testcase>
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board signals that earlier attempts exist &gt; stays quiet on a group that ran clean the first time" time="0.008054866">
+        </testcase>
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board shows the paused portion of a long phase (plan U26) &gt; shows the paused portion distinctly from the phase elapsed" time="0.010720274">
+        </testcase>
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board shows the paused portion of a long phase (plan U26) &gt; renders without the paused chip, not a fabricated zero, when paused_s is absent" time="0.006900478">
+        </testcase>
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board shows the paused portion of a long phase (plan U26) &gt; renders no phase line at all when the heartbeat has none" time="0.009158198">
+        </testcase>
+        <testcase classname="src/components/GroupBoard.test.tsx" name="the board does not call a stale failure a failure &gt; shows g3&apos;s leftover failure text as history under a completed state" time="0.010815287">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/GroupDrillIn.test.tsx" timestamp="2026-08-29T16:50:40.372Z" hostname="Giovani" tests="8" failures="0" errors="0" skipped="0" time="0.242735032">
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="difficulty and intensity (U28) &gt; shows the group&apos;s difficulty score and intensity tier" time="0.089563843">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="difficulty and intensity (U28) &gt; labels a paired_plus group&apos;s -extra verdict as the mandatory second pass" time="0.028991921">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="difficulty and intensity (U28) &gt; renders no extra-pass label for a group with no -extra verdict" time="0.030367307">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="session generation naming and timestamps (U35) &gt; labels a session id ending -coder-g3 as gen 3, not part of the name" time="0.013025133">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="session generation naming and timestamps (U35) &gt; renders no generation label for a session with no generation suffix" time="0.015694179">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="session generation naming and timestamps (U35) &gt; shows a session timestamp in the operator&apos;s local zone, named" time="0.017684782">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="surprise board — pending vs. emitted (U12) &gt; renders no surprise section when both directions are empty" time="0.023937783">
+        </testcase>
+        <testcase classname="src/components/GroupDrillIn.test.tsx" name="surprise board — pending vs. emitted (U12) &gt; shows surprises pending for the group with their reason, separately from what it emitted" time="0.021938001">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/PathChip.test.tsx" timestamp="2026-08-29T16:50:40.374Z" hostname="Giovani" tests="7" failures="0" errors="0" skipped="0" time="0.138992615">
+        <testcase classname="src/components/PathChip.test.tsx" name="PathChip &gt; copies the full path while displaying a middle-ellipsised one" time="0.097237743">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathChip &gt; leaves a path that already fits alone" time="0.002426264">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathChip &gt; keeps the full path reachable without a clipboard, via the title" time="0.007024699">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathChip &gt; never fetches the file it points at" time="0.007664071">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathChip &gt; middle-ellipsises to exactly the budget it was given" time="0.000536808">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathsDrawer &gt; copies every path at once, one per line" time="0.018130222">
+        </testcase>
+        <testcase classname="src/components/PathChip.test.tsx" name="PathsDrawer &gt; lists an artifact that does not exist rather than hiding it" time="0.004376555">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/UsageLimitBanner.test.tsx" timestamp="2026-08-29T16:50:40.375Z" hostname="Giovani" tests="5" failures="0" errors="0" skipped="0" time="0.035728751">
+        <testcase classname="src/components/UsageLimitBanner.test.tsx" name="the usage-limit banner &gt; renders nothing when the run has never hit a limit" time="0.007729568">
+        </testcase>
+        <testcase classname="src/components/UsageLimitBanner.test.tsx" name="the usage-limit banner &gt; clears itself once the pause is released" time="0.001168283">
+        </testcase>
+        <testcase classname="src/components/UsageLimitBanner.test.tsx" name="the usage-limit banner &gt; shows the reset time and the provider&apos;s own words, verbatim" time="0.022990727">
+        </testcase>
+        <testcase classname="src/components/UsageLimitBanner.test.tsx" name="the usage-limit banner &gt; says it is polling when the limit gave no reset time" time="0.002463373">
+        </testcase>
+        <testcase classname="src/components/UsageLimitBanner.test.tsx" name="the usage-limit banner &gt; never counts down past zero" time="0.000344731">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/routes/launch.test.tsx" timestamp="2026-08-29T16:50:40.377Z" hostname="Giovani" tests="33" failures="0" errors="0" skipped="0" time="1.865069219">
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; is reachable at /p/:project/launch and offers all three cards" time="0.282497222">
+            <system-err>
+⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+
+            </system-err>
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; posts the plan chosen from the picker" time="0.148045337">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; accepts a typed path for a plan the picker does not know about" time="0.082627684">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; will not group with no plan named at all" time="0.044547542">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; sends the escalation tier chosen on the run form" time="0.113255314">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; sends the tier chosen on the resume form — the trap this page exists for" time="0.065480828">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; omits an unset option entirely rather than sending a value it invented" time="0.035771885">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; unticking &apos;wait out usage limits&apos; sends the opt-out, ticking sends nothing" time="0.068783038">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows the backend&apos;s own message when a launch is refused" time="0.053128148">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; streams the launched job&apos;s log" time="0.047608829">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; the project index links to it" time="0.01694428">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; renders granularity, token budget and auto-resume on the group form" time="0.038790659">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; posts a body whose granularity is &apos;balanced&apos; when that is chosen" time="0.047605754">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; omits granularity, token budget and auto-resume when none is touched, and the job still starts" time="0.03304662">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows the resolved options the backend echoed back on the submitted job" time="0.052474307">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; makes a grouping that appears server-side selectable without a reload" time="0.104081683">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; stops a finished job&apos;s log reporting &apos;running&apos; without a reload" time="0.037597214">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; stops refetching once the page unmounts" time="0.011156305">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; leaves the last known data on screen when a refetch fails" time="0.086488423">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; links a launched job to its own addressable page" time="0.038222699">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; renders a selected grouping&apos;s groups with tasks, files, estimates and dependencies" time="0.03837625">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows an explanatory empty state for a grouping with no groups.json, not an error" time="0.031472805">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; does not launch anything from the preview — it renders no button of its own" time="0.034277488">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; renders three model selects, defaulted to the values the CLI would resolve" time="0.0377352">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows concurrency&apos;s resolved default of 1 rather than an empty input" time="0.023309261">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows an unspecified option&apos;s resolved default next to the field" time="0.037597871">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; sends a worker model chosen on the run form through to argv" time="0.043850262">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; still starts a run when every option, including the models, is left at its default" time="0.031224531">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; pre-selects the run being viewed when opened from its &apos;Resume this run&apos; link" time="0.022335359">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; populates the resume form&apos;s fields from the run&apos;s last-used options" time="0.036899868">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; notes that previous options could not be recovered when no job record matches the run" time="0.036215317">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; submits the pre-filled resume form unedited as the run&apos;s last-used options" time="0.045824566">
+        </testcase>
+        <testcase classname="src/routes/launch.test.tsx" name="the launch route &gt; shows the resolved concurrency and the three model ids in the run header once a run is going" time="0.035527989">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/grouping/GroupingTab.test.tsx" timestamp="2026-08-29T16:50:40.383Z" hostname="Giovani" tests="4" failures="0" errors="0" skipped="0" time="0.283689788">
+        <testcase classname="src/components/grouping/GroupingTab.test.tsx" name="GroupingTab speccer runs &gt; lists one row per recorded call, with model and token usage" time="0.076810058">
+        </testcase>
+        <testcase classname="src/components/grouping/GroupingTab.test.tsx" name="GroupingTab speccer runs &gt; opens a call&apos;s prompt and response in the session viewer" time="0.173657746">
+        </testcase>
+        <testcase classname="src/components/grouping/GroupingTab.test.tsx" name="GroupingTab speccer runs &gt; renders an explanatory empty state when the llm/ directory is absent" time="0.011306807">
+        </testcase>
+        <testcase classname="src/components/grouping/GroupingTab.test.tsx" name="GroupingTab speccer runs &gt; shows a rewrite call recorded later alongside the grouping-time calls, distinguishable by when they ran" time="0.02092298">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/grouping/stages.test.ts" timestamp="2026-08-29T16:50:40.385Z" hostname="Giovani" tests="10" failures="0" errors="0" skipped="0" time="0.009272628">
+        <testcase classname="src/components/grouping/stages.test.ts" name="frames &gt; takes its stage names from the trace rather than a hardcoded pipeline" time="0.003517446">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="frames &gt; recolours exactly the tasks that changed group at the merge stage" time="0.000564638">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="frames &gt; recolours nothing at renumber, where every group id changes" time="0.000348926">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="frames &gt; keeps a group&apos;s hue stable across stages" time="0.000935443">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="stage selection &gt; defaults to the final stage when ?stage= is absent" time="0.000275714">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="stage selection &gt; resolves a stage name from the query param" time="0.000154186">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="stage selection &gt; falls back to the final stage for a name that is not in this trace" time="0.000200625">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="stage selection &gt; accepts a numeric index too, for links made before a rename" time="0.000179793">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="wording &gt; states what a stage did as a fact, never as a judgement" time="0.000809825">
+        </testcase>
+        <testcase classname="src/components/grouping/stages.test.ts" name="wording &gt; lists a group&apos;s members in stable order" time="0.000570687">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/components/launch/JobProgress.test.tsx" timestamp="2026-08-29T16:50:40.387Z" hostname="Giovani" tests="12" failures="0" errors="0" skipped="0" time="0.036890738">
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="latestSpecProgress &gt; finds no progress in an empty or unrecognisable log" time="0.001205916">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="latestSpecProgress &gt; reads the count out of a spec line" time="0.000518238">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="latestSpecProgress &gt; tracks the most recent spec line, not the first" time="0.000195399">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="latestSpecProgress &gt; ignores a malformed total of zero" time="0.000161209">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="formatElapsed &gt; renders sub-minute durations as seconds" time="0.000240846">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="formatElapsed &gt; renders minutes and zero-padded seconds" time="0.000098674">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="formatElapsed &gt; never goes negative" time="0.000075315">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="JobProgress &gt; renders nothing when no spec line has arrived — the fallback for an" time="0.007118071">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="JobProgress &gt; renders nothing for a job with no lines at all" time="0.001322779">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="JobProgress &gt; renders a determinate bar sized to the latest spec fraction" time="0.017063035">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="JobProgress &gt; advances as more spec lines arrive" time="0.005242744">
+        </testcase>
+        <testcase classname="src/components/launch/JobProgress.test.tsx" name="JobProgress &gt; shows an elapsed time once startedAt is known" time="0.002316261">
+        </testcase>
+    </testsuite>
+</testsuites>

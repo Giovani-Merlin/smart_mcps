@@ -1,0 +1,35 @@
+{
+  "run_id": "r20260829-162627",
+  "schema_version": 1,
+  "groups": {
+    "g1": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g2": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g3": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    }
+  },
+  "live_pids": {},
+  "interrupted_at": null
+}

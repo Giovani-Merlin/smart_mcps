@@ -1,0 +1,46 @@
+{
+  "status": "completed",
+  "summary": "Implemented `orchestrate split`: added `assign_tasks`, `split_plan`, `add_frontmatter_field`, and `add_predecessor_note` to `orchestrator/grouping/plan_edit.py` for verbatim, byte-safe plan partitioning; added `finding_task_groups` to `orchestrator/grouping/advisory.py` to turn a disconnected finding's `task_sets` or a serial finding's direct `tasks_before`/`tasks_after` boundary into a task->document assignment (monolithic findings and valley-only serial findings are correctly reported as not directly addressable); wired a new `split` CLI subcommand in `orchestrator/cli.py` supporting `--seam N` (reads `preview/advisory.json`) and repeatable `--tasks a,b` (which overrides `--seam`), with all-tasks-assigned-exactly-once validation, `<stem>-part<N>-plan.md` output naming, `split_from` frontmatter, a predecessor note on downstream documents of a serial-seam split, and an untouched source plan; also numbered cohesion findings and printed their task sets/boundary cuts in `_print_advisory_report`. Added `tests/test_plan_split.py` (30 tests) covering assignment validation, split correctness/byte-identity, frontmatter helpers, finding-to-groups logic, and full CLI flows including plan-check and price-under-cap on produced documents. Full suite run: 1552 passed, 5 pre-existing failures unrelated to this change (permission-denied on `~/.claude/projects` and a `/tmp` cross-device link in `execution/confinement.py`/`execution/finish.py`, files this group never touched).",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g2-1",
+      "status": "pass",
+      "notes": "Manually verified _print_advisory_report numbers every finding stably across two calls on the same report and prints task_sets (disconnected) or the tasks_before/tasks_after cut (serial)."
+    },
+    {
+      "item_id": "g2-2",
+      "status": "pass",
+      "notes": "tests/test_plan_split.py::TestSplitPlan::test_two_way_split_is_byte_identical_combined and test_no_unit_lost_or_duplicated verify combined task ids/unit ids equal the original's with no loss/duplication, and each entry's/section's bytes are found verbatim in its document."
+    },
+    {
+      "item_id": "g2-3",
+      "status": "pass",
+      "notes": "test_tasks_overrides_seam_when_both_given confirms --tasks wins when both flags are given."
+    },
+    {
+      "item_id": "g2-4",
+      "status": "pass",
+      "notes": "assign_tasks raises naming every unassigned and doubly-assigned task id in one error; test_missing_or_double_assigned_tasks_named_and_rejected and TestAssignTasks cover both cases plus combined."
+    },
+    {
+      "item_id": "g2-5",
+      "status": "pass",
+      "notes": "test_produced_documents_pass_plan_check and test_produced_documents_price_under_cap run `plan-check` and `group --price` against split output documents."
+    },
+    {
+      "item_id": "g2-6",
+      "status": "pass",
+      "notes": "test_serial_seam_writes_predecessor_note_only_on_downstream confirms the note appears only in part2, referencing part1's filename."
+    },
+    {
+      "item_id": "g2-7",
+      "status": "pass",
+      "notes": "test_original_plan_text_is_never_mutated and the CLI tests assert the source plan's bytes are unchanged after a split."
+    }
+  ],
+  "surprises": []
+}

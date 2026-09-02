@@ -1,0 +1,36 @@
+{
+  "status": "completed",
+  "summary": "Found the group's implementation (advisory.py, cli.py wiring, pipeline.py graph-build seam, test_advisory.py) already substantially written from a prior session. Fixed two bugs: a missing cli.py import for build_advisory_report/serialize_advisory_report that would have caused a NameError on any real `group --advise` invocation, and a test fixture in test_map_error_surfaces_as_grouper_error that lacked the task-map version marker so it exercised the 'absent map -> LLM mapper fallback' path instead of the intended 'malformed map -> TaskMapError' path. Verified all four cohesion thresholds are named module constants with in-code justification, ran the full test_advisory.py suite (13/13 pass) plus the broader suite (only pre-existing, unrelated sandbox-environment failures in test_cli.py/test_finish.py remain, present before my changes), and did an end-to-end CLI smoke test in a scratch repo confirming `group --advise` builds the graph once, prints the granularity/cohesion report, writes valid preview/advisory.json, and never touches groups.json.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g3-1",
+      "status": "pass",
+      "notes": "TestOneGraphBuild covers single-build call counting and full per-preset metric+Pareto coverage; confirmed live via CLI smoke test"
+    },
+    {
+      "item_id": "g3-2",
+      "status": "pass",
+      "notes": "TestCohesionShapes covers disjoint sets, pure chain, and clique fixtures"
+    },
+    {
+      "item_id": "g3-3",
+      "status": "pass",
+      "notes": "TestPreviewIsolation + live smoke test confirm advisory.json under preview/ and groups.json untouched"
+    },
+    {
+      "item_id": "g3-4",
+      "status": "pass",
+      "notes": "TestDeterminism (two-run byte-identical) and TestOneGraphBuild.test_zero_llm_calls (raising runner stub)"
+    },
+    {
+      "item_id": "g3-5",
+      "status": "pass",
+      "notes": "NEAR_DISCONNECTED_EDGE_WEIGHT_THRESHOLD, SERIALITY_DEPTH_WIDTH_RATIO_THRESHOLD, CUT_SWEEP_VALLEY_MARGIN, MONOLITHIC_MODULARITY_THRESHOLD/MONOLITHIC_CONDUCTANCE_THRESHOLD each carry a justification comment"
+    }
+  ],
+  "surprises": []
+}

@@ -1,0 +1,6 @@
+{
+  "status": "approved",
+  "required_changes": [],
+  "surprises": [],
+  "notes": "orchestrator/grouping/plan_edit.py implements extract_task_map_entries/render_task_map_block, split_units, validate_plan, and verify_map_unchanged as the single verbatim-surgery module, reusing task_map_block_span (plan_reader.py) and locate_units_span/UNIT_HEADING (plan_sections.py) rather than duplicating regexes. `orchestrate plan-check <plan> [--against <path>]` is wired into cli.py's dispatch before any config/LLM/codegraph setup. All 22 tests in tests/test_plan_edit.py pass, including byte-identical round-trip on the repo's real 36-unit (largest) plan, all-differences-in-one-report diffing, CLI exit codes naming offending units, sub-second timing (~0.8ms), and a subprocess.run-raises probe proving no codegraph/LLM call. Ran the full suite (uv run pytest, excluding *_live.py): 1487 passed, 5 failed — all 5 are the coder-reported pre-existing sandbox-environment failures (permission-denied mkdir under ~/.claude/projects, cross-device git worktree move), none touching this diff's files. All 5 verification items (g1-1..g1-5) verified independently against the code and confirmed passing."
+}

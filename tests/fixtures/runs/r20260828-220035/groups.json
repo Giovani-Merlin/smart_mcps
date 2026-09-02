@@ -1,0 +1,493 @@
+{
+  "plan_path": "docs/plans/2026-08-28-001-feat-deterministic-grouper-advisory-plan.md",
+  "groups": [
+    {
+      "id": "g1",
+      "name": "deterministic-spec-assembly",
+      "summary": "Parse plan units and assemble every group's name/summary/spec/verification with zero LLM calls",
+      "spec": "Implement U1 (`u1-plan-sections`) and U2 (`u2-spec-assembly`) from the plan — the foundation of wave 1a. Read those two unit sections in the plan document for the authoritative goals; this spec covers how they fit together and what constrains you.\n\n**U1 first, U2 on top of it.** U1 is a new module `orchestrator/grouping/plan_sections.py`: a pure parser over a plan document producing (a) the preamble — everything before the `## Units` heading with the task map stripped (reuse `strip_task_map` in `orchestrator/grouping/plan_reader.py:133`), (b) unit sections keyed by unit id, matching heading `### U<N>.` to task ids `u<N>-…`, each carrying verbatim body, the tagged `Summary:` line, and parsed Verification bullets, and (c) a digest builder emitting preamble + one tagged summary line per unit + the implements/consumes registry. A unit with no `Summary:` line falls back to its heading title and raises an info flag — older plans must keep working. A task id with no matching unit section is a hard error. Parse errors accumulate per phase and report together (the same discipline U6 applies elsewhere; U6 is a sibling group, so implement accumulation locally here rather than waiting on shared helpers).\n\n**U2** is a new `orchestrator/grouping/assembler.py` plus the `run_grouping` wiring in `orchestrator/grouping/pipeline.py:673`, which today calls `write_specs`. Replace that call with deterministic assembly: name and summary derived from member unit titles (summary within `SUMMARY_MAX_CHARS`, `orchestrator/model.py`); spec = a generated relational header followed by the member units' plan sections verbatim; verification = the units' Verification bullets as `VerificationItem`s with ids `<group_id>-<n>` and `required=true`. Per the plan's R2 decision the relational header uses **graph/DAG facts only** — member list with descriptions, intra-group `depends_on` in topological order, upstream/downstream group ids with the contract tags exchanged, slice membership — no interpretive prose. Dry deterministic prose is explicitly acceptable; do not add a polish pass and do not call an LLM anywhere in this path.\n\nAfter assembly run the verification-coverage lint: every unit Verification bullet must land in exactly one group's `VerificationItem`s, otherwise raise `GrouperError` naming the unit. Add the flag `specs: assembled from plan — speccer LLM skipped` to `groups.json` and change the stage progress line to `stage: assemble` with no per-spec LLM progress.\n\n**Constraints.** Do not delete `orchestrator/grouping/speccer.py` or `orchestrator/prompts/speccer.md` — a separate group (U4) owns the removal commit; just stop calling `write_specs` from the assembled path. `GroupSpec`/`VerificationItem` shapes stay as they are. `serialize_grouping` remains the canonical writer; `groups.json` must be byte-deterministic. `compute_partition`'s deterministic prefix is unchanged.\n\n**Done** means `group` on a task-mapped plan produces a launchable `groups.json` with a runner stub that raises on any LLM call, the coverage lint is live, and `tests/test_plan_sections.py`, `tests/test_assembler.py`, and the updated `tests/test_grouper_pipeline.py` are green alongside the existing suite.",
+      "difficulty": 0.2619047619047619,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g1-1",
+          "description": "Parsing this plan document itself yields one section per task-map entry, each section's text found verbatim in the source, and a digest containing every unit's `Summary:` line and none of the unit bodies.",
+          "required": true
+        },
+        {
+          "id": "g1-2",
+          "description": "A plan whose `U3` heading is missing while the map declares `u3-layered-context` raises one error naming `u3-layered-context`; a plan with two missing sections reports both in the same error.",
+          "required": true
+        },
+        {
+          "id": "g1-3",
+          "description": "The digest and section split are byte-stable: parsing the same text twice yields identical bytes, and the task-map YAML block appears in neither the digest nor any section.",
+          "required": true
+        },
+        {
+          "id": "g1-4",
+          "description": "`group` on a task-mapped plan completes with an LLM runner stub that raises on any call, and the produced `groups.json` validates against `GroupingResult` with non-empty name/summary/spec/verification for every group.",
+          "required": true
+        },
+        {
+          "id": "g1-5",
+          "description": "Each group's spec contains its member unit sections verbatim, and its relational header names exactly the upstream/downstream group ids `build_group_dag` produced — regenerating after a changed partition changes the header accordingly.",
+          "required": true
+        },
+        {
+          "id": "g1-6",
+          "description": "Every Verification bullet of every unit appears as exactly one `VerificationItem` across all groups with ids matching `^g\\d+-\\d+$`; removing one unit's Verification section makes grouping fail naming that unit.",
+          "required": true
+        },
+        {
+          "id": "g1-7",
+          "description": "`groups.json` output is byte-deterministic across two runs on an unchanged repo.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u1-plan-sections",
+        "u2-spec-assembly"
+      ],
+      "files": [
+        "orchestrator/grouping/assembler.py",
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/plan_sections.py",
+        "tests/test_assembler.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_plan_sections.py"
+      ],
+      "estimated_tokens": 139919
+    },
+    {
+      "id": "g2",
+      "name": "cycle-repair-withdrawal",
+      "summary": "Group-DAG cycle repair withdraws inferred precedence edges before falling back to merging",
+      "spec": "Implement U10 (`u10-cycle-repair-withdrawal`) from the plan — fix C4.1/R11. Read that unit section for the goal.\n\nDepends on `u9-partition-diagnostics`, which exposes the declared-vs-inferred edge classification; build on that rather than re-deriving it.\n\nToday `_drop_inferred_cycles` (`orchestrator/grouping/graphing.py:626`) withdraws inferred edges at the **task-graph** level, but the group-DAG repair `repair_cycles` (`orchestrator/grouping/partition.py`) only merges SCCs and re-splits by wave — it never withdraws. That merge is what collapses a partition when a single inferred edge closes a group cycle.\n\nGive `repair_cycles` the declared-edge set (the mapper's `depends_on` pairs) and, when a group-SCC cycle forms, first withdraw **inferred** precedence edges — banking their weight as affinity exactly as `_drop_inferred_cycles` already does at task level — until the group DAG is acyclic. Fall back to the existing merge + re-split only if withdrawal alone cannot break the cycle. **Declared edges are never withdrawn**, under any pressure. Record every withdrawal in the trace `repairs` with the edges named.\n\n**Scope guard.** The plan is explicit that R11 is **edge withdrawal only**. The hyperedge / hub-routing re-modeling of symbol-derived edges is parked in the post-eval-harness backlog — do not start it, and do not change how symbol edges are created at graphing time.\n\nDeterminism discipline is unchanged: sorted iteration, a full ordering, byte-stable partitions.\n\n**Done** means both fixtures below pass and `tests/test_partition.py` and the existing partition suite are green.",
+      "difficulty": 0.16428571428571428,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g11"
+      ],
+      "verification": [
+        {
+          "id": "g2-1",
+          "description": "A fixture whose group cycle is closed only by an inferred edge partitions cleanly with no merge, the withdrawal recorded in the trace `repairs` with the edge named, and the final group count unchanged from the pre-cycle expectation.",
+          "required": true
+        },
+        {
+          "id": "g2-2",
+          "description": "A fixture whose cycle consists solely of declared edges still takes the merge + re-split path, and declared edges never appear as withdrawn in any trace.",
+          "required": true
+        },
+        {
+          "id": "g2-3",
+          "description": "Withdrawn edges' weight is banked as affinity, and partitions remain byte-deterministic across runs.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u10-cycle-repair-withdrawal"
+      ],
+      "files": [
+        "orchestrator/grouping/graphing.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_partition.py"
+      ],
+      "estimated_tokens": 190543
+    },
+    {
+      "id": "g3",
+      "name": "advisory-report",
+      "summary": "group --advise: all granularities and cohesion diagnostics off one built graph, zero LLM",
+      "spec": "Implement U11 (`u11-advisory-report`) from the plan — R12–R14, the core of wave 1c. Read that unit section for the authoritative goal; it is the largest unit in this run.\n\nAdd `group --advise <plan>`. It builds the task graph **once** — refactor the `compute_partition` prefix (`orchestrator/grouping/pipeline.py:436`) into a graph-building seam so the graph can be built and then partitioned repeatedly — and runs the partition at every `GRANULARITY_LEVELS` preset (`orchestrator/grouping/partition.py:40`) off that cached graph. Per the plan's decision there is **no cross-invocation cache in v1**: reuse within a single invocation only, measure re-run latency, cache later only if it proves necessary.\n\nWrite an **Advisory Report** — a JSON artifact in the grouping's `preview/` dir plus a human-readable rendering — carrying, per preset: group count, per-group node work and budget utilization (mean/max), cross-group edge cut, group-DAG depth, simulated makespan via `_simulate_makespan` (`partition.py:783`), and modularity via `scorecard._modularity`. Flag Pareto-dominant presets.\n\n**Cohesion diagnostics, zero LLM:**\n- Weakly-connected components computed **before** Louvain; a multi-component or near-disconnected plan is flagged \"this reads as N separate plans\", naming the task sets.\n- A seriality signal — critical path over max wave width, using `_compute_waves` (`partition.py:998`) — plus a topological-order cut sweep whose valleys name candidate phase boundaries (\"this reads as serial phases\").\n- A \"structurally monolithic\" report when modularity is low and every cut has high conductance.\n\nAll four thresholds (near-disconnected WCC edge weight, seriality depth/width ratio, cut-sweep valley detection, low-modularity/high-conductance) are **named module constants**, tuned during implementation against the existing runs and traces in this repo. Justify each chosen value in a comment.\n\n`--advise` follows the `preview/` quarantine semantics already used by `--no-spec`/`--dry-run` (`orchestrator/cli.py:665–742`): it must never touch a persisted `groups.json`. No LLM call anywhere in this path.\n\nThis group is upstream of the plan-skill group, which teaches `/orchestrator-plan` to run `--advise` and present its diagnostics — keep the human-readable rendering presentable as-is.\n\n**Done** means `tests/test_advisory.py` covers the one-build assertion, the three shape fixtures, preview isolation, and determinism.",
+      "difficulty": 0.19642857142857142,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g3-1",
+          "description": "`group --advise` on a fixture plan performs exactly one graph build (asserted via a counting client stub) and emits a report with one entry per granularity preset, each carrying group count, utilization, edge cut, DAG depth, makespan, and modularity, with Pareto-dominant presets flagged.",
+          "required": true
+        },
+        {
+          "id": "g3-2",
+          "description": "A fixture of two disjoint task sets is flagged \"reads as 2 separate plans\" naming both sets; a pure chain fixture is flagged serial with the boundary between its widest-gap waves; a clique fixture reports \"structurally monolithic\".",
+          "required": true
+        },
+        {
+          "id": "g3-3",
+          "description": "After `--advise`, a pre-existing `groups.json` in the same grouping dir is byte-identical, and `advisory.json` lives under `preview/`.",
+          "required": true
+        },
+        {
+          "id": "g3-4",
+          "description": "The report is byte-deterministic across two runs on an unchanged repo, and no LLM call occurs (runner stub raises on any call).",
+          "required": true
+        },
+        {
+          "id": "g3-5",
+          "description": "All four diagnostic thresholds are named module constants with in-code justification for the chosen value.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u11-advisory-report"
+      ],
+      "files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/advisory.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/scorecard.py",
+        "tests/test_advisory.py"
+      ],
+      "estimated_tokens": 223821
+    },
+    {
+      "id": "g4",
+      "name": "merge-fill-penalty",
+      "summary": "Merge key gains a fill/balance term so one group stops absorbing merges up to the cap",
+      "spec": "Implement U12 (`u12-fill-penalty`) from the plan — the R19b greedy-fragmentation experiment, landed in wave 1c by user decision. Read that unit section for the goal.\n\nThe merge key in `merge_small_groups` is today `(-source_wave, candidate_makespan, -removed_affinity, -edge_weight, merged_work, source, target)` (`orchestrator/grouping/partition.py:974`) — `merged_work` sits in 5th place with no fill or balance term, which is the measured cause of one group absorbing merges until it hits ~96% of cap while siblings starve.\n\nAdd a fill/balance term ranked **above** `merged_work`'s current position: candidate merges whose merged work lands inside a target band are preferred over ones landing at the cap. The band comes from a new config knob `[partition] target_fill_ratio` in `orchestrator/config.py`. Its default is a judgment call — choose it, and **justify the choice in-code**; the plan records that calibrating it properly is backlogged to the eval harness, so a defensible default with a comment is the deliverable, not a tuned optimum.\n\n**Determinism discipline is non-negotiable**: sorted iteration, a full ordering with no ties left to hash order, byte-stable partitions across runs. Slice must-link and budget-cap invariants must continue to hold across the whole existing suite.\n\nThe granularity-ladder and hub tests will legitimately shift where the expected partition changes. Update them — and **explain in the test** why the new partition is the right one. Do not pin a test to an old partition you believe is worse, and do not loosen an assertion to make it pass.\n\nThe advisory report's granularity comparison (a sibling group) is the intended before/after readout for this change; if it is available, record the observed shift.\n\n**Done** means the pathology fixture shows strictly lower fill variance, no group over cap, an acyclic group DAG, and `tests/test_partition.py` plus the full suite green.",
+      "difficulty": 0.11111111111111109,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g4-1",
+          "description": "A synthetic fixture reproducing the greedy pathology (one group absorbing every merge to ~96% of cap while siblings starve) yields a partition with strictly lower per-group fill variance, no group over cap, and an acyclic group DAG.",
+          "required": true
+        },
+        {
+          "id": "g4-2",
+          "description": "Partitions remain byte-deterministic across runs, and slice must-link and budget-cap invariants hold across the whole existing test suite.",
+          "required": true
+        },
+        {
+          "id": "g4-3",
+          "description": "`[partition] target_fill_ratio` exists in `orchestrator/config.py` with a default justified in-code, and the fill term is ranked above `merged_work` in the merge key.",
+          "required": true
+        },
+        {
+          "id": "g4-4",
+          "description": "Every granularity-ladder or hub test whose expected partition changed carries an in-test explanation of why the new partition is correct.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u12-fill-penalty"
+      ],
+      "files": [
+        "orchestrator/config.py",
+        "orchestrator/grouping/partition.py",
+        "tests/test_partition.py"
+      ],
+      "estimated_tokens": 149251
+    },
+    {
+      "id": "g5",
+      "name": "planning-contract-and-advise-phase",
+      "summary": "Document the plan authoring contract and make /orchestrator-plan consult --advise before asking about splits",
+      "spec": "Implement U5 (`u5-planning-contract-docs`) and U13 (`u13-plan-skill-advise-phase`) from the plan — the two documentation units, both touching `skills/orchestrator-plan/SKILL.md`, which is why they share a group. Read both unit sections for the authoritative goals. `u13` depends on `u5` and on `u11-advisory-report` (a sibling group ships `group --advise`); write the hand-off phase against the `--advise` behavior the plan specifies.\n\n**U5 — the authoring contract**, in `skills/orchestrator-plan/SKILL.md` and `docs/orchestrator-task-map.md`:\n- The required per-unit tagged `Summary:` line (R21) and the `### U<N>.` ↔ `u<N>-…` id convention.\n- Verification written as a bulleted list, one item per bullet; a single-line Verification is one item.\n- `symbols` is **optional**, contributes derived precedence, and on a dense codebase omitting it may give a better partition. This replaces the current unconditional \"Record exact existing symbols\" instruction — the measured lesson (R9/C4) is that populating `symbols` on this codebase added 103 inferred edges and degenerated the partition; declared `depends_on` and shared-file affinity carry the structure instead.\n- The pricing formula with its numeric defaults documented next to `size_hints`: node work = source_bytes/4.0 × 1.3 + 2000 per file, cap = 200,000 − head, with the multipliers named and a pointer to `group --price`.\n- The plan-template unit skeleton gains the `Summary:` field.\n\n**U13 — the hand-off phase** in the same skill: after the `--no-spec` validation, run `smart-mcps-orchestrate group <plan> --advise`, present the Advisory Report's diagnostics (granularity comparison, \"reads as N plans\", \"reads as serial phases\"), and **ask the user** whether to split along the reported seams or proceed as one plan. Never split silently, never rewrite the plan prose. Proceed-as-one must be an explicit option in the question.\n\n**Do not fabricate wave-2 capability.** The mechanical split (R16) and the deepen command (R17) do not exist yet; note them as arriving with wave 2 and do not reference a deepen command as currently runnable.\n\n**Done** means both documents state the conventions above and the skill's hand-off phase reads as specified.",
+      "difficulty": 0.15277777777777776,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g3"
+      ],
+      "verification": [
+        {
+          "id": "g5-1",
+          "description": "`docs/orchestrator-task-map.md` states the node-work formula with numeric defaults (bytes/4 × 1.3 + 2000/file, cap = 200,000 − head) and names `group --price`.",
+          "required": true
+        },
+        {
+          "id": "g5-2",
+          "description": "`SKILL.md` no longer instructs \"Record exact existing symbols\" without qualification; it states the dense-codebase trade-off and the `Summary:`/Verification-bullet conventions, and the unit template shows `Summary:`.",
+          "required": true
+        },
+        {
+          "id": "g5-3",
+          "description": "The skill's hand-off phase contains the `--advise` invocation after `--no-spec` validation, instructs presenting its diagnostics, and phrases the split strictly as a question to the user with proceed-as-one as an explicit option.",
+          "required": true
+        },
+        {
+          "id": "g5-4",
+          "description": "The skill contains no instruction to auto-split or regenerate plan prose, and no reference to a deepen command as currently runnable.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u13-plan-skill-advise-phase",
+        "u5-planning-contract-docs"
+      ],
+      "files": [
+        "docs/orchestrator-task-map.md",
+        "skills/orchestrator-plan/SKILL.md"
+      ],
+      "estimated_tokens": 72980
+    },
+    {
+      "id": "g6",
+      "name": "layered-worker-context",
+      "summary": "Base context carries the plan digest; group specs carry member sections plus contracts-only neighbor lines",
+      "spec": "Implement U3 (`u3-layered-context`) from the plan — the token-economy half of wave 1a (R22/R23). Read that unit section for the authoritative goal.\n\nThis group depends on `u1-plan-sections` and `u2-spec-assembly` (delivered by the spec-assembly group): the digest builder and the assembler already exist when you start. Your job is to switch the two consumers over.\n\n**`compile_base_context`** (`orchestrator/grouping/base_context.py:19`) currently ends with `strip_task_map(plan)` — the full plan text. Replace that with the U1 **digest**: preamble + per-unit tagged `Summary:` lines + implements/consumes registry. Everything else in the base context (ground rules, CLAUDE.md/AGENTS.md, codegraph summary) stays. The byte-stability contract and the guarantee that no `orchestrator-task-map` marker survives both carry over to the digest — this content feeds `start_base` (`orchestrator/execution/sessions.py:400`), the run's base session every worker forks from, so a byte drift is a cache miss for every worker.\n\n**The assembler** gains contracts-only neighbor lines: for each cross-group unit this group consumes from or provides to, append one line carrying the contract tag, the counterpart task id, and that unit's `Summary:` line. Never a neighbor's full section. The invariant to hold: base context + one group's spec contains that group's own unit sections exactly once and no other group's bodies. No worker context anywhere contains the full plan document.\n\n`base_tokens` and therefore `partition_budget_cap` now derive from the smaller digest-based context, so groups get roomier. Apply **no compensating adjustment** — the plan is explicit about this. Update `tests/test_grouper_pipeline.py` where cap expectations legitimately move, and say in the test why.\n\nLayered context is the default, not a flag — do not add an opt-out that restores the full plan.\n\n**Done** means a multi-unit fixture produces a digest-based `base-context.md`, specs carry contracts lines for their neighbors, and the pipeline suite is green.",
+      "difficulty": 0.20634920634920637,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g1"
+      ],
+      "verification": [
+        {
+          "id": "g6-1",
+          "description": "For a multi-unit fixture plan, `base-context.md` contains every unit's `Summary:` line and the preamble, contains no unit's full section body and no `orchestrator-task-map` marker, and compiling twice is byte-identical.",
+          "required": true
+        },
+        {
+          "id": "g6-2",
+          "description": "A group consuming `/api/x` implemented by another group carries a contracts line naming `/api/x` and the implementing task id, and does not contain that neighbor unit's section body.",
+          "required": true
+        },
+        {
+          "id": "g6-3",
+          "description": "The union of one group's assembled spec plus the base context contains that group's full unit sections exactly once.",
+          "required": true
+        },
+        {
+          "id": "g6-4",
+          "description": "`base_tokens`/`budget_cap` derive from the digest-based context with no compensating adjustment, and pipeline tests whose cap expectations moved explain the change.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u3-layered-context"
+      ],
+      "files": [
+        "orchestrator/grouping/assembler.py",
+        "orchestrator/grouping/base_context.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py"
+      ],
+      "estimated_tokens": 130374
+    },
+    {
+      "id": "g7",
+      "name": "speccer-removal",
+      "summary": "Delete the grouping-time speccer and its grouping-form knob in one recoverable commit",
+      "spec": "Implement U4 (`u4-speccer-removal`) from the plan, and read ADR 0006 (`docs/adr/0006-delete-the-grouping-time-speccer.md`) for the decision behind it. This group depends on `u2-spec-assembly`: the deterministic assembler is already the live path, so nothing calls `write_specs` by the time you delete it.\n\n**Delete**: `orchestrator/grouping/speccer.py`, `orchestrator/prompts/speccer.md`, the grouping-form model knob (`GroupingOptions.model_speccer` in `orchestrator/observatory/launch.py` around lines 121/147 and its argv plumbing, the grouping-form parts of `ui/src/routes/Launch.tsx:193`, `ui/src/components/launch/ExecutionOptions.tsx`, `ui/src/types.ts` around line 532, `ui/src/api.ts`), and the grouping-time speccer wiring and help text in `orchestrator/cli.py`.\n\n**Keep — this is the sharp edge of the unit.** Two speccers exist. The **mid-run rewrite speccer** stays untouched: `orchestrator/cli.py:1919` `_rewrite_provider` area, the escalation path in `orchestrator/execution/review.py`, and the **run-form** `model_speccer` knob in `ui/src/components/launch/ExecutionOptions.tsx:261`. The Observatory LLM-call viewer (`SpeccerCalls` in `ui/src/components/grouping/GroupingTab.tsx`) stays. `_speccer_json_runner` stays — it also serves the mapper for foreign plans; reword its docstring and the `--model-speccer` help to \"mapper / rewrite speccer\". `config.session.speccer_model` and the `--model-speccer` flag survive; only the grouping-time consumer goes.\n\nLand this unit's changes as **one standalone commit** and record its sha in a short \"grouping-time speccer removed\" note in `docs/orchestrator-grouping.md` — recovery is a cherry-pick, per ADR 0006.\n\n**Done** means no references remain, the grouping launch API no longer accepts `model_speccer` while the run launch body still does, and `tests/test_observatory_launch.py`, `ui/src/routes/launch.test.tsx`, the rest of the UI suite, and the review/rewrite tests are green.",
+      "difficulty": 0.20950046685340803,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g1"
+      ],
+      "verification": [
+        {
+          "id": "g7-1",
+          "description": "`grep -r \"write_specs\\|prompts/speccer\" orchestrator/ ui/src/` finds no references, and `orchestrator/grouping/speccer.py` and `orchestrator/prompts/speccer.md` do not exist.",
+          "required": true
+        },
+        {
+          "id": "g7-2",
+          "description": "The grouping launch API rejects/ignores `model_speccer` for groupings while the run launch body still accepts it; `pytest tests/test_observatory_launch.py` and the UI test suite pass.",
+          "required": true
+        },
+        {
+          "id": "g7-3",
+          "description": "The rewrite-speccer path still works: `orchestrator/execution/review.py`'s rewrite flow and its tests are unchanged and green, and the run-form `model_speccer` knob plus the `SpeccerCalls` viewer are untouched.",
+          "required": true
+        },
+        {
+          "id": "g7-4",
+          "description": "`docs/orchestrator-grouping.md` contains a removal note carrying the sha of the single standalone commit that made this change.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u4-speccer-removal"
+      ],
+      "files": [
+        "docs/orchestrator-grouping.md",
+        "orchestrator/cli.py",
+        "orchestrator/grouping/speccer.py",
+        "orchestrator/observatory/launch.py",
+        "orchestrator/prompts/speccer.md",
+        "tests/test_observatory_launch.py",
+        "ui/src/api.ts",
+        "ui/src/components/launch/ExecutionOptions.tsx",
+        "ui/src/routes/Launch.tsx",
+        "ui/src/routes/launch.test.tsx",
+        "ui/src/types.ts"
+      ],
+      "estimated_tokens": 320993
+    },
+    {
+      "id": "g8",
+      "name": "error-accumulation",
+      "summary": "Slice-overflow and plan_reader validation report every failure per phase instead of the first",
+      "spec": "Implement U6 (`u6-error-accumulation`) from the plan — fix C1/R5, the measured failure where validating one written plan cost 15 `group` invocations because each run surfaced exactly one error. Read that unit section for the goal.\n\nTwo sites. `_check_slice_overflow` (`orchestrator/grouping/pipeline.py:214`) raises on the first over-cap slice inside its loop; collect every over-cap slice and raise once listing all of them with their sums and overshoots. `orchestrator/grouping/plan_reader.py` has roughly twenty `raise TaskMapError` sites and no accumulator; group them into phases and accumulate within each — shape errors reported together first, then reference errors (unknown `depends_on`, bad `size_hints`, duplicate ids) reported together.\n\n**Phase order is preserved**: the first failing phase reports its full set and stops. Do not merge phases into one mega-report — a reference check on a malformed map produces noise, which is why the phasing exists.\n\nError text keeps naming each problem exactly as it does today, one line per problem, so single-error wording is unchanged and existing tests that assert on messages keep passing without edits. This is a legibility change, not a wording rewrite.\n\nThis group is upstream of the budget-naming and partition-diagnostics groups, which both build on the accumulator — keep the accumulation helper reusable and clearly named rather than inlining it twice.\n\n**Done** means `tests/test_plan_reader.py` and `tests/test_grouper_pipeline.py` cover multi-error reporting per phase and the full suite is green.",
+      "difficulty": 0.19642857142857142,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g8-1",
+          "description": "A map with three over-cap slices fails with one `GrouperError` naming all three slices with their sums and overshoots.",
+          "required": true
+        },
+        {
+          "id": "g8-2",
+          "description": "A map with two unknown-key tasks and two bad `size_hints` entries reports both unknown-key problems in one error; fixing those then reports both `size_hints` problems in one error.",
+          "required": true
+        },
+        {
+          "id": "g8-3",
+          "description": "Single-error behavior is unchanged in wording, and existing tests asserting on error messages pass without modification.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u6-error-accumulation"
+      ],
+      "files": [
+        "orchestrator/grouping/pipeline.py",
+        "orchestrator/grouping/plan_reader.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_plan_reader.py"
+      ],
+      "estimated_tokens": 149540
+    },
+    {
+      "id": "g9",
+      "name": "price-mode",
+      "summary": "group --price prints per-task node work and per-slice sums against the cap sub-second, no codegraph",
+      "spec": "Implement U7 (`u7-price-mode`) from the plan — fix C3/R6, giving a plan author a sub-second way to price a task map before paying for a full `group` run. Read that unit section for the goal.\n\nAdd `group --price <plan>` to `orchestrator/cli.py`, with any pricing helpers it needs in `orchestrator/grouping/estimator.py`. It parses the task map only — **no graph build, no codegraph client, no quiescence check** — prices every task's node work from working-tree byte counts plus `size_hints`, and prints per-task node work, per-slice sums against the cap with pass/fail, and the resolved budget parameters (`token_budget`, `bytes_per_token`, `slack_multiplier`, `coder_slack_multiplier`, `per_file_tool_allowance`, head, cap).\n\n**The cap is approximate and must say so.** Per the plan's decision, `--price` compiles its base context with an **empty codegraph summary**, so the printed cap lands within a few thousand tokens of the real one while staying sub-second. Print the approximation and its cause in the output rather than burying it.\n\nExit non-zero if any slice exceeds the cap. Runtime must be under a second on this repo's real plan documents — that budget is the whole point of the mode, so avoid pulling in the graph-building path even indirectly.\n\nOutput vocabulary must name both `node work` and `coder work` consistently with U8 (a sibling group owns that unit; the two literal labels are the shared contract).\n\n**Done** means `tests/test_cli_price.py` covers the over-cap exit path with a codegraph client stub that raises if touched, plus the timing and cross-check against `grouping-trace.json`.",
+      "difficulty": 0.11111111111111109,
+      "intensity": "self_verify",
+      "dependencies": [],
+      "verification": [
+        {
+          "id": "g9-1",
+          "description": "On a fixture plan with one over-cap slice, `--price` exits non-zero and prints that slice's member-by-member node work, sum, cap, and overshoot.",
+          "required": true
+        },
+        {
+          "id": "g9-2",
+          "description": "`--price` never invokes codegraph — asserted via a client stub that raises on any call — and states in its output that the cap is approximate because the codegraph summary was empty.",
+          "required": true
+        },
+        {
+          "id": "g9-3",
+          "description": "On this repo's 2026-08-26 plan document, `--price` completes in under one second and its per-task figures match `grouping-trace.json` `node_work` for the same map within the stated cap approximation.",
+          "required": true
+        },
+        {
+          "id": "g9-4",
+          "description": "The output names both `node work` and `coder work` scales, consistently with U8's vocabulary.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u7-price-mode"
+      ],
+      "files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/estimator.py",
+        "tests/test_cli_price.py"
+      ],
+      "estimated_tokens": 139523
+    },
+    {
+      "id": "g10",
+      "name": "budget-naming",
+      "summary": "Name node work vs coder work distinctly in every operator-facing budget figure",
+      "spec": "Implement U8 (`u8-budget-naming`) from the plan — fix C2/R7, where an operator reading a budget figure cannot tell whether it is the unscaled quantity or the coder-scaled one. Read that unit section for the goal.\n\nDepends on `u6-error-accumulation`: the slice-overflow error already reports all offending slices when you start, so you are changing the wording of a multi-slice message.\n\nEverywhere an operator sees a budget figure — the slice-overflow error in `orchestrator/grouping/pipeline.py`, the dry-run/group report listing, and the `--price` output — name the two quantities distinctly: `node work` for the unscaled figure (`node_work`, `orchestrator/grouping/estimator.py:51`) and `coder work` for the figure scaled by `coder_slack_multiplier` (2.5). The slice-overflow error prints both figures per offending slice and states the multiplier value in use.\n\n**No arithmetic changes.** This is vocabulary only — `partition_budget_cap`, `node_work`, and the head computation are untouched. No user-facing output may say a bare \"work\" for either quantity.\n\nThe `--price` command is built by a sibling group; that unit's own verification requires its output to name both scales consistently with this one. Establish the vocabulary here as the reference — if the two land in either order, the shared constraint is the two literal labels `node work` and `coder work`.\n\n**Done** means `tests/test_grouper_pipeline.py` asserts the labels and the multiplier in the overflow message, and the suite is green.",
+      "difficulty": 0.15476190476190474,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g8"
+      ],
+      "verification": [
+        {
+          "id": "g10-1",
+          "description": "The slice-overflow error message contains both a `node work` and a `coder work` figure for each offending slice, plus the literal multiplier value in use.",
+          "required": true
+        },
+        {
+          "id": "g10-2",
+          "description": "`group --dry-run`'s per-group listing labels its figure `node work`, and no user-facing output says bare \"work\" for either quantity.",
+          "required": true
+        },
+        {
+          "id": "g10-3",
+          "description": "No budget arithmetic changed: node work, head, and cap values are identical to before on an unchanged fixture.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u8-budget-naming"
+      ],
+      "files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py"
+      ],
+      "estimated_tokens": 201360
+    },
+    {
+      "id": "g11",
+      "name": "partition-diagnostics",
+      "summary": "Report inferred-vs-declared edge provenance on degenerate partitions and name slice-re-entrant paths",
+      "spec": "Implement U9 (`u9-partition-diagnostics`) from the plan — fix C4.2/R8 and C5/R10, the two partition failures that today surface as a generic saturation message the author cannot act on. Read that unit section for the goal.\n\nDepends on `u6-error-accumulation`: the accumulate-then-report discipline is already available, and part (b) below must use it.\n\n**(a) Provenance in the degenerate-partition error.** When the partition degenerates into one SCC, report how many of the edges inside the offending SCC are inferred versus declared, with the inferred edges' source kind — e.g. \"103 of 127 dependency edges are inferred from `symbols`\". Source this from the same contribution data `EdgeProvenanceRecorder`/`edge_provenance_document` (`orchestrator/grouping/pipeline.py:306`) already records; do not build a second provenance channel. This is the diagnostic that would have explained the measured case where populating `symbols` on this dense codebase added 103 inferred precedence edges and collapsed the partition.\n\n**(b) Slice re-entry detection.** A dependency path that leaves a slice and re-enters it is currently only visible as saturation. Detect it on the contracted graph **before** partitioning and report by name with the exact edit: \"slice `resilience` contracts `u1` and `u3`, but `u1 → u2 → u3` leaves the slice and returns — bring `u2` into the slice or drop the label\". Report **all** such shapes together, per the R5 discipline.\n\nWork spans `pipeline.py`, `graphing.py`, and `partition.py`; keep the detection in the layer that owns the contracted graph rather than duplicating traversal.\n\nThis group is upstream of the cycle-repair-withdrawal group, which consumes the declared-vs-inferred distinction — expose that classification as a reusable value, not just error-message text.\n\n**Done** means fixtures for both shapes fail with the specific messages and `tests/test_partition.py` plus `tests/test_grouper_pipeline.py` are green.",
+      "difficulty": 0.20422077922077925,
+      "intensity": "self_verify",
+      "dependencies": [
+        "g8"
+      ],
+      "verification": [
+        {
+          "id": "g11-1",
+          "description": "A fixture reproducing the run-10 shape (u1→u2→u3 with u1/u3 slice-mates) fails naming the slice, the full path, and both remedies — not with the generic saturation message.",
+          "required": true
+        },
+        {
+          "id": "g11-2",
+          "description": "Multiple slice-re-entrant shapes in one map are all reported together in a single error.",
+          "required": true
+        },
+        {
+          "id": "g11-3",
+          "description": "A degenerate-partition fixture with mixed inferred/declared edges reports the exact inferred and declared counts inside the offending SCC and the inferred edges' source kind, sourced from the existing edge-provenance data.",
+          "required": true
+        }
+      ],
+      "tasks": [
+        "u9-partition-diagnostics"
+      ],
+      "files": [
+        "orchestrator/grouping/graphing.py",
+        "orchestrator/grouping/partition.py",
+        "orchestrator/grouping/pipeline.py",
+        "tests/test_grouper_pipeline.py",
+        "tests/test_partition.py"
+      ],
+      "estimated_tokens": 235349
+    }
+  ],
+  "flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u1-plan-sections file orchestrator/grouping/plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u1-plan-sections file tests/test_plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file tests/test_assembler.py does not exist yet — retained as prospective",
+    "task map: task u3-layered-context file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u7-price-mode file tests/test_cli_price.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file orchestrator/grouping/advisory.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file tests/test_advisory.py does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "estimator: group g3 estimate 223821 exceeds budget 200000 and cannot be split further",
+    "estimator: group g7 estimate 320993 exceeds budget 200000 and cannot be split further",
+    "estimator: group g10 estimate 201360 exceeds budget 200000 and cannot be split further",
+    "estimator: group g11 estimate 235349 exceeds budget 200000 and cannot be split further"
+  ]
+}

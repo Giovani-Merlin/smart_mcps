@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260829-162627/g1-plan-edit-verbatim-plan-surgery-and-the",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-29T16:27:54+00:00",
+  "base_ref": "5eca4f14b65b17100b6a91efd9bbbf005a488492"
+}

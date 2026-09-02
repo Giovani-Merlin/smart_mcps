@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g5-planning-contract-and-advise-phase",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T21:15:09+00:00",
+  "base_ref": "5d1e256cc0863162481d52ab4e241879df31c770"
+}

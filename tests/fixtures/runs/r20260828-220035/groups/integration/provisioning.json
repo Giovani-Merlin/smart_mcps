@@ -1,0 +1,11 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/integration",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T20:01:43+00:00"
+}

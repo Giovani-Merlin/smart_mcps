@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "plan_path": "docs/plans/2026-08-29-001-feat-plan-split-and-deepen-plan.md",
+  "granularities": [
+    {
+      "granularity": "independent",
+      "group_count": 3,
+      "node_work_fraction_mean": 0.752734395079183,
+      "node_work_fraction_max": 0.8767422846315571,
+      "cross_group_edge_cut": 3,
+      "group_dag_depth": 3,
+      "simulated_makespan": 329508.6875,
+      "modularity": -0.20510396975425332,
+      "pareto_dominant": true
+    },
+    {
+      "granularity": "balanced",
+      "group_count": 3,
+      "node_work_fraction_mean": 0.752734395079183,
+      "node_work_fraction_max": 0.8767422846315571,
+      "cross_group_edge_cut": 3,
+      "group_dag_depth": 3,
+      "simulated_makespan": 329508.6875,
+      "modularity": -0.20510396975425332,
+      "pareto_dominant": true
+    },
+    {
+      "granularity": "monolithic",
+      "group_count": 3,
+      "node_work_fraction_mean": 0.752734395079183,
+      "node_work_fraction_max": 0.8767422846315571,
+      "cross_group_edge_cut": 3,
+      "group_dag_depth": 3,
+      "simulated_makespan": 329508.6875,
+      "modularity": -0.20510396975425332,
+      "pareto_dominant": true
+    }
+  ],
+  "cohesion": []
+}

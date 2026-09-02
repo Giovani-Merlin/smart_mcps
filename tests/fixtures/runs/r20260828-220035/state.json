@@ -1,0 +1,107 @@
+{
+  "run_id": "r20260828-220035",
+  "schema_version": 1,
+  "groups": {
+    "g1": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g2": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g3": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g4": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g5": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g6": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g7": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g8": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g9": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g10": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    },
+    "g11": {
+      "state": "completed",
+      "generation": 1,
+      "failure": null,
+      "holds": [],
+      "resolve_settled": false,
+      "reentry_count": 0,
+      "quarantined": false
+    }
+  },
+  "live_pids": {},
+  "interrupted_at": null
+}

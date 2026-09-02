@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g6-layered-worker-context",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T21:17:37+00:00",
+  "base_ref": "57927454ca21b761e0820c3db4ae3eacc03f2660"
+}

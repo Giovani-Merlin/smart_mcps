@@ -1,0 +1,31 @@
+{
+  "status": "completed",
+  "summary": "Implemented U5 and U13: docs/orchestrator-task-map.md gained a new 'Pricing a task's node work' section with the exact node_work/cap formula and numeric defaults, pointing to `group --price`. skills/orchestrator-plan/SKILL.md now states the U<N>/u<N>-slug id convention, requires a Summary: line per unit, marks symbols as optional with the measured dense-codebase degeneration trade-off replacing the old unconditional instruction, requires one Verification bullet per checkable item, adds Summary: to the unit template, and inserts a `group --advise` step into Phase 7 hand-off (after --no-spec, before the summary/dry-run) that presents diagnostics and asks the user to choose split-vs-proceed-as-one, explicitly deferring the mechanical split/deepen command as not-yet-existing wave-2 work. Changes committed as c2a5200.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g5-1",
+      "status": "pass",
+      "notes": "docs/orchestrator-task-map.md states node_work = source_bytes/4.0 × 1.3 + per-file allowance, cap = 200,000 − head, names all multipliers, and points at group --price"
+    },
+    {
+      "item_id": "g5-2",
+      "status": "pass",
+      "notes": "SKILL.md Phase 2 replaces the unconditional symbols instruction with the dense-codebase trade-off; Units section states Summary: requirement and Verification-bullet convention; template shows Summary: field"
+    },
+    {
+      "item_id": "g5-3",
+      "status": "pass",
+      "notes": "Phase 7 runs --advise after --no-spec, instructs presenting diagnostics, and phrases the choice as a question with proceed-as-one as an explicit option"
+    },
+    {
+      "item_id": "g5-4",
+      "status": "pass",
+      "notes": "No auto-split/regenerate instruction added; the single 'deepen command' mention only states it doesn't exist yet, not that it's runnable"
+    }
+  ],
+  "surprises": []
+}

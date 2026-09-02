@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "max_contributions_per_edge": 20,
+  "affinity": [
+    {
+      "a": "u1-plan-edit",
+      "b": "u2-plan-split",
+      "total_weight": 2.75,
+      "total_contributions": 3,
+      "recorded_contributions": 3,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/plan_edit.py"
+          ]
+        },
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 0.75,
+          "detail": {
+            "tags": [
+              "plan-edit"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "a": "u1-plan-edit",
+      "b": "u3-deepen-skill",
+      "total_weight": 0.75,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 0.75,
+          "detail": {
+            "tags": [
+              "plan-edit"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "a": "u2-plan-split",
+      "b": "u4-planning-contract",
+      "total_weight": 1.5,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 1.5,
+          "detail": {
+            "tags": [
+              "advisory-seams",
+              "split-cli"
+            ],
+            "base_weight": 3.0,
+            "layer_scale": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "a": "u3-deepen-skill",
+      "b": "u4-planning-contract",
+      "total_weight": 0.75,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 0.75,
+          "detail": {
+            "tags": [
+              "deepen-skill"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 0.5
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "upstream": "u1-plan-edit",
+      "downstream": "u2-plan-split",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u1-plan-edit",
+      "downstream": "u3-deepen-skill",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u2-plan-split",
+      "downstream": "u4-planning-contract",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u3-deepen-skill",
+      "downstream": "u4-planning-contract",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    }
+  ],
+  "withdrawn": [],
+  "groups": [
+    {
+      "group_id": "g1",
+      "tasks": [
+        "u1-plan-edit"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 3.5,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g2",
+      "tasks": [
+        "u2-plan-split"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 4.25,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u1-plan-edit",
+          "u2-plan-split"
+        ]
+      ]
+    },
+    {
+      "group_id": "g3",
+      "tasks": [
+        "u3-deepen-skill",
+        "u4-planning-contract"
+      ],
+      "internal_affinity_weight": 0.75,
+      "external_affinity_weight": 2.25,
+      "internal_affinity_by_kind": {
+        "semantic": 0.75
+      },
+      "upstream_dependency_edges": [
+        [
+          "u1-plan-edit",
+          "u3-deepen-skill"
+        ],
+        [
+          "u2-plan-split",
+          "u4-planning-contract"
+        ]
+      ]
+    }
+  ]
+}

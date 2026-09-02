@@ -1,0 +1,31 @@
+{
+  "status": "completed",
+  "summary": "Implemented `group --price <plan>` (U7/C3/R6): a sub-second, zero-codegraph, zero-graph-build pricing mode. Added `parse_task_map_for_pricing` to plan_reader.py (filesystem-only task-map parse, no CodegraphClient, symbols skipped since pricing never reads them), and `TaskPrice`/`SlicePrice`/`PriceReport`/`price_task_mappings`/`price_plan` to estimator.py, reusing the existing `node_work`/`partition_budget_cap` formulas and compiling base context with an empty codegraph summary per the plan's approximation decision. Wired `--price` into cli.py's `group` subcommand, dispatched before any codegraph/LLM/usage-limit machinery, printing per-task and per-slice node-work/coder-work figures against the approximate cap and exiting non-zero on overshoot. Wrote tests/test_cli_price.py covering the over-cap exit path, the never-touches-codegraph guarantee (via a raising client-runner stub), a missing-task-map error path, and a cross-check against this repo's real 2026-08-26 plan document (copied into an isolated tmp repo to avoid touching the real worktree's .orchestrator/) proving --price's per-task node work matches grouping-trace.json's node_work from a real `group --no-spec` run on the same map, sub-second. Full suite: 1477 passed; 5 pre-existing failures are unrelated sandbox/filesystem environment issues (confinement policy dir permissions, cross-device git worktree move), not touched by this change.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g9-1",
+      "status": "pass",
+      "notes": "TestOverCapSliceCli.test_exits_nonzero_and_prints_member_detail"
+    },
+    {
+      "item_id": "g9-2",
+      "status": "pass",
+      "notes": "TestPriceNeverTouchesCodegraph — raising-runner stub never invoked; output states cap approximation"
+    },
+    {
+      "item_id": "g9-3",
+      "status": "pass",
+      "notes": "TestRealPlanCrossCheck.test_price_is_subsecond_and_matches_the_real_trace against docs/plans/2026-08-26-...-plan.md"
+    },
+    {
+      "item_id": "g9-4",
+      "status": "pass",
+      "notes": "output consistently prints both 'node work' and 'coder work' labels"
+    }
+  ],
+  "surprises": []
+}

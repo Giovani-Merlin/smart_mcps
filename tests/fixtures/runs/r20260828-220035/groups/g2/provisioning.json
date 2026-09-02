@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g2-cycle-repair-withdrawal",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T22:19:53+00:00",
+  "base_ref": "0e822bd8a5d484f2aab9822c2a0a266af80bdaa5"
+}

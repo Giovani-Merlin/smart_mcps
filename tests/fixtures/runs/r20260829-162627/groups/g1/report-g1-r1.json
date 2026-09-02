@@ -1,0 +1,36 @@
+{
+  "status": "completed",
+  "summary": "Implemented orchestrator/grouping/plan_edit.py as the single verbatim-surgery module: extract_task_map_entries/render_task_map_block for byte-exact task-map entry slicing, split_units for byte-exact unit-section slicing, validate_plan for structural consistency checks, and verify_map_unchanged which diffs two plan documents' surviving task entries (field-level, via YAML) and unit ids, reporting every difference found. Added task_map_block_span to plan_reader.py and locate_units_span/UNIT_HEADING to plan_sections.py as the minimal span helpers plan_edit needed, reusing the existing fence/heading regexes rather than duplicating them. Wired `orchestrate plan-check <plan> [--against <path>]` into cli.py, dispatching before any config/LLM/codegraph setup. All 5 verification items pass, confirmed live against the repo's real 36-unit plan (byte-identical round trip, ~0.8ms per validate_plan call). Full suite is green except 5 pre-existing, unrelated failures traced to sandbox environment issues (cross-device git worktree move, permission-denied mkdir under ~/.claude/projects) that reproduce with zero relation to this diff.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g1-1",
+      "status": "pass",
+      "notes": "test_all_units_reassembled_yield_byte_identical_map_and_sections + test_real_plan_round_trips_byte_identical (36-unit real plan)"
+    },
+    {
+      "item_id": "g1-2",
+      "status": "pass",
+      "notes": "test_accepts_added_bullets_inside_a_unit_body, test_rejects_and_names_altered_depends_on_size_hints_and_task_id"
+    },
+    {
+      "item_id": "g1-3",
+      "status": "pass",
+      "notes": "test_reports_all_three_altered_entries_in_one_call, test_reports_three_separately_altered_entries"
+    },
+    {
+      "item_id": "g1-4",
+      "status": "pass",
+      "notes": "test_exits_zero_on_well_formed_plan, test_exits_nonzero_naming_offending_unit_missing_section, test_exits_nonzero_naming_offending_unit_missing_map_entry"
+    },
+    {
+      "item_id": "g1-5",
+      "status": "pass",
+      "notes": "test_completes_under_a_second_on_the_repos_largest_plan (~0.8ms), test_never_touches_codegraph_or_llm"
+    }
+  ],
+  "surprises": []
+}

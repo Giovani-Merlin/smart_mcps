@@ -1,0 +1,4 @@
+JUNIT report written to /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20260829-162627/groups/g3/preflight-junit-ui.xml
+7:00:16 PM [vite] warning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.
+7:00:16 PM [vite] warning: `optimizeDeps.esbuildOptions` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `optimizeDeps.rolldownOptions` instead.
+Both esbuild and oxc options were set. oxc options will be used and esbuild options will be ignored. The following esbuild options were set: `{ jsx: 'automatic', jsxImportSource: undefined }`

@@ -1,0 +1,1210 @@
+{
+  "schema_version": 1,
+  "input_graph": {
+    "nodes": [
+      "u1-plan-sections",
+      "u10-cycle-repair-withdrawal",
+      "u11-advisory-report",
+      "u12-fill-penalty",
+      "u13-plan-skill-advise-phase",
+      "u2-spec-assembly",
+      "u3-layered-context",
+      "u4-speccer-removal",
+      "u5-planning-contract-docs",
+      "u6-error-accumulation",
+      "u7-price-mode",
+      "u8-budget-naming",
+      "u9-partition-diagnostics"
+    ],
+    "affinity": [
+      [
+        "u1-plan-sections",
+        "u2-spec-assembly",
+        4.5
+      ],
+      [
+        "u1-plan-sections",
+        "u3-layered-context",
+        4.5
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u11-advisory-report",
+        2.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u12-fill-penalty",
+        2.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u2-spec-assembly",
+        1.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u3-layered-context",
+        1.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u6-error-accumulation",
+        1.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u8-budget-naming",
+        1.0
+      ],
+      [
+        "u10-cycle-repair-withdrawal",
+        "u9-partition-diagnostics",
+        4.0
+      ],
+      [
+        "u11-advisory-report",
+        "u12-fill-penalty",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u13-plan-skill-advise-phase",
+        4.5
+      ],
+      [
+        "u11-advisory-report",
+        "u2-spec-assembly",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u3-layered-context",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u4-speccer-removal",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u6-error-accumulation",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u7-price-mode",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u8-budget-naming",
+        2.0
+      ],
+      [
+        "u11-advisory-report",
+        "u9-partition-diagnostics",
+        2.0
+      ],
+      [
+        "u12-fill-penalty",
+        "u9-partition-diagnostics",
+        2.0
+      ],
+      [
+        "u13-plan-skill-advise-phase",
+        "u5-planning-contract-docs",
+        5.5
+      ],
+      [
+        "u2-spec-assembly",
+        "u3-layered-context",
+        7.5
+      ],
+      [
+        "u2-spec-assembly",
+        "u6-error-accumulation",
+        2.0
+      ],
+      [
+        "u2-spec-assembly",
+        "u8-budget-naming",
+        2.0
+      ],
+      [
+        "u2-spec-assembly",
+        "u9-partition-diagnostics",
+        2.0
+      ],
+      [
+        "u3-layered-context",
+        "u6-error-accumulation",
+        2.0
+      ],
+      [
+        "u3-layered-context",
+        "u8-budget-naming",
+        2.0
+      ],
+      [
+        "u3-layered-context",
+        "u9-partition-diagnostics",
+        2.0
+      ],
+      [
+        "u4-speccer-removal",
+        "u7-price-mode",
+        1.0
+      ],
+      [
+        "u4-speccer-removal",
+        "u8-budget-naming",
+        1.0
+      ],
+      [
+        "u5-planning-contract-docs",
+        "u7-price-mode",
+        4.5
+      ],
+      [
+        "u6-error-accumulation",
+        "u8-budget-naming",
+        2.0
+      ],
+      [
+        "u6-error-accumulation",
+        "u9-partition-diagnostics",
+        2.0
+      ],
+      [
+        "u7-price-mode",
+        "u8-budget-naming",
+        1.0
+      ],
+      [
+        "u8-budget-naming",
+        "u9-partition-diagnostics",
+        2.0
+      ]
+    ],
+    "dependencies": [
+      [
+        "u1-plan-sections",
+        "u2-spec-assembly",
+        1.0
+      ],
+      [
+        "u1-plan-sections",
+        "u3-layered-context",
+        1.0
+      ],
+      [
+        "u11-advisory-report",
+        "u13-plan-skill-advise-phase",
+        1.0
+      ],
+      [
+        "u2-spec-assembly",
+        "u3-layered-context",
+        1.0
+      ],
+      [
+        "u2-spec-assembly",
+        "u4-speccer-removal",
+        1.0
+      ],
+      [
+        "u5-planning-contract-docs",
+        "u13-plan-skill-advise-phase",
+        1.0
+      ],
+      [
+        "u6-error-accumulation",
+        "u8-budget-naming",
+        1.0
+      ],
+      [
+        "u6-error-accumulation",
+        "u9-partition-diagnostics",
+        1.0
+      ],
+      [
+        "u9-partition-diagnostics",
+        "u10-cycle-repair-withdrawal",
+        1.0
+      ]
+    ]
+  },
+  "node_work": [
+    {
+      "node": "u1-plan-sections",
+      "source_bytes": 0,
+      "file_count": 2,
+      "bytes_tokens": 0.0,
+      "file_allowance_tokens": 4000.0,
+      "total": 4000.0
+    },
+    {
+      "node": "u10-cycle-repair-withdrawal",
+      "source_bytes": 158316,
+      "file_count": 4,
+      "bytes_tokens": 51452.700000000004,
+      "file_allowance_tokens": 8000.0,
+      "total": 59452.700000000004
+    },
+    {
+      "node": "u11-advisory-report",
+      "source_bytes": 186130,
+      "file_count": 6,
+      "bytes_tokens": 60492.25,
+      "file_allowance_tokens": 12000.0,
+      "total": 72492.25
+    },
+    {
+      "node": "u12-fill-penalty",
+      "source_bytes": 113328,
+      "file_count": 3,
+      "bytes_tokens": 36831.6,
+      "file_allowance_tokens": 6000.0,
+      "total": 42831.6
+    },
+    {
+      "node": "u13-plan-skill-advise-phase",
+      "source_bytes": 9893,
+      "file_count": 1,
+      "bytes_tokens": 3215.225,
+      "file_allowance_tokens": 2000.0,
+      "total": 5215.225
+    },
+    {
+      "node": "u2-spec-assembly",
+      "source_bytes": 82101,
+      "file_count": 4,
+      "bytes_tokens": 26682.825,
+      "file_allowance_tokens": 8000.0,
+      "total": 34682.825
+    },
+    {
+      "node": "u3-layered-context",
+      "source_bytes": 83833,
+      "file_count": 4,
+      "bytes_tokens": 27245.725000000002,
+      "file_allowance_tokens": 8000.0,
+      "total": 35245.725000000006
+    },
+    {
+      "node": "u4-speccer-removal",
+      "source_bytes": 275449,
+      "file_count": 11,
+      "bytes_tokens": 89520.925,
+      "file_allowance_tokens": 22000.0,
+      "total": 111520.925
+    },
+    {
+      "node": "u5-planning-contract-docs",
+      "source_bytes": 25323,
+      "file_count": 2,
+      "bytes_tokens": 8229.975,
+      "file_allowance_tokens": 4000.0,
+      "total": 12229.975
+    },
+    {
+      "node": "u6-error-accumulation",
+      "source_bytes": 107890,
+      "file_count": 4,
+      "bytes_tokens": 35064.25,
+      "file_allowance_tokens": 8000.0,
+      "total": 43064.25
+    },
+    {
+      "node": "u7-price-mode",
+      "source_bytes": 101664,
+      "file_count": 3,
+      "bytes_tokens": 33040.8,
+      "file_allowance_tokens": 6000.0,
+      "total": 39040.8
+    },
+    {
+      "node": "u8-budget-naming",
+      "source_bytes": 177879,
+      "file_count": 3,
+      "bytes_tokens": 57810.675,
+      "file_allowance_tokens": 6000.0,
+      "total": 63810.675
+    },
+    {
+      "node": "u9-partition-diagnostics",
+      "source_bytes": 206956,
+      "file_count": 5,
+      "bytes_tokens": 67260.7,
+      "file_allowance_tokens": 10000.0,
+      "total": 77260.7
+    }
+  ],
+  "budget": {
+    "base_tokens": 12496,
+    "spec_tokens_allowance": 3000,
+    "slack_multiplier": 1.3,
+    "coder_slack_multiplier": 2.5,
+    "token_budget": 200000,
+    "head": 50362.0,
+    "budget_cap": 149638.0
+  },
+  "config": {
+    "edge_weights": {
+      "shared_file": 1.0,
+      "call": 2.0,
+      "impact": 1.5,
+      "prose_neighbor": 0.5,
+      "semantic": 1.5,
+      "semantic_floor": 0.5,
+      "semantic_ceil": 3.0
+    },
+    "partition": {
+      "hub_threshold": 0.4,
+      "louvain_resolution": 1.0,
+      "allow_oversized_slice": false,
+      "allow_degenerate_partition": false,
+      "granularity": "independent"
+    },
+    "estimator": {
+      "token_budget": 200000,
+      "bytes_per_token": 4.0,
+      "slack_multiplier": 1.3,
+      "coder_slack_multiplier": 2.5,
+      "per_file_tool_allowance": 2000,
+      "spec_tokens_allowance": 3000,
+      "size_hint_small": 500,
+      "size_hint_medium": 2000,
+      "size_hint_large": 5000
+    },
+    "difficulty": {
+      "weight_files_touched": 1.0,
+      "weight_max_fan": 1.5,
+      "weight_hub_touches": 2.0,
+      "weight_cross_group_edges": 1.5,
+      "weight_verification_items": 1.0,
+      "scale_files_touched": 6.0,
+      "scale_max_fan": 10.0,
+      "scale_hub_touches": 1.0,
+      "scale_cross_group_edges": 3.0,
+      "scale_verification_items": 5.0,
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    "breaker": {
+      "context_token_limit": 250000,
+      "max_rounds_per_generation": 3,
+      "max_generations": 3,
+      "max_reentries": 3,
+      "context_ladder_enabled": false
+    },
+    "execution": {
+      "concurrency": 1,
+      "sequential": true,
+      "permission_mode": "acceptEdits",
+      "max_rewrites": 2,
+      "max_conflict_resolve_attempts": 1,
+      "on_group_failure": "halt",
+      "review_scratch_cap_bytes": 100000000
+    },
+    "preflight": {
+      "check_command": null,
+      "check_timeout_s": 900.0
+    },
+    "session": {
+      "claude_bin": "claude",
+      "model": "sonnet",
+      "base_model": "claude-opus-5",
+      "speccer_model": "claude-opus-5",
+      "known_models": [
+        "opus",
+        "sonnet",
+        "haiku",
+        "fable",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+        "claude-fable-5"
+      ],
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "Glob",
+        "Grep",
+        "TodoWrite",
+        "NotebookEdit",
+        "Bash(git *)",
+        "Bash(*/git *)",
+        "Bash(uv *)",
+        "Bash(*/uv *)",
+        "Bash(python *)",
+        "Bash(*/python *)",
+        "Bash(python3 *)",
+        "Bash(*/python3 *)",
+        "Bash(pytest*)",
+        "Bash(*/pytest*)",
+        "Bash(ruff*)",
+        "Bash(*/ruff*)",
+        "Bash(mypy*)",
+        "Bash(*/mypy*)",
+        "Bash(pip *)",
+        "Bash(*/pip *)",
+        "Bash(pip3 *)",
+        "Bash(*/pip3 *)",
+        "Bash(npm *)",
+        "Bash(*/npm *)",
+        "Bash(npx *)",
+        "Bash(*/npx *)",
+        "Bash(node *)",
+        "Bash(*/node *)",
+        "Bash(pnpm *)",
+        "Bash(*/pnpm *)",
+        "Bash(yarn *)",
+        "Bash(*/yarn *)",
+        "Bash(make *)",
+        "Bash(*/make *)",
+        "Bash(ls *)",
+        "Bash(*/ls *)",
+        "Bash(cat *)",
+        "Bash(*/cat *)",
+        "Bash(head *)",
+        "Bash(*/head *)",
+        "Bash(tail *)",
+        "Bash(*/tail *)",
+        "Bash(find *)",
+        "Bash(*/find *)",
+        "Bash(rg *)",
+        "Bash(*/rg *)",
+        "Bash(grep *)",
+        "Bash(*/grep *)",
+        "Bash(sed *)",
+        "Bash(*/sed *)",
+        "Bash(awk *)",
+        "Bash(*/awk *)",
+        "Bash(mkdir *)",
+        "Bash(*/mkdir *)",
+        "Bash(cp *)",
+        "Bash(*/cp *)",
+        "Bash(mv *)",
+        "Bash(*/mv *)",
+        "Bash(echo *)",
+        "Bash(*/echo *)",
+        "Bash(cd *)",
+        "Bash(*/cd *)",
+        "Bash(test *)",
+        "Bash(*/test *)",
+        "Bash(which *)",
+        "Bash(*/which *)",
+        "Bash(env)",
+        "Bash(curl *)",
+        "Bash(*/curl *)",
+        "Bash(pkill *)",
+        "Bash(*/pkill *)",
+        "Bash(agent-browser *)",
+        "Bash(*/agent-browser *)"
+      ],
+      "transcript_root": null,
+      "max_thinking_tokens": 4000,
+      "thinking": "adaptive",
+      "confine": true,
+      "disallowed_tools": [],
+      "settings": null,
+      "cache_root": null,
+      "extra_write_paths": [],
+      "provision_args": [
+        "--all-extras"
+      ],
+      "usage_limit": {
+        "auto_resume": true,
+        "max_wait_s": 0.0,
+        "max_attempts": 6,
+        "skew_s": 60.0,
+        "fallback_poll_s": 900.0
+      },
+      "auth": {
+        "enabled": true,
+        "credentials_path": null,
+        "poll_s": 60.0,
+        "max_wait_s": 0.0,
+        "max_attempts": 6
+      }
+    },
+    "escalation": {
+      "enabled": false,
+      "intensity": "autonomous",
+      "source": "workers_via_orchestrator",
+      "timeout_s": null,
+      "on_timeout": "autonomous",
+      "poll_interval_s": 1.0
+    }
+  },
+  "hub_roles": [
+    {
+      "node": "u1-plan-sections",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.16666666666666666,
+      "threshold": 0.4
+    },
+    {
+      "node": "u10-cycle-repair-withdrawal",
+      "role": "core",
+      "depends_on_ratio": 0.08333333333333333,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u11-advisory-report",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.08333333333333333,
+      "threshold": 0.4
+    },
+    {
+      "node": "u12-fill-penalty",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u13-plan-skill-advise-phase",
+      "role": "core",
+      "depends_on_ratio": 0.16666666666666666,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u2-spec-assembly",
+      "role": "core",
+      "depends_on_ratio": 0.08333333333333333,
+      "depended_by_ratio": 0.16666666666666666,
+      "threshold": 0.4
+    },
+    {
+      "node": "u3-layered-context",
+      "role": "core",
+      "depends_on_ratio": 0.16666666666666666,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u4-speccer-removal",
+      "role": "core",
+      "depends_on_ratio": 0.08333333333333333,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u5-planning-contract-docs",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.08333333333333333,
+      "threshold": 0.4
+    },
+    {
+      "node": "u6-error-accumulation",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.16666666666666666,
+      "threshold": 0.4
+    },
+    {
+      "node": "u7-price-mode",
+      "role": "core",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u8-budget-naming",
+      "role": "core",
+      "depends_on_ratio": 0.08333333333333333,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    },
+    {
+      "node": "u9-partition-diagnostics",
+      "role": "core",
+      "depends_on_ratio": 0.08333333333333333,
+      "depended_by_ratio": 0.08333333333333333,
+      "threshold": 0.4
+    }
+  ],
+  "slice_atoms": [
+    {
+      "label": "assembly",
+      "members": [
+        "u1-plan-sections",
+        "u2-spec-assembly"
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "stage": "contraction",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 1,
+        "u11-advisory-report": 1,
+        "u12-fill-penalty": 1,
+        "u13-plan-skill-advise-phase": 2,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 0,
+        "u4-speccer-removal": 2,
+        "u5-planning-contract-docs": 2,
+        "u6-error-accumulation": 0,
+        "u7-price-mode": 2,
+        "u8-budget-naming": 0,
+        "u9-partition-diagnostics": 1
+      }
+    },
+    {
+      "stage": "lift",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 2,
+        "u11-advisory-report": 3,
+        "u12-fill-penalty": 4,
+        "u13-plan-skill-advise-phase": 5,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 0,
+        "u4-speccer-removal": 6,
+        "u5-planning-contract-docs": 5,
+        "u6-error-accumulation": 1,
+        "u7-price-mode": 7,
+        "u8-budget-naming": 1,
+        "u9-partition-diagnostics": 2
+      }
+    },
+    {
+      "stage": "split",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 4,
+        "u11-advisory-report": 6,
+        "u12-fill-penalty": 7,
+        "u13-plan-skill-advise-phase": 8,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 1,
+        "u4-speccer-removal": 9,
+        "u5-planning-contract-docs": 8,
+        "u6-error-accumulation": 2,
+        "u7-price-mode": 10,
+        "u8-budget-naming": 3,
+        "u9-partition-diagnostics": 5
+      }
+    },
+    {
+      "stage": "merge",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 4,
+        "u11-advisory-report": 6,
+        "u12-fill-penalty": 7,
+        "u13-plan-skill-advise-phase": 8,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 1,
+        "u4-speccer-removal": 9,
+        "u5-planning-contract-docs": 8,
+        "u6-error-accumulation": 2,
+        "u7-price-mode": 10,
+        "u8-budget-naming": 3,
+        "u9-partition-diagnostics": 5
+      }
+    },
+    {
+      "stage": "repair",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 4,
+        "u11-advisory-report": 6,
+        "u12-fill-penalty": 7,
+        "u13-plan-skill-advise-phase": 8,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 1,
+        "u4-speccer-removal": 9,
+        "u5-planning-contract-docs": 8,
+        "u6-error-accumulation": 2,
+        "u7-price-mode": 10,
+        "u8-budget-naming": 3,
+        "u9-partition-diagnostics": 5
+      }
+    },
+    {
+      "stage": "renumber",
+      "partition": {
+        "u1-plan-sections": 0,
+        "u10-cycle-repair-withdrawal": 1,
+        "u11-advisory-report": 2,
+        "u12-fill-penalty": 3,
+        "u13-plan-skill-advise-phase": 4,
+        "u2-spec-assembly": 0,
+        "u3-layered-context": 5,
+        "u4-speccer-removal": 6,
+        "u5-planning-contract-docs": 4,
+        "u6-error-accumulation": 7,
+        "u7-price-mode": 8,
+        "u8-budget-naming": 9,
+        "u9-partition-diagnostics": 10
+      }
+    }
+  ],
+  "louvain": [
+    {
+      "resolution": 1.0,
+      "seed": 42,
+      "communities": [
+        [
+          "slice::assembly",
+          "u3-layered-context",
+          "u6-error-accumulation",
+          "u8-budget-naming"
+        ],
+        [
+          "u10-cycle-repair-withdrawal",
+          "u11-advisory-report",
+          "u12-fill-penalty",
+          "u9-partition-diagnostics"
+        ],
+        [
+          "u13-plan-skill-advise-phase",
+          "u4-speccer-removal",
+          "u5-planning-contract-docs",
+          "u7-price-mode"
+        ]
+      ]
+    }
+  ],
+  "splits": [
+    {
+      "group_members": [
+        "u1-plan-sections",
+        "u2-spec-assembly",
+        "u3-layered-context"
+      ],
+      "total_work": 199821.375,
+      "budget_cap": 149638.0,
+      "candidates": [
+        {
+          "block_a": "slice::assembly",
+          "block_b": "u3-layered-context",
+          "weight": 12.0,
+          "cut": true
+        }
+      ],
+      "resulting_components": [
+        [
+          "slice::assembly"
+        ],
+        [
+          "u3-layered-context"
+        ]
+      ]
+    },
+    {
+      "group_members": [
+        "u6-error-accumulation",
+        "u8-budget-naming"
+      ],
+      "total_work": 267187.3125,
+      "budget_cap": 149638.0,
+      "candidates": [
+        {
+          "block_a": "u6-error-accumulation",
+          "block_b": "u8-budget-naming",
+          "weight": 2.0,
+          "cut": true
+        }
+      ],
+      "resulting_components": [
+        [
+          "u6-error-accumulation"
+        ],
+        [
+          "u8-budget-naming"
+        ]
+      ]
+    },
+    {
+      "group_members": [
+        "u10-cycle-repair-withdrawal",
+        "u9-partition-diagnostics"
+      ],
+      "total_work": 341783.5,
+      "budget_cap": 149638.0,
+      "candidates": [
+        {
+          "block_a": "u10-cycle-repair-withdrawal",
+          "block_b": "u9-partition-diagnostics",
+          "weight": 4.0,
+          "cut": true
+        }
+      ],
+      "resulting_components": [
+        [
+          "u10-cycle-repair-withdrawal"
+        ],
+        [
+          "u9-partition-diagnostics"
+        ]
+      ]
+    }
+  ],
+  "merges": [
+    {
+      "round": 0,
+      "source": 1,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 199821.375,
+      "edge_weight": 2.0
+    },
+    {
+      "round": 0,
+      "source": 4,
+      "target": 5,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 341783.5,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 0,
+      "source": 8,
+      "target": 6,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 239843.625,
+      "edge_weight": 1.0
+    }
+  ],
+  "repairs": [],
+  "dag": {
+    "0": [
+      5,
+      6
+    ],
+    "2": [
+      4
+    ],
+    "7": [
+      9,
+      10
+    ],
+    "10": [
+      1
+    ]
+  },
+  "last_stage": "split",
+  "groups": [
+    {
+      "group_id": "g1",
+      "files_touched": 6,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 3,
+      "verification_items": 7,
+      "difficulty": 0.2619047619047619,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g2",
+      "files_touched": 4,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 3,
+      "difficulty": 0.16428571428571428,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g3",
+      "files_touched": 6,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 5,
+      "difficulty": 0.19642857142857142,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g4",
+      "files_touched": 3,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 0,
+      "verification_items": 4,
+      "difficulty": 0.11111111111111109,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g5",
+      "files_touched": 2,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 4,
+      "difficulty": 0.15277777777777776,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g6",
+      "files_touched": 4,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 4,
+      "difficulty": 0.20634920634920637,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g7",
+      "files_touched": 11,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 4,
+      "difficulty": 0.20950046685340803,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g8",
+      "files_touched": 4,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 3,
+      "difficulty": 0.19642857142857142,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g9",
+      "files_touched": 3,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 0,
+      "verification_items": 4,
+      "difficulty": 0.11111111111111109,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g10",
+      "files_touched": 3,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 1,
+      "verification_items": 3,
+      "difficulty": 0.15476190476190474,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g11",
+      "files_touched": 5,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 3,
+      "difficulty": 0.20422077922077925,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    }
+  ],
+  "mapper_flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u1-plan-sections file orchestrator/grouping/plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u1-plan-sections file tests/test_plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file tests/test_assembler.py does not exist yet — retained as prospective",
+    "task map: task u3-layered-context file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u7-price-mode file tests/test_cli_price.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file orchestrator/grouping/advisory.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file tests/test_advisory.py does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)"
+  ],
+  "partition_flags": [],
+  "flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u1-plan-sections file orchestrator/grouping/plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u1-plan-sections file tests/test_plan_sections.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u2-spec-assembly file tests/test_assembler.py does not exist yet — retained as prospective",
+    "task map: task u3-layered-context file orchestrator/grouping/assembler.py does not exist yet — retained as prospective",
+    "task map: task u7-price-mode file tests/test_cli_price.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file orchestrator/grouping/advisory.py does not exist yet — retained as prospective",
+    "task map: task u11-advisory-report file tests/test_advisory.py does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "estimator: group g3 estimate 223821 exceeds budget 200000 and cannot be split further",
+    "estimator: group g7 estimate 320993 exceeds budget 200000 and cannot be split further",
+    "estimator: group g10 estimate 201360 exceeds budget 200000 and cannot be split further",
+    "estimator: group g11 estimate 235349 exceeds budget 200000 and cannot be split further"
+  ],
+  "failure": null,
+  "scorecard": {
+    "group_count": 11,
+    "cross_group_edges": 7,
+    "work_fraction_min": 0.2914567155401703,
+    "work_fraction_mean": 0.9308033842886286,
+    "work_fraction_max": 1.8631785542442427,
+    "critical_path_length": 3,
+    "modularity": 0.015906336565096945,
+    "slice_integrity_ok": true
+  },
+  "provenance": {
+    "timestamp": "2026-08-28T19:58:14.316302+00:00",
+    "plan_path": "docs/plans/2026-08-28-001-feat-deterministic-grouper-advisory-plan.md",
+    "plan_content_sha256": "9fdf5d4794cdc5471ef0345681cbade7ceb6f79fca1b25f8e9c3158c012d61bf",
+    "repo_commit_sha": "a2098a08ca53c1dd870533ecc375d05803d2b7c3",
+    "worktree_dirty": true,
+    "index_fingerprint": "77ae3c385b2add984d5c406b228ab733d541e7e83c276501e18e9bc645753286",
+    "louvain_seed": 42,
+    "louvain_resolution": 1.0
+  },
+  "quiescence": [
+    {
+      "fingerprint": "77ae3c385b2add984d5c406b228ab733d541e7e83c276501e18e9bc645753286",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 184,
+        "nodeCount": 5159,
+        "edgeCount": 14000,
+        "dbSizeBytes": 12759040,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 433,
+          "constant": 83,
+          "file": 184,
+          "function": 1680,
+          "import": 1231,
+          "interface": 102,
+          "method": 1122,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 274
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    },
+    {
+      "fingerprint": "77ae3c385b2add984d5c406b228ab733d541e7e83c276501e18e9bc645753286",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 184,
+        "nodeCount": 5159,
+        "edgeCount": 14000,
+        "dbSizeBytes": 12759040,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 433,
+          "constant": 83,
+          "file": 184,
+          "function": 1680,
+          "import": 1231,
+          "interface": 102,
+          "method": 1122,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 274
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    },
+    {
+      "fingerprint": "77ae3c385b2add984d5c406b228ab733d541e7e83c276501e18e9bc645753286",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 184,
+        "nodeCount": 5159,
+        "edgeCount": 14000,
+        "dbSizeBytes": 12759040,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 433,
+          "constant": 83,
+          "file": 184,
+          "function": 1680,
+          "import": 1231,
+          "interface": 102,
+          "method": 1122,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 274
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    }
+  ]
+}

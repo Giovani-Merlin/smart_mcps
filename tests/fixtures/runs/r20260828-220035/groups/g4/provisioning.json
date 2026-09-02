@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g4-merge-fill-penalty",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T20:43:43+00:00",
+  "base_ref": "1e4f01ec638625a53a841c905c8135df0caca737"
+}

@@ -1,0 +1,26 @@
+{
+  "status": "completed",
+  "summary": "Implemented U10: repair_cycles now withdraws inferred precedence edges (banked as affinity already, never declared ones) on a group-DAG cycle before falling back to the existing merge+re-split, mutating graph.dependencies in place so build_group_dag's downstream check stays consistent. Added a declared-edge parameter threaded from pipeline.py's mapper depends_on pairs, with None defaulting to pre-U10 merge-only behavior for backward compatibility. Trace RepairEntry/record_repair gained action and withdrawn_edges fields. Added new tests covering both required fixtures, determinism, and affinity banking; full existing partition/grouping/trace/pipeline suites pass, and the 5 failures seen in the full test run are pre-existing environment issues (tmp cross-device link, permission errors) in unrelated test_cli.py/test_finish.py modules untouched by this change.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g2-1",
+      "status": "pass",
+      "notes": "test_cycle_closed_only_by_an_inferred_edge_withdraws_instead_of_merging: group count unchanged, withdrawal recorded in trace repairs with action=withdraw and edge named"
+    },
+    {
+      "item_id": "g2-2",
+      "status": "pass",
+      "notes": "test_cycle_of_solely_declared_edges_still_merges_and_never_withdraws: merge+re-split path taken, declared edges never withdrawn"
+    },
+    {
+      "item_id": "g2-3",
+      "status": "pass",
+      "notes": "test_withdrawal_repair_is_deterministic_across_runs plus assertion that withdrawn edge's weight remains in graph.affinity untouched (already banked at build time)"
+    }
+  ],
+  "surprises": []
+}

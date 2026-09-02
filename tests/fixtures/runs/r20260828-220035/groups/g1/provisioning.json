@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g1-deterministic-spec-assembly",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T20:01:48+00:00",
+  "base_ref": "a2098a08ca53c1dd870533ecc375d05803d2b7c3"
+}

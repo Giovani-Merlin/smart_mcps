@@ -1,0 +1,1171 @@
+{
+  "version": 1,
+  "max_contributions_per_edge": 20,
+  "affinity": [
+    {
+      "a": "u1-plan-sections",
+      "b": "u2-spec-assembly",
+      "total_weight": 4.5,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "plan-sections"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u1-plan-sections",
+      "b": "u3-layered-context",
+      "total_weight": 4.5,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "plan-sections"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u11-advisory-report",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u12-fill-penalty",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_partition.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u2-spec-assembly",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u3-layered-context",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u6-error-accumulation",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u8-budget-naming",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u10-cycle-repair-withdrawal",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 4.0,
+      "total_contributions": 4,
+      "recorded_contributions": 4,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/graphing.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_partition.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u12-fill-penalty",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u13-plan-skill-advise-phase",
+      "total_weight": 4.5,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "advisory-report"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u2-spec-assembly",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u3-layered-context",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u4-speccer-removal",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u6-error-accumulation",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u7-price-mode",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u8-budget-naming",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u11-advisory-report",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u12-fill-penalty",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/partition.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_partition.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u13-plan-skill-advise-phase",
+      "b": "u5-planning-contract-docs",
+      "total_weight": 5.5,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "skills/orchestrator-plan/SKILL.md"
+          ]
+        },
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "planning-contract"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u2-spec-assembly",
+      "b": "u3-layered-context",
+      "total_weight": 7.5,
+      "total_contributions": 4,
+      "recorded_contributions": 4,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/assembler.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        },
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "assembled-specs"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u2-spec-assembly",
+      "b": "u6-error-accumulation",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u2-spec-assembly",
+      "b": "u8-budget-naming",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u2-spec-assembly",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u3-layered-context",
+      "b": "u6-error-accumulation",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u3-layered-context",
+      "b": "u8-budget-naming",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u3-layered-context",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u4-speccer-removal",
+      "b": "u7-price-mode",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u4-speccer-removal",
+      "b": "u8-budget-naming",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u5-planning-contract-docs",
+      "b": "u7-price-mode",
+      "total_weight": 4.5,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "semantic",
+          "declared": true,
+          "scaled_weight": 4.5,
+          "detail": {
+            "tags": [
+              "planning-contract"
+            ],
+            "base_weight": 1.5,
+            "layer_scale": 3.0
+          }
+        }
+      ]
+    },
+    {
+      "a": "u6-error-accumulation",
+      "b": "u8-budget-naming",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u6-error-accumulation",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u7-price-mode",
+      "b": "u8-budget-naming",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "a": "u8-budget-naming",
+      "b": "u9-partition-diagnostics",
+      "total_weight": 2.0,
+      "total_contributions": 2,
+      "recorded_contributions": 2,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "orchestrator/grouping/pipeline.py"
+          ]
+        },
+        {
+          "kind": "shared_file",
+          "declared": false,
+          "scaled_weight": 1.0,
+          "files": [
+            "tests/test_grouper_pipeline.py"
+          ]
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "upstream": "u1-plan-sections",
+      "downstream": "u2-spec-assembly",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u1-plan-sections",
+      "downstream": "u3-layered-context",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u11-advisory-report",
+      "downstream": "u13-plan-skill-advise-phase",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u2-spec-assembly",
+      "downstream": "u3-layered-context",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u2-spec-assembly",
+      "downstream": "u4-speccer-removal",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u5-planning-contract-docs",
+      "downstream": "u13-plan-skill-advise-phase",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u6-error-accumulation",
+      "downstream": "u8-budget-naming",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u6-error-accumulation",
+      "downstream": "u9-partition-diagnostics",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    },
+    {
+      "upstream": "u9-partition-diagnostics",
+      "downstream": "u10-cycle-repair-withdrawal",
+      "total_weight": 1.0,
+      "total_contributions": 1,
+      "recorded_contributions": 1,
+      "truncated_contributions": 0,
+      "truncated_weight": 0.0,
+      "contributions": [
+        {
+          "kind": "declared_depends_on",
+          "declared": true,
+          "scaled_weight": 1.0,
+          "detail": {
+            "source": "task_map"
+          }
+        }
+      ]
+    }
+  ],
+  "withdrawn": [],
+  "groups": [
+    {
+      "group_id": "g1",
+      "tasks": [
+        "u1-plan-sections",
+        "u2-spec-assembly"
+      ],
+      "internal_affinity_weight": 4.5,
+      "external_affinity_weight": 20.0,
+      "internal_affinity_by_kind": {
+        "semantic": 4.5
+      },
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g2",
+      "tasks": [
+        "u10-cycle-repair-withdrawal"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 12.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u9-partition-diagnostics",
+          "u10-cycle-repair-withdrawal"
+        ]
+      ]
+    },
+    {
+      "group_id": "g3",
+      "tasks": [
+        "u11-advisory-report"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 16.5,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g4",
+      "tasks": [
+        "u12-fill-penalty"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 5.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g5",
+      "tasks": [
+        "u13-plan-skill-advise-phase",
+        "u5-planning-contract-docs"
+      ],
+      "internal_affinity_weight": 5.5,
+      "external_affinity_weight": 9.0,
+      "internal_affinity_by_kind": {
+        "semantic": 4.5,
+        "shared_file": 1.0
+      },
+      "upstream_dependency_edges": [
+        [
+          "u11-advisory-report",
+          "u13-plan-skill-advise-phase"
+        ]
+      ]
+    },
+    {
+      "group_id": "g6",
+      "tasks": [
+        "u3-layered-context"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 20.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u1-plan-sections",
+          "u3-layered-context"
+        ],
+        [
+          "u2-spec-assembly",
+          "u3-layered-context"
+        ]
+      ]
+    },
+    {
+      "group_id": "g7",
+      "tasks": [
+        "u4-speccer-removal"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 3.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u2-spec-assembly",
+          "u4-speccer-removal"
+        ]
+      ]
+    },
+    {
+      "group_id": "g8",
+      "tasks": [
+        "u6-error-accumulation"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 10.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g9",
+      "tasks": [
+        "u7-price-mode"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 7.5,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": []
+    },
+    {
+      "group_id": "g10",
+      "tasks": [
+        "u8-budget-naming"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 13.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u6-error-accumulation",
+          "u8-budget-naming"
+        ]
+      ]
+    },
+    {
+      "group_id": "g11",
+      "tasks": [
+        "u9-partition-diagnostics"
+      ],
+      "internal_affinity_weight": 0.0,
+      "external_affinity_weight": 16.0,
+      "internal_affinity_by_kind": {},
+      "upstream_dependency_edges": [
+        [
+          "u6-error-accumulation",
+          "u9-partition-diagnostics"
+        ]
+      ]
+    }
+  ]
+}

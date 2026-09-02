@@ -1,0 +1,46 @@
+{
+  "status": "completed",
+  "summary": "Implemented U1 (deterministic plan-section parser) and U2 (deterministic spec assembly replacing write_specs) with zero LLM calls in the grouping-time path. Added orchestrator/grouping/plan_sections.py and orchestrator/grouping/assembler.py, wired assembler into run_grouping, added the verification-coverage lint and the 'specs: assembled from plan' flag, and updated stage progress. Updated existing test fixtures (GREENFIELD_PLAN/MIXED_PLAN and their downstream references across several test files) to the u<N>-slug unit convention and added dedicated test_plan_sections.py and test_assembler.py suites. Did not touch speccer.py/prompts/speccer.md or the mid-run rewrite-speccer path, per spec (reserved for a sibling group). Full suite: 1427 passed, 5 failed — all 5 are pre-existing environment issues (sandbox permission denial writing under ~/.claude/projects, and a cross-device git worktree move under /tmp) in files this group never touched.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g1-1",
+      "status": "pass",
+      "notes": "tests/test_plan_sections.py::TestParsePlanSections::test_one_section_per_task_map_entry_verbatim and test_digest_has_every_summary_line_and_no_unit_bodies"
+    },
+    {
+      "item_id": "g1-2",
+      "status": "pass",
+      "notes": "test_missing_single_unit_heading_names_it and test_two_missing_unit_headings_reported_together"
+    },
+    {
+      "item_id": "g1-3",
+      "status": "pass",
+      "notes": "test_byte_stable_across_two_parses and test_task_map_absent_from_digest_and_sections"
+    },
+    {
+      "item_id": "g1-4",
+      "status": "pass",
+      "notes": "tests/test_grouper_pipeline.py::TestTaskMapRegimes::test_premapped_plan_never_calls_the_llm_runner (StubLlm asserts on any non-mapper schema) plus full run_grouping/GroupingResult round-trip in TestPipeline"
+    },
+    {
+      "item_id": "g1-5",
+      "status": "pass",
+      "notes": "tests/test_assembler.py::test_spec_contains_member_unit_sections_verbatim and test_relational_header_names_upstream_and_downstream_groups / test_regenerating_after_changed_partition_changes_the_header"
+    },
+    {
+      "item_id": "g1-6",
+      "status": "pass",
+      "notes": "test_verification_ids_match_pattern_and_cover_every_bullet and test_missing_unit_verification_fails_naming_the_unit"
+    },
+    {
+      "item_id": "g1-7",
+      "status": "pass",
+      "notes": "test_byte_deterministic_across_two_calls plus test_premapped_output_is_byte_deterministic in test_grouper_pipeline.py"
+    }
+  ],
+  "surprises": []
+}

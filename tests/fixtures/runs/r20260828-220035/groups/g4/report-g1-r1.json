@@ -1,0 +1,37 @@
+{
+  "status": "completed",
+  "summary": "Added a fill/balance term to merge_small_groups' merge key (orchestrator/grouping/partition.py), a new target_fill_ratio config knob (orchestrator/config.py) with an in-code justified default of 0.75, and threaded it through DefaultPartitionStrategy, pipeline.py, and advisory.py. After extensive analysis (a literal 'boolean band' reading of the spec is provably a no-op — redundant with the existing merged_work tiebreak — since bucket-then-value sorting is mathematically identical to value-only sorting on a threshold of that same value), implemented instead as a distance-from-target-fill term, which is genuinely non-redundant. Verified via a synthetic pathology fixture (two hubs competing for a shared task pool) showing strictly lower fill-size variance, no group over cap, and an acyclic group DAG, plus determinism and no-op-when-uncapped checks. One real golden fixture (brownfield-cross-stack) legitimately shifted and was regenerated/reviewed; unrelated budget_cap/group_work drift in 7 other golden fixtures (pre-existing on this branch, not part of this unit's scope) was left untouched. Full suite: 1444 passed, 5 pre-existing environment-only failures unrelated to this change.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g4-1",
+      "status": "pass",
+      "notes": "TestFillPenalty.test_fill_term_lowers_group_size_variance_without_breaking_invariants in tests/test_partition.py: synthetic two-hub fixture shows strictly lower pvariance under the new key, no group over cap, acyclic DAG (build_group_dag succeeds)."
+    },
+    {
+      "item_id": "g4-2",
+      "status": "pass",
+      "notes": "test_fill_term_is_deterministic_across_runs (5 runs, identical); full suite run twice (1444 passed) confirms no invariant regressions across existing slice/budget-cap tests."
+    },
+    {
+      "item_id": "g4-3",
+      "status": "pass",
+      "notes": "PartitionConfig.target_fill_ratio (orchestrator/config.py) with in-code justification; fill_gap term sits above merged_work in the key tuple in merge_small_groups."
+    },
+    {
+      "item_id": "g4-4",
+      "status": "pass",
+      "notes": "No granularity-ladder or hub test's expected partition changed (tests/test_partition.py: 56/56 pass unchanged) — the fixtures that trigger competing budget-capped candidates are outside those tests' scope, so nothing needed updating. One golden fixture (brownfield-cross-stack) did shift and was regenerated with review."
+    }
+  ],
+  "surprises": [
+    {
+      "kind": "other",
+      "description": "A literal reading of the plan's 'candidate merge work lands inside a target band, preferred over one landing at the cap' is mathematically a no-op if implemented as a boolean in/out-of-band bucket ranked above merged_work: bucket-then-value sorting is always identical in outcome to sorting by value alone when the bucket is a threshold on that same value. Implemented as a distance-from-target-fill term instead (genuinely non-redundant, verified with a synthetic fixture). Worth knowing if U12 gets revisited or tuned in the eval harness — the boolean framing in the plan prose doesn't survive contact with the algorithm's per-round global-argmin selection.",
+      "affected_groups": []
+    }
+  ]
+}

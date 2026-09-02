@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260829-162627/g3-deepen-skill-orchestrator-deepen-explore",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-29T16:50:43+00:00",
+  "base_ref": "7dd7ec54e09a064daa3176efc88aca4d8993a8aa"
+}

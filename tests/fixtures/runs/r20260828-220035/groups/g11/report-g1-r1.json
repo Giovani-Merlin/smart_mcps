@@ -1,0 +1,26 @@
+{
+  "status": "completed",
+  "summary": "Implemented U9: (a) the degenerate-partition GrouperError now reports declared-vs-inferred edge counts and inferred signal kinds for the offending SCC, sourced from the existing EdgeProvenance ledgers via new reusable predicates (EdgeProvenance.dependency_is_declared/dependency_kinds) and a structured DegenerateRepair value threaded from repair_cycles through the strategy; (b) a new find_slice_reentrant_paths (partition.py) detects, on the contracted graph before partitioning, any slice whose supernode sits in an introduced cycle, reconstructs the concrete path, and pipeline._check_slice_reentry reports all such slices together via ErrorAccumulator with the slice name, full path, and both remedies. Updated one pre-existing test whose fixture happened to be exactly the run-10 shape (now caught earlier) to use a cross-slice mutual-dependency shape instead, preserving its original intent of testing repair_cycles' overshoot recording. Added unit tests in test_partition.py (find_slice_reentrant_paths, DegenerateRepair population) and integration tests in test_grouper_pipeline.py (full compute_partition pipeline for both failure shapes, plus direct tests of the provenance-counting helpers). All 133 tests in test_partition.py + test_grouper_pipeline.py pass; full suite shows only 5 pre-existing, unrelated failures (CLI banner/intensity wording, a /tmp cross-device worktree-move artifact) confirmed unrelated via git diff --stat.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g11-1",
+      "status": "pass",
+      "notes": "test_run10_shape_names_slice_path_and_both_remedies in test_grouper_pipeline.py reproduces u1->u2->u3 with u1/u3 slice-mates through compute_partition and asserts the slice name, full path, both remedies, and absence of 'saturated'/'degenerate' generic wording."
+    },
+    {
+      "item_id": "g11-2",
+      "status": "pass",
+      "notes": "test_two_independent_reentrant_slices_reported_together asserts both slice names and both paths appear in one GrouperError ('2 problems found')."
+    },
+    {
+      "item_id": "g11-3",
+      "status": "pass",
+      "notes": "test_degenerate_partition_error_names_counts_and_kinds and test_edge_provenance_counts_classify_declared_vs_inferred assert exact declared/inferred counts and per-kind breakdown sourced from EdgeProvenance, with no second provenance channel introduced."
+    }
+  ],
+  "surprises": []
+}

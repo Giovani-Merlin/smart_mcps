@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "group_id": "g4",
+  "started_at": "2026-08-28T20:43:43.196+00:00",
+  "generation": 1,
+  "round": 1,
+  "round_started_at": "2026-08-28T20:43:43.759+00:00",
+  "phase": "merging into integration",
+  "phase_elapsed_s": 67.7,
+  "round_elapsed_s": 1882.8,
+  "paused_s": 0.0,
+  "updated_at": "2026-08-28T21:15:09.216+00:00"
+}

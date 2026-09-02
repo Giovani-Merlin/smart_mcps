@@ -1,0 +1,641 @@
+{
+  "schema_version": 1,
+  "input_graph": {
+    "nodes": [
+      "u1-plan-edit",
+      "u2-plan-split",
+      "u3-deepen-skill",
+      "u4-planning-contract"
+    ],
+    "affinity": [
+      [
+        "u1-plan-edit",
+        "u2-plan-split",
+        2.75
+      ],
+      [
+        "u1-plan-edit",
+        "u3-deepen-skill",
+        0.75
+      ],
+      [
+        "u2-plan-split",
+        "u4-planning-contract",
+        1.5
+      ],
+      [
+        "u3-deepen-skill",
+        "u4-planning-contract",
+        0.75
+      ]
+    ],
+    "dependencies": [
+      [
+        "u1-plan-edit",
+        "u2-plan-split",
+        1.0
+      ],
+      [
+        "u1-plan-edit",
+        "u3-deepen-skill",
+        1.0
+      ],
+      [
+        "u2-plan-split",
+        "u4-planning-contract",
+        1.0
+      ],
+      [
+        "u3-deepen-skill",
+        "u4-planning-contract",
+        1.0
+      ]
+    ]
+  },
+  "node_work": [
+    {
+      "node": "u1-plan-edit",
+      "source_bytes": 121348,
+      "file_count": 4,
+      "bytes_tokens": 39438.1,
+      "file_allowance_tokens": 8000.0,
+      "total": 47438.1
+    },
+    {
+      "node": "u2-plan-split",
+      "source_bytes": 145917,
+      "file_count": 5,
+      "bytes_tokens": 47423.025,
+      "file_allowance_tokens": 10000.0,
+      "total": 57423.025
+    },
+    {
+      "node": "u3-deepen-skill",
+      "source_bytes": 15691,
+      "file_count": 4,
+      "bytes_tokens": 5099.575,
+      "file_allowance_tokens": 8000.0,
+      "total": 13099.575
+    },
+    {
+      "node": "u4-planning-contract",
+      "source_bytes": 64438,
+      "file_count": 3,
+      "bytes_tokens": 20942.350000000002,
+      "file_allowance_tokens": 6000.0,
+      "total": 26942.350000000002
+    }
+  ],
+  "budget": {
+    "base_tokens": 8180,
+    "spec_tokens_allowance": 3000,
+    "slack_multiplier": 1.3,
+    "coder_slack_multiplier": 2.5,
+    "token_budget": 200000,
+    "head": 36335.0,
+    "budget_cap": 163665.0
+  },
+  "config": {
+    "edge_weights": {
+      "shared_file": 1.0,
+      "call": 2.0,
+      "impact": 1.5,
+      "prose_neighbor": 0.5,
+      "semantic": 1.5,
+      "semantic_floor": 0.5,
+      "semantic_ceil": 3.0
+    },
+    "partition": {
+      "hub_threshold": 0.4,
+      "louvain_resolution": 1.0,
+      "allow_oversized_slice": false,
+      "allow_degenerate_partition": false,
+      "granularity": "independent",
+      "target_fill_ratio": 0.75
+    },
+    "estimator": {
+      "token_budget": 200000,
+      "bytes_per_token": 4.0,
+      "slack_multiplier": 1.3,
+      "coder_slack_multiplier": 2.5,
+      "per_file_tool_allowance": 2000,
+      "spec_tokens_allowance": 3000,
+      "size_hint_small": 500,
+      "size_hint_medium": 2000,
+      "size_hint_large": 5000
+    },
+    "difficulty": {
+      "weight_files_touched": 1.0,
+      "weight_max_fan": 1.5,
+      "weight_hub_touches": 2.0,
+      "weight_cross_group_edges": 1.5,
+      "weight_verification_items": 1.0,
+      "scale_files_touched": 6.0,
+      "scale_max_fan": 10.0,
+      "scale_hub_touches": 1.0,
+      "scale_cross_group_edges": 3.0,
+      "scale_verification_items": 5.0,
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    "breaker": {
+      "context_token_limit": 250000,
+      "max_rounds_per_generation": 3,
+      "max_generations": 3,
+      "max_reentries": 3,
+      "context_ladder_enabled": false
+    },
+    "execution": {
+      "concurrency": 1,
+      "sequential": true,
+      "permission_mode": "acceptEdits",
+      "max_rewrites": 2,
+      "max_conflict_resolve_attempts": 1,
+      "on_group_failure": "halt",
+      "review_scratch_cap_bytes": 100000000
+    },
+    "preflight": {
+      "check_command": null,
+      "check_timeout_s": 900.0
+    },
+    "session": {
+      "claude_bin": "claude",
+      "model": "sonnet",
+      "fork_base_session": false,
+      "base_model": "claude-opus-5",
+      "speccer_model": "claude-opus-5",
+      "known_models": [
+        "opus",
+        "sonnet",
+        "haiku",
+        "fable",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+        "claude-fable-5"
+      ],
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "Glob",
+        "Grep",
+        "TodoWrite",
+        "NotebookEdit",
+        "Bash(git *)",
+        "Bash(*/git *)",
+        "Bash(uv *)",
+        "Bash(*/uv *)",
+        "Bash(python *)",
+        "Bash(*/python *)",
+        "Bash(python3 *)",
+        "Bash(*/python3 *)",
+        "Bash(pytest*)",
+        "Bash(*/pytest*)",
+        "Bash(ruff*)",
+        "Bash(*/ruff*)",
+        "Bash(mypy*)",
+        "Bash(*/mypy*)",
+        "Bash(pip *)",
+        "Bash(*/pip *)",
+        "Bash(pip3 *)",
+        "Bash(*/pip3 *)",
+        "Bash(npm *)",
+        "Bash(*/npm *)",
+        "Bash(npx *)",
+        "Bash(*/npx *)",
+        "Bash(node *)",
+        "Bash(*/node *)",
+        "Bash(pnpm *)",
+        "Bash(*/pnpm *)",
+        "Bash(yarn *)",
+        "Bash(*/yarn *)",
+        "Bash(make *)",
+        "Bash(*/make *)",
+        "Bash(ls *)",
+        "Bash(*/ls *)",
+        "Bash(cat *)",
+        "Bash(*/cat *)",
+        "Bash(head *)",
+        "Bash(*/head *)",
+        "Bash(tail *)",
+        "Bash(*/tail *)",
+        "Bash(find *)",
+        "Bash(*/find *)",
+        "Bash(rg *)",
+        "Bash(*/rg *)",
+        "Bash(grep *)",
+        "Bash(*/grep *)",
+        "Bash(sed *)",
+        "Bash(*/sed *)",
+        "Bash(awk *)",
+        "Bash(*/awk *)",
+        "Bash(mkdir *)",
+        "Bash(*/mkdir *)",
+        "Bash(cp *)",
+        "Bash(*/cp *)",
+        "Bash(mv *)",
+        "Bash(*/mv *)",
+        "Bash(echo *)",
+        "Bash(*/echo *)",
+        "Bash(cd *)",
+        "Bash(*/cd *)",
+        "Bash(test *)",
+        "Bash(*/test *)",
+        "Bash(which *)",
+        "Bash(*/which *)",
+        "Bash(env)",
+        "Bash(curl *)",
+        "Bash(*/curl *)",
+        "Bash(pkill *)",
+        "Bash(*/pkill *)",
+        "Bash(agent-browser *)",
+        "Bash(*/agent-browser *)"
+      ],
+      "transcript_root": null,
+      "max_thinking_tokens": 4000,
+      "thinking": "adaptive",
+      "confine": true,
+      "disallowed_tools": [],
+      "settings": null,
+      "cache_root": null,
+      "extra_write_paths": [],
+      "provision_args": [
+        "--all-extras"
+      ],
+      "usage_limit": {
+        "auto_resume": true,
+        "max_wait_s": 0.0,
+        "max_attempts": 6,
+        "skew_s": 60.0,
+        "fallback_poll_s": 900.0
+      },
+      "auth": {
+        "enabled": true,
+        "credentials_path": null,
+        "poll_s": 60.0,
+        "max_wait_s": 0.0,
+        "max_attempts": 6
+      }
+    },
+    "escalation": {
+      "enabled": false,
+      "intensity": "autonomous",
+      "source": "workers_via_orchestrator",
+      "timeout_s": null,
+      "on_timeout": "autonomous",
+      "poll_interval_s": 1.0
+    }
+  },
+  "hub_roles": [
+    {
+      "node": "u1-plan-edit",
+      "role": "utility_hub",
+      "depends_on_ratio": 0.0,
+      "depended_by_ratio": 0.6666666666666666,
+      "threshold": 0.4
+    },
+    {
+      "node": "u2-plan-split",
+      "role": "core",
+      "depends_on_ratio": 0.3333333333333333,
+      "depended_by_ratio": 0.3333333333333333,
+      "threshold": 0.4
+    },
+    {
+      "node": "u3-deepen-skill",
+      "role": "core",
+      "depends_on_ratio": 0.3333333333333333,
+      "depended_by_ratio": 0.3333333333333333,
+      "threshold": 0.4
+    },
+    {
+      "node": "u4-planning-contract",
+      "role": "aggregator_hub",
+      "depends_on_ratio": 0.6666666666666666,
+      "depended_by_ratio": 0.0,
+      "threshold": 0.4
+    }
+  ],
+  "slice_atoms": [],
+  "stages": [
+    {
+      "stage": "louvain",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 3
+      }
+    },
+    {
+      "stage": "lift",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 3
+      }
+    },
+    {
+      "stage": "split",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 3
+      }
+    },
+    {
+      "stage": "merge",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 2
+      }
+    },
+    {
+      "stage": "repair",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 2
+      }
+    },
+    {
+      "stage": "renumber",
+      "partition": {
+        "u1-plan-edit": 0,
+        "u2-plan-split": 1,
+        "u3-deepen-skill": 2,
+        "u4-planning-contract": 2
+      }
+    }
+  ],
+  "louvain": [],
+  "splits": [],
+  "merges": [
+    {
+      "round": 0,
+      "source": 1,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 262152.8125,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 0,
+      "source": 3,
+      "target": 1,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 210913.4375,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 0,
+      "source": 3,
+      "target": 2,
+      "accepted": true,
+      "reason": "",
+      "merged_work": 107604.8125,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 1,
+      "source": 1,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 262152.8125,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 0,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 226200.0625,
+      "edge_weight": 1.0
+    },
+    {
+      "round": 1,
+      "source": 2,
+      "target": 1,
+      "accepted": false,
+      "reason": "over_budget",
+      "merged_work": 251162.375,
+      "edge_weight": 1.0
+    }
+  ],
+  "repairs": [],
+  "dag": {
+    "0": [
+      1,
+      2
+    ],
+    "1": [
+      2
+    ]
+  },
+  "last_stage": "merge",
+  "groups": [
+    {
+      "group_id": "g1",
+      "files_touched": 4,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 1,
+      "cross_group_edges": 2,
+      "verification_items": 5,
+      "difficulty": 0.35714285714285715,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g2",
+      "files_touched": 5,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 0,
+      "cross_group_edges": 2,
+      "verification_items": 7,
+      "difficulty": 0.233982683982684,
+      "intensity": "self_verify",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    },
+    {
+      "group_id": "g3",
+      "files_touched": 7,
+      "max_fan_in": 0,
+      "max_fan_out": 0,
+      "hub_touches": 1,
+      "cross_group_edges": 2,
+      "verification_items": 12,
+      "difficulty": 0.4063348416289593,
+      "intensity": "paired",
+      "d_review": 0.35,
+      "d_hard": 0.65
+    }
+  ],
+  "mapper_flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u1-plan-edit file orchestrator/grouping/plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u1-plan-edit file tests/test_plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u2-plan-split file orchestrator/grouping/plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u2-plan-split file tests/test_plan_split.py does not exist yet — retained as prospective",
+    "task map: task u3-deepen-skill file skills/orchestrator-deepen/SKILL.md does not exist yet — retained as prospective",
+    "task map: task u3-deepen-skill file skills/orchestrator-deepen/explorer-prompt.md does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)"
+  ],
+  "partition_flags": [],
+  "flags": [
+    "task map: parsed from plan — mapper LLM skipped",
+    "task map: task u1-plan-edit file orchestrator/grouping/plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u1-plan-edit file tests/test_plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u2-plan-split file orchestrator/grouping/plan_edit.py does not exist yet — retained as prospective",
+    "task map: task u2-plan-split file tests/test_plan_split.py does not exist yet — retained as prospective",
+    "task map: task u3-deepen-skill file skills/orchestrator-deepen/SKILL.md does not exist yet — retained as prospective",
+    "task map: task u3-deepen-skill file skills/orchestrator-deepen/explorer-prompt.md does not exist yet — retained as prospective",
+    "self-modification: this plan's mappings touch orchestrator/ — the changes take effect on the next run, not this one (see orchestrator/README.md)",
+    "specs: assembled from plan — speccer LLM skipped"
+  ],
+  "failure": null,
+  "scorecard": {
+    "group_count": 3,
+    "cross_group_edges": 3,
+    "work_fraction_min": 0.6574699080438701,
+    "work_fraction_mean": 0.7530781881689222,
+    "work_fraction_max": 0.8771427153025998,
+    "critical_path_length": 3,
+    "modularity": -0.20510396975425332,
+    "slice_integrity_ok": true
+  },
+  "provenance": {
+    "timestamp": "2026-08-29T16:24:28.359050+00:00",
+    "plan_path": "docs/plans/2026-08-29-001-feat-plan-split-and-deepen-plan.md",
+    "plan_content_sha256": "1d1f8448e4935974ceb7fc14e03fbcb954c8fa5d26cb88c5ab406ba8b9628cdb",
+    "repo_commit_sha": "5eca4f14b65b17100b6a91efd9bbbf005a488492",
+    "worktree_dirty": true,
+    "index_fingerprint": "f9775328921579545c84f4d0fc6675755589cc231ccd9f58af5e5cbfb83aaecd",
+    "louvain_seed": 42,
+    "louvain_resolution": 1.0
+  },
+  "quiescence": [
+    {
+      "fingerprint": "f9775328921579545c84f4d0fc6675755589cc231ccd9f58af5e5cbfb83aaecd",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 191,
+        "nodeCount": 5498,
+        "edgeCount": 15296,
+        "dbSizeBytes": 12800000,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 475,
+          "constant": 83,
+          "file": 191,
+          "function": 1783,
+          "import": 1289,
+          "interface": 102,
+          "method": 1219,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 306
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    },
+    {
+      "fingerprint": "f9775328921579545c84f4d0fc6675755589cc231ccd9f58af5e5cbfb83aaecd",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 191,
+        "nodeCount": 5498,
+        "edgeCount": 15296,
+        "dbSizeBytes": 12800000,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 475,
+          "constant": 83,
+          "file": 191,
+          "function": 1783,
+          "import": 1289,
+          "interface": 102,
+          "method": 1219,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 306
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    },
+    {
+      "fingerprint": "f9775328921579545c84f4d0fc6675755589cc231ccd9f58af5e5cbfb83aaecd",
+      "status": {
+        "initialized": true,
+        "projectPath": "/home/gbm1996/wksp/smart_mcps",
+        "fileCount": 191,
+        "nodeCount": 5498,
+        "edgeCount": 15296,
+        "dbSizeBytes": 12800000,
+        "backend": "node-sqlite",
+        "journalMode": "wal",
+        "nodesByKind": {
+          "class": 475,
+          "constant": 83,
+          "file": 191,
+          "function": 1783,
+          "import": 1289,
+          "interface": 102,
+          "method": 1219,
+          "route": 28,
+          "type_alias": 22,
+          "variable": 306
+        },
+        "languages": [
+          "python",
+          "tsx",
+          "typescript"
+        ],
+        "pendingChanges": {
+          "added": 0,
+          "modified": 0,
+          "removed": 0
+        },
+        "worktreeMismatch": null
+      }
+    }
+  ]
+}

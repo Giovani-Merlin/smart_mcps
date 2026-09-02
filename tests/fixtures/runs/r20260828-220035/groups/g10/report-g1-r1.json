@@ -1,0 +1,26 @@
+{
+  "status": "completed",
+  "summary": "Implemented U8: `_check_slice_overflow` in orchestrator/grouping/pipeline.py now takes coder_slack_multiplier, computes both the unscaled `node work` and the already-coder-scaled `coder work` per member and in totals, states the multiplier value, and labels the cap as a 'coder work cap'; the `--allow-oversized-slice` flag message was updated to match. Fixed the one remaining bare-'work' label in cli.py's scorecard printout ('work fraction of cap' -> 'node work fraction of cap'); the dry-run per-group listing already said 'node work'. Updated the three existing overflow tests in tests/test_grouper_pipeline.py to assert both labels and the multiplier. No arithmetic touched. Full pipeline/partition test suites pass (121 tests); 4 unrelated pre-existing failures in test_cli.py (TestRunBanner, TestReviewIntensityWarning) are caused by a sandbox permission error writing to ~/.claude/projects/... outside the worktree, untouched by this diff.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g10-1",
+      "status": "pass",
+      "notes": "overflow message now includes 'node work', 'coder work', and 'coder_slack_multiplier=<value>' per offending slice; verified in tests/test_grouper_pipeline.py::TestSliceOverflowAccumulation"
+    },
+    {
+      "item_id": "g10-2",
+      "status": "pass",
+      "notes": "dry-run listing already said 'node work'; fixed the remaining bare 'work fraction of cap' in cli.py's scorecard print to 'node work fraction of cap'"
+    },
+    {
+      "item_id": "g10-3",
+      "status": "pass",
+      "notes": "no changes to node_work(), partition_budget_cap(), or head computation; only display/message wording changed"
+    }
+  ],
+  "surprises": []
+}

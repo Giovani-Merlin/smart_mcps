@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g8-error-accumulation",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T21:52:17+00:00",
+  "base_ref": "4c0455c04f81c8a9c4903edc77590c5edd1d8492"
+}

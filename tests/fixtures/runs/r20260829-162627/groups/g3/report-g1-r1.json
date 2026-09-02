@@ -1,0 +1,71 @@
+{
+  "status": "completed",
+  "summary": "Implemented U3 (deepen-skill) and U4 (planning-contract) for group g3. Confirmed via new tests in tests/test_plan_sections.py that Edge cases/Non-goals/Run:/Pass: bullets already parse harmlessly through the existing plan_sections/_split_bullets machinery with zero production code changes needed, and that a Run:/Pass: bullet assembles into exactly one VerificationItem. Wrote skills/orchestrator-deepen/SKILL.md and explorer-prompt.md defining the standalone interactive deepen skill (per-group explorer subagents walking a ten-category edge-case taxonomy, 3-5 EVPI-ranked questions per group with candidate answers always offered, grounded Run:/Pass: verification, all writes routed through plan_edit.py + plan-check --against). Updated skills/orchestrator-plan/SKILL.md Phase 7 to offer `split` after the advisory and print the `/orchestrator-deepen` command at the end, removing the 'wave-2 capability that does not exist yet' sentence, and added optional Edge cases/Non-goals/Run:/Pass: slots to its unit template. Documented `split` and `plan-check` (flags, non-destructive/zero-LLM semantics) in docs/orchestrator-grouping.md, and the byte-for-byte split preservation guarantee in docs/orchestrator-task-map.md. Verified every command/flag named in the three docs exists in live `--help` output. Full test suite passes except 5 pre-existing failures unrelated to my changes (tmpfs cross-device-link and CLI banner flakiness, confirmed via git diff that I never touched those files).",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g3-1",
+      "status": "pass",
+      "notes": "test_known_fields_unchanged_by_new_bullets in tests/test_plan_sections.py"
+    },
+    {
+      "item_id": "g3-2",
+      "status": "pass",
+      "notes": "test_digest_carries_only_tagged_summary_no_edge_case_text and test_new_bullets_appear_verbatim_in_assembled_group_spec"
+    },
+    {
+      "item_id": "g3-3",
+      "status": "pass",
+      "notes": "TestRunPassVerificationBullet in tests/test_plan_sections.py"
+    },
+    {
+      "item_id": "g3-4",
+      "status": "pass",
+      "notes": "SKILL.md Phase 3 + Non-negotiable rules"
+    },
+    {
+      "item_id": "g3-5",
+      "status": "pass",
+      "notes": "SKILL.md Phase 4 + explorer-prompt.md step 5"
+    },
+    {
+      "item_id": "g3-6",
+      "status": "pass",
+      "notes": "SKILL.md Phase 4 + Non-negotiable rules"
+    },
+    {
+      "item_id": "g3-7",
+      "status": "pass",
+      "notes": "explorer-prompt.md step 2 lists all ten categories; step 3 restricts reporting to fired ones"
+    },
+    {
+      "item_id": "g3-8",
+      "status": "pass",
+      "notes": "grep confirms 'wave-2'/'does not exist yet' sentence removed; Phase 7 now offers split and prints deepen command"
+    },
+    {
+      "item_id": "g3-9",
+      "status": "pass",
+      "notes": "unit template gains optional Edge cases / Non-goals slots and Run:/Pass: convention note"
+    },
+    {
+      "item_id": "g3-10",
+      "status": "pass",
+      "notes": "new 'split and plan-check' section in docs/orchestrator-grouping.md"
+    },
+    {
+      "item_id": "g3-11",
+      "status": "pass",
+      "notes": "new 'Mechanical split' section in docs/orchestrator-task-map.md"
+    },
+    {
+      "item_id": "g3-12",
+      "status": "pass",
+      "notes": "verified group/run/split/plan-check --help output matches every command/flag named in the three docs"
+    }
+  ],
+  "surprises": []
+}

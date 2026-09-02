@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/gbm1996/wksp/smart_mcps/.worktrees/r20260828-220035/g11-partition-diagnostics",
+  "command": [
+    "uv",
+    "sync",
+    "--all-extras"
+  ],
+  "state": "provisioned",
+  "detail": "",
+  "at": "2026-08-28T22:02:39+00:00",
+  "base_ref": "a5f0169258fad055d808a99ebf758cf7b84d21b9"
+}

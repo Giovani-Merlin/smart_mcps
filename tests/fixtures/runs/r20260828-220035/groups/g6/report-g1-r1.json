@@ -1,0 +1,37 @@
+{
+  "status": "completed",
+  "summary": "Implemented U3 layered worker context: compile_base_context (orchestrator/grouping/base_context.py) now embeds the U1 plan digest (preamble + per-unit Summary lines + implements/consumes registry) instead of the full stripped plan, so base_tokens/budget_cap derive from the smaller digest with no compensating adjustment. Discovered that the existing U2 assembler's upstream/downstream contract labels were gated on graph.dependencies edges, which misses pure implements/consumes tag relationships with no depends_on edge between the two tasks — added a new 'Contracts (cross-group):' section built from direct tag matching (implementers/consumers index) independent of the DAG, satisfying the spec's requirement that a group consuming a tag implemented elsewhere always gets a contracts line naming the tag, counterpart task id, and its Summary line, never the neighbor's full section. Added/updated tests in tests/test_assembler.py and tests/test_grouper_pipeline.py (new TestLayeredContext class) covering all four verification items. Full test suite passes except 5 pre-existing environment-specific failures (permission denied writing outside repo, cross-device git worktree move in /tmp) unrelated to this change.",
+  "question": "",
+  "denied_command": "",
+  "denial_error": "",
+  "denial_source": "",
+  "verification_results": [
+    {
+      "item_id": "g6-1",
+      "status": "pass",
+      "notes": "test_base_context_has_no_marker_or_heading and test_base_context_carries_digest_not_full_sections verify digest content, no full section bodies, no task-map marker, byte-identical on repeat compile"
+    },
+    {
+      "item_id": "g6-2",
+      "status": "pass",
+      "notes": "test_cross_group_contract_names_tag_and_task_not_neighbor_section (assembler) verifies contracts line names tag + implementing task id and excludes the neighbor's full section text"
+    },
+    {
+      "item_id": "g6-3",
+      "status": "pass",
+      "notes": "test_group_spec_plus_base_context_covers_its_own_sections_exactly_once verifies union contains each group's own unit sections exactly once and no other group's bodies"
+    },
+    {
+      "item_id": "g6-4",
+      "status": "pass",
+      "notes": "test_base_tokens_and_cap_derive_from_the_digest_with_no_compensation verifies base_tokens/budget_cap derive dynamically from the (smaller) digest-based context with no offset; existing cap-dependent test (test_base_context_has_no_marker_or_heading) updated with explanatory comment"
+    }
+  ],
+  "surprises": [
+    {
+      "kind": "other",
+      "description": "The U2 assembler's existing upstream/downstream contract labels were derived only from graph.dependencies (depends_on) edges, so a pure implements/consumes tag relationship with no direct dependency edge between the two specific tasks (common: both depend on a shared ancestor rather than on each other) would have produced no contracts line at all. Added a separate tag-matching pass for this rather than modifying the existing DAG-based Upstream/Downstream sections, to avoid breaking g1's R2 test (header must change when the DAG changes).",
+      "affected_groups": []
+    }
+  ]
+}
