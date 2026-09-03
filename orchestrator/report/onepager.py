@@ -2,10 +2,13 @@
 a pure validator that checks the result without ever rewriting it (plan U5).
 
 The one-pager is the single LLM-authored slot in the whole report: capped at
-300 words, three fixed sections, and every bullet must end in a pointer drawn
+450 words, four fixed sections, and every bullet must end in a pointer drawn
 from ``RunFacts`` (a group id, a unit id, a verification item id, an R-id, a
-changed file path, or a short sha) so a claim can always be checked against
-the record it names.
+changed file path, a short sha, an escalation id, or a session label) so a
+claim can always be checked against the record it names.
+
+Since report v2 the one-pager is also folded into ``report.html`` (Summary)
+and is the body of the PR ``finish`` opens.
 """
 
 from __future__ import annotations
@@ -14,13 +17,19 @@ import re
 
 from orchestrator.report.facts import RunFacts
 
-#: The three body sections, in the required order. The H1 title line is
+#: The four body sections, in the required order. The H1 title line is
 #: checked separately (its text is free-form: "<plan_title> — <run_id>").
-_SECTIONS = ("TL;DR", "Problems found", "Next steps")
+#: "Run notes" (report v2 U4) is the driver's narrative: hand fixes, causes
+#: of escalations, what was recovered — sourced from the driver's own
+#: ``.orchestrator/notes-<run_id>.md`` and the escalation record.
+_SECTIONS = ("TL;DR", "Problems found", "Run notes", "Next steps")
+#: Sections where a modal verb reads as a recommendation that belongs in
+#: "Next steps" instead.
+_NO_MODAL_SECTIONS = ("Problems found", "Run notes")
 _TLDR_BULLETS = 3
 _MIN_BULLETS = 1
 _MAX_BULLETS = 5
-_MAX_WORDS = 300
+_MAX_WORDS = 450
 
 #: Vague summary filler that carries no evidence — the kind of phrase that
 #: lets a one-pager sound complete without saying anything checkable.
@@ -34,12 +43,33 @@ _BANNED_PHRASES = (
     "as you can see",
 )
 
-#: Banned only inside "Problems found": a modal verb there reads as a
-#: recommendation ("this should be fixed"), which belongs in "Next steps".
+#: Banned inside "Problems found" and "Run notes": a modal verb there reads
+#: as a recommendation ("this should be fixed"), which belongs in "Next steps".
 _MODAL_VERBS = ("should", "would", "could", "might", "may", "must", "shall", "will")
 
 _BULLET_RE = re.compile(r"^-\s+(?P<body>.*)\((?P<pointer>[^()]*)\)\s*$")
 _HEADING_RE = re.compile(r"^(#{1,2})\s+(.*?)\s*$")
+_POINTER_COMMENT_RE = re.compile(
+    r"^[ \t]*<!--\s*valid pointers:.*?-->[ \t]*\n?", re.MULTILINE | re.DOTALL
+)
+_H1_LINE_RE = re.compile(r"^#\s+.*\n?", re.MULTILINE)
+_ESCALATION_ID_CHARS = 12
+
+
+def strip_pointer_comment(text: str) -> str:
+    """The one-pager without the scaffold's ``<!-- valid pointers … -->``
+    comment — what the HTML Summary and the PR body embed."""
+    return _POINTER_COMMENT_RE.sub("", text).rstrip() + "\n"
+
+
+def body_without_title(text: str) -> str:
+    """``strip_pointer_comment`` plus the H1 dropped: the PR body's opening."""
+    return _H1_LINE_RE.sub("", strip_pointer_comment(text), count=1).lstrip("\n")
+
+
+def session_label(group_id: str, role: str, generation: int) -> str:
+    """``<gid>/<role>/gen<n>`` — how a one-pager bullet cites one session."""
+    return f"{group_id}/{role}/gen{generation}"
 
 
 # --------------------------------------------------------------- pointers
@@ -51,7 +81,14 @@ def _valid_pointers(facts: RunFacts) -> set[str]:
     JSON (plan U5)."""
     pointers: set[str] = set()
     pointers.update(cf.path for cf in facts.changed_files)
-    pointers.update(group.id for group in facts.groups)
+    for group in facts.groups:
+        pointers.add(group.id)
+        for escalation in group.escalations:
+            eid = str(escalation.get("id") or "")
+            if eid:
+                pointers.add(eid[:_ESCALATION_ID_CHARS])
+        for session in group.sessions:
+            pointers.add(session_label(group.id, session.role, session.generation))
     for unit in facts.units:
         pointers.add(unit.unit_id)
         pointers.update(item.item_id for item in unit.verification)
@@ -67,7 +104,7 @@ def _valid_pointers(facts: RunFacts) -> set[str]:
 
 
 def scaffold(facts: RunFacts) -> str:
-    """The fixed skeleton the run-driver session fills in: three sections,
+    """The fixed skeleton the run-driver session fills in: four sections,
     placeholder bullets, and an HTML comment enumerating every pointer that
     would validate. The placeholders point at the literal string
     ``POINTER``, which is never a member of the valid set, so an untouched
@@ -86,6 +123,11 @@ def scaffold(facts: RunFacts) -> str:
         "## Problems found",
         "",
         "- one bullet per problem, each ending with the pointer that proves it (POINTER)",
+        "",
+        "## Run notes",
+        "",
+        "- one bullet per thing the driver did — a hand fix, an escalation's cause, "
+        "what was recovered — each ending with the pointer it concerns (POINTER)",
         "",
         "## Next steps",
         "",
@@ -160,7 +202,7 @@ def validate(text: str, facts: RunFacts) -> list[str]:
         )
 
     section_bullets: dict[str, list[str]] = {"TL;DR": tldr_bullets}
-    for name in ("Problems found", "Next steps"):
+    for name in _SECTIONS[1:]:
         bullets = _bullets(_section_text(text, name))
         section_bullets[name] = bullets
         if not (_MIN_BULLETS <= len(bullets) <= _MAX_BULLETS):
@@ -187,9 +229,10 @@ def validate(text: str, facts: RunFacts) -> list[str]:
         if re.search(rf"\b{re.escape(phrase)}\b", haystack):
             violations.append(f"banned phrase: {phrase!r}")
 
-    problems_text = _section_text(text, "Problems found").lower()
-    for verb in _MODAL_VERBS:
-        if re.search(rf"\b{verb}\b", problems_text):
-            violations.append(f"modal verb {verb!r} is not allowed in Problems found")
+    for name in _NO_MODAL_SECTIONS:
+        section_lower = _section_text(text, name).lower()
+        for verb in _MODAL_VERBS:
+            if re.search(rf"\b{verb}\b", section_lower):
+                violations.append(f"modal verb {verb!r} is not allowed in {name}")
 
     return violations

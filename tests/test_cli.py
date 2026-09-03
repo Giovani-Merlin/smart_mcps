@@ -2106,6 +2106,8 @@ class TestReportOnePagerCli:
             "- Requirement sixteen on mechanical plan splitting is satisfied (R16)\n\n"
             "## Problems found\n\n"
             "- No problems were recorded for this run (g1)\n\n"
+            "## Run notes\n\n"
+            "- Nothing was fixed by hand during this run (g1)\n\n"
             "## Next steps\n\n"
             "- Watch the plan-edit surgery contract for drift next run "
             "(orchestrator/grouping/plan_edit.py)\n"
@@ -2157,8 +2159,97 @@ class TestReportOnePagerCli:
                 "- Requirement sixteen on mechanical plan splitting is satisfied (R16)\n\n"
                 "## Problems found\n\n"
                 "- No problems were recorded for this run (g1)\n\n"
+                "## Run notes\n\n"
+                "- Nothing was fixed by hand during this run (g1)\n\n"
                 "## Next steps\n\n"
                 "- Watch the plan-edit surgery contract for drift next run "
                 "(orchestrator/grouping/plan_edit.py)\n"
             ).encode()
         )
+
+
+class TestReportFormatsCli:
+    """`report --format …` against the real ``r20260829-162627`` fixture
+    (report v2 U2): the artifact set is facts/html/changelog only, the
+    one-pager under --out is folded into the HTML, and ``docs/RUNLOG.md`` is
+    touched only with ``--update-runlog``."""
+
+    FIXTURE_RUN_ID = "r20260829-162627"
+    FIXTURE_RUN_DIR = Path(__file__).parent / "fixtures" / "runs" / "r20260829-162627"
+
+    def _run(self, tmp_path, *extra):
+        out_dir = tmp_path / "out"
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--out",
+                str(out_dir),
+                *extra,
+            ]
+        )
+        assert exit_code == 0
+        return out_dir
+
+    def test_all_writes_three_files_and_never_pr_body(self, tmp_path, capsys):
+        out_dir = self._run(tmp_path, "--format", "all")
+        assert sorted(p.name for p in out_dir.iterdir()) == [
+            "CHANGELOG-entry.md",
+            "facts.json",
+            "report.html",
+        ]
+        assert "pr-body" not in capsys.readouterr().out
+
+    def test_pr_body_is_not_a_format_choice(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["report", self.FIXTURE_RUN_ID, "--format", "pr-body"])
+        assert "invalid choice: 'pr-body'" in capsys.readouterr().err
+
+    def test_one_pager_under_out_is_folded_into_the_html(self, tmp_path):
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "one-pager.md").write_text(
+            "# Plan split and deepen — r20260829-162627\n\n"
+            "## TL;DR\n\n- Three groups landed (g1)\n- Unit one done (u1)\n- R16 met (R16)\n\n"
+            "## Problems found\n\n- None (g1)\n\n"
+            "## Run notes\n\n- Nothing by hand (g1)\n\n"
+            "## Next steps\n\n- None (g1)\n\n"
+            "<!-- valid pointers: g1, u1, R16 -->\n"
+        )
+        self._run(tmp_path, "--format", "html")
+        html = (out_dir / "report.html").read_text()
+        assert "<h2>Summary</h2>" in html
+        assert '<a href="#group-g1">g1</a>' in html
+        assert "valid pointers" not in html
+
+    def test_changelog_leaves_runlog_untouched_unless_asked(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        (repo / "docs").mkdir(parents=True)
+        runlog = repo / "docs" / "RUNLOG.md"
+        runlog.write_text("# Run log\n\nuntouched\n")
+        # The fixture's plan lives in this checkout; the runlog is the only
+        # thing under --repo the command may write, and only when asked.
+        monkeypatch.chdir(repo)
+        out_dir = tmp_path / "out"
+        base = [
+            "report",
+            self.FIXTURE_RUN_ID,
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(self.FIXTURE_RUN_DIR),
+            "--out",
+            str(out_dir),
+            "--format",
+            "changelog",
+        ]
+        assert main(base) == 0
+        assert runlog.read_text() == "# Run log\n\nuntouched\n"
+        assert (out_dir / "CHANGELOG-entry.md").is_file()
+
+        assert main([*base, "--update-runlog"]) == 0
+        updated = runlog.read_text()
+        assert "untouched" in updated
+        assert f"<!-- run:{self.FIXTURE_RUN_ID} -->" in updated

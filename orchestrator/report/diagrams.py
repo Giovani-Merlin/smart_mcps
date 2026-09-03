@@ -1,37 +1,39 @@
-"""Mermaid diagram sources rendered from ``RunFacts`` and git (plan U2).
+"""Diagram sources rendered from ``RunFacts`` and git (plan U2): two mermaid
+flowcharts (plan → outcome, architecture delta) and one HTML timeline.
 
 Every function here is a pure text renderer: no LLM call, no invented data.
 When the underlying fact is unavailable (no git range, no Python files
-changed, ``codegraph`` not on ``PATH``), the renderer returns a short
-``%%`` comment explaining why instead of raising or fabricating a diagram.
+changed), the mermaid renderer returns a short ``%%`` comment explaining why
+instead of raising or fabricating a diagram.
+
+The run timeline is plain HTML/CSS generated here (report v2 U1) — a
+``<table class="timeline">`` with one row per group and one positioned bar
+per session — because mermaid's gantt squeezed an 11-group run into an
+unreadable strip and needed a CDN to render at all.
 """
 
 from __future__ import annotations
 
 import ast
-import json
 import re
-import shutil
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from markupsafe import escape
+from pydantic import BaseModel
 
 from orchestrator.report.facts import GroupFacts, RunFacts
 
 _INVALID_ID_RE = re.compile(r"[^A-Za-z0-9_]")
 _MERMAID_TEXT_BANNED = str.maketrans({":": "-", ",": ";", "\n": " "})
-_ADD_PARSER_RE = re.compile(r'add_parser\(\s*"([\w-]+)"')
-_RUN_ID_RE = re.compile(r"r(\d{8})-(\d{6})")
 
 
 class Diagrams(BaseModel):
+    #: HTML (not mermaid) since report v2: see ``timeline_html``.
     timeline: str = ""
     plan_outcome: str = ""
     architecture_delta: str = ""
-    howto_sequences: list[str] = Field(default_factory=list)
-    howto_note: str | None = None
 
 
 # ------------------------------------------------------------------- helpers
@@ -57,21 +59,6 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
-def _fmt_dt(value: datetime) -> str:
-    return value.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _run_id_dt(run_id: str) -> datetime:
-    match = _RUN_ID_RE.search(run_id)
-    if not match:
-        return datetime(1970, 1, 1)
-    date_part, time_part = match.groups()
-    try:
-        return datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S")
-    except ValueError:
-        return datetime(1970, 1, 1)
-
-
 def _run_git(repo_root: Path, *args: str) -> str | None:
     result = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True)
     if result.returncode != 0:
@@ -79,46 +66,113 @@ def _run_git(repo_root: Path, *args: str) -> str | None:
     return result.stdout
 
 
-# -------------------------------------------------------------------- gantt
+# ----------------------------------------------------------------- timeline
 
 
-def timeline_gantt(facts: RunFacts) -> str:
-    lines = [
-        "gantt",
-        f"    title {_mermaid_text('Run timeline — ' + facts.run_id)}",
-        "    dateFormat YYYY-MM-DDTHH:mm:ss",
-        "    axisFormat %H:%M",
-    ]
-    run_start = _run_id_dt(facts.run_id)
+def _fmt_clock(value: datetime) -> str:
+    return value.strftime("%H:%M")
+
+
+def _fmt_minutes(minutes: float) -> str:
+    total = int(round(minutes))
+    hours, mins = divmod(total, 60)
+    return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
+
+
+def timeline_html(facts: RunFacts) -> str:
+    """The run timeline as an HTML table: one row per group; each cell holds a
+    positioned ``<span class="bar coder|reviewer">`` per session (left/width
+    are percentages of the run's wall clock) and a ``<span class="mark …">``
+    glyph per retirement/escalation. Every string from the facts is escaped
+    here, so the template renders the result with ``|safe``."""
+    spans: list[tuple[datetime, datetime]] = []
     for group in facts.groups:
-        lines.append(f"    section {_mermaid_text(group.id + ': ' + (group.name or group.id))}")
-        last_end = None
-        for index, session in enumerate(group.sessions, start=1):
+        for session in group.sessions:
             start = _parse_dt(session.started_at)
             if start is None:
                 continue
             end = _parse_dt(session.ended_at) or start
-            if end <= start:
-                end = start + timedelta(minutes=1)
-            task_id = _mermaid_id(f"{group.id}_{session.role}_{session.generation}_{index}")
-            label = _mermaid_text(f"{session.role} gen{session.generation}")
-            lines.append(f"    {label} :done, {task_id}, {_fmt_dt(start)}, {_fmt_dt(end)}")
-            last_end = max(last_end, end) if last_end else end
+            spans.append((start, max(end, start)))
+    for event in facts.timeline:
+        at = _parse_dt(event.at)
+        if at is not None:
+            spans.append((at, at))
+    if not spans:
+        return '<p class="muted timeline-empty">no timestamped sessions recorded for this run</p>'
+    run_start = min(start for start, _ in spans)
+    run_end = max(end for _, end in spans)
+    total_minutes = max((run_end - run_start).total_seconds() / 60, 1.0)
+
+    def pct(value: datetime) -> float:
+        return max(0.0, min(100.0, (value - run_start).total_seconds() / 60 / total_minutes * 100))
+
+    rows: list[str] = []
+    for group in facts.groups:
+        cells: list[str] = []
+        for session in group.sessions:
+            start = _parse_dt(session.started_at)
+            if start is None:
+                continue
+            end = _parse_dt(session.ended_at)
+            known_end = end is not None and end > start
+            end = end if end is not None and end > start else start
+            left = pct(start)
+            width = max(pct(end) - left, 0.4)
+            role = "reviewer" if session.role == "reviewer" else "coder"
+            duration = _fmt_minutes((end - start).total_seconds() / 60) if known_end else "n/a"
+            title = (
+                f"{group.id} {session.role} gen{session.generation}: "
+                f"{_fmt_clock(start)}–{_fmt_clock(end) if known_end else '?'} ({duration})"
+            )
+            if session.ended_at_source not in ("manifest", "unknown"):
+                title += f"; end inferred from {session.ended_at_source}"
+            classes = f"bar {role}" + ("" if known_end else " open")
+            cells.append(
+                f'<span class="{classes}" style="left:{left:.2f}%;width:{width:.2f}%" '
+                f'title="{escape(title)}"></span>'
+            )
             if session.retirement_reason:
-                mid = _mermaid_id(f"{task_id}_retired")
-                label = _mermaid_text(f"retired: {session.retirement_reason}")
-                lines.append(f"    {label} :milestone, {mid}, {_fmt_dt(end)}, 0d")
-        for e_index, escalation in enumerate(group.escalations, start=1):
-            at = _parse_dt(escalation.get("created_at")) or last_end or run_start
-            mid = _mermaid_id(f"{group.id}_escalation_{e_index}")
-            label = _mermaid_text(f"escalation: {escalation.get('kind', 'escalation')}")
-            lines.append(f"    {label} :milestone, {mid}, {_fmt_dt(at)}, 0d")
-            last_end = max(last_end, at) if last_end else at
-        state_at = last_end or run_start
-        mid = _mermaid_id(f"{group.id}_state")
-        label = _mermaid_text(f"state: {group.state}")
-        lines.append(f"    {label} :milestone, {mid}, {_fmt_dt(state_at)}, 0d")
-    return "\n".join(lines)
+                cells.append(
+                    f'<span class="mark retired" style="left:{pct(end):.2f}%" '
+                    f'title="{escape(f"retired: {session.retirement_reason}")}">&#x2715;</span>'
+                )
+        for event in facts.timeline:
+            if event.group_id != group.id or event.kind != "escalation":
+                continue
+            at = _parse_dt(event.at)
+            if at is None:
+                continue
+            cells.append(
+                f'<span class="mark escalation" style="left:{pct(at):.2f}%" '
+                f'title="{escape(f"escalation: {event.label}")}">&#x26A0;</span>'
+            )
+        label = escape(f"{group.id}: {group.name or group.id}")
+        anchor = escape(f"#group-{group.id}")
+        state = escape(group.state)
+        rows.append(
+            f'<tr><th scope="row"><a href="{anchor}">{label}</a></th>'
+            f'<td class="lane">{"".join(cells)}</td>'
+            f'<td class="state">{state}</td></tr>'
+        )
+
+    ticks = 6
+    axis = "".join(
+        f'<span class="tick" style="left:{i / ticks * 100:.2f}%">'
+        f"{_fmt_clock(run_start + (run_end - run_start) * i / ticks)}</span>"
+        for i in range(ticks + 1)
+    )
+    caption = escape(
+        f"{_fmt_clock(run_start)} → {_fmt_clock(run_end)} "
+        f"({_fmt_minutes(total_minutes)} wall clock, {run_start.strftime('%Y-%m-%d')})"
+    )
+    return (
+        '<table class="timeline">'
+        f"<caption>{caption}</caption>"
+        '<thead><tr><th scope="col">Group</th>'
+        f'<th scope="col" class="lane"><div class="axis">{axis}</div></th>'
+        '<th scope="col">State</th></tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
 
 
 # --------------------------------------------------------------- flowchart
@@ -284,156 +338,12 @@ def architecture_delta(facts: RunFacts, repo_root: Path) -> str:
     return "\n".join(lines)
 
 
-# -------------------------------------------------------------- how-to-use
-
-
-def _dispatch_handler(cli_text: str, name: str) -> str | None:
-    pattern = re.compile(rf'args\.command == "{re.escape(name)}":\s*\n\s*return (\w+)\(')
-    match = pattern.search(cli_text)
-    return match.group(1) if match else None
-
-
-def _public_top_level_functions(source: str) -> list[str]:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-    return [
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not node.name.startswith("_")
-    ]
-
-
-def _entry_points(facts: RunFacts, repo_root: Path) -> list[tuple[str, str]]:
-    base_sha = facts.git_range.base_sha
-    tip_sha = facts.git_range.tip_sha
-    assert base_sha is not None and tip_sha is not None
-
-    points: list[tuple[str, str]] = []
-    changed_paths = {cf.path for cf in facts.changed_files}
-
-    if "orchestrator/cli.py" in changed_paths:
-        diff = _run_git(repo_root, "diff", "-U0", base_sha, tip_sha, "--", "orchestrator/cli.py")
-        added_text = "\n".join(
-            line[1:]
-            for line in (diff or "").splitlines()
-            if line.startswith("+") and not line.startswith("+++")
-        )
-        tip_cli = _git_show(repo_root, tip_sha, "orchestrator/cli.py") or ""
-        for match in _ADD_PARSER_RE.finditer(added_text):
-            name = match.group(1)
-            handler = _dispatch_handler(tip_cli, name)
-            if handler:
-                points.append((name, handler))
-
-    for path in sorted(changed_paths):
-        if not path.endswith(".py"):
-            continue
-        base_src = _git_show(repo_root, base_sha, path)
-        tip_src = _git_show(repo_root, tip_sha, path)
-        if base_src is None and tip_src is not None:
-            for fn_name in _public_top_level_functions(tip_src):
-                points.append((fn_name, fn_name))
-
-    seen: set[str] = set()
-    unique: list[tuple[str, str]] = []
-    for label, symbol in points:
-        if symbol in seen:
-            continue
-        seen.add(symbol)
-        unique.append((label, symbol))
-    return unique[:8]
-
-
-def _codegraph_callees(repo_root: Path, symbol: str) -> list[dict] | None:
-    try:
-        result = subprocess.run(
-            ["codegraph", "callees", symbol, "--json", "--limit", "20", "-p", str(repo_root)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except ValueError:
-        return None
-    return data.get("callees") or []
-
-
-def _sequence_for(repo_root: Path, label: str, symbol: str) -> str | None:
-    depth1 = _codegraph_callees(repo_root, symbol)
-    if not depth1:
-        return None
-
-    participants: dict[str, str] = {label: _mermaid_id(label)}
-    edges: list[tuple[str, str]] = []
-
-    def participant_id(name: str) -> str:
-        if name not in participants:
-            participants[name] = _mermaid_id(name)
-        return participants[name]
-
-    for callee in depth1[:6]:
-        name = callee.get("name")
-        if not name:
-            continue
-        participant_id(name)
-        edges.append((label, name))
-        for callee2 in (_codegraph_callees(repo_root, name) or [])[:4]:
-            name2 = callee2.get("name")
-            if not name2:
-                continue
-            participant_id(name2)
-            edges.append((name, name2))
-
-    if not edges:
-        return None
-
-    lines = ["sequenceDiagram"]
-    for participant_name, participant_ident in participants.items():
-        lines.append(f"    participant {participant_ident} as {participant_name}")
-    for source, target in edges:
-        lines.append(f"    {participants[source]}->>{participants[target]}: calls")
-    return "\n".join(lines)
-
-
-def howto_sequences(facts: RunFacts, repo_root: Path) -> tuple[list[str], str | None]:
-    if shutil.which("codegraph") is None:
-        return [], "codegraph is not on PATH; how-to-use sequences skipped"
-    if not (repo_root / ".codegraph").is_dir():
-        return [], ".codegraph/ index is missing; how-to-use sequences skipped"
-    if not facts.git_range.available:
-        return [], "no git range for this run; how-to-use sequences skipped"
-
-    entry_points = _entry_points(facts, repo_root)
-    if not entry_points:
-        return [], "no new entry points found in this run's diff"
-
-    diagrams = [
-        diagram
-        for label, symbol in entry_points
-        if (diagram := _sequence_for(repo_root, label, symbol)) is not None
-    ]
-    if not diagrams:
-        return [], "codegraph found no callees for this run's new entry points"
-    return diagrams, None
-
-
 # ------------------------------------------------------------------ bundle
 
 
 def render_all(facts: RunFacts, repo_root: Path) -> Diagrams:
-    sequences, note = howto_sequences(facts, repo_root)
     return Diagrams(
-        timeline=timeline_gantt(facts),
+        timeline=timeline_html(facts),
         plan_outcome=plan_outcome_flowchart(facts),
         architecture_delta=architecture_delta(facts, repo_root),
-        howto_sequences=sequences,
-        howto_note=note,
     )

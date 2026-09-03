@@ -123,6 +123,7 @@ def finish_run(
             "or its legacy path; branch teardown needs it to verify merges"
         )
 
+    _copy_driver_notes(repo_root, run_id, paths, log)
     _generate_and_commit_docs(repo_root, run_id, integration_wt, paths, log)
 
     tip = _git_ok(repo_root, "rev-parse", branch).strip()
@@ -202,53 +203,84 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
         raise FinishError(f"push of {branch} to origin failed: {result.stderr.strip()[:500]}")
 
 
+# ------------------------------------------------------------ driver notes
+
+DRIVER_NOTES_FILENAME = "driver-notes.md"
+
+
+def driver_notes_source(repo_root: Path, run_id: str) -> Path:
+    """Where the run-driver skill keeps its triage notes for a run."""
+    return repo_root / ".orchestrator" / f"notes-{run_id}.md"
+
+
+def _copy_driver_notes(
+    repo_root: Path, run_id: str, paths: RunPaths, log: Callable[[str], None]
+) -> None:
+    """Copy ``.orchestrator/notes-<run_id>.md`` (the driver session's own
+    record: causes, hand fixes, next steps) into the run dir as
+    ``driver-notes.md`` so the export bundle and future fixtures carry the
+    narrative the one-pager's "Run notes" section is written from (report
+    v2 U4). Never committed to ``docs/``; silently absent when the driver
+    kept no notes."""
+    source = driver_notes_source(repo_root, run_id)
+    if not source.is_file():
+        return
+    destination = paths.run_dir / DRIVER_NOTES_FILENAME
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    log(f"finish {run_id}: copied driver notes to {destination.relative_to(repo_root)}")
+
+
 # -------------------------------------------------------------------- docs
 
 
-def _render_facts_doc(facts, out_dir: Path) -> None:
+def _one_pager_text(out_dir: Path) -> str | None:
+    path = out_dir / "one-pager.md"
+    return path.read_text() if path.is_file() else None
+
+
+def render_facts_doc(facts, out_dir: Path, repo_root: Path) -> Path:
     from orchestrator.execution.manifest import atomic_write_text
 
-    atomic_write_text(out_dir / "facts.json", facts.model_dump_json(indent=2) + "\n")
+    destination = out_dir / "facts.json"
+    atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+    return destination
 
 
-def _render_html_doc(facts, out_dir: Path, repo_root: Path) -> None:
+def render_html_doc(facts, out_dir: Path, repo_root: Path) -> Path:
+    """``report.html`` with the one-pager under ``out_dir`` folded into its
+    Summary when present (report v2 U2). Shared with the CLI's ``report``."""
     from orchestrator.execution.manifest import atomic_write_text
     from orchestrator.report.diagrams import render_all
     from orchestrator.report.html import render_html
 
     diagrams = render_all(facts, repo_root)
-    atomic_write_text(out_dir / "report.html", render_html(facts, diagrams))
+    destination = out_dir / "report.html"
+    atomic_write_text(destination, render_html(facts, diagrams, one_pager=_one_pager_text(out_dir)))
+    return destination
 
 
-def _render_changelog_doc(facts, out_dir: Path, repo_root: Path) -> None:
-    # Deliberately not `render.markdown`'s `update_runlog` side effect: that
-    # writes `docs/RUNLOG.md`, outside `docs/runs/<run_id>/`, and `finish`
-    # must never commit anything outside that directory (plan U5 constraint).
+def render_changelog_doc(facts, out_dir: Path, repo_root: Path) -> Path:
+    """``CHANGELOG-entry.md`` only — never ``docs/RUNLOG.md``: `finish` must
+    not commit anything outside ``docs/runs/<run_id>/`` (plan U5), and a
+    preview `report` must not dirty the checkout (report v2 U2). The CLI's
+    ``--update-runlog`` is the one opt-in writer of the run log."""
     from orchestrator.execution.manifest import atomic_write_text
     from orchestrator.report.diagrams import render_all
     from orchestrator.report.markdown import render_changelog_entry
 
     diagrams = render_all(facts, repo_root)
-    atomic_write_text(out_dir / "CHANGELOG-entry.md", render_changelog_entry(facts, diagrams))
+    destination = out_dir / "CHANGELOG-entry.md"
+    atomic_write_text(destination, render_changelog_entry(facts, diagrams))
+    return destination
 
 
-def _render_pr_body_doc(facts, out_dir: Path) -> None:
-    from orchestrator.execution.manifest import atomic_write_text
-    from orchestrator.report.markdown import render_pr_body
-
-    atomic_write_text(out_dir / "pr-body.md", render_pr_body(facts))
-
-
-#: format name -> renderer, scoped to writing only inside `docs/runs/<run_id>/`
-#: — the subset of the CLI's report formats that have no side effect outside
-#: that directory (plan U5; `report.render`-style registry, kept local here
-#: rather than shared with the CLI's `_REPORT_FORMATS` because the CLI's
-#: `changelog` renderer intentionally also updates `docs/RUNLOG.md`).
+#: format name -> renderer, every one scoped to writing only inside
+#: `docs/runs/<run_id>/`. The CLI's `report` command reuses these.
 _DOCS_FORMATS: dict[str, Callable] = {
-    "facts": lambda facts, out_dir, repo_root: _render_facts_doc(facts, out_dir),
-    "html": _render_html_doc,
-    "changelog": _render_changelog_doc,
-    "pr-body": lambda facts, out_dir, repo_root: _render_pr_body_doc(facts, out_dir),
+    "facts": render_facts_doc,
+    "html": render_html_doc,
+    "changelog": render_changelog_doc,
 }
 
 
@@ -275,14 +307,8 @@ def _generate_and_commit_docs(
     out_dir = integration_wt / config.docs.out_dir / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for name in config.docs.formats:
-        renderer = _DOCS_FORMATS.get(name)
-        if renderer is None:
-            raise FinishError(
-                f"unknown [docs] format {name!r}; expected one of {sorted(_DOCS_FORMATS)}"
-            )
-        renderer(facts, out_dir, repo_root)
-
+    # Validate the one-pager before the HTML embeds it, so an invalid one
+    # never reaches the branch in any form.
     one_pager_path = out_dir / "one-pager.md"
     if one_pager_path.is_file():
         from orchestrator.report.onepager import validate
@@ -293,6 +319,14 @@ def _generate_and_commit_docs(
                 f"one-pager.md failed validation for {run_id}:\n"
                 + "\n".join(f"- {v}" for v in violations)
             )
+
+    for name in config.docs.formats:
+        renderer = _DOCS_FORMATS.get(name)
+        if renderer is None:
+            raise FinishError(
+                f"unknown [docs] format {name!r}; expected one of {sorted(_DOCS_FORMATS)}"
+            )
+        renderer(facts, out_dir, repo_root)
 
     rel_out_dir = out_dir.relative_to(integration_wt).as_posix()
     _git_ok(integration_wt, "add", rel_out_dir)
@@ -314,14 +348,39 @@ def _render_pr_body(
     manifest: RunManifest | None,
     paths: RunPaths,
 ) -> str:
-    """The PR body, rendered from ``RunFacts`` via ``report.markdown`` (plan
-    U3) — fixed headings (Motivation/Changes/Risks/Testing/Handoff, plus a
-    Postmortem when the run had trouble), never free narrative."""
+    """The PR body as a derived view (report v2 U2): the one-pager's body
+    (H1 and pointer comment dropped) when the run has one, then the changelog
+    entry's Outcome/Scope/Cost lines, a link to ``report.html`` on the branch,
+    and the postmortem-lite block when the run had trouble. Without a
+    one-pager it is the header lines and the link only."""
     from orchestrator.report.facts import build_facts
-    from orchestrator.report.markdown import render_pr_body
+    from orchestrator.report.markdown import changelog_header_lines, render_postmortem
+    from orchestrator.report.onepager import body_without_title
 
     facts = build_facts(repo_root, run_id, run_dir=paths.run_dir)
-    return render_pr_body(facts)
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
+    one_pager: str | None = None
+    if integration_wt is not None:
+        one_pager = _one_pager_text(integration_wt / config.docs.out_dir / run_id)
+
+    lines = [f"Orchestrator run `{facts.run_id}` — {facts.plan_title or facts.run_id}", ""]
+    if one_pager:
+        lines.append(body_without_title(one_pager).rstrip())
+        lines.append("")
+    lines.append("## Run record")
+    lines.append("")
+    lines.extend(changelog_header_lines(facts))
+    report_rel = f"{config.docs.out_dir}/{facts.run_id}/report.html"
+    lines.append(
+        f"- **Report**: the complete record is [`{report_rel}`]({report_rel}) on this branch "
+        f"(`{report_rel}`)"
+    )
+    lines.append("")
+    if facts.trouble:
+        lines.append(render_postmortem(facts))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _open_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) -> tuple[bool, str]:

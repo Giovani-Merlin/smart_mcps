@@ -8,10 +8,20 @@
 
 ## Problems found
 
-- No problems surfaced during this run; nothing to report (g1)
+- split's output failed plan-check on every real plan: a missing newline glued the task-map fence onto the first unit heading and the section tail after the units was dropped, found only after the run by hand (orchestrator/grouping/plan_edit.py)
+- g2 ran as self_verify and merged on its own report alone; item g2-5 claimed plan-check verifiable output that was never run (g2-5)
+- g3's reviewer ran the suite inside the Landlock sandbox, saw 5 phantom failures, and approved for a wrong stated reason (g3/reviewer/gen1)
+
+## Run notes
+
+- First live exercise of the deterministic grouper: the mapper and speccer LLM calls were both skipped and the three-group chain ran unattended, generation 1 each (g1/coder/gen1)
+- Verified the integration branch by hand: 1562 pytest passed against 1505 on main (a76fec68)
+- Diagnosed the split defect after the run against the real 2026-08-29 plan and fixed it the next day with the fixture reordered to the real section layout (orchestrator/grouping/plan_edit.py)
+- Traced the self_verify hole to the merge decision reading only the report's status field, never its verification results; closed it the next day with a structural gate on required items (g2)
+- g1's edit to plan_sections.py sat outside u1's declared file list; checked and kept, since the change is additive and g3 never touched the file (orchestrator/grouping/plan_sections.py)
 
 ## Next steps
 
-- No follow-up work is outstanding from this run (g2)
-
-<!-- valid pointers: 5eca4f14, R16, R17, R18, R19, a76fec68, docs/orchestrator-grouping.md, docs/orchestrator-task-map.md, g1, g1-1, g1-2, g1-3, g1-4, g1-5, g2, g2-1, g2-2, g2-3, g2-4, g2-5, g2-6, g2-7, g3, g3-1, g3-10, g3-11, g3-12, g3-2, g3-3, g3-4, g3-5, g3-6, g3-7, g3-8, g3-9, orchestrator/cli.py, orchestrator/grouping/advisory.py, orchestrator/grouping/plan_edit.py, orchestrator/grouping/plan_reader.py, orchestrator/grouping/plan_sections.py, skills/orchestrator-deepen/SKILL.md, skills/orchestrator-deepen/explorer-prompt.md, skills/orchestrator-plan/SKILL.md, tests/test_plan_edit.py, tests/test_plan_sections.py, tests/test_plan_split.py, u1, u2, u3, u4 -->
+- Require each verification pass to name a test id, and treat "manually verified" as skipped, so the evidence-quality half of the self_verify gap closes too (g2-5)
+- Exempt the tests the Landlock sandbox breaks, or grant the sandbox what they need, so reviewers stop learning to dismiss red tests (g3/reviewer/gen1)
+- Add declared-but-untouched files to the merge gate: a group whose verification names a file its diff never touches is not verified (g2)

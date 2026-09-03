@@ -8,23 +8,28 @@ session — 29–467 lines across the runs measured, and rarely read in full.
 
 This doc describes the replacement: `smart-mcps-orchestrate report`, a
 deterministic `RunFacts` model computed from the run directory, the plan, and
-git, rendered into four formats plus one capped, validated, LLM-authored
+git, rendered into three artifacts plus one capped, validated, LLM-authored
 one-pager. `finish` generates and commits the configured formats onto the
-integration branch before it pushes, so the record ships in the PR.
+integration branch before it pushes, so the record ships in the PR — and the
+PR body itself is derived from the same one-pager.
 
-## Formats
+## The artifact set (report v2, plugin 0.16.0)
 
 `smart-mcps-orchestrate report <run_id> [--run-dir PATH] [--out PATH] --format <name>`
 renders one format (or `all`) from `orchestrator/report/facts.py`'s
 `RunFacts`. Every renderer is a pure function of `RunFacts` plus git — none
 of them call an LLM.
 
-| format      | file(s)                                              | what it is                                                                                                                                       |
-| ----------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `facts`     | `facts.json`                                         | the raw `RunFacts` model, for anything that wants to consume the run mechanically                                                                |
-| `changelog` | `CHANGELOG-entry.md` + a section in `docs/RUNLOG.md` | trial A: one fragment per group, appended idempotently to the running log                                                                        |
-| `pr-body`   | `pr-body.md`                                         | trial C: the fixed-template PR body `finish` now uses — Motivation/Changes/Risks/Testing/Handoff, plus a Postmortem section when `facts.trouble` |
-| `html`      | `report.html`                                        | trial B: one self-contained file with per-unit evidence cards and the six visualizations (below)                                                 |
+| artifact             | format      | what it is                                                                                                                                                             |
+| -------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `facts.json`         | `facts`     | the raw `RunFacts` model, for anything that wants to consume the run mechanically                                                                                      |
+| `report.html`        | `html`      | **the complete record**: the one-pager (when present) as its Summary, the escalation log, evidence matrix, requirement traceability, group cards, cost, timeline, diagrams |
+| `CHANGELOG-entry.md` | `changelog` | one fragment per group plus the plan → outcome flowchart and a postmortem-lite section when the run had trouble; GitHub-renderable markdown                            |
+| `one-pager.md`       | —           | the single LLM-authored slot (below); hand-written by the run-driver session, validated by `--validate`, folded into `report.html` and the PR body                       |
+
+`pr-body.md` is gone: the changelog entry was a superset of it, and the PR
+body is now a derived view (see "The PR body" below), so there is no third
+prose artifact to keep in sync.
 
 `--run-dir` points the reader at a run directory other than
 `.orchestrator/runs/<run_id>/` — used for the two fixture runs under
@@ -32,13 +37,19 @@ of them call an LLM.
 can be exercised without a real orchestrator run in CI. `--out` defaults to
 `<repo>/<[docs] out_dir>/<run_id>/`.
 
+**`report` never writes outside `--out`.** `--format changelog` used to
+rewrite `docs/RUNLOG.md` as a side effect, which is how a preview run dirtied
+a group's worktree during verification. Since 0.16.0 the run log is updated
+only when `--update-runlog` is passed alongside `--format changelog`/`all`;
+`finish` never touches it (it commits nothing outside `docs/runs/<run_id>/`).
+
 ## The `[docs]` config block
 
 `.orchestrator/config.toml`:
 
 ```toml
 [docs]
-formats = ["facts", "html", "changelog", "pr-body"]
+formats = ["facts", "html", "changelog"]
 out_dir = "docs/runs"
 ```
 
@@ -58,10 +69,10 @@ relative to the repo root — keep them in sync if you change one.
 
 ## The one-pager contract
 
-Trial D is the **only** LLM-authored slot in the whole record: a single
-capped, structured narrative that the run-driver session writes and a pure
-validator checks — the validator never rewrites the file, so a violation is
-always the session's to fix, not silently patched away.
+The one-pager is the **only** LLM-authored slot in the whole record: a
+single capped, structured narrative that the run-driver session writes and a
+pure validator checks — the validator never rewrites the file, so a violation
+is always the session's to fix, not silently patched away.
 
 **Scaffold**: `smart-mcps-orchestrate report <run_id> --out <dir> --scaffold one-pager`
 writes a fixed skeleton to `<dir>/one-pager.md`:
@@ -79,11 +90,15 @@ writes a fixed skeleton to `<dir>/one-pager.md`:
 
 - one bullet per problem, each ending with the pointer that proves it (POINTER)
 
+## Run notes
+
+- one bullet per thing the driver did — a hand fix, an escalation's cause, what was recovered — each ending with the pointer it concerns (POINTER)
+
 ## Next steps
 
 - one bullet per next step, each ending with the pointer that motivates it (POINTER)
 
-<!-- valid pointers: <every group id, unit id, verification item id, R-id, changed file path, and the 8-char base/tip sha for this run> -->
+<!-- valid pointers: <every group id, unit id, verification item id, R-id, changed file path, 8-char base/tip sha, 12-char escalation id, and <gid>/<role>/gen<n> session label for this run> -->
 ```
 
 The trailing HTML comment is not decoration — it is the **entire** set of
@@ -91,23 +106,32 @@ strings a bullet's pointer may end in, computed from `RunFacts` (never
 re-derived from raw run JSON). The literal placeholder `POINTER` is never a
 member of that set, so an untouched scaffold always fails validation.
 
+**Run notes** is the section only the driver can write: what was fixed by
+hand, why each escalation happened, what was recovered. Its sources are the
+driver's own `.orchestrator/notes-<run_id>.md` (which `finish` copies into
+the run dir as `driver-notes.md`, never into `docs/`) and the escalation
+record in `facts.json` — the HTML renders that record as a computed
+"Escalations and answers" table, so the one-pager only has to explain, not
+list.
+
 **Rules** (`orchestrator/report/onepager.py` `validate`):
 
-- Exactly one H1, then `## TL;DR`, `## Problems found`, `## Next steps` in
-  that order.
-- TL;DR has exactly 3 bullets; Problems found and Next steps each have 1–5.
+- Exactly one H1, then `## TL;DR`, `## Problems found`, `## Run notes`,
+  `## Next steps` in that order.
+- TL;DR has exactly 3 bullets; the other three sections each have 1–5.
 - Every bullet ends `(<pointer>)` where `<pointer>` is a single token from the
   scaffold's valid-pointers comment — a group id (`g4`), a unit id (`u12`),
-  a verification item id (`g5-3`), an R-id (`R22`), a changed file path, or
-  the 8-char base/tip sha. A bullet may still *say* more in its body — e.g.
-  point at a specific evidence file like `groups/g4/report-g1-r1.json` in
+  a verification item id (`g5-3`), an R-id (`R22`), a changed file path,
+  the 8-char base/tip sha, the first 12 chars of an escalation id, or a
+  session label (`g3/coder/gen2`). A bullet may still *say* more in its body —
+  e.g. point at a specific evidence file like `groups/g4/report-g1-r1.json` in
   the prose — as long as it still ends in a valid single-token pointer.
-- Total body word count (pointers excluded) is capped at 300 words.
+- Total body word count (pointers excluded) is capped at 450 words.
 - No banned filler ("overall", "in conclusion", "in summary", "it is worth
   noting", "it should be noted", "needless to say", "as you can see").
 - No modal verb ("should", "would", "could", "might", "may", "must", "shall",
-  "will") inside Problems found — a modal there reads as a recommendation,
-  which belongs in Next steps instead.
+  "will") inside Problems found or Run notes — a modal there reads as a
+  recommendation, which belongs in Next steps instead.
 
 **Validate**: `smart-mcps-orchestrate report <run_id> --validate <path>` reads
 the file, checks it against the run's own `RunFacts`, prints every violated
@@ -120,30 +144,82 @@ worktree, not the main checkout, since that is where it commits from. Write
 it there directly with `--out .worktrees/<run_id>/integration/docs/runs/<run_id>`.
 If it is present but invalid, `finish` raises before it pushes; if it is
 simply absent, `finish` generates the other configured formats without it —
-the one-pager is optional, never a launch blocker.
+the one-pager is optional, never a launch blocker. Note the CLI auto-finishes
+the moment every group is terminal, so write the one-pager **before** the
+last group merges, or run `finish` again afterwards to refresh the PR body.
 
-## The six visualizations (trial B / `report.html`)
+### Writing the one-pager: extract, then abstract
 
-`orchestrator/report/diagrams.py` renders four mermaid sources and
-`orchestrator/report/html.py` composes all six into `report.html`, all
-computed, never LLM-drawn:
+The recipe the run-driver skill follows, so the narrative stays checkable:
 
-1. **Evidence matrix** — every verification item against its `pass`/`fail`/
-   `skipped` status and the coder's proof notes.
-2. **Requirement traceability** — every R-id declared in the plan's
-   frontmatter-linked brainstorm doc against the unit(s) that implement it.
-3. **Architecture delta** — a Python import-graph diff between the run's base
-   and tip commits.
-4. **How-to-use sequences** — depth-2 `codegraph callees` sequence diagrams
-   for new entry points; skipped with a note when `codegraph` or
-   `.codegraph/` is unavailable.
-5. **Run timeline** — a gantt chart from each group's session `started_at`/
-   `ended_at`.
-6. **Plan-to-outcome map** — a flowchart from plan unit to group to final
-   state.
+1. **Extract.** From two XML-delimited sources only — `<facts>` (the
+   changelog entry just previewed) and `<driver_notes>` (the notes file) —
+   list `{pointer, fact quote}` items: one line per thing worth saying, each
+   already carrying the pointer that proves it. Never feed raw transcripts.
+2. **Abstract.** Fill the scaffold from that list and nothing else. If no
+   pointer supports a sentence, leave it out.
+3. **Verify.** Run `--validate`; fix only the bullets it names, then run it
+   again. Do not rewrite bullets it did not name.
 
-Cost and change-footprint charts were considered and explicitly deferred
-(owner's call, not a technical blocker) — see the plan's Decisions section.
+## The PR body
+
+`finish` opens the PR with a body derived from the same artifacts, never a
+free narrative (`orchestrator/execution/finish.py` `_render_pr_body`):
+
+1. the one-pager's body — H1 and pointer comment dropped — when the
+   integration worktree has one;
+2. a `## Run record` block: the changelog entry's Outcome / Scope / Cost
+   lines plus a link to `docs/runs/<run_id>/report.html` on the branch;
+3. the postmortem-lite block when `facts.trouble`.
+
+Without a one-pager the body is items 2 and 3 only.
+
+## `report.html`
+
+One self-contained file, in decision order (status badge → summary → what
+went wrong → evidence → appendices):
+
+1. **Summary** — the one-pager rendered from markdown; each bullet's trailing
+   pointer links to the matching group card, unit line, verification item, or
+   requirement row.
+2. **Escalations and answers** — computed from `facts.json`: id, kind,
+   group/generation, prompt excerpt, action, the operator's answer text.
+   Rendered only when the run had any.
+3. **Evidence matrix** — every verification item against its status and the
+   coder's proof notes.
+4. **Requirement traceability** — every R-id against the unit(s) that
+   implement it.
+5. **Groups** — one card per group (anchor `#group-<gid>`): units, state,
+   sessions, planned vs touched files, required changes, escalations.
+6. **Group cost** — tokens (input + output + cache-creation) with cache reads
+   listed apart, so a warm session never inflates the headline.
+7. **Run timeline** — an HTML table generated in Python
+   (`diagrams.timeline_html`): one row per group, one bar per session
+   (coder/reviewer colour; dashed when the manifest never recorded an end and
+   the heartbeat supplied it), ⚠ escalation and ✕ retirement glyphs with
+   tooltips. No CDN needed.
+8. **Architecture delta** — a mermaid import-graph diff between base and tip.
+9. **Plan → outcome** — a mermaid flowchart from plan unit to group to state.
+
+The two mermaid diagrams render client-side (mermaid 11 from jsdelivr, with
+`useMaxWidth:false` so they are no longer squeezed into the column) inside a
+fixed-height pan/zoom shell ([svg-pan-zoom](https://github.com/bumbu/svg-pan-zoom)
+3.6.2): drag to pan, wheel to zoom, **Fit** to reset, **Expand** to open the
+diagram in a full-window dialog (Esc closes), **Source** to show the mermaid
+text. Offline, the raw mermaid source stays visible. The how-to-use sequence
+diagrams of 0.15.0 were dropped.
+
+## Elapsed time and tokens
+
+Two facts bugs from the 0.15.0 trial are fixed in `RunFacts`:
+
+- A session the manifest never closed (`ended_at: null`) used to read as
+  `Elapsed: 0m`. Now `ended_at` falls back to the next session's start, else
+  the group heartbeat's `updated_at`; `ended_at_source` says which. When
+  nothing is known it renders `n/a`, never `0m`.
+- `tokens` summed cache reads in, so a one-session group read as 26M tokens.
+  Now `tokens` is input + output + cache-creation and `cache_read_tokens` is a
+  separate field; every cost line reads `N tokens (+M cache-read)`.
 
 ## Producing the fixture trial set
 
@@ -151,15 +227,16 @@ Two finished runs are committed as fixtures so every format can be exercised
 without a live orchestrator run: `tests/fixtures/runs/r20260828-220035`
 (11 groups, 4 surprises, `facts.trouble == true`) and
 `tests/fixtures/runs/r20260829-162627` (3 groups, clean). Both have their
-complete trial sets committed under `docs/runs/<run_id>/` — `facts.json`,
-`report.html`, `CHANGELOG-entry.md`, `pr-body.md`, and a hand-written,
-validated `one-pager.md` — generated with:
+complete artifact sets committed under `docs/runs/<run_id>/` — `facts.json`,
+`report.html`, `CHANGELOG-entry.md`, and a hand-written, validated
+`one-pager.md` — generated with:
 
 ```sh
-uv run smart-mcps-orchestrate report <run_id> --run-dir tests/fixtures/runs/<run_id> --format all
 uv run smart-mcps-orchestrate report <run_id> --run-dir tests/fixtures/runs/<run_id> --scaffold one-pager
 # fill in docs/runs/<run_id>/one-pager.md by hand, then loop:
 uv run smart-mcps-orchestrate report <run_id> --run-dir tests/fixtures/runs/<run_id> --validate docs/runs/<run_id>/one-pager.md
+# last, so the HTML folds the finished one-pager in:
+uv run smart-mcps-orchestrate report <run_id> --run-dir tests/fixtures/runs/<run_id> --format all
 ```
 
 These fixture manifests' `transcript_path`s point at home-directory files

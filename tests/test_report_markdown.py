@@ -1,8 +1,8 @@
-"""``orchestrator/report/markdown.py`` — trial A (changelog entry + RUNLOG)
-and trial C (PR body), the synthetic-facts cases the two real fixture runs
-don't exercise directly: a stale-only failure, RUNLOG idempotency across two
-runs, and the postmortem gate. See
-``docs/plans/2026-09-02-001-feat-run-report-plan.md`` U3.
+"""``orchestrator/report/markdown.py`` — trial A (changelog entry + RUNLOG),
+the synthetic-facts cases the two real fixture runs don't exercise directly:
+a stale-only failure, RUNLOG idempotency across two runs, the postmortem
+gate, and the cost line's cache-read split (report v2 U3). The PR body is
+derived in ``execution/finish.py`` since report v2 — see ``test_finish.py``.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from orchestrator.report.facts import (
     VerificationFacts,
 )
 from orchestrator.report.markdown import (
+    changelog_header_lines,
     render_changelog_entry,
     render_fragments,
-    render_pr_body,
     update_runlog,
 )
 
@@ -30,11 +30,9 @@ RUN_ID = "r20260101-000000"
 
 def _diagrams() -> Diagrams:
     return Diagrams(
-        timeline="gantt\n    section g1\n",
+        timeline='<table class="timeline"></table>',
         plan_outcome="flowchart LR\n    a --> b\n",
         architecture_delta="%% no python files changed",
-        howto_sequences=[],
-        howto_note="no entry points",
     )
 
 
@@ -58,6 +56,7 @@ def _clean_facts() -> RunFacts:
                         started_at="2026-01-01T00:00:00+00:00",
                         ended_at="2026-01-01T01:00:00+00:00",
                         tokens={"input": 100, "output": 50},
+                        cache_read_tokens=5000,
                     )
                 ],
             )
@@ -115,7 +114,7 @@ def test_fragment_reports_state_summary_verification_tokens_and_elapsed():
     assert "state: completed" in fragment
     assert "Implemented the widget end to end with tests." in fragment
     assert "1/1 pass" in fragment
-    assert "150 total across 1 session(s)" in fragment
+    assert "150 tokens (+5000 cache-read) across 1 session(s)" in fragment
     assert "1h0m" in fragment
     assert "g1-1" in fragment and "pass" in fragment
 
@@ -171,10 +170,27 @@ def test_stale_only_failure_does_not_trigger_postmortem():
     assert "## Postmortem" not in entry
 
 
-def test_changelog_embeds_the_gantt_and_flowchart_diagrams_as_mermaid_fences():
+def test_changelog_embeds_the_flowchart_but_never_the_html_timeline():
     entry = render_changelog_entry(_clean_facts(), _diagrams())
-    assert "```mermaid\ngantt" in entry
     assert "```mermaid\nflowchart LR" in entry
+    assert "<table" not in entry
+    assert "Run timeline" not in entry
+
+
+def test_elapsed_is_na_never_zero_when_no_session_ended():
+    facts = _clean_facts()
+    facts.groups[0].sessions[0].ended_at = None
+    fragment = render_fragments(facts)["g1"]
+    assert "**Elapsed**: n/a" in fragment
+    assert "**Elapsed**: 0m" not in fragment
+
+
+def test_header_lines_split_cache_reads_out_of_the_cost():
+    lines = changelog_header_lines(_clean_facts())
+    assert len(lines) == 3
+    cost = next(line for line in lines if "**Cost**" in line)
+    assert "150 tokens (+5000 cache-read) across 1 session(s)" in cost
+    assert "model-a=150" in cost
 
 
 # --------------------------------------------------------------- RUNLOG.md
@@ -204,36 +220,3 @@ def test_runlog_never_touches_another_runs_marked_block(tmp_path: Path):
 
     assert other_entry in updated
     assert f"<!-- run:{RUN_ID} -->" in updated
-
-
-# ---------------------------------------------------------------- PR body
-
-
-def test_pr_body_has_the_five_headings_in_order():
-    body = render_pr_body(_clean_facts())
-    headings = ["## Motivation", "## Changes", "## Risks", "## Testing", "## Handoff"]
-    positions = [body.index(h) for h in headings]
-    assert positions == sorted(positions)
-
-
-def test_pr_body_omits_postmortem_when_no_trouble():
-    body = render_pr_body(_clean_facts())
-    assert "## Postmortem" not in body
-
-
-def test_pr_body_has_postmortem_when_troubled():
-    body = render_pr_body(_troubled_facts())
-    assert "## Postmortem" in body
-    assert "boom, it broke" in body
-
-
-def test_pr_body_stale_only_failure_omits_postmortem():
-    body = render_pr_body(_stale_only_facts())
-    assert "## Postmortem" not in body
-
-
-def test_pr_body_every_bullet_ends_with_a_closing_paren():
-    body = render_pr_body(_troubled_facts())
-    bullets = [line for line in body.splitlines() if line.startswith("- ")]
-    assert bullets
-    assert all(line.endswith(")") for line in bullets)

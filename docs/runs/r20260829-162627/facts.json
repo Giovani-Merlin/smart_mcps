@@ -122,28 +122,30 @@
           "generation": 1,
           "model": "sonnet",
           "started_at": "2026-08-29T16:27:57.038611+00:00",
-          "ended_at": null,
+          "ended_at": "2026-08-29T16:38:56.565964+00:00",
+          "ended_at_source": "next_session",
           "retirement_reason": null,
           "tokens": {
             "input": 90,
             "output": 44893,
-            "cache_read": 5141890,
             "cache_creation": 144035
-          }
+          },
+          "cache_read_tokens": 5141890
         },
         {
           "role": "reviewer",
           "generation": 1,
           "model": "sonnet",
           "started_at": "2026-08-29T16:38:56.565964+00:00",
-          "ended_at": null,
+          "ended_at": "2026-08-29T16:40:14.224+00:00",
+          "ended_at_source": "heartbeat",
           "retirement_reason": null,
           "tokens": {
             "input": 26,
             "output": 3124,
-            "cache_read": 965061,
             "cache_creation": 70817
-          }
+          },
+          "cache_read_tokens": 965061
         }
       ],
       "escalations": [],
@@ -189,14 +191,15 @@
           "generation": 1,
           "model": "sonnet",
           "started_at": "2026-08-29T16:40:16.792864+00:00",
-          "ended_at": null,
+          "ended_at": "2026-08-29T16:50:43.407+00:00",
+          "ended_at_source": "heartbeat",
           "retirement_reason": null,
           "tokens": {
             "input": 120,
             "output": 43645,
-            "cache_read": 7991832,
             "cache_creation": 152037
-          }
+          },
+          "cache_read_tokens": 7991832
         }
       ],
       "escalations": [],
@@ -247,28 +250,30 @@
           "generation": 1,
           "model": "sonnet",
           "started_at": "2026-08-29T16:50:46.235147+00:00",
-          "ended_at": null,
+          "ended_at": "2026-08-29T16:59:07.208359+00:00",
+          "ended_at_source": "next_session",
           "retirement_reason": null,
           "tokens": {
             "input": 100,
             "output": 24611,
-            "cache_read": 5445279,
             "cache_creation": 123362
-          }
+          },
+          "cache_read_tokens": 5445279
         },
         {
           "role": "reviewer",
           "generation": 1,
           "model": "sonnet",
           "started_at": "2026-08-29T16:59:07.208359+00:00",
-          "ended_at": null,
+          "ended_at": "2026-08-29T17:00:23.102+00:00",
+          "ended_at_source": "heartbeat",
           "retirement_reason": null,
           "tokens": {
             "input": 32,
             "output": 3095,
-            "cache_read": 1156566,
             "cache_creation": 67284
-          }
+          },
+          "cache_read_tokens": 1156566
         }
       ],
       "escalations": [],
@@ -513,13 +518,31 @@
     },
     {
       "at": "2026-08-29T16:38:56.565964+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:38:56.565964+00:00",
       "kind": "session_start",
+      "group_id": "g1",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-08-29T16:40:14.224+00:00",
+      "kind": "session_end",
       "group_id": "g1",
       "label": "reviewer"
     },
     {
       "at": "2026-08-29T16:40:16.792864+00:00",
       "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:50:43.407+00:00",
+      "kind": "session_end",
       "group_id": "g2",
       "label": "coder"
     },
@@ -531,7 +554,19 @@
     },
     {
       "at": "2026-08-29T16:59:07.208359+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:59:07.208359+00:00",
       "kind": "session_start",
+      "group_id": "g3",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-08-29T17:00:23.102+00:00",
+      "kind": "session_end",
       "group_id": "g3",
       "label": "reviewer"
     }

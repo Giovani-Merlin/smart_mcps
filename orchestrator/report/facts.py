@@ -61,9 +61,24 @@ class SessionFacts(BaseModel):
     generation: int = 1
     model: str | None = None
     started_at: str | None = None
+    #: The manifest's ``ended_at`` when recorded; otherwise inferred (see
+    #: ``ended_at_source``) so elapsed time never silently reads as zero.
     ended_at: str | None = None
+    #: ``manifest`` | ``next_session`` (a retired session ends when its
+    #: successor starts) | ``heartbeat`` (the group's last heartbeat
+    #: ``updated_at``) | ``unknown`` (``ended_at`` is None).
+    ended_at_source: str = "manifest"
     retirement_reason: str | None = None
+    #: Billable-shaped spend only: ``input``, ``output``, ``cache_creation``.
+    #: Cache reads are kept apart in ``cache_read_tokens`` — summing them in
+    #: made a one-session group read as 26M "tokens" (report v2 U3).
     tokens: dict[str, int] = Field(default_factory=dict)
+    cache_read_tokens: int = 0
+
+
+def session_tokens(session: "SessionFacts") -> int:
+    """Input + output + cache-creation tokens, never cache reads."""
+    return sum(session.tokens.values())
 
 
 class TestFacts(BaseModel):
@@ -417,6 +432,57 @@ def _attribute_verification(
     return by_task
 
 
+def _heartbeat_updated_at(paths: RunPaths, group_id: str) -> str | None:
+    """The group heartbeat's ``updated_at`` — the last moment the group was
+    provably alive, used as the end of a session the manifest never closed."""
+    import json
+
+    heartbeat = paths.group_dir(group_id) / "heartbeat.json"
+    if not heartbeat.is_file():
+        return None
+    try:
+        value = json.loads(heartbeat.read_text()).get("updated_at")
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _session_facts(paths: RunPaths, group_id: str, export_sessions: list) -> list[SessionFacts]:
+    """Sessions with the U3 elapsed fallback: a null ``ended_at`` becomes the
+    next session's ``started_at`` (a retired session ends when its successor
+    starts), else the group heartbeat's ``updated_at`` when that is after the
+    start, else stays ``None`` (rendered "n/a", never "0m")."""
+    heartbeat_at = _heartbeat_updated_at(paths, group_id)
+    facts: list[SessionFacts] = []
+    for index, s in enumerate(export_sessions):
+        ended_at = s.ended_at
+        source = "manifest"
+        if not ended_at:
+            successor = export_sessions[index + 1] if index + 1 < len(export_sessions) else None
+            if successor is not None and successor.started_at:
+                ended_at, source = successor.started_at, "next_session"
+            elif heartbeat_at and (not s.started_at or heartbeat_at > s.started_at):
+                ended_at, source = heartbeat_at, "heartbeat"
+            else:
+                ended_at, source = None, "unknown"
+        tokens = s.tokens.model_dump()
+        cache_read = int(tokens.pop("cache_read", 0) or 0)
+        facts.append(
+            SessionFacts(
+                role=s.role,
+                generation=s.generation,
+                model=s.model,
+                started_at=s.started_at,
+                ended_at=ended_at,
+                ended_at_source=source,
+                retirement_reason=s.retirement_reason,
+                tokens=tokens,
+                cache_read_tokens=cache_read,
+            )
+        )
+    return facts
+
+
 def _latest_report(paths: RunPaths, group_id: str) -> dict | None:
     import json
 
@@ -491,19 +557,8 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         if source_group is not None:
             verification_by_task.update(_attribute_verification(source_group, units_by_id))
 
-        sessions = [
-            SessionFacts(
-                role=s.role,
-                generation=s.generation,
-                model=s.model,
-                started_at=s.started_at,
-                ended_at=s.ended_at,
-                retirement_reason=s.retirement_reason,
-                tokens=s.tokens.model_dump(),
-            )
-            for s in export_group.sessions
-        ]
-        for s in export_group.sessions:
+        sessions = _session_facts(paths, export_group.id, list(export_group.sessions))
+        for s in sessions:
             if s.started_at:
                 timeline.append(
                     TimelineEvent(

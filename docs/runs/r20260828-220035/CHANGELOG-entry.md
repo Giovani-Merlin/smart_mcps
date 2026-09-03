@@ -2,7 +2,7 @@
 
 - **Outcome**: 11/11 groups completed, 13/13 units landed (`state.json`)
 - **Scope**: 35 files changed, +4424/-419 lines (`a2098a08..93dadc02`)
-- **Cost**: 116097732 tokens across 22 session(s) (claude-opus-5=590282, sonnet=115507450) (`manifest.json`)
+- **Cost**: 2665188 tokens (+113432544 cache-read) across 22 session(s) (claude-opus-5=467038, sonnet=2198150) (`manifest.json`)
 
 ### g1: deterministic-spec-assembly — state: completed
 - **Summary**: Implemented U1 (deterministic plan-section parser) and U2 (deterministic spec assembly replacing write_specs) with zero LLM calls in the grouping-time path.… (`g1`)
@@ -10,8 +10,8 @@
 - **Surprises**: none recorded (`g1`)
 - **Required changes**: none (`g1`)
 - **Escalations**: none (`g1`)
-- **Tokens**: 26150875 total across 2 session(s) (claude-opus-5=53662, sonnet=26097213) (`g1`)
-- **Elapsed**: 0m (`g1`)
+- **Tokens**: 391611 tokens (+25759264 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=349153) (`g1`)
+- **Elapsed**: 27m (`g1`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -29,8 +29,8 @@
 - **Surprises**: none recorded (`g2`)
 - **Required changes**: none (`g2`)
 - **Escalations**: none (`g2`)
-- **Tokens**: 7681434 total across 2 session(s) (claude-opus-5=53662, sonnet=7627772) (`g2`)
-- **Elapsed**: 0m (`g2`)
+- **Tokens**: 232103 tokens (+7449331 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=189645) (`g2`)
+- **Elapsed**: 2h31m (`g2`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -43,8 +43,8 @@
 - **Surprises**: none recorded (`g3`)
 - **Required changes**: none (`g3`)
 - **Escalations**: none (`g3`)
-- **Tokens**: 4027985 total across 2 session(s) (claude-opus-5=53662, sonnet=3974323) (`g3`)
-- **Elapsed**: 0m (`g3`)
+- **Tokens**: 136576 tokens (+3891409 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=94118) (`g3`)
+- **Elapsed**: 41m (`g3`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -59,8 +59,8 @@
 - **Surprise (other)**: A literal reading of the plan's 'candidate merge work lands inside a target band, preferred over one landing at the cap' is mathematically a no-op if implemented as a boolean in/out-of-band bucket ranked above merged_work: bucket-then-value sorting is always identical in outcome to sorting by value alone when the bucket is a threshold on that same value. Implemented as a distance-from-target-fill term instead (genuinely non-redundant, verified with a synthetic fixture). Worth knowing if U12 gets revisited or tuned in the eval harness — the boolean framing in the plan prose doesn't survive contact with the algorithm's per-round global-argmin selection. (`groups/g4/report-g1-r1.json`)
 - **Required changes**: none (`g4`)
 - **Escalations**: none (`g4`)
-- **Tokens**: 20733361 total across 2 session(s) (claude-opus-5=53662, sonnet=20679699) (`g4`)
-- **Elapsed**: 0m (`g4`)
+- **Tokens**: 436732 tokens (+20296629 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=394274) (`g4`)
+- **Elapsed**: 1h13m (`g4`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -73,8 +73,8 @@
 - **Surprises**: none recorded (`g5`)
 - **Required changes**: none (`g5`)
 - **Escalations**: none (`g5`)
-- **Tokens**: 1112309 total across 2 session(s) (claude-opus-5=53662, sonnet=1058647) (`g5`)
-- **Elapsed**: 0m (`g5`)
+- **Tokens**: 115083 tokens (+997226 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=72625) (`g5`)
+- **Elapsed**: 1h15m (`g5`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -89,8 +89,8 @@
 - **Surprise (other)**: The U2 assembler's existing upstream/downstream contract labels were derived only from graph.dependencies (depends_on) edges, so a pure implements/consumes tag relationship with no direct dependency edge between the two specific tasks (common: both depend on a shared ancestor rather than on each other) would have produced no contracts line at all. Added a separate tag-matching pass for this rather than modifying the existing DAG-based Upstream/Downstream sections, to avoid breaking g1's R2 test (header must change when the DAG changes). (`groups/g6/report-g1-r1.json`)
 - **Required changes**: none (`g6`)
 - **Escalations**: none (`g6`)
-- **Tokens**: 4502247 total across 2 session(s) (claude-opus-5=53662, sonnet=4448585) (`g6`)
-- **Elapsed**: 0m (`g6`)
+- **Tokens**: 185196 tokens (+4317051 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=142738) (`g6`)
+- **Elapsed**: 1h23m (`g6`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -105,8 +105,8 @@
 - **Surprise (interface_mismatch)**: The plan/spec's file list implied orchestrator/grouping/speccer.py could be deleted outright, but write_specs()/GroupSpec were still live dependencies of the mid-run rewrite speccer and (via GroupSpec) the deterministic assembler from U2/U3. Resolved by relocating the shared pieces (GroupSpec to model.py, the LLM-calling function inlined/renamed in cli.py) rather than deleting functionality still in use — worth knowing if another unit assumed speccer.py's removal was a pure deletion with no code to preserve. (`groups/g7/report-g1-r1.json`)
 - **Required changes**: none (`g7`)
 - **Escalations**: none (`g7`)
-- **Tokens**: 17238147 total across 2 session(s) (claude-opus-5=53662, sonnet=17184485) (`g7`)
-- **Elapsed**: 0m (`g7`)
+- **Tokens**: 252304 tokens (+16985843 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=209846) (`g7`)
+- **Elapsed**: 1h50m (`g7`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -121,8 +121,8 @@
 - **Surprises**: none recorded (`g8`)
 - **Required changes**: none (`g8`)
 - **Escalations**: none (`g8`)
-- **Tokens**: 3991401 total across 2 session(s) (claude-opus-5=53662, sonnet=3937739) (`g8`)
-- **Elapsed**: 0m (`g8`)
+- **Tokens**: 167388 tokens (+3824013 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=124930) (`g8`)
+- **Elapsed**: 1h57m (`g8`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -136,8 +136,8 @@
 - **Surprises**: none recorded (`g9`)
 - **Required changes**: none (`g9`)
 - **Escalations**: none (`g9`)
-- **Tokens**: 13574908 total across 2 session(s) (claude-opus-5=53662, sonnet=13521246) (`g9`)
-- **Elapsed**: 0m (`g9`)
+- **Tokens**: 301028 tokens (+13273880 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=258570) (`g9`)
+- **Elapsed**: 2h45m (`g9`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -151,8 +151,8 @@
 - **Surprises**: none recorded (`g10`)
 - **Required changes**: none (`g10`)
 - **Escalations**: none (`g10`)
-- **Tokens**: 2230397 total across 2 session(s) (claude-opus-5=53662, sonnet=2176735) (`g10`)
-- **Elapsed**: 0m (`g10`)
+- **Tokens**: 129162 tokens (+2101235 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=86704) (`g10`)
+- **Elapsed**: 2h0m (`g10`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -165,8 +165,8 @@
 - **Surprises**: none recorded (`g11`)
 - **Required changes**: none (`g11`)
 - **Escalations**: none (`g11`)
-- **Tokens**: 14854668 total across 2 session(s) (claude-opus-5=53662, sonnet=14801006) (`g11`)
-- **Elapsed**: 0m (`g11`)
+- **Tokens**: 318005 tokens (+14536663 cache-read) across 2 session(s) (claude-opus-5=42458, sonnet=275547) (`g11`)
+- **Elapsed**: 2h18m (`g11`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -174,59 +174,6 @@
 | g11-2 | pass | test_two_independent_reentrant_slices_reported_together asserts both slice names and both paths appear in one GrouperError ('2 problems found'). |
 
 ## Diagrams
-
-### Run timeline
-
-```mermaid
-gantt
-    title Run timeline — r20260828-220035
-    dateFormat YYYY-MM-DDTHH:mm:ss
-    axisFormat %H:%M
-    section g1- deterministic-spec-assembly
-    orchestrator gen1 :done, g1_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g1_coder_1_2, 2026-08-28T20:01:48, 2026-08-28T20:02:48
-    state- completed :milestone, g1_state, 2026-08-28T20:02:48, 0d
-    section g2- cycle-repair-withdrawal
-    orchestrator gen1 :done, g2_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g2_coder_1_2, 2026-08-28T22:19:53, 2026-08-28T22:20:53
-    state- completed :milestone, g2_state, 2026-08-28T22:20:53, 0d
-    section g3- advisory-report
-    orchestrator gen1 :done, g3_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g3_coder_1_2, 2026-08-28T20:29:04, 2026-08-28T20:30:04
-    state- completed :milestone, g3_state, 2026-08-28T20:30:04, 0d
-    section g4- merge-fill-penalty
-    orchestrator gen1 :done, g4_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g4_coder_1_2, 2026-08-28T20:43:43, 2026-08-28T20:44:43
-    state- completed :milestone, g4_state, 2026-08-28T20:44:43, 0d
-    section g5- planning-contract-and-advise-phase
-    orchestrator gen1 :done, g5_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g5_coder_1_2, 2026-08-28T21:15:09, 2026-08-28T21:16:09
-    state- completed :milestone, g5_state, 2026-08-28T21:16:09, 0d
-    section g6- layered-worker-context
-    orchestrator gen1 :done, g6_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g6_coder_1_2, 2026-08-28T21:17:37, 2026-08-28T21:18:37
-    state- completed :milestone, g6_state, 2026-08-28T21:18:37, 0d
-    section g7- speccer-removal
-    orchestrator gen1 :done, g7_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g7_coder_1_2, 2026-08-28T21:25:13, 2026-08-28T21:26:13
-    state- completed :milestone, g7_state, 2026-08-28T21:26:13, 0d
-    section g8- error-accumulation
-    orchestrator gen1 :done, g8_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g8_coder_1_2, 2026-08-28T21:52:17, 2026-08-28T21:53:17
-    state- completed :milestone, g8_state, 2026-08-28T21:53:17, 0d
-    section g9- price-mode
-    orchestrator gen1 :done, g9_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g9_coder_1_2, 2026-08-28T22:33:01, 2026-08-28T22:34:01
-    state- completed :milestone, g9_state, 2026-08-28T22:34:01, 0d
-    section g10- budget-naming
-    orchestrator gen1 :done, g10_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g10_coder_1_2, 2026-08-28T21:58:45, 2026-08-28T21:59:45
-    state- completed :milestone, g10_state, 2026-08-28T21:59:45, 0d
-    section g11- partition-diagnostics
-    orchestrator gen1 :done, g11_orchestrator_1_1, 2026-08-28T20:01:43, 2026-08-28T20:01:48
-    coder gen1 :done, g11_coder_1_2, 2026-08-28T22:02:39, 2026-08-28T22:03:39
-    state- completed :milestone, g11_state, 2026-08-28T22:03:39, 0d
-```
 
 ### Plan → outcome
 

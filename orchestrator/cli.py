@@ -465,8 +465,14 @@ def main(
     report_cmd.add_argument(
         "--format",
         default="facts",
-        choices=["facts", "html", "changelog", "pr-body", "all"],
+        choices=["facts", "html", "changelog", "all"],
         help="report format to render ('all' runs every registered format)",
+    )
+    report_cmd.add_argument(
+        "--update-runlog",
+        action="store_true",
+        help="with --format changelog/all: also rewrite this run's block in docs/RUNLOG.md "
+        "(off by default so a preview never dirties the checkout; `finish` updates it itself)",
     )
     report_cmd.add_argument(
         "--scaffold",
@@ -2936,47 +2942,37 @@ def _write_facts_format(facts, out_dir: Path, repo_root: Path) -> Path:
 
 
 def _write_html_format(facts, out_dir: Path, repo_root: Path) -> Path:
-    from orchestrator.execution.manifest import atomic_write_text
-    from orchestrator.report.diagrams import render_all
-    from orchestrator.report.html import render_html
+    # A one-pager already under --out (the driver wrote it there) is folded
+    # into the HTML's Summary; `finish` does the same on the integration branch.
+    from orchestrator.execution.finish import render_html_doc
 
-    diagrams = render_all(facts, repo_root)
-    destination = out_dir / "report.html"
-    atomic_write_text(destination, render_html(facts, diagrams))
-    return destination
+    return render_html_doc(facts, out_dir, repo_root)
 
 
 def _write_changelog_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.finish import render_changelog_doc
+
+    return render_changelog_doc(facts, out_dir, repo_root)
+
+
+def _update_runlog(facts, out_dir: Path, repo_root: Path) -> Path:
+    """Rewrite this run's block in ``docs/RUNLOG.md`` from the entry just
+    written under ``out_dir`` — opt-in via ``--update-runlog`` so a preview
+    `report` never dirties the checkout (report v2 U2)."""
     from orchestrator.execution.manifest import atomic_write_text
-    from orchestrator.report.diagrams import render_all
-    from orchestrator.report.markdown import render_changelog_entry, update_runlog
+    from orchestrator.report.markdown import update_runlog
 
-    diagrams = render_all(facts, repo_root)
-    entry = render_changelog_entry(facts, diagrams)
-    destination = out_dir / "CHANGELOG-entry.md"
-    atomic_write_text(destination, entry)
-
+    entry = (out_dir / "CHANGELOG-entry.md").read_text()
     runlog_path = repo_root / "docs" / "RUNLOG.md"
     atomic_write_text(runlog_path, update_runlog(runlog_path, facts.run_id, entry))
-    return destination
+    return runlog_path
 
 
-def _write_pr_body_format(facts, out_dir: Path, repo_root: Path) -> Path:
-    from orchestrator.execution.manifest import atomic_write_text
-    from orchestrator.report.markdown import render_pr_body
-
-    destination = out_dir / "pr-body.md"
-    atomic_write_text(destination, render_pr_body(facts))
-    return destination
-
-
-#: format name -> renderer; ``all`` runs every one of these (report U4). New
-#: formats (markdown, one-pager) register themselves here as their groups land.
+#: format name -> renderer; ``all`` runs every one of these (report U4).
 _REPORT_FORMATS = {
     "facts": _write_facts_format,
     "html": _write_html_format,
     "changelog": _write_changelog_format,
-    "pr-body": _write_pr_body_format,
 }
 
 
@@ -3024,6 +3020,8 @@ def _cmd_report(args: argparse.Namespace) -> int:
             return 2
         destination = renderer(facts, out_dir, repo_root)
         print(f"wrote {destination}")
+        if name == "changelog" and args.update_runlog:
+            print(f"updated {_update_runlog(facts, out_dir, repo_root)}")
     return 0
 
 

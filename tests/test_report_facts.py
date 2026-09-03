@@ -219,3 +219,30 @@ def test_group_with_no_junit_reports_tests_not_ran(tmp_path: Path) -> None:
     assert facts.groups[0].tests.ran is False
     assert facts.groups[0].tests.total == 0
     assert facts.groups[0].tests.junit_path is None
+
+
+# ------------------------------------------------- real fixture (report v2 U3)
+
+_REAL_FIXTURE_ID = "r20260828-220035"
+_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "runs" / _REAL_FIXTURE_ID
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_real_fixture_tokens_exclude_cache_reads_and_elapsed_falls_back_to_heartbeat() -> None:
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(_REPO_ROOT, _REAL_FIXTURE_ID, run_dir=_REAL_FIXTURE_DIR)
+    g1 = next(g for g in facts.groups if g.id == "g1")
+    session = next(s for s in g1.sessions if s.role == "coder")
+    # The manifest never closed the session: the heartbeat's updated_at is
+    # the fallback, so elapsed is a real duration, never 0m.
+    assert session.ended_at_source == "heartbeat"
+    assert session.ended_at is not None and session.ended_at > session.started_at
+    from datetime import datetime
+
+    elapsed = datetime.fromisoformat(session.ended_at) - datetime.fromisoformat(session.started_at)
+    assert elapsed.total_seconds() > 60
+    # Cache reads (25.7M for this session) are reported apart from tokens.
+    assert "cache_read" not in session.tokens
+    assert sum(session.tokens.values()) < 1_000_000
+    assert session.cache_read_tokens > 1_000_000

@@ -2,7 +2,7 @@
 
 - **Outcome**: 3/3 groups completed, 4/4 units landed (`state.json`)
 - **Scope**: 13 files changed, +1874/-10 lines (`5eca4f14..a76fec68`)
-- **Cost**: 21377899 tokens across 5 session(s) (sonnet=21377899) (`manifest.json`)
+- **Cost**: 677271 tokens (+20700628 cache-read) across 5 session(s) (sonnet=677271) (`manifest.json`)
 
 ### g1: plan-edit — verbatim plan surgery and the `plan-check` guard — state: completed
 - **Summary**: Implemented orchestrator/grouping/plan_edit.py as the single verbatim-surgery module: extract_task_map_entries/render_task_map_block for byte-exact task-map entry slicing, split_units for byte-exact unit-section slicing, validate_plan for… (`g1`)
@@ -11,8 +11,8 @@
 - **Surprises**: none recorded (`g1`)
 - **Required changes**: none (`g1`)
 - **Escalations**: none (`g1`)
-- **Tokens**: 6369936 total across 2 session(s) (sonnet=6369936) (`g1`)
-- **Elapsed**: unknown (`g1`)
+- **Tokens**: 262985 tokens (+6106951 cache-read) across 2 session(s) (sonnet=262985) (`g1`)
+- **Elapsed**: 12m (`g1`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -28,8 +28,8 @@
 - **Surprises**: none recorded (`g2`)
 - **Required changes**: none (`g2`)
 - **Escalations**: none (`g2`)
-- **Tokens**: 8187634 total across 1 session(s) (sonnet=8187634) (`g2`)
-- **Elapsed**: unknown (`g2`)
+- **Tokens**: 195802 tokens (+7991832 cache-read) across 1 session(s) (sonnet=195802) (`g2`)
+- **Elapsed**: 10m (`g2`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -48,8 +48,8 @@
 - **Surprises**: none recorded (`g3`)
 - **Required changes**: none (`g3`)
 - **Escalations**: none (`g3`)
-- **Tokens**: 6820329 total across 2 session(s) (sonnet=6820329) (`g3`)
-- **Elapsed**: unknown (`g3`)
+- **Tokens**: 218484 tokens (+6601845 cache-read) across 2 session(s) (sonnet=218484) (`g3`)
+- **Elapsed**: 9m (`g3`)
 
 | item | status | evidence |
 | --- | --- | --- |
@@ -67,26 +67,6 @@
 | g3-12 | pass | verified group/run/split/plan-check --help output matches every command/flag named in the three docs |
 
 ## Diagrams
-
-### Run timeline
-
-```mermaid
-gantt
-    title Run timeline — r20260829-162627
-    dateFormat YYYY-MM-DDTHH:mm:ss
-    axisFormat %H:%M
-    section g1- plan-edit — verbatim plan surgery and the `plan-check` guard
-    coder gen1 :done, g1_coder_1_1, 2026-08-29T16:27:57, 2026-08-29T16:28:57
-    reviewer gen1 :done, g1_reviewer_1_2, 2026-08-29T16:38:56, 2026-08-29T16:39:56
-    state- completed :milestone, g1_state, 2026-08-29T16:39:56, 0d
-    section g2- plan-split — `orchestrate split`; seam-addressable and overridable
-    coder gen1 :done, g2_coder_1_1, 2026-08-29T16:40:16, 2026-08-29T16:41:16
-    state- completed :milestone, g2_state, 2026-08-29T16:41:16, 0d
-    section g3- deepen-skill — `/orchestrator-deepen`; explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2
-    coder gen1 :done, g3_coder_1_1, 2026-08-29T16:50:46, 2026-08-29T16:51:46
-    reviewer gen1 :done, g3_reviewer_1_2, 2026-08-29T16:59:07, 2026-08-29T17:00:07
-    state- completed :milestone, g3_state, 2026-08-29T17:00:07, 0d
-```
 
 ### Plan → outcome
 

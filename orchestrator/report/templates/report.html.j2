@@ -15,6 +15,9 @@
     --pass: #2f9e44;
     --fail: #c92a2a;
     --unverified: #e8a400;
+    --coder: #4c6ef5;
+    --reviewer: #f59f00;
+    --link: #1c64c9;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -23,6 +26,7 @@
       --muted: #9aa1ac;
       --border: #33373f;
       --card-bg: #1c1f24;
+      --link: #6ea8ff;
     }
   }
   body {
@@ -34,7 +38,9 @@
     padding: 2rem 1.25rem 4rem;
     line-height: 1.5;
   }
+  a { color: var(--link); }
   h1, h2, h3 { line-height: 1.25; }
+  section { margin-top: 2rem; }
   table { border-collapse: collapse; width: 100%; margin: 0.75rem 0 1.5rem; }
   th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
   th { background: var(--card-bg); }
@@ -46,9 +52,48 @@
   .cell-fail { color: var(--fail); font-weight: 600; }
   .cell-unverified { color: var(--unverified); }
   .card { border: 1px solid var(--border); background: var(--card-bg); border-radius: 8px; padding: 1rem; margin: 0.75rem 0; }
-  pre.mermaid { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; }
-  .one-pager { border-left: 4px solid var(--pass); padding-left: 1rem; white-space: pre-wrap; }
+  .card:target, tr:target, details:target { outline: 2px solid var(--link); outline-offset: 2px; }
+  .one-pager { border-left: 4px solid var(--pass); padding-left: 1rem; }
+  .one-pager h1 { font-size: 1.15rem; margin: 0 0 0.5rem; }
+  .one-pager h2 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+  .one-pager ul { margin: 0.25rem 0; padding-left: 1.25rem; }
   details summary { cursor: pointer; }
+  .escalations td.prompt, .escalations td.answer { max-width: 28rem; white-space: pre-wrap; font-size: 0.9rem; }
+
+  /* Run timeline: one row per group, bars positioned in % of wall clock. */
+  .timeline caption { caption-side: top; text-align: left; color: var(--muted); font-size: 0.9rem; padding-bottom: 0.25rem; }
+  .timeline th[scope="row"] { white-space: nowrap; font-weight: 500; width: 1%; }
+  .timeline td.lane, .timeline th.lane { position: relative; padding: 0; min-width: 24rem; }
+  .timeline td.lane { height: 1.6rem; }
+  .timeline .axis { position: relative; height: 1.3rem; }
+  .timeline .tick { position: absolute; top: 0.1rem; transform: translateX(-50%); font-size: 0.7rem; font-weight: 400; color: var(--muted); }
+  .timeline .bar { position: absolute; top: 0.4rem; height: 0.8rem; border-radius: 3px; min-width: 3px; }
+  .timeline .bar.coder { background: var(--coder); }
+  .timeline .bar.reviewer { background: var(--reviewer); }
+  .timeline .bar.open { opacity: 0.5; border: 1px dashed var(--fg); }
+  .timeline .mark { position: absolute; top: 0.1rem; transform: translateX(-50%); font-size: 0.9rem; line-height: 1; cursor: help; }
+  .timeline .mark.escalation { color: var(--unverified); }
+  .timeline .mark.retired { color: var(--fail); }
+  .timeline td.state { white-space: nowrap; width: 1%; }
+  .legend span { display: inline-block; margin-right: 1rem; font-size: 0.85rem; }
+  .legend i { display: inline-block; width: 1.2rem; height: 0.7rem; border-radius: 3px; vertical-align: middle; margin-right: 0.3rem; }
+  .legend i.coder { background: var(--coder); }
+  .legend i.reviewer { background: var(--reviewer); }
+
+  /* Mermaid diagrams: pan/zoom shell, expand dialog, source toggle. */
+  .diagram { margin: 0.75rem 0 1.5rem; }
+  .diagram-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.35rem; }
+  .diagram-toolbar button, dialog button { font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); color: var(--fg); cursor: pointer; }
+  .diagram-shell { height: 55vh; overflow: hidden; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; }
+  .diagram-shell pre.mermaid { margin: 0; height: 100%; }
+  .diagram-shell pre.mermaid:not([data-processed]) { padding: 1rem; overflow: auto; white-space: pre; }
+  .diagram-shell svg { width: 100%; height: 100%; max-width: none !important; display: block; }
+  .diagram-source pre { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; }
+  dialog.diagram-dialog { width: 96vw; height: 94vh; max-width: none; max-height: none; padding: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  dialog.diagram-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog.diagram-dialog .dialog-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+  dialog.diagram-dialog .dialog-shell { height: calc(94vh - 3rem); overflow: hidden; }
+  dialog.diagram-dialog .dialog-shell svg { width: 100%; height: 100%; max-width: none !important; display: block; }
 </style>
 </head>
 <body>
@@ -62,27 +107,59 @@
     {% if facts.pr_url %}&middot; <a href="{{ facts.pr_url }}">pull request</a>{% endif %}
   </p>
   {% if facts.plan_objective %}<p class="muted">{{ facts.plan_objective }}</p>{% endif %}
+  <nav class="muted">
+    {% if one_pager_html %}<a href="#summary">Summary</a> &middot;{% endif %}
+    {% if escalations %}<a href="#escalations">Escalations</a> &middot;{% endif %}
+    <a href="#evidence">Evidence</a> &middot;
+    <a href="#requirements">Requirements</a> &middot;
+    <a href="#groups">Groups</a> &middot;
+    <a href="#cost">Cost</a> &middot;
+    <a href="#timeline">Timeline</a> &middot;
+    <a href="#architecture">Architecture delta</a> &middot;
+    <a href="#plan-outcome">Plan → outcome</a>
+  </nav>
 </header>
 
-{% if one_pager %}
-<section>
+{% if one_pager_html %}
+<section id="summary">
   <h2>Summary</h2>
-  <div class="one-pager">{{ one_pager }}</div>
+  <div class="one-pager">{{ one_pager_html }}</div>
 </section>
 {% endif %}
 
-<section>
+{% if escalations %}
+<section id="escalations">
+  <h2>Escalations and answers</h2>
+  <table class="escalations">
+    <thead><tr><th>Id</th><th>Kind</th><th>Group</th><th>Prompt</th><th>Action</th><th>Operator answer</th></tr></thead>
+    <tbody>
+    {% for e in escalations %}
+      <tr id="escalation-{{ e.id }}">
+        <td><code>{{ e.id }}</code>{% if e.created_at %}<br><span class="muted">{{ e.created_at }}</span>{% endif %}</td>
+        <td>{{ e.kind }}</td>
+        <td><a href="#group-{{ e.group_id }}">{{ e.group_id }}</a>{% if e.generation %} gen{{ e.generation }}{% endif %}</td>
+        <td class="prompt">{{ e.prompt }}</td>
+        <td>{{ e.action or '—' }}</td>
+        <td class="answer">{{ e.answer or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section id="evidence">
   <h2>Evidence matrix</h2>
   <table>
     <thead><tr><th>Group</th><th>State</th><th>Verification items</th></tr></thead>
     <tbody>
     {% for row in evidence_rows %}
       <tr>
-        <td>{{ row.group.id }}: {{ row.group.name }}</td>
+        <td><a href="#group-{{ row.group.id }}">{{ row.group.id }}</a>: {{ row.group.name }}</td>
         <td>{{ row.group.state }}</td>
         <td>
         {% for item in row.verification %}
-          <details class="cell-{{ item.status }}">
+          <details id="item-{{ item.item_id }}" class="cell-{{ item.status }}">
             <summary>{{ item.item_id }}: {{ item.status }}</summary>
             <p>{{ item.description }}</p>
             {% if item.evidence %}<p class="muted">{{ item.evidence }}</p>{% endif %}
@@ -97,15 +174,15 @@
   </table>
 </section>
 
-<section>
+<section id="requirements">
   <h2>Requirement traceability</h2>
   <table>
     <thead><tr><th>Requirement</th><th>Units</th><th>Landed</th></tr></thead>
     <tbody>
     {% for rid in facts.rids %}
-      <tr>
+      <tr id="rid-{{ rid.rid }}">
         <td>{{ rid.rid }}</td>
-        <td>{{ rid.units | join(', ') }}</td>
+        <td>{% for unit in rid.units %}<a href="#unit-{{ unit }}">{{ unit }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td class="{{ 'cell-pass' if rid.landed else 'cell-fail' }}">{{ 'landed' if rid.landed else 'not landed' }}</td>
       </tr>
     {% else %}
@@ -115,15 +192,18 @@
   </table>
 </section>
 
-<section>
+<section id="groups">
   <h2>Groups</h2>
   {% for group in facts.groups %}
-  <div class="card">
+  <div class="card" id="group-{{ group.id }}">
     <h3>{{ group.id }}: {{ group.name }}</h3>
     {% for unit in facts.units if unit.group_id == group.id %}
-    <p><strong>{{ unit.unit_id }}</strong>: {{ unit.summary or unit.goal }}</p>
+    <p id="unit-{{ unit.unit_id }}"><strong>{{ unit.unit_id }}</strong>: {{ unit.summary or unit.goal }}</p>
     {% endfor %}
     <p class="muted">state: {{ group.state }}{% if group.verdict_status %} &middot; verdict: {{ group.verdict_status }}{% endif %}{% if group.failure %} &middot; failure: {{ group.failure }}{% endif %}</p>
+    <p><strong>Sessions</strong>:
+      {% for session in group.sessions %}{{ group.id }}/{{ session.role }}/gen{{ session.generation }}{% if session.model %} ({{ session.model }}){% endif %}{% if session.retirement_reason %} — retired: {{ session.retirement_reason }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}none recorded{% endfor %}
+    </p>
     <p><strong>Planned files</strong>: {{ group.planned_files | join(', ') if group.planned_files else 'none declared' }}</p>
     <p><strong>Touched files</strong>: {{ group.touched_files | join(', ') if group.touched_files else 'none' }}</p>
     {% if group.required_changes %}
@@ -132,58 +212,156 @@
     {% if group.surprises %}
     <p><strong>Surprises</strong>: {{ group.surprises | length }}</p>
     {% endif %}
+    {% if group.escalations %}
+    <p><strong>Escalations</strong>: {% for e in group.escalations %}<a href="#escalation-{{ (e.id or '')[:12] }}">{{ (e.id or '')[:12] }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
   </div>
   {% endfor %}
 </section>
 
-<section>
-  <h2>Architecture delta</h2>
-  <pre class="mermaid">{{ diagrams.architecture_delta }}</pre>
-</section>
-
-<section>
-  <h2>How-to-use sequences</h2>
-  {% if diagrams.howto_sequences %}
-    {% for sequence in diagrams.howto_sequences %}
-    <pre class="mermaid">{{ sequence }}</pre>
-    {% endfor %}
-  {% else %}
-    <pre class="mermaid">{{ '%% ' + (diagrams.howto_note or 'no how-to-use sequences for this run') }}</pre>
-  {% endif %}
-</section>
-
-<section>
-  <h2>Run timeline</h2>
-  <pre class="mermaid">{{ diagrams.timeline }}</pre>
-</section>
-
-<section>
-  <h2>Plan → outcome</h2>
-  <pre class="mermaid">{{ diagrams.plan_outcome }}</pre>
-</section>
-
-<section>
+<section id="cost">
   <h2>Group cost</h2>
   <table>
-    <thead><tr><th>Group</th><th>Sessions</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Group</th><th>Sessions</th><th>Tokens</th><th>Cache-read tokens</th></tr></thead>
     <tbody>
     {% for group in facts.groups %}
       <tr>
-        <td>{{ group.id }}: {{ group.name }}</td>
+        <td><a href="#group-{{ group.id }}">{{ group.id }}</a>: {{ group.name }}</td>
         <td>{{ group.sessions | length }}</td>
         <td>{{ '{:,}'.format(group_tokens[group.id]) }}</td>
+        <td class="muted">{{ '{:,}'.format(group_cache_read[group.id]) }}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
+  <p class="muted">Tokens = input + output + cache-creation. Cache reads are billed separately and listed apart so a warm session does not inflate the headline.</p>
 </section>
 
+<section id="timeline">
+  <h2>Run timeline</h2>
+  <p class="legend"><span><i class="coder"></i>coder</span><span><i class="reviewer"></i>reviewer</span><span>&#x26A0; escalation</span><span>&#x2715; retirement</span><span class="muted">dashed = end not recorded</span></p>
+  {{ timeline_html }}
+</section>
+
+<section id="architecture">
+  <h2>Architecture delta</h2>
+  <figure class="diagram">
+    <div class="diagram-toolbar"><button type="button" data-action="expand">Expand</button><button type="button" data-action="fit">Fit</button><button type="button" data-action="source">Source</button></div>
+    <div class="diagram-shell"><pre class="mermaid">{{ diagrams.architecture_delta }}</pre></div>
+    <details class="diagram-source"><summary>mermaid source</summary><pre>{{ diagrams.architecture_delta }}</pre></details>
+  </figure>
+</section>
+
+<section id="plan-outcome">
+  <h2>Plan → outcome</h2>
+  <figure class="diagram">
+    <div class="diagram-toolbar"><button type="button" data-action="expand">Expand</button><button type="button" data-action="fit">Fit</button><button type="button" data-action="source">Source</button></div>
+    <div class="diagram-shell"><pre class="mermaid">{{ diagrams.plan_outcome }}</pre></div>
+    <details class="diagram-source"><summary>mermaid source</summary><pre>{{ diagrams.plan_outcome }}</pre></details>
+  </figure>
+</section>
+
+<dialog class="diagram-dialog" id="diagram-dialog">
+  <div class="dialog-toolbar"><span class="muted">drag to pan · wheel to zoom · Esc to close</span><span><button type="button" data-action="fit">Fit</button> <button type="button" data-action="close">Close</button></span></div>
+  <div class="dialog-shell"></div>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
+  const instances = new Map();
+
+  function attachPanZoom(svg) {
+    if (typeof svgPanZoom !== 'function') return null;
+    const existing = instances.get(svg);
+    if (existing) existing.destroy();
+    const viewBox = svg.viewBox && svg.viewBox.baseVal;
+    if (viewBox && viewBox.width && viewBox.height) {
+      // Safari needs explicit dimensions before svg-pan-zoom measures.
+      svg.setAttribute('width', String(viewBox.width));
+      svg.setAttribute('height', String(viewBox.height));
+    }
+    svg.style.maxWidth = 'none';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    const instance = svgPanZoom(svg, {
+      controlIconsEnabled: true,
+      fit: true,
+      center: true,
+      minZoom: 0.2,
+      maxZoom: 20,
+      zoomScaleSensitivity: 0.3,
+    });
+    instances.set(svg, instance);
+    return instance;
+  }
+
+  function refit(svg) {
+    const instance = instances.get(svg);
+    if (instance) { instance.resize(); instance.fit(); instance.center(); }
+  }
+
+  const dialog = document.getElementById('diagram-dialog');
+  const dialogShell = dialog.querySelector('.dialog-shell');
+  let expanded = null; // { svg, home }
+
+  function collapse() {
+    // Only once the dialog is really closed: a 'close' event delivered late
+    // (after a second Expand) must not pull the new svg out from under it.
+    if (!expanded || dialog.open) return;
+    const { svg, home } = expanded;
+    home.appendChild(svg);
+    expanded = null;
+    attachPanZoom(svg);
+  }
+
+  // Collapse on every way out — the Close button, Esc, and the 'close'
+  // event — synchronously where we can: a queued 'close' event is not always
+  // delivered promptly on a heavy page, and the svg must never stay stranded.
+  function closeDialog() { if (dialog.open) dialog.close(); collapse(); }
+  dialog.addEventListener('close', collapse);
+  dialog.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); closeDialog(); }
+  });
+  dialog.querySelector('[data-action="close"]').addEventListener('click', closeDialog);
+  dialog.querySelector('[data-action="fit"]').addEventListener('click', () => {
+    if (expanded) refit(expanded.svg);
+  });
+
+  for (const figure of document.querySelectorAll('figure.diagram')) {
+    const shell = figure.querySelector('.diagram-shell');
+    const source = figure.querySelector('details.diagram-source');
+    figure.querySelector('[data-action="source"]').addEventListener('click', () => {
+      source.open = !source.open;
+    });
+    figure.querySelector('[data-action="fit"]').addEventListener('click', () => {
+      const svg = shell.querySelector('svg');
+      if (svg) refit(svg);
+    });
+    figure.querySelector('[data-action="expand"]').addEventListener('click', () => {
+      const svg = shell.querySelector('svg');
+      if (!svg) { source.open = true; return; }
+      const home = svg.parentElement;
+      const instance = instances.get(svg);
+      if (instance) { instance.destroy(); instances.delete(svg); }
+      dialogShell.appendChild(svg);
+      expanded = { svg, home };
+      dialog.showModal();
+      attachPanZoom(svg);
+    });
+  }
+
   try {
     const mermaidModule = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
     const mermaid = mermaidModule.default;
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+      flowchart: { useMaxWidth: false },
+      sequence: { useMaxWidth: false },
+    });
     await mermaid.run({ querySelector: '.mermaid' });
+    for (const svg of document.querySelectorAll('.diagram-shell svg')) attachPanZoom(svg);
   } catch (err) {
     console.warn('mermaid failed to load from the CDN; showing raw diagram source', err);
   }

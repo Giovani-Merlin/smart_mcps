@@ -210,40 +210,62 @@ When the process exits (signal **(b)**):
    1. Check `.orchestrator/config.toml` `[docs] formats` — the report is only
       generated (and committed) when it names at least one format. If the
       repo wants a report and the block is empty or missing, add
-      `[docs]\nformats = ["facts", "html", "changelog", "pr-body"]` yourself
-      and commit it before launching the *next* run (`finish` reads it fresh,
-      so this run only gets a report if it was already set before launch).
-   2. Preview the read-only formats now, so you can write the one-pager from
-      real facts: `smart-mcps-orchestrate report $RUN --format all` — i.e.
-      `report --format all` against the run id. This
-      writes `facts.json`, `report.html`, `CHANGELOG-entry.md`, and
-      `pr-body.md` under `docs/runs/$RUN/` in this checkout — nothing here is
-      committed yet; `finish` re-renders the configured formats itself onto
-      the integration branch.
-   3. If `[docs] formats` includes a report and you want the one-pager
-      (trial D, the single LLM-authored slot) folded in, write it directly
-      into the integration worktree, since that is where `finish` looks for
-      it: `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`.
-      Fill in the three sections yourself from the facts you just previewed —
-      TL;DR (3 bullets), Problems found (1–5), Next steps (1–5), every bullet
-      ending in `(pointer)` drawn from the scaffold's own
-      `<!-- valid pointers: … -->` comment. Then loop:
-      `smart-mcps-orchestrate report $RUN --validate .worktrees/$RUN/integration/docs/runs/$RUN/one-pager.md`
-      until it exits 0 — a nonzero exit prints the exact rule that failed,
-      never guess a fix. A present but invalid one-pager makes `finish` abort
-      before it pushes, so do not skip the loop. Leaving `one-pager.md`
-      absent is fine — `finish` generates the other formats without it.
+      `[docs]\nformats = ["facts", "html", "changelog"]` yourself and commit
+      it before launching the *next* run (`finish` reads it fresh, so this
+      run only gets a report if it was already set before launch).
+   2. Preview the computed formats now, so you write the one-pager from real
+      facts: `smart-mcps-orchestrate report $RUN --format all --out /tmp/rr-$RUN`.
+      This writes `facts.json`, `report.html`, and `CHANGELOG-entry.md`
+      there and nothing else — it never touches `docs/RUNLOG.md` unless you
+      add `--update-runlog`, and never writes into a worktree. `finish`
+      re-renders the configured formats itself onto the integration branch.
+   3. Write the one-pager — it IS the PR body and IS the Summary at the top
+      of `report.html`, so it is the record the human approves from. Write it
+      directly into the integration worktree, since that is where `finish`
+      looks for it, and **before the last group merges**: the CLI
+      auto-finishes the moment every group is terminal, and a one-pager
+      written after that only lands if you run `finish` again to refresh the
+      PR body.
+      `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
+      Then fill it in with the extract-then-abstract recipe:
+      - **Extract.** Build one prompt from two XML-delimited sources and
+        nothing else — never a transcript:
+        ```
+        <facts>…contents of /tmp/rr-$RUN/CHANGELOG-entry.md…</facts>
+        <driver_notes>…contents of .orchestrator/notes-$RUN.md…</driver_notes>
+        ```
+        From them list `{pointer, fact quote}` items, one per thing worth
+        saying, each pointer taken from the scaffold's
+        `<!-- valid pointers: … -->` comment. If no pointer supports a
+        statement, leave it out.
+      - **Abstract.** Fill the four sections from that list only — TL;DR
+        (exactly 3 bullets), Problems found (1–5), **Run notes** (1–5: what
+        *you* did — hand fixes, the cause of each escalation, what was
+        recovered; cite escalation ids and `gid/role/genN` session labels),
+        Next steps (1–5). Every bullet ends in `(pointer)`. No modal verbs in
+        Problems found or Run notes; 450 words total.
+      - **Verify.** Loop
+        `smart-mcps-orchestrate report $RUN --validate .worktrees/$RUN/integration/docs/runs/$RUN/one-pager.md`
+        until it exits 0, fixing **only** the bullets it names — a nonzero
+        exit prints the exact rule that failed, never guess a fix. A present
+        but invalid one-pager makes `finish` abort before it pushes, so do
+        not skip the loop. Leaving `one-pager.md` absent is fine — `finish`
+        generates the other formats without it and the PR body falls back
+        to the run-record lines and the report link.
    4. Run `smart-mcps-orchestrate finish $RUN` only after the human has seen
-      the summary — it renders `[docs] formats` onto the integration branch,
-      commits `docs/runs/$RUN/`, pushes, and opens a PR whose body is now the
-      fixed-template `pr-body.md`, not free narrative.
-      `smart-mcps-orchestrate export $RUN` writes the ingest bundle if the
-      repo's workflow ingests runs.
+      the one-pager — it copies `.orchestrator/notes-$RUN.md` into the run
+      dir as `driver-notes.md`, renders `[docs] formats` onto the
+      integration branch (the one-pager folded into `report.html`), commits
+      `docs/runs/$RUN/`, pushes, and opens a PR whose body is the one-pager
+      plus the run-record lines. To also record the run in `docs/RUNLOG.md`,
+      run `report $RUN --format changelog --update-runlog` in the main
+      checkout and commit it there. `smart-mcps-orchestrate export $RUN`
+      writes the ingest bundle if the repo's workflow ingests runs.
 4. Keep `.orchestrator/notes-<run_id>.md` as your own triage notes as you go
    (every escalation and how it was resolved, anything you fixed on the
-   integration branch) — it is scratch for *you*, not the human-facing
-   record. The report replaces the old "write the summary into the notes
-   file" step; do not duplicate the report's content there.
+   integration branch) — it is scratch for *you* and the raw material for the
+   one-pager's Run notes, not the human-facing record. Do not duplicate the
+   report's computed content there.
 5. Surface anything the plan/deepen skills should learn — a verification item
    that turned out self-referential, a data path the plan named that
    `[workspace]` did not cover, a unit the grouper should have split — as a
