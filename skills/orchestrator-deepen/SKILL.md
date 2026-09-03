@@ -106,6 +106,25 @@ Queries fire for the `[external]` and `[research]` groups the human approves
 — untagged groups fire none even when research is enabled. If no group earns
 any tag, skip the question entirely and note why.
 
+**Once research is approved, recommend *where* the queries run and ask.**
+Count the queries the approved groups earn (at most two per group) and size
+the brief each needs (signatures + prose from the plan and codegraph):
+
+- **Direct** — you run `smart-mcps-perplexity` yourself from this session:
+  the right call when the approved set is small (roughly ≤2 queries total)
+  and the briefs are context you already hold — a cold subagent would
+  re-derive it for no gain. This is also the natural choice in `inline`
+  exploration mode, where the explorer *is* this session.
+- **Subagent** — the queries run inside the explorer (batched mode) or a
+  `perplexity-explorer` agent: the right call when there are several queries
+  or each brief needs fresh codegraph pulls large enough to bloat this
+  session's context. Every answer still comes back as a self-contained
+  report, so Phase 3 is unchanged.
+
+State the recommendation with the count (*"3 queries, ~2 briefs of new
+codegraph context → subagent"*) and confirm with the human in the same
+`AskUserQuestion` round when possible; never spawn for a single query.
+
 Each explorer (or the inline pass) uses the template in
 [`explorer-prompt.md`](./explorer-prompt.md), filling in the plan path, the
 batch's group ids, and those groups' member unit sections verbatim — one
@@ -239,11 +258,14 @@ preflight), not a bare `smart-mcps-orchestrate run`.
   the total fits the inline budget, batched by the advisory's packing
   otherwise; one-explorer-per-group is never the default, only a confirmed
   choice.
-- **Perplexity research is opt-in, defaults to No, and lives inside the
-  explorer** — never a separate per-group researcher; it fires only for
-  groups the human approved from the tagged `[external]`/`[research]`/`[hard]`
-  listing, at most two queries per group, and its candidates still must pass
-  the divergence test like any other.
+- **Perplexity research is opt-in, defaults to No, and runs where the
+  context already is** — direct from this session for a handful of queries,
+  inside the explorer / a `perplexity-explorer` subagent when the query count
+  or brief data warrants it (recommended, then confirmed with the human);
+  never a separate per-group researcher. It fires only for groups the human
+  approved from the tagged `[external]`/`[research]`/`[hard]` listing, at
+  most two queries per group, and its candidates still must pass the
+  divergence test like any other.
 - No implementation code. Every new bullet and every refined prose line is a
   direct write of an explicit human answer — prose no answer touched is
   never regenerated.
