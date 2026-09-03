@@ -2,10 +2,16 @@
 a pure validator that checks the result without ever rewriting it (plan U5).
 
 The one-pager is the single LLM-authored slot in the whole report: capped at
-450 words, four fixed sections, and every bullet must end in a pointer drawn
-from ``RunFacts`` (a group id, a unit id, a verification item id, an R-id, a
-changed file path, a short sha, an escalation id, or a session label) so a
-claim can always be checked against the record it names.
+900 words, four fixed sections, and every top-level bullet must end in a
+pointer drawn from ``RunFacts`` (a group id, a unit id, a verification item
+id, an R-id, a changed file path, a short sha, an escalation id, or a session
+label) so a claim can always be checked against the record it names.
+
+Since report v2.1 a section may open with one plain paragraph of context
+before its bullets, and a bullet may carry indented continuation lines
+(``  `` prefix — plain text or ``  - `` sub-bullets). Neither needs a
+pointer; both count toward the word cap. The pointer rule is for top-level
+bullets only: a line that starts ``- `` in column 0.
 
 Since report v2 the one-pager is also folded into ``report.html`` (Summary)
 and is the body of the PR ``finish`` opens.
@@ -28,8 +34,8 @@ _SECTIONS = ("TL;DR", "Problems found", "Run notes", "Next steps")
 _NO_MODAL_SECTIONS = ("Problems found", "Run notes")
 _TLDR_BULLETS = 3
 _MIN_BULLETS = 1
-_MAX_BULLETS = 5
-_MAX_WORDS = 450
+_MAX_BULLETS = 8
+_MAX_WORDS = 900
 
 #: Vague summary filler that carries no evidence — the kind of phrase that
 #: lets a one-pager sound complete without saying anything checkable.
@@ -116,22 +122,32 @@ def scaffold(facts: RunFacts) -> str:
         "",
         "## TL;DR",
         "",
+        "one short paragraph of context, optional",
+        "",
         "- one bullet naming the outcome (POINTER)",
         "- one bullet naming the cost or risk (POINTER)",
         "- one bullet naming what changed (POINTER)",
         "",
         "## Problems found",
         "",
+        "one short paragraph of context, optional",
+        "",
         "- one bullet per problem, each ending with the pointer that proves it (POINTER)",
+        "  optional indented continuation lines: more detail, no pointer needed",
         "",
         "## Run notes",
+        "",
+        "one short paragraph of context, optional",
         "",
         "- one bullet per thing the driver did — a hand fix, an escalation's cause, "
         "what was recovered — each ending with the pointer it concerns (POINTER)",
         "",
         "## Next steps",
         "",
-        "- one bullet per next step, each ending with the pointer that motivates it (POINTER)",
+        "one short paragraph of context, optional",
+        "",
+        '- <action>: <why it matters and what "done" looks like> (POINTER)',
+        "  - how: optional sub-bullet with the concrete first move",
         "",
         f"<!-- valid pointers: {pointers} -->",
         "",
@@ -167,7 +183,29 @@ def _section_text(text: str, name: str) -> str:
 
 
 def _bullets(section_text: str) -> list[str]:
-    return [line.strip() for line in section_text.splitlines() if line.strip().startswith("- ")]
+    """Top-level bullets only — a raw line starting ``- `` in column 0. An
+    indented ``  - `` sub-bullet is a continuation of the bullet above it and
+    is neither counted nor asked for a pointer."""
+    return [line.rstrip() for line in section_text.splitlines() if line.startswith("- ")]
+
+
+def _section_words(section_text: str) -> int:
+    """Words in every non-heading, non-comment line of a section: a top-level
+    bullet contributes its body (pointer excluded); a paragraph or indented
+    continuation contributes all its words (a leading ``- `` marker dropped)."""
+    total = 0
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("<!--") or stripped.startswith("#"):
+            continue
+        if line.startswith("- "):
+            body, _pointer = _bullet_body_and_pointer(stripped)
+            total += len(body.split())
+            continue
+        if stripped.startswith("- "):
+            stripped = stripped[2:]
+        total += len(stripped.split())
+    return total
 
 
 def _bullet_body_and_pointer(bullet: str) -> tuple[str, str | None]:
@@ -211,16 +249,17 @@ def validate(text: str, facts: RunFacts) -> list[str]:
             )
 
     valid_pointers = _valid_pointers(facts)
-    word_total = 0
     for name in _SECTIONS:
         for bullet in section_bullets[name]:
-            body, pointer = _bullet_body_and_pointer(bullet)
-            word_total += len(body.split())
+            _body, pointer = _bullet_body_and_pointer(bullet)
             if pointer is None:
                 violations.append(f"bullet missing a trailing (<pointer>): {bullet}")
             elif pointer not in valid_pointers:
                 violations.append(f"unknown pointer {pointer!r} in bullet: {bullet}")
 
+    word_total = sum(
+        _section_words(_section_text(strip_pointer_comment(text), name)) for name in _SECTIONS
+    )
     if word_total > _MAX_WORDS:
         violations.append(f"body exceeds {_MAX_WORDS} words (excluding pointers): {word_total}")
 

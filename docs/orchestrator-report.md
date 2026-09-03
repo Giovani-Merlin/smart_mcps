@@ -23,7 +23,7 @@ of them call an LLM.
 | artifact             | format      | what it is                                                                                                                                                             |
 | -------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `facts.json`         | `facts`     | the raw `RunFacts` model, for anything that wants to consume the run mechanically                                                                                      |
-| `report.html`        | `html`      | **the complete record**: the one-pager (when present) as its Summary, the escalation log, evidence matrix, requirement traceability, group cards, cost, timeline, diagrams |
+| `report.html`        | `html`      | **the complete record**: the one-pager (when present) as its Summary, the escalation log, the shared worker context, evidence matrix, requirement traceability, group cards (spec, plan sections, diff), cost, timeline, diagrams |
 | `CHANGELOG-entry.md` | `changelog` | one fragment per group plus the plan → outcome flowchart and a postmortem-lite section when the run had trouble; GitHub-renderable markdown                            |
 | `one-pager.md`       | —           | the single LLM-authored slot (below); hand-written by the run-driver session, validated by `--validate`, folded into `report.html` and the PR body                       |
 
@@ -82,21 +82,31 @@ writes a fixed skeleton to `<dir>/one-pager.md`:
 
 ## TL;DR
 
+one short paragraph of context, optional
+
 - one bullet naming the outcome (POINTER)
 - one bullet naming the cost or risk (POINTER)
 - one bullet naming what changed (POINTER)
 
 ## Problems found
 
+one short paragraph of context, optional
+
 - one bullet per problem, each ending with the pointer that proves it (POINTER)
+  optional indented continuation lines: more detail, no pointer needed
 
 ## Run notes
+
+one short paragraph of context, optional
 
 - one bullet per thing the driver did — a hand fix, an escalation's cause, what was recovered — each ending with the pointer it concerns (POINTER)
 
 ## Next steps
 
-- one bullet per next step, each ending with the pointer that motivates it (POINTER)
+one short paragraph of context, optional
+
+- <action>: <why it matters and what "done" looks like> (POINTER)
+  - how: optional sub-bullet with the concrete first move
 
 <!-- valid pointers: <every group id, unit id, verification item id, R-id, changed file path, 8-char base/tip sha, 12-char escalation id, and <gid>/<role>/gen<n> session label for this run> -->
 ```
@@ -118,15 +128,28 @@ list.
 
 - Exactly one H1, then `## TL;DR`, `## Problems found`, `## Run notes`,
   `## Next steps` in that order.
-- TL;DR has exactly 3 bullets; the other three sections each have 1–5.
-- Every bullet ends `(<pointer>)` where `<pointer>` is a single token from the
-  scaffold's valid-pointers comment — a group id (`g4`), a unit id (`u12`),
-  a verification item id (`g5-3`), an R-id (`R22`), a changed file path,
-  the 8-char base/tip sha, the first 12 chars of an escalation id, or a
-  session label (`g3/coder/gen2`). A bullet may still *say* more in its body —
-  e.g. point at a specific evidence file like `groups/g4/report-g1-r1.json` in
-  the prose — as long as it still ends in a valid single-token pointer.
-- Total body word count (pointers excluded) is capped at 450 words.
+- TL;DR has exactly 3 top-level bullets; the other three sections each have
+  1–8.
+- A section may open with **one plain paragraph** of context before its
+  bullets. It needs no pointer.
+- Every **top-level** bullet (a line starting `- ` in column 0) ends
+  `(<pointer>)` where `<pointer>` is a single token from the scaffold's
+  valid-pointers comment — a group id (`g4`), a unit id (`u12`), a
+  verification item id (`g5-3`), an R-id (`R22`), a changed file path, the
+  8-char base/tip sha, the first 12 chars of an escalation id, or a session
+  label (`g3/coder/gen2`). A bullet may still *say* more in its body — e.g.
+  point at a specific evidence file like `groups/g4/report-g1-r1.json` in the
+  prose — as long as it still ends in a valid single-token pointer.
+- A bullet may be followed by **indented continuation lines** (two-space
+  prefix): plain text, or `  - ` sub-bullets. They need no pointer and are not
+  counted as bullets. The HTML Summary links only top-level pointers, so a
+  sub-bullet's parentheses are left as written.
+- Total word count over every non-heading, non-comment line of the four
+  sections — paragraphs and continuations included, pointers excluded — is
+  capped at 900 words.
+- **Next steps** convention (skill guidance, not a validator rule):
+  `- <action>: <why it matters and what "done" looks like> (pointer)`,
+  optionally followed by a `  - how:` sub-bullet with the concrete first move.
 - No banned filler ("overall", "in conclusion", "in summary", "it is worth
   noting", "it should be noted", "needless to say", "as you can see").
 - No modal verb ("should", "would", "could", "might", "may", "must", "shall",
@@ -179,27 +202,55 @@ Without a one-pager the body is items 2 and 3 only.
 One self-contained file, in decision order (status badge → summary → what
 went wrong → evidence → appendices):
 
-1. **Summary** — the one-pager rendered from markdown; each bullet's trailing
-   pointer links to the matching group card, unit line, verification item, or
-   requirement row.
+1. **Summary** — the one-pager rendered from markdown; each top-level
+   bullet's trailing pointer links to the matching group card, unit line,
+   verification item, or requirement row. Paragraphs and sub-bullets render
+   as written.
 2. **Escalations and answers** — computed from `facts.json`: id, kind,
    group/generation, prompt excerpt, action, the operator's answer text.
    Rendered only when the run had any.
-3. **Evidence matrix** — every verification item against its status and the
-   coder's proof notes.
-4. **Requirement traceability** — every R-id against the unit(s) that
+3. **Shared context** — the run's `base-context.md`, the prefix every coder
+   and reviewer received before its own spec, shown as snapshotted. The
+   intro lists the file's `##` sections and states how much of the plan the
+   workers saw, **read off the file itself** (`html.base_context_plan_mode`)
+   rather than assumed: a `## Plan digest (…)` heading means the digest —
+   plan preamble, one `Summary:` line per unit, implements/consumes registry
+   — so no worker saw another unit's full section (`grouping/base_context.py`,
+   runs from 2026-08-28 U3 on); a `## Plan document (…)` heading means the
+   full plan, every unit's section included (earlier runs, e.g. the
+   r20260828-220035 fixture, which is the run that introduced the digest).
+   Rendered from markdown (GFM tables enabled) inside one collapsed
+   `<details>`. Present when `facts.base_context_path` is set and the
+   renderer was given the run dir; `facts.json` carries only the path.
+4. **Evidence matrix** — every verification item against its status and the
+   coder's proof notes. Items start **expanded** (each `<details>` is `open`)
+   so the matrix reads without clicking; a reader can still fold one.
+5. **Requirement traceability** — every R-id against the unit(s) that
    implement it.
-5. **Groups** — one card per group (anchor `#group-<gid>`): units, state,
-   sessions, planned vs touched files, required changes, escalations.
-6. **Group cost** — tokens (input + output + cache-creation) with cache reads
+6. **Groups** — one card per group (anchor `#group-<gid>`): units (each with
+   a collapsed **Plan section U<n>** holding the unit's plan text verbatim),
+   a collapsed **Spec given to this group** (`#spec-<gid>`; the
+   speccer-rewritten spec when one exists, via `manifest.effective_group`),
+   a link back to the shared context, state, sessions, planned vs touched
+   files, required changes, escalations, and a collapsed **Diff — N files,
+   +A/−D (merge <sha8>)** holding the group's full diff **side by side**, VS
+   Code style (`git diff <merge>^1 <merge>` parsed by `gitview.split_diff`:
+   old on the left, new on the right, removed/added runs paired within a
+   hunk; truncated at 400 KB on a line boundary with a note). The diff is computed at render time from
+   `GroupFacts.merge_sha` and is never stored in `facts.json`; a group with no
+   merge commit says so.
+7. **Group cost** — tokens (input + output + cache-creation) with cache reads
    listed apart, so a warm session never inflates the headline.
-7. **Run timeline** — an HTML table generated in Python
+8. **Run timeline** — an HTML table generated in Python
    (`diagrams.timeline_html`): one row per group, one bar per session
    (coder/reviewer colour; dashed when the manifest never recorded an end and
    the heartbeat supplied it), ⚠ escalation and ✕ retirement glyphs with
    tooltips. No CDN needed.
-8. **Architecture delta** — a mermaid import-graph diff between base and tip.
-9. **Plan → outcome** — a mermaid flowchart from plan unit to group to state.
+9. **Architecture delta** — a mermaid import-graph diff between base and tip.
+10. **Plan → outcome** — a mermaid flowchart from plan unit to group to state.
+
+Both mermaid diagrams set an explicit dark label colour on every `classDef`,
+so node text stays legible on the pastel fills under mermaid's `dark` theme.
 
 The two mermaid diagrams render client-side (mermaid 11 from jsdelivr, with
 `useMaxWidth:false` so they are no longer squeezed into the column) inside a

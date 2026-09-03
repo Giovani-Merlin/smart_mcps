@@ -246,3 +246,23 @@ def test_real_fixture_tokens_exclude_cache_reads_and_elapsed_falls_back_to_heart
     assert "cache_read" not in session.tokens
     assert sum(session.tokens.values()) < 1_000_000
     assert session.cache_read_tokens > 1_000_000
+
+
+def test_real_fixture_carries_merge_sha_spec_section_text_and_base_context() -> None:
+    import subprocess
+
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(_REPO_ROOT, _REAL_FIXTURE_ID, run_dir=_REAL_FIXTURE_DIR)
+    g1 = next(g for g in facts.groups if g.id == "g1")
+    assert g1.merge_sha is not None and len(g1.merge_sha) == 40
+    subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "cat-file", "-e", f"{g1.merge_sha}^{{commit}}"], check=True
+    )
+    # Every merged group has its own merge commit, all distinct.
+    shas = [g.merge_sha for g in facts.groups]
+    assert all(shas) and len(set(shas)) == len(shas)
+    assert g1.spec.startswith("Implement U1")
+    u1 = next(u for u in facts.units if u.unit_id == "u1")
+    assert u1.section_text.startswith("### U1.")
+    assert facts.base_context_path == "base-context.md"

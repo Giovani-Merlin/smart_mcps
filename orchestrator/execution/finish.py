@@ -247,16 +247,29 @@ def render_facts_doc(facts, out_dir: Path, repo_root: Path) -> Path:
     return destination
 
 
-def render_html_doc(facts, out_dir: Path, repo_root: Path) -> Path:
+def render_html_doc(facts, out_dir: Path, repo_root: Path, run_dir: Path | None = None) -> Path:
     """``report.html`` with the one-pager under ``out_dir`` folded into its
-    Summary when present (report v2 U2). Shared with the CLI's ``report``."""
+    Summary when present (report v2 U2), each merged group's diff (git runs
+    in ``repo_root``), and the shared ``base-context.md`` read from
+    ``run_dir`` — the default ``.orchestrator/runs/<run_id>`` when not given
+    (report v2.1). Shared with the CLI's ``report``."""
     from orchestrator.execution.manifest import atomic_write_text
     from orchestrator.report.diagrams import render_all
     from orchestrator.report.html import render_html
 
     diagrams = render_all(facts, repo_root)
     destination = out_dir / "report.html"
-    atomic_write_text(destination, render_html(facts, diagrams, one_pager=_one_pager_text(out_dir)))
+    run_dir = RunPaths(repo_root, facts.run_id, run_dir=run_dir).run_dir
+    atomic_write_text(
+        destination,
+        render_html(
+            facts,
+            diagrams,
+            one_pager=_one_pager_text(out_dir),
+            repo_root=repo_root,
+            run_dir=run_dir,
+        ),
+    )
     return destination
 
 
@@ -326,7 +339,10 @@ def _generate_and_commit_docs(
             raise FinishError(
                 f"unknown [docs] format {name!r}; expected one of {sorted(_DOCS_FORMATS)}"
             )
-        renderer(facts, out_dir, repo_root)
+        if renderer is render_html_doc:
+            renderer(facts, out_dir, repo_root, run_dir=paths.run_dir)
+        else:
+            renderer(facts, out_dir, repo_root)
 
     rel_out_dir = out_dir.relative_to(integration_wt).as_posix()
     _git_ok(integration_wt, "add", rel_out_dir)

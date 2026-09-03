@@ -239,11 +239,18 @@ When the process exits (signal **(b)**):
         `<!-- valid pointers: … -->` comment. If no pointer supports a
         statement, leave it out.
       - **Abstract.** Fill the four sections from that list only — TL;DR
-        (exactly 3 bullets), Problems found (1–5), **Run notes** (1–5: what
+        (exactly 3 bullets), Problems found (1–8), **Run notes** (1–8: what
         *you* did — hand fixes, the cause of each escalation, what was
         recovered; cite escalation ids and `gid/role/genN` session labels),
-        Next steps (1–5). Every bullet ends in `(pointer)`. No modal verbs in
-        Problems found or Run notes; 450 words total.
+        Next steps (1–8). Each section may open with one plain paragraph of
+        context (no pointer). Every top-level bullet ends in `(pointer)`; a
+        bullet may carry indented continuation lines or `  - ` sub-bullets,
+        which need no pointer. Write Next steps as
+        `- <action>: <why it matters and what "done" looks like> (pointer)`,
+        optionally with a `  - how:` sub-bullet naming the first concrete
+        move — a reader acts on these, so give each the context to act. No
+        modal verbs in Problems found or Run notes; 900 words total over
+        paragraphs, bullets and continuations.
       - **Verify.** Loop
         `smart-mcps-orchestrate report $RUN --validate .worktrees/$RUN/integration/docs/runs/$RUN/one-pager.md`
         until it exits 0, fixing **only** the bullets it names — a nonzero

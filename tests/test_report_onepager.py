@@ -137,7 +137,7 @@ def test_missing_run_notes_section_fails_naming_both_rules() -> None:
     )
     violations = validate(text, make_facts())
     assert any("headings must be exactly one H1" in v for v in violations)
-    assert "Run notes must have 1-5 bullets, found 0" in violations
+    assert "Run notes must have 1-8 bullets, found 0" in violations
 
 
 def test_run_notes_bullet_without_pointer_is_named() -> None:
@@ -200,20 +200,66 @@ def test_tldr_wrong_bullet_count_trips_only_that_rule() -> None:
 
 
 def test_section_too_many_bullets_trips_only_that_rule() -> None:
-    extra = "".join(f"- extra problem number {n} (g1)\n" for n in range(2, 7))
+    extra = "".join(f"- extra problem number {n} (g1)\n" for n in range(2, 10))
     text = _replace_once(
         _CLEAN_TEXT,
         "- No problems were recorded for this run (g1)\n",
         "- No problems were recorded for this run (g1)\n" + extra,
     )
     violations = validate(text, make_facts())
-    assert violations == ["Problems found must have 1-5 bullets, found 6"]
+    assert violations == ["Problems found must have 1-8 bullets, found 9"]
+
+
+def test_eight_bullets_with_sub_bullets_pass_but_nine_top_level_fail() -> None:
+    # Sub-bullets (indented "  - ") are continuations, never top-level bullets.
+    eight = "".join(
+        f"- extra problem number {n} (g1)\n  - detail {n}: a sub-bullet with no pointer\n"
+        for n in range(2, 9)
+    )
+    base = "- No problems were recorded for this run (g1)\n"
+    text = _replace_once(_CLEAN_TEXT, base, base + eight)
+    assert validate(text, make_facts()) == []
+    ninth = "- a ninth top-level problem (g1)\n"
+    text = _replace_once(text, base, base + ninth)
+    assert validate(text, make_facts()) == ["Problems found must have 1-8 bullets, found 9"]
+
+
+def test_paragraph_before_bullets_validates() -> None:
+    text = _replace_once(
+        _CLEAN_TEXT,
+        "## Problems found\n\n",
+        "## Problems found\n\nA plain paragraph of context with no pointer at all.\n\n",
+    )
+    assert validate(text, make_facts()) == []
+
+
+def test_indented_continuation_without_pointer_validates() -> None:
+    text = _replace_once(
+        _CLEAN_TEXT,
+        "- Watch the widget file for regressions next run (foo.py)\n",
+        "- Watch the widget file for regressions next run (foo.py)\n"
+        "  it matters because the file changed without a test\n"
+        "  - how: add a regression test first\n",
+    )
+    assert validate(text, make_facts()) == []
+
+
+def test_paragraph_and_continuation_words_count_toward_the_cap() -> None:
+    filler = " ".join(["word"] * 900)
+    text = _replace_once(
+        _CLEAN_TEXT,
+        "## Problems found\n\n",
+        f"## Problems found\n\n{filler}\n\n",
+    )
+    violations = validate(text, make_facts())
+    assert len(violations) == 1
+    assert "exceeds 900 words" in violations[0]
 
 
 def test_section_zero_bullets_trips_only_that_rule() -> None:
     text = _replace_once(_CLEAN_TEXT, "- No problems were recorded for this run (g1)\n", "")
     violations = validate(text, make_facts())
-    assert violations == ["Problems found must have 1-5 bullets, found 0"]
+    assert violations == ["Problems found must have 1-8 bullets, found 0"]
 
 
 # ----------------------------------------------------------------- pointers
@@ -247,7 +293,7 @@ def test_unknown_pointer_trips_only_that_rule() -> None:
 
 
 def test_word_cap_exceeded_trips_only_that_rule() -> None:
-    long_body = " ".join(["word"] * 451)
+    long_body = " ".join(["word"] * 901)
     text = _replace_once(
         _CLEAN_TEXT,
         "- The widget group landed cleanly (g1)\n",
@@ -255,17 +301,17 @@ def test_word_cap_exceeded_trips_only_that_rule() -> None:
     )
     violations = validate(text, make_facts())
     assert len(violations) == 1
-    assert "exceeds 450 words" in violations[0]
+    assert "exceeds 900 words" in violations[0]
 
 
-def test_word_cap_allows_exactly_450_words() -> None:
+def test_word_cap_allows_exactly_900_words() -> None:
     # The clean text already carries a handful of words; fill up to the cap.
     already = sum(
         len(line[2:].rsplit("(", 1)[0].split())
         for line in _CLEAN_TEXT.splitlines()
         if line.startswith("- ")
     )
-    filler = " ".join(["word"] * (450 - already - 4))
+    filler = " ".join(["word"] * (900 - already - 4))
     text = _replace_once(
         _CLEAN_TEXT,
         "- The widget group landed cleanly (g1)\n",

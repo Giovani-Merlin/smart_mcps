@@ -58,6 +58,27 @@
   .one-pager h2 { font-size: 1rem; margin: 1rem 0 0.25rem; }
   .one-pager ul { margin: 0.25rem 0; padding-left: 1.25rem; }
   details summary { cursor: pointer; }
+  .card details { margin: 0.5rem 0; }
+  .card details > summary, #shared-context details > summary { font-weight: 600; }
+  .prose { border-left: 3px solid var(--border); padding: 0.25rem 1rem; margin: 0.5rem 0; overflow-x: auto; }
+  .prose pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; overflow: auto; }
+  .prose code { font-size: 0.9em; }
+  /* Side-by-side diff (VS Code style): old on the left, new on the right. */
+  .diff-scroll { max-height: 70vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); margin: 0.5rem 0; }
+  .diff-file { margin: 0; }
+  .diff-file + .diff-file { border-top: 2px solid var(--border); }
+  .diff-path { position: sticky; top: 0; z-index: 1; background: var(--card-bg); border-bottom: 1px solid var(--border); padding: 0.3rem 0.6rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; font-weight: 600; }
+  table.split-diff { table-layout: fixed; width: 100%; margin: 0; border-collapse: collapse; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; line-height: 1.4; }
+  table.split-diff td { border: none; padding: 0 0.4rem; vertical-align: top; }
+  table.split-diff col.ln { width: 3.4rem; }
+  table.split-diff td.ln { text-align: right; color: var(--muted); user-select: none; border-right: 1px solid var(--border); }
+  table.split-diff td.txt { white-space: pre-wrap; word-break: break-all; }
+  table.split-diff td.old.txt { border-right: 1px solid var(--border); }
+  table.split-diff tr.hunk td { color: var(--link); background: var(--card-bg); padding: 0.15rem 0.6rem; white-space: pre; }
+  table.split-diff td.del { background: rgba(201, 42, 42, 0.16); }
+  table.split-diff td.add { background: rgba(47, 158, 68, 0.16); }
+  table.split-diff td.empty { background: rgba(128, 128, 128, 0.07); }
+  table.split-diff tr.ctx:hover td { background: rgba(128, 128, 128, 0.12); }
   .escalations td.prompt, .escalations td.answer { max-width: 28rem; white-space: pre-wrap; font-size: 0.9rem; }
 
   /* Run timeline: one row per group, bars positioned in % of wall clock. */
@@ -110,6 +131,7 @@
   <nav class="muted">
     {% if one_pager_html %}<a href="#summary">Summary</a> &middot;{% endif %}
     {% if escalations %}<a href="#escalations">Escalations</a> &middot;{% endif %}
+    {% if base_context %}<a href="#shared-context">Shared context</a> &middot;{% endif %}
     <a href="#evidence">Evidence</a> &middot;
     <a href="#requirements">Requirements</a> &middot;
     <a href="#groups">Groups</a> &middot;
@@ -148,6 +170,22 @@
 </section>
 {% endif %}
 
+{% if base_context %}
+<section id="shared-context">
+  <h2>Shared context</h2>
+  <p class="muted">The one file every coder and reviewer read before its own spec, shown as the run snapshotted it. Its sections: {% for h in base_context.headings %}<code>{{ h }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    {% if base_context.plan_mode == 'digest' %}The plan part is the <strong>digest</strong> — the plan's preamble, one summary line per unit, and the implements/consumes registry — so no worker saw another unit's full section.
+    {% elif base_context.plan_mode == 'document' %}The plan part is the <strong>full plan document</strong>, every unit's section included, so each worker did see the other units' full task definitions (this run predates the plan digest).
+    {% else %}No plan section was recognised in it; read the file to see what the workers knew of the plan.
+    {% endif %}
+    A group's spec goes only to that group; each one is in its card under <a href="#groups">Groups</a>.</p>
+  <details>
+    <summary>{{ base_context.name }} ({{ base_context.lines }} lines)</summary>
+    <div class="prose">{{ base_context.html }}</div>
+  </details>
+</section>
+{% endif %}
+
 <section id="evidence">
   <h2>Evidence matrix</h2>
   <table>
@@ -159,7 +197,7 @@
         <td>{{ row.group.state }}</td>
         <td>
         {% for item in row.verification %}
-          <details id="item-{{ item.item_id }}" class="cell-{{ item.status }}">
+          <details id="item-{{ item.item_id }}" class="cell-{{ item.status }}" open>
             <summary>{{ item.item_id }}: {{ item.status }}</summary>
             <p>{{ item.description }}</p>
             {% if item.evidence %}<p class="muted">{{ item.evidence }}</p>{% endif %}
@@ -199,7 +237,22 @@
     <h3>{{ group.id }}: {{ group.name }}</h3>
     {% for unit in facts.units if unit.group_id == group.id %}
     <p id="unit-{{ unit.unit_id }}"><strong>{{ unit.unit_id }}</strong>: {{ unit.summary or unit.goal }}</p>
+    {% if unit.unit_id in section_html %}
+    <details class="plan-section" id="section-{{ unit.unit_id }}">
+      <summary>Plan section {{ unit.unit_id | upper }}</summary>
+      <div class="prose">{{ section_html[unit.unit_id] }}</div>
+    </details>
+    {% endif %}
     {% endfor %}
+    {% if group.id in spec_html %}
+    <details class="spec" id="spec-{{ group.id }}">
+      <summary>Spec given to this group</summary>
+      <div class="prose">{{ spec_html[group.id] }}</div>
+    </details>
+    {% endif %}
+    {% if base_context %}
+    <p class="muted">Before this spec the workers read only the <a href="#shared-context">shared context</a> ({{ base_context.name }}{% if base_context.plan_mode == 'digest' %}, with the plan digest: one summary line per unit{% elif base_context.plan_mode == 'document' %}, with the full plan document: every unit's section{% endif %}) — never another group's spec.</p>
+    {% endif %}
     <p class="muted">state: {{ group.state }}{% if group.verdict_status %} &middot; verdict: {{ group.verdict_status }}{% endif %}{% if group.failure %} &middot; failure: {{ group.failure }}{% endif %}</p>
     <p><strong>Sessions</strong>:
       {% for session in group.sessions %}{{ group.id }}/{{ session.role }}/gen{{ session.generation }}{% if session.model %} ({{ session.model }}){% endif %}{% if session.retirement_reason %} — retired: {{ session.retirement_reason }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}none recorded{% endfor %}
@@ -214,6 +267,40 @@
     {% endif %}
     {% if group.escalations %}
     <p><strong>Escalations</strong>: {% for e in group.escalations %}<a href="#escalation-{{ (e.id or '')[:12] }}">{{ (e.id or '')[:12] }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% if diffs_enabled %}
+    {% if group.id in group_diffs %}
+    {% set d = group_diffs[group.id] %}
+    <details class="diff" id="diff-{{ group.id }}">
+      <summary>Diff — {{ d.files }} file{{ '' if d.files == 1 else 's' }}, +{{ d.added }}/&minus;{{ d.deleted }} (merge <code>{{ short_sha(group.merge_sha) }}</code>)</summary>
+      {% if d.truncated %}<p class="muted">diff truncated at {{ diff_max_kb }} KB — run <code>git show {{ short_sha(group.merge_sha) }}</code> for the rest</p>{% endif %}
+      <div class="diff-scroll">
+      {% for f in diff_files[group.id] %}
+        <div class="diff-file">
+          <div class="diff-path">{{ f.path }}{% if f.binary %} <span class="muted">(binary)</span>{% endif %}</div>
+          {% if f.rows %}
+          <table class="split-diff">
+            <colgroup><col class="ln"><col><col class="ln"><col></colgroup>
+            <tbody>
+            {% for row in f.rows %}
+              {% if row.kind == 'hunk' %}
+              <tr class="hunk"><td colspan="4">{{ row.old }}</td></tr>
+              {% else %}
+              {% set old_cls = 'del' if row.old is not none and row.kind != 'ctx' else ('' if row.old is not none else 'empty') %}
+              {% set new_cls = 'add' if row.new is not none and row.kind != 'ctx' else ('' if row.new is not none else 'empty') %}
+              <tr class="{{ row.kind }}"><td class="ln {{ old_cls }}">{{ row.old_no if row.old_no is not none else '' }}</td><td class="old txt {{ old_cls }}">{{ row.old if row.old is not none else '' }}</td><td class="ln {{ new_cls }}">{{ row.new_no if row.new_no is not none else '' }}</td><td class="new txt {{ new_cls }}">{{ row.new if row.new is not none else '' }}</td></tr>
+              {% endif %}
+            {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+      {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <p class="muted">no merge commit found for this group</p>
+    {% endif %}
     {% endif %}
   </div>
   {% endfor %}

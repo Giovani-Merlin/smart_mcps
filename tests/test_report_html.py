@@ -7,6 +7,8 @@ escalation with its operator answer, the pan/zoom diagram shell, and the
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jinja2
 import pytest
 
@@ -19,7 +21,18 @@ from orchestrator.report.facts import (
     UnitFacts,
     VerificationFacts,
 )
-from orchestrator.report.html import _env, render_html, render_one_pager_html
+from orchestrator.report.gitview import group_diff, split_diff
+from orchestrator.report.html import (
+    _env,
+    _link_pointers,
+    markdown_html,
+    render_html,
+    render_one_pager_html,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_CLEAN_FIXTURE_ID = "r20260829-162627"
+_CLEAN_FIXTURE_DIR = _REPO_ROOT / "tests" / "fixtures" / "runs" / _CLEAN_FIXTURE_ID
 
 RUN_ID = "r20260101-000000"
 
@@ -224,3 +237,179 @@ def test_template_raises_on_undefined_variable_instead_of_rendering_blank():
     template = _env.get_template("report.html.j2")
     with pytest.raises(jinja2.UndefinedError):
         template.render(facts=_facts(failing=False))
+
+
+# ------------------------------------------------ v2.1: open evidence items
+
+
+def test_evidence_items_start_expanded():
+    html = render_html(_facts(failing=False), _diagrams())
+    assert '<details id="item-g1-1" class="cell-pass" open>' in html
+
+
+# --------------------------------------------- v2.1: diffs, spec, context
+
+
+_DIFF = (
+    "diff --git a/x.py b/x.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/x.py\n"
+    "+++ b/x.py\n"
+    "@@ -1,4 +1,5 @@\n"
+    " keep\n"
+    "-old one\n"
+    "-old two\n"
+    "+new one\n"
+    " tail\n"
+    "+added\n"
+    "+<script>alert(1)</script>\n"
+    "\\ No newline at end of file\n"
+    "diff --git a/img.png b/img.png\n"
+    "Binary files a/img.png and b/img.png differ\n"
+)
+
+
+def test_split_diff_pairs_removed_and_added_runs_side_by_side():
+    files = split_diff(_DIFF)
+    assert [f.path for f in files] == ["x.py", "img.png"]
+    assert files[1].binary and files[1].rows == []
+    rows = files[0].rows
+    assert [r.kind for r in rows] == ["hunk", "ctx", "change", "del", "ctx", "add", "add"]
+    change = rows[2]
+    assert (change.old_no, change.old, change.new_no, change.new) == (2, "old one", 2, "new one")
+    only_del = rows[3]
+    assert (only_del.old_no, only_del.old, only_del.new) == (3, "old two", None)
+    assert (rows[4].old_no, rows[4].new_no) == (4, 3)  # line numbers advance per side
+    assert (rows[5].old, rows[5].new_no, rows[5].new) == (None, 4, "added")
+
+
+def test_split_diff_cells_are_escaped_in_the_rendered_table():
+    facts = _facts(failing=False)
+    facts.groups[0].merge_sha = "0" * 40
+    import orchestrator.report.html as html_module
+    from orchestrator.report.gitview import GroupDiff
+
+    original = html_module.group_diff
+    html_module.group_diff = lambda *_a, **_k: GroupDiff(_DIFF, False, 2, 4, 2)
+    try:
+        html = render_html(facts, _diagrams(), repo_root=Path("."))
+    finally:
+        html_module.group_diff = original
+    assert '<table class="split-diff">' in html
+    assert "<script>alert(1)</script>" not in html
+    assert '<td class="new txt add">&lt;script&gt;alert(1)&lt;/script&gt;</td>' in html
+    assert '<td class="old txt del">old two</td><td class="ln empty"></td>' in html
+    assert '<div class="diff-path">img.png <span class="muted">(binary)</span></div>' in html
+
+
+def test_markdown_html_renders_pipe_tables():
+    rendered = str(markdown_html("| Path | Purpose |\n|---|---|\n| `a` | b |\n"))
+    assert "<table>" in rendered and "<th>Path</th>" in rendered and "<td>b</td>" in rendered
+
+
+def test_group_diff_truncates_on_a_line_boundary():
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(_REPO_ROOT, _CLEAN_FIXTURE_ID, run_dir=_CLEAN_FIXTURE_DIR)
+    sha = facts.groups[0].merge_sha
+    assert sha
+    full = group_diff(_REPO_ROOT, sha)
+    assert not full.truncated and full.files > 0 and full.added > 0
+    small = group_diff(_REPO_ROOT, sha, max_bytes=200)
+    assert small.truncated
+    assert small.text.endswith("\n") and 0 < len(small.text.encode()) <= 200
+    assert group_diff(_REPO_ROOT, sha, max_bytes=5).text == ""  # no line fits: nothing half-cut
+    assert small.files == full.files  # counts come from numstat, not the cut text
+
+
+def test_real_fixture_renders_a_diff_spec_section_and_shared_context():
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(_REPO_ROOT, _CLEAN_FIXTURE_ID, run_dir=_CLEAN_FIXTURE_DIR)
+    diagrams = render_all(facts, _REPO_ROOT)
+    html = render_html(facts, diagrams, repo_root=_REPO_ROOT, run_dir=_CLEAN_FIXTURE_DIR)
+    assert html.count('<details class="diff"') == len(facts.groups) == 3
+    assert '<table class="split-diff">' in html
+    assert '<td class="new txt add">' in html
+    assert "diff truncated" not in html
+    assert "no merge commit found" not in html
+    assert 'id="shared-context"' in html
+    assert "Worker ground rules" in html
+    assert 'id="spec-g1"' in html
+    assert "Spec given to this group" in html
+    assert 'id="section-u1"' in html and "Plan section U1" in html
+    assert '<a href="#shared-context">Shared context</a>' in html
+
+    # Without repo_root/run_dir those parts are absent, not broken.
+    bare = render_html(facts, diagrams)
+    assert '<details class="diff"' not in bare
+    assert "no merge commit found" not in bare
+    assert 'id="shared-context"' not in bare
+    assert 'id="spec-g1"' in bare  # the spec comes from facts, not the paths
+
+
+def test_shared_context_states_digest_or_full_plan_from_the_file_itself():
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.facts import build_facts
+    from orchestrator.report.html import base_context_plan_mode
+
+    fixtures = _REPO_ROOT / "tests" / "fixtures" / "runs"
+    assert (
+        base_context_plan_mode((fixtures / "r20260829-162627" / "base-context.md").read_text())
+        == "digest"
+    )
+    assert (
+        base_context_plan_mode((fixtures / "r20260828-220035" / "base-context.md").read_text())
+        == "document"
+    )
+    assert base_context_plan_mode("# Base context\n\n## Worker ground rules\n") is None
+
+    # The older run's workers saw every unit's section; the report must say so.
+    old_id = "r20260828-220035"
+    old = build_facts(_REPO_ROOT, old_id, run_dir=fixtures / old_id)
+    html = render_html(old, render_all(old, _REPO_ROOT), run_dir=fixtures / old_id)
+    assert "full plan document" in html
+    assert "no worker saw another unit's full section" not in html
+    assert (
+        "<code>Plan document (2026-08-28-001-feat-deterministic-grouper-advisory-plan.md)</code>"
+        in html
+    )
+
+    new_id = "r20260829-162627"
+    new = build_facts(_REPO_ROOT, new_id, run_dir=fixtures / new_id)
+    html = render_html(new, render_all(new, _REPO_ROOT), run_dir=fixtures / new_id)
+    assert "no worker saw another unit's full section" in html
+    assert "full plan document" not in html
+
+
+def test_group_without_merge_sha_says_so_only_when_diffs_are_enabled():
+    facts = _facts(failing=False)
+    with_root = render_html(facts, _diagrams(), repo_root=_REPO_ROOT)
+    assert "no merge commit found for this group" in with_root
+    assert "no merge commit found" not in render_html(facts, _diagrams())
+
+
+def test_spec_markdown_is_escaped_not_injected():
+    facts = _facts(failing=False)
+    facts.groups[0].spec = "Do the thing.\n\n<script>alert(1)</script>\n"
+    html = render_html(facts, _diagrams())
+    assert 'id="spec-g1"' in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_link_pointers_leaves_sub_bullets_and_paragraphs_untouched():
+    text = (
+        "A paragraph mentioning (g1) stays as it is.\n"
+        "- Fix the widget: it matters (g1)\n"
+        "  - how: open the file (g1)\n"
+        "  plain continuation (g1)\n"
+    )
+    linked = _link_pointers(text, {"g1": "#group-g1"})
+    assert linked.splitlines() == [
+        "A paragraph mentioning (g1) stays as it is.",
+        "- Fix the widget: it matters ([g1](#group-g1))",
+        "  - how: open the file (g1)",
+        "  plain continuation (g1)",
+    ]

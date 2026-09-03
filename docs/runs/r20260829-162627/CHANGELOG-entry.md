@@ -72,9 +72,9 @@
 
 ```mermaid
 flowchart LR
-    classDef ok fill:#d1f5d3,stroke:#2f9e44;
-    classDef fail fill:#ffd6d6,stroke:#c92a2a;
-    classDef resolved fill:#fff3bf,stroke:#e8a400;
+    classDef ok fill:#d1f5d3,stroke:#2f9e44,color:#1a1a1a;
+    classDef fail fill:#ffd6d6,stroke:#c92a2a,color:#1a1a1a;
+    classDef resolved fill:#fff3bf,stroke:#e8a400,color:#1a1a1a;
     u_u1["u1- plan-edit — verbatim plan surgery and the `plan-check` guard"]
     grp_g1["g1- plan-edit — verbatim plan surgery and the `plan-check` guard"]
     u_u1 -->|approved| grp_g1

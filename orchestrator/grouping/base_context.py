@@ -14,6 +14,14 @@ from orchestrator.grouping.plan_sections import parse_plan_sections
 from orchestrator.prompts import load_template
 
 CONVENTION_FILES = ("CLAUDE.md", "AGENTS.md")
+#: The heading under which the plan digest lands in ``base-context.md``. The
+#: report reads it back (``report.html.base_context_plan_mode``) to state how
+#: much of the plan the workers saw, so keep it in one place.
+PLAN_DIGEST_HEADING = "## Plan digest ("
+#: What the compiler wrote before c526237 (2026-08-28, U3): the whole plan
+#: document, every unit's section included. Runs snapshotted before then —
+#: the ``r20260828-220035`` fixture among them — still carry it.
+LEGACY_PLAN_DOCUMENT_HEADING = "## Plan document ("
 
 
 def compile_base_context(repo_root: Path, plan_path: Path, codegraph_summary: str) -> str:
@@ -39,5 +47,5 @@ def compile_base_context(repo_root: Path, plan_path: Path, codegraph_summary: st
         sections.append(f"## Codebase architecture (codegraph)\n\n{codegraph_summary.strip()}\n")
 
     digest = parse_plan_sections(plan_path.read_text()).digest
-    sections.append(f"## Plan digest ({plan_path.name})\n\n{digest.strip()}\n")
+    sections.append(f"{PLAN_DIGEST_HEADING}{plan_path.name})\n\n{digest.strip()}\n")
     return "\n".join(sections)

@@ -189,9 +189,9 @@ def _state_class(group: GroupFacts) -> str:
 def plan_outcome_flowchart(facts: RunFacts) -> str:
     lines = [
         "flowchart LR",
-        "    classDef ok fill:#d1f5d3,stroke:#2f9e44;",
-        "    classDef fail fill:#ffd6d6,stroke:#c92a2a;",
-        "    classDef resolved fill:#fff3bf,stroke:#e8a400;",
+        "    classDef ok fill:#d1f5d3,stroke:#2f9e44,color:#1a1a1a;",
+        "    classDef fail fill:#ffd6d6,stroke:#c92a2a,color:#1a1a1a;",
+        "    classDef resolved fill:#fff3bf,stroke:#e8a400,color:#1a1a1a;",
     ]
     group_by_id = {g.id: g for g in facts.groups}
     group_nodes: dict[str, str] = {}
@@ -319,9 +319,9 @@ def architecture_delta(facts: RunFacts, repo_root: Path) -> str:
 
     lines = [
         "flowchart LR",
-        "    classDef added fill:#d1f5d3,stroke:#2f9e44;",
-        "    classDef removed fill:#ffd6d6,stroke:#c92a2a;",
-        "    classDef kept fill:#e7e7e7,stroke:#868e96;",
+        "    classDef added fill:#d1f5d3,stroke:#2f9e44,color:#1a1a1a;",
+        "    classDef removed fill:#ffd6d6,stroke:#c92a2a,color:#1a1a1a;",
+        "    classDef kept fill:#e7e7e7,stroke:#868e96,color:#1a1a1a;",
     ]
     node_ids: dict[str, str] = {}
     for module in sorted(node_class):

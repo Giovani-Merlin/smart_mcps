@@ -2941,12 +2941,14 @@ def _write_facts_format(facts, out_dir: Path, repo_root: Path) -> Path:
     return destination
 
 
-def _write_html_format(facts, out_dir: Path, repo_root: Path) -> Path:
+def _write_html_format(facts, out_dir: Path, repo_root: Path, run_dir: Path | None = None) -> Path:
     # A one-pager already under --out (the driver wrote it there) is folded
     # into the HTML's Summary; `finish` does the same on the integration branch.
+    # `run_dir` (the --run-dir override, else the default) is where the shared
+    # base-context.md is read from.
     from orchestrator.execution.finish import render_html_doc
 
-    return render_html_doc(facts, out_dir, repo_root)
+    return render_html_doc(facts, out_dir, repo_root, run_dir=run_dir)
 
 
 def _write_changelog_format(facts, out_dir: Path, repo_root: Path) -> Path:
@@ -3018,7 +3020,10 @@ def _cmd_report(args: argparse.Namespace) -> int:
         if renderer is None:
             print(f"error: unknown format {name!r}", file=sys.stderr)
             return 2
-        destination = renderer(facts, out_dir, repo_root)
+        if renderer is _write_html_format:
+            destination = renderer(facts, out_dir, repo_root, run_dir=args.run_dir)
+        else:
+            destination = renderer(facts, out_dir, repo_root)
         print(f"wrote {destination}")
         if name == "changelog" and args.update_runlog:
             print(f"updated {_update_runlog(facts, out_dir, repo_root)}")

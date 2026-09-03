@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 from pydantic import BaseModel, Field
 
 from orchestrator.execution.export import build_export
-from orchestrator.execution.manifest import RunPaths
+from orchestrator.execution.manifest import RunPaths, effective_group
 from orchestrator.execution.worktrees import integration_branch
 from orchestrator.grouping.plan_sections import UnitSection, parse_plan_sections, unit_key_for_task
 from orchestrator.model import Group, GroupingResult, VerificationItem
@@ -98,6 +98,15 @@ class GroupFacts(BaseModel):
     #: The latest coder report's own ``summary`` field, when one exists
     #: (report U3's per-group fragments trim this to ~20 words).
     report_summary: str | None = None
+    #: The spec the coder actually received — the speccer-rewritten one when a
+    #: ``spec-gen<N>.json`` exists (``manifest.effective_group``), else the
+    #: grouper's original (report v2.1 U4).
+    spec: str = ""
+    #: The ``merge(<run_id>): <gid>`` commit on the integration branch's
+    #: first-parent history; ``None`` when the git range is unavailable or
+    #: the group never merged. ``report.html`` shows ``git diff <sha>^1 <sha>``
+    #: from it (report v2.1 U3); the diff itself is never stored in facts.
+    merge_sha: str | None = None
     state: str = "pending"
     verdict_status: str | None = None
     failure: str | None = None
@@ -129,6 +138,10 @@ class UnitFacts(BaseModel):
     title: str = ""
     summary: str = ""
     goal: str = ""
+    #: The unit's plan section verbatim — heading line through the next
+    #: heading — so the report can show what the plan asked for, not only
+    #: its ``Goal`` bullet (report v2.1 U4).
+    section_text: str = ""
     verification: list[VerificationFacts] = Field(default_factory=list)
     landed: bool = False
 
@@ -168,6 +181,10 @@ class RunFacts(BaseModel):
     timeline: list[TimelineEvent] = Field(default_factory=list)
     adr_delta: list[AdrDelta] = Field(default_factory=list)
     trouble: bool = False
+    #: ``"base-context.md"`` when the run dir carries the compiled ground
+    #: rules + plan every worker received; the text itself stays out of
+    #: ``facts.json`` (hundreds of lines) and is read by ``render_html``.
+    base_context_path: str | None = None
 
 
 # ------------------------------------------------------------------- git io
@@ -266,8 +283,23 @@ def _planned_files_fallback(groups: list[Group]) -> list[ChangedFileFacts]:
     ]
 
 
+def _run_merge_commits(
+    repo_root: Path, run_id: str, git_range: GitRangeFacts
+) -> list[tuple[str, str]]:
+    """``_merge_commits`` over the run's git range, or ``[]`` when the range
+    is unavailable — computed once in ``build_facts`` and shared by file
+    attribution and ``GroupFacts.merge_sha``."""
+    if not git_range.available:
+        return []
+    assert git_range.base_sha is not None and git_range.tip_sha is not None
+    return _merge_commits(repo_root, run_id, git_range.base_sha, git_range.tip_sha)
+
+
 def _build_changed_files(
-    paths: RunPaths, repo_root: Path, run_id: str, git_range: GitRangeFacts, groups: list[Group]
+    repo_root: Path,
+    git_range: GitRangeFacts,
+    groups: list[Group],
+    merges: list[tuple[str, str]],
 ) -> list[ChangedFileFacts]:
     if not git_range.available:
         return _planned_files_fallback(groups)
@@ -275,7 +307,6 @@ def _build_changed_files(
     overall = _numstat(repo_root, git_range.base_sha, git_range.tip_sha)
     if not overall:
         return []
-    merges = _merge_commits(repo_root, run_id, git_range.base_sha, git_range.tip_sha)
     # Oldest first, so a file touched by more than one group's merge is
     # attributed to the last (most recent) one to have written it.
     path_to_group: dict[str, str] = {}
@@ -534,9 +565,13 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
     units_by_id: dict[str, UnitSection] = plan_sections.units if plan_sections else {}
 
     git_range = _resolve_git_range(paths, repo_root, run_id)
-    changed_files = _build_changed_files(
-        paths, repo_root, run_id, git_range, list(groups_by_id.values())
-    )
+    merges = _run_merge_commits(repo_root, run_id, git_range)
+    # Newest first in the log; a group that merged twice (resolve after a
+    # failed first merge) keeps its most recent merge commit.
+    merge_sha_by_group: dict[str, str] = {}
+    for merge_sha, gid in merges:
+        merge_sha_by_group.setdefault(gid, merge_sha)
+    changed_files = _build_changed_files(repo_root, git_range, list(groups_by_id.values()), merges)
     adr_delta = _adr_delta(repo_root, git_range)
 
     run_log_text = paths.event_log_path.read_text() if paths.event_log_path.is_file() else ""
@@ -551,6 +586,9 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
 
     for export_group in export.groups:
         source_group = groups_by_id.get(export_group.id)
+        # The speccer-rewritten spec when one exists: what the coder was
+        # actually given, which is what the report should show.
+        shown_group = effective_group(paths, source_group) if source_group else None
         tasks = list(source_group.tasks) if source_group else []
         for task_id in tasks:
             task_to_group[task_id] = export_group.id
@@ -637,9 +675,11 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         group_facts.append(
             GroupFacts(
                 id=export_group.id,
-                name=export_group.name,
-                summary=export_group.summary,
+                name=shown_group.name if shown_group else export_group.name,
+                summary=shown_group.summary if shown_group else export_group.summary,
                 report_summary=report_summary,
+                spec=shown_group.spec if shown_group else "",
+                merge_sha=merge_sha_by_group.get(export_group.id),
                 state=export_group.final_state,
                 verdict_status=verdict_status,
                 failure=real_failure,
@@ -707,6 +747,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                 title=unit.title,
                 summary=unit.summary,
                 goal=_bullet_value(unit.text, "Goal"),
+                section_text=unit.text,
                 verification=verification_facts,
                 landed=landed,
             )
@@ -746,4 +787,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         timeline=sorted(timeline, key=lambda e: e.at),
         adr_delta=adr_delta,
         trouble=trouble,
+        base_context_path=(
+            "base-context.md" if (paths.run_dir / "base-context.md").is_file() else None
+        ),
     )

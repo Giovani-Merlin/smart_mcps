@@ -27,6 +27,7 @@ from orchestrator.report.facts import (
 )
 
 RUN_ID = "r20260101-000000"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _facts(**overrides) -> RunFacts:
@@ -161,3 +162,20 @@ def test_render_all_bundles_every_diagram_with_correct_first_lines():
     assert diagrams.plan_outcome.startswith("flowchart LR")
     assert diagrams.architecture_delta.splitlines()[0].startswith(("flowchart", "%%"))
     assert "sequenceDiagram" not in diagrams.model_dump_json()
+
+
+def test_every_classdef_sets_a_text_color_so_labels_read_in_dark_theme():
+    # Mermaid's dark theme paints light label text; on the pastel fills the
+    # classDefs choose, only an explicit color: keeps the labels legible.
+    from orchestrator.report.facts import build_facts
+
+    real = build_facts(
+        _REPO_ROOT,
+        "r20260829-162627",
+        run_dir=_REPO_ROOT / "tests" / "fixtures" / "runs" / "r20260829-162627",
+    )
+    assert real.git_range.available
+    for source in (plan_outcome_flowchart(_facts()), architecture_delta(real, _REPO_ROOT)):
+        classdefs = [line for line in source.splitlines() if "classDef" in line]
+        assert classdefs
+        assert all("color:" in line for line in classdefs), classdefs
