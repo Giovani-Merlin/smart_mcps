@@ -1137,6 +1137,7 @@ class TestRunBanner:
         (fake_home / "sessions").mkdir(parents=True)
         (tmp_path / ".orchestrator" / "config.toml").write_text(
             f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
         )
         monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
         monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
@@ -1161,8 +1162,16 @@ class TestRunBanner:
         # a coder, whose failure lands the group INTERRUPTED instead. The base
         # session is the stable single-spawn observable for banner ordering.
         exit_code = main(
-            ["run", "--repo", str(tmp_path), "--run-id", "r9", "--sequential", "--hitl",
-             "--fork-base"]
+            [
+                "run",
+                "--repo",
+                str(tmp_path),
+                "--run-id",
+                "r9",
+                "--sequential",
+                "--hitl",
+                "--fork-base",
+            ]
         )
         captured = capsys.readouterr()
         assert exit_code == 1
@@ -1335,6 +1344,7 @@ class TestReviewIntensityWarning:
         (fake_home / "sessions").mkdir(parents=True)
         (tmp_path / ".orchestrator" / "config.toml").write_text(
             f'[session]\nclaude_bin = ["{sys.executable}", "{FAKE_CLAUDE}"]\n'
+            f'transcript_root = "{tmp_path / "claude-home" / "projects"}"\n'
         )
         monkeypatch.setenv("FAKE_CLAUDE_HOME", str(fake_home))
         monkeypatch.delenv("FAKE_CLAUDE_HIDE_FLAGS", raising=False)
@@ -2040,3 +2050,206 @@ class TestStdoutBuffering:
         finally:
             proc.kill()
             proc.wait(timeout=10)
+
+
+class TestReportOnePagerCli:
+    """`report --scaffold one-pager` / `--validate` (plan U5), exercised
+    against the real ``r20260829-162627`` fixture run so the pointer set
+    comes from an actual plan and git range, not a synthetic stand-in."""
+
+    FIXTURE_RUN_ID = "r20260829-162627"
+    FIXTURE_RUN_DIR = Path(__file__).parent / "fixtures" / "runs" / "r20260829-162627"
+
+    def test_scaffold_then_validate_untouched_fails_naming_violations(self, tmp_path, capsys):
+        out_dir = tmp_path / "op"
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--scaffold",
+                "one-pager",
+                "--out",
+                str(out_dir),
+            ]
+        )
+        assert exit_code == 0
+        one_pager = out_dir / "one-pager.md"
+        assert one_pager.is_file()
+
+        capsys.readouterr()
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--validate",
+                str(one_pager),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert out.count("unknown pointer") >= 3
+
+    def test_validate_clean_one_pager_exits_zero_silently_then_flips_on_banned_phrase(
+        self, tmp_path, capsys
+    ):
+        one_pager = tmp_path / "one-pager.md"
+        one_pager.write_text(
+            "# Plan split and deepen — r20260829-162627\n\n"
+            "## TL;DR\n\n"
+            "- Three groups landed cleanly with verification passing (g1)\n"
+            "- The plan-edit module backs the split and deepen commands "
+            "(orchestrator/grouping/plan_edit.py)\n"
+            "- Requirement sixteen on mechanical plan splitting is satisfied (R16)\n\n"
+            "## Problems found\n\n"
+            "- No problems were recorded for this run (g1)\n\n"
+            "## Run notes\n\n"
+            "- Nothing was fixed by hand during this run (g1)\n\n"
+            "## Next steps\n\n"
+            "- Watch the plan-edit surgery contract for drift next run "
+            "(orchestrator/grouping/plan_edit.py)\n"
+        )
+
+        capsys.readouterr()
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--validate",
+                str(one_pager),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert captured.out == ""
+
+        before = one_pager.read_bytes()
+        text = one_pager.read_text().replace(
+            "- No problems were recorded for this run (g1)",
+            "- No problems were recorded for this run Overall (g1)",
+        )
+        one_pager.write_text(text)
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--validate",
+                str(one_pager),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert "banned phrase: 'overall'" in out
+        # The earlier clean validation call never wrote back to the file.
+        assert (
+            before
+            == (
+                "# Plan split and deepen — r20260829-162627\n\n"
+                "## TL;DR\n\n"
+                "- Three groups landed cleanly with verification passing (g1)\n"
+                "- The plan-edit module backs the split and deepen commands "
+                "(orchestrator/grouping/plan_edit.py)\n"
+                "- Requirement sixteen on mechanical plan splitting is satisfied (R16)\n\n"
+                "## Problems found\n\n"
+                "- No problems were recorded for this run (g1)\n\n"
+                "## Run notes\n\n"
+                "- Nothing was fixed by hand during this run (g1)\n\n"
+                "## Next steps\n\n"
+                "- Watch the plan-edit surgery contract for drift next run "
+                "(orchestrator/grouping/plan_edit.py)\n"
+            ).encode()
+        )
+
+
+class TestReportFormatsCli:
+    """`report --format …` against the real ``r20260829-162627`` fixture
+    (report v2 U2): the artifact set is facts/html/changelog only, the
+    one-pager under --out is folded into the HTML, and ``docs/RUNLOG.md`` is
+    touched only with ``--update-runlog``."""
+
+    FIXTURE_RUN_ID = "r20260829-162627"
+    FIXTURE_RUN_DIR = Path(__file__).parent / "fixtures" / "runs" / "r20260829-162627"
+
+    def _run(self, tmp_path, *extra):
+        out_dir = tmp_path / "out"
+        exit_code = main(
+            [
+                "report",
+                self.FIXTURE_RUN_ID,
+                "--run-dir",
+                str(self.FIXTURE_RUN_DIR),
+                "--out",
+                str(out_dir),
+                *extra,
+            ]
+        )
+        assert exit_code == 0
+        return out_dir
+
+    def test_all_writes_three_files_and_never_pr_body(self, tmp_path, capsys):
+        out_dir = self._run(tmp_path, "--format", "all")
+        assert sorted(p.name for p in out_dir.iterdir()) == [
+            "CHANGELOG-entry.md",
+            "facts.json",
+            "report.html",
+        ]
+        assert "pr-body" not in capsys.readouterr().out
+
+    def test_pr_body_is_not_a_format_choice(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["report", self.FIXTURE_RUN_ID, "--format", "pr-body"])
+        assert "invalid choice: 'pr-body'" in capsys.readouterr().err
+
+    def test_one_pager_under_out_is_folded_into_the_html(self, tmp_path):
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "one-pager.md").write_text(
+            "# Plan split and deepen — r20260829-162627\n\n"
+            "## TL;DR\n\n- Three groups landed (g1)\n- Unit one done (u1)\n- R16 met (R16)\n\n"
+            "## Problems found\n\n- None (g1)\n\n"
+            "## Run notes\n\n- Nothing by hand (g1)\n\n"
+            "## Next steps\n\n- None (g1)\n\n"
+            "<!-- valid pointers: g1, u1, R16 -->\n"
+        )
+        self._run(tmp_path, "--format", "html")
+        html = (out_dir / "report.html").read_text()
+        assert "<h2>Summary</h2>" in html
+        assert '<a href="#group-g1">g1</a>' in html
+        assert "valid pointers" not in html
+
+    def test_changelog_leaves_runlog_untouched_unless_asked(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        (repo / "docs").mkdir(parents=True)
+        runlog = repo / "docs" / "RUNLOG.md"
+        runlog.write_text("# Run log\n\nuntouched\n")
+        # The fixture's plan lives in this checkout; the runlog is the only
+        # thing under --repo the command may write, and only when asked.
+        monkeypatch.chdir(repo)
+        out_dir = tmp_path / "out"
+        base = [
+            "report",
+            self.FIXTURE_RUN_ID,
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(self.FIXTURE_RUN_DIR),
+            "--out",
+            str(out_dir),
+            "--format",
+            "changelog",
+        ]
+        assert main(base) == 0
+        assert runlog.read_text() == "# Run log\n\nuntouched\n"
+        assert (out_dir / "CHANGELOG-entry.md").is_file()
+
+        assert main([*base, "--update-runlog"]) == 0
+        updated = runlog.read_text()
+        assert "untouched" in updated
+        assert f"<!-- run:{self.FIXTURE_RUN_ID} -->" in updated

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run report — {{ facts.run_id }}</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --border: #d9dde3;
+    --card-bg: #f7f8fa;
+    --pass: #2f9e44;
+    --fail: #c92a2a;
+    --unverified: #e8a400;
+    --coder: #4c6ef5;
+    --reviewer: #f59f00;
+    --link: #1c64c9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e7e9ec;
+      --muted: #9aa1ac;
+      --border: #33373f;
+      --card-bg: #1c1f24;
+      --link: #6ea8ff;
+    }
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    line-height: 1.5;
+  }
+  a { color: var(--link); }
+  h1, h2, h3 { line-height: 1.25; }
+  section { margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin: 0.75rem 0 1.5rem; }
+  th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: var(--card-bg); }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .badge-trouble { background: var(--fail); color: #fff; }
+  .badge-clean { background: var(--pass); color: #fff; }
+  .cell-pass { color: var(--pass); }
+  .cell-fail { color: var(--fail); font-weight: 600; }
+  .cell-unverified { color: var(--unverified); }
+  .card { border: 1px solid var(--border); background: var(--card-bg); border-radius: 8px; padding: 1rem; margin: 0.75rem 0; }
+  .card:target, tr:target, details:target { outline: 2px solid var(--link); outline-offset: 2px; }
+  .one-pager { border-left: 4px solid var(--pass); padding-left: 1rem; }
+  .one-pager h1 { font-size: 1.15rem; margin: 0 0 0.5rem; }
+  .one-pager h2 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+  .one-pager ul { margin: 0.25rem 0; padding-left: 1.25rem; }
+  details summary { cursor: pointer; }
+  .card details { margin: 0.5rem 0; }
+  .card details > summary, #shared-context details > summary { font-weight: 600; }
+  .prose { border-left: 3px solid var(--border); padding: 0.25rem 1rem; margin: 0.5rem 0; overflow-x: auto; }
+  .prose pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; overflow: auto; }
+  .prose code { font-size: 0.9em; }
+  /* Side-by-side diff (VS Code style): old on the left, new on the right. */
+  .diff-scroll { max-height: 70vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); margin: 0.5rem 0; }
+  .diff-file { margin: 0; }
+  .diff-file + .diff-file { border-top: 2px solid var(--border); }
+  .diff-path { position: sticky; top: 0; z-index: 1; background: var(--card-bg); border-bottom: 1px solid var(--border); padding: 0.3rem 0.6rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; font-weight: 600; }
+  table.split-diff { table-layout: fixed; width: 100%; margin: 0; border-collapse: collapse; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; line-height: 1.4; }
+  table.split-diff td { border: none; padding: 0 0.4rem; vertical-align: top; }
+  table.split-diff col.ln { width: 3.4rem; }
+  table.split-diff td.ln { text-align: right; color: var(--muted); user-select: none; border-right: 1px solid var(--border); }
+  table.split-diff td.txt { white-space: pre-wrap; word-break: break-all; }
+  table.split-diff td.old.txt { border-right: 1px solid var(--border); }
+  table.split-diff tr.hunk td { color: var(--link); background: var(--card-bg); padding: 0.15rem 0.6rem; white-space: pre; }
+  table.split-diff td.del { background: rgba(201, 42, 42, 0.16); }
+  table.split-diff td.add { background: rgba(47, 158, 68, 0.16); }
+  table.split-diff td.empty { background: rgba(128, 128, 128, 0.07); }
+  table.split-diff tr.ctx:hover td { background: rgba(128, 128, 128, 0.12); }
+  .escalations td.prompt, .escalations td.answer { max-width: 28rem; white-space: pre-wrap; font-size: 0.9rem; }
+
+  /* Run timeline: one row per group, bars positioned in % of wall clock. */
+  .timeline caption { caption-side: top; text-align: left; color: var(--muted); font-size: 0.9rem; padding-bottom: 0.25rem; }
+  .timeline th[scope="row"] { white-space: nowrap; font-weight: 500; width: 1%; }
+  .timeline td.lane, .timeline th.lane { position: relative; padding: 0; min-width: 24rem; }
+  .timeline td.lane { height: 1.6rem; }
+  .timeline .axis { position: relative; height: 1.3rem; }
+  .timeline .tick { position: absolute; top: 0.1rem; transform: translateX(-50%); font-size: 0.7rem; font-weight: 400; color: var(--muted); }
+  .timeline .bar { position: absolute; top: 0.4rem; height: 0.8rem; border-radius: 3px; min-width: 3px; }
+  .timeline .bar.coder { background: var(--coder); }
+  .timeline .bar.reviewer { background: var(--reviewer); }
+  .timeline .bar.open { opacity: 0.5; border: 1px dashed var(--fg); }
+  .timeline .mark { position: absolute; top: 0.1rem; transform: translateX(-50%); font-size: 0.9rem; line-height: 1; cursor: help; }
+  .timeline .mark.escalation { color: var(--unverified); }
+  .timeline .mark.retired { color: var(--fail); }
+  .timeline td.state { white-space: nowrap; width: 1%; }
+  .legend span { display: inline-block; margin-right: 1rem; font-size: 0.85rem; }
+  .legend i { display: inline-block; width: 1.2rem; height: 0.7rem; border-radius: 3px; vertical-align: middle; margin-right: 0.3rem; }
+  .legend i.coder { background: var(--coder); }
+  .legend i.reviewer { background: var(--reviewer); }
+
+  /* Mermaid diagrams: pan/zoom shell, expand dialog, source toggle. */
+  .diagram { margin: 0.75rem 0 1.5rem; }
+  .diagram-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.35rem; }
+  .diagram-toolbar button, dialog button { font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); color: var(--fg); cursor: pointer; }
+  .diagram-shell { height: 55vh; overflow: hidden; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; }
+  .diagram-shell pre.mermaid { margin: 0; height: 100%; }
+  .diagram-shell pre.mermaid:not([data-processed]) { padding: 1rem; overflow: auto; white-space: pre; }
+  .diagram-shell svg { width: 100%; height: 100%; max-width: none !important; display: block; }
+  .diagram-source pre { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; }
+  dialog.diagram-dialog { width: 96vw; height: 94vh; max-width: none; max-height: none; padding: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  dialog.diagram-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog.diagram-dialog .dialog-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+  dialog.diagram-dialog .dialog-shell { height: calc(94vh - 3rem); overflow: hidden; }
+  dialog.diagram-dialog .dialog-shell svg { width: 100%; height: 100%; max-width: none !important; display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{ facts.plan_title or facts.run_id }}</h1>
+  <p>
+    {% if trouble %}<span class="badge badge-trouble">trouble</span>{% else %}<span class="badge badge-clean">clean</span>{% endif %}
+    run <code>{{ facts.run_id }}</code>
+    &middot; git range <code>{{ base_short }}..{{ tip_short }}</code>
+    {% if facts.pr_url %}&middot; <a href="{{ facts.pr_url }}">pull request</a>{% endif %}
+  </p>
+  {% if facts.plan_objective %}<p class="muted">{{ facts.plan_objective }}</p>{% endif %}
+  <nav class="muted">
+    {% if one_pager_html %}<a href="#summary">Summary</a> &middot;{% endif %}
+    {% if escalations %}<a href="#escalations">Escalations</a> &middot;{% endif %}
+    {% if base_context %}<a href="#shared-context">Shared context</a> &middot;{% endif %}
+    <a href="#evidence">Evidence</a> &middot;
+    <a href="#requirements">Requirements</a> &middot;
+    <a href="#groups">Groups</a> &middot;
+    <a href="#cost">Cost</a> &middot;
+    <a href="#timeline">Timeline</a> &middot;
+    <a href="#architecture">Architecture delta</a> &middot;
+    <a href="#plan-outcome">Plan → outcome</a>
+  </nav>
+</header>
+
+{% if one_pager_html %}
+<section id="summary">
+  <h2>Summary</h2>
+  <div class="one-pager">{{ one_pager_html }}</div>
+</section>
+{% endif %}
+
+{% if escalations %}
+<section id="escalations">
+  <h2>Escalations and answers</h2>
+  <table class="escalations">
+    <thead><tr><th>Id</th><th>Kind</th><th>Group</th><th>Prompt</th><th>Action</th><th>Operator answer</th></tr></thead>
+    <tbody>
+    {% for e in escalations %}
+      <tr id="escalation-{{ e.id }}">
+        <td><code>{{ e.id }}</code>{% if e.created_at %}<br><span class="muted">{{ e.created_at }}</span>{% endif %}</td>
+        <td>{{ e.kind }}</td>
+        <td><a href="#group-{{ e.group_id }}">{{ e.group_id }}</a>{% if e.generation %} gen{{ e.generation }}{% endif %}</td>
+        <td class="prompt">{{ e.prompt }}</td>
+        <td>{{ e.action or '—' }}</td>
+        <td class="answer">{{ e.answer or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if base_context %}
+<section id="shared-context">
+  <h2>Shared context</h2>
+  <p class="muted">The one file every coder and reviewer read before its own spec, shown as the run snapshotted it. Its sections: {% for h in base_context.headings %}<code>{{ h }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    {% if base_context.plan_mode == 'digest' %}The plan part is the <strong>digest</strong> — the plan's preamble, one summary line per unit, and the implements/consumes registry — so no worker saw another unit's full section.
+    {% elif base_context.plan_mode == 'document' %}The plan part is the <strong>full plan document</strong>, every unit's section included, so each worker did see the other units' full task definitions (this run predates the plan digest).
+    {% else %}No plan section was recognised in it; read the file to see what the workers knew of the plan.
+    {% endif %}
+    A group's spec goes only to that group; each one is in its card under <a href="#groups">Groups</a>.</p>
+  <details>
+    <summary>{{ base_context.name }} ({{ base_context.lines }} lines)</summary>
+    <div class="prose">{{ base_context.html }}</div>
+  </details>
+</section>
+{% endif %}
+
+<section id="evidence">
+  <h2>Evidence matrix</h2>
+  <table>
+    <thead><tr><th>Group</th><th>State</th><th>Verification items</th></tr></thead>
+    <tbody>
+    {% for row in evidence_rows %}
+      <tr>
+        <td><a href="#group-{{ row.group.id }}">{{ row.group.id }}</a>: {{ row.group.name }}</td>
+        <td>{{ row.group.state }}</td>
+        <td>
+        {% for item in row.verification %}
+          <details id="item-{{ item.item_id }}" class="cell-{{ item.status }}" open>
+            <summary>{{ item.item_id }}: {{ item.status }}</summary>
+            <p>{{ item.description }}</p>
+            {% if item.evidence %}<p class="muted">{{ item.evidence }}</p>{% endif %}
+          </details>
+        {% else %}
+          <span class="muted">no verification items</span>
+        {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section id="requirements">
+  <h2>Requirement traceability</h2>
+  <table>
+    <thead><tr><th>Requirement</th><th>Units</th><th>Landed</th></tr></thead>
+    <tbody>
+    {% for rid in facts.rids %}
+      <tr id="rid-{{ rid.rid }}">
+        <td>{{ rid.rid }}</td>
+        <td>{% for unit in rid.units %}<a href="#unit-{{ unit }}">{{ unit }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td class="{{ 'cell-pass' if rid.landed else 'cell-fail' }}">{{ 'landed' if rid.landed else 'not landed' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted">no requirement-coverage lines found in this plan</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section id="groups">
+  <h2>Groups</h2>
+  {% for group in facts.groups %}
+  <div class="card" id="group-{{ group.id }}">
+    <h3>{{ group.id }}: {{ group.name }}</h3>
+    {% for unit in facts.units if unit.group_id == group.id %}
+    <p id="unit-{{ unit.unit_id }}"><strong>{{ unit.unit_id }}</strong>: {{ unit.summary or unit.goal }}</p>
+    {% if unit.unit_id in section_html %}
+    <details class="plan-section" id="section-{{ unit.unit_id }}">
+      <summary>Plan section {{ unit.unit_id | upper }}</summary>
+      <div class="prose">{{ section_html[unit.unit_id] }}</div>
+    </details>
+    {% endif %}
+    {% endfor %}
+    {% if group.id in spec_html %}
+    <details class="spec" id="spec-{{ group.id }}">
+      <summary>Spec given to this group</summary>
+      <div class="prose">{{ spec_html[group.id] }}</div>
+    </details>
+    {% endif %}
+    {% if base_context %}
+    <p class="muted">Before this spec the workers read only the <a href="#shared-context">shared context</a> ({{ base_context.name }}{% if base_context.plan_mode == 'digest' %}, with the plan digest: one summary line per unit{% elif base_context.plan_mode == 'document' %}, with the full plan document: every unit's section{% endif %}) — never another group's spec.</p>
+    {% endif %}
+    <p class="muted">state: {{ group.state }}{% if group.verdict_status %} &middot; verdict: {{ group.verdict_status }}{% endif %}{% if group.failure %} &middot; failure: {{ group.failure }}{% endif %}</p>
+    <p><strong>Sessions</strong>:
+      {% for session in group.sessions %}{{ group.id }}/{{ session.role }}/gen{{ session.generation }}{% if session.model %} ({{ session.model }}){% endif %}{% if session.retirement_reason %} — retired: {{ session.retirement_reason }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}none recorded{% endfor %}
+    </p>
+    <p><strong>Planned files</strong>: {{ group.planned_files | join(', ') if group.planned_files else 'none declared' }}</p>
+    <p><strong>Touched files</strong>: {{ group.touched_files | join(', ') if group.touched_files else 'none' }}</p>
+    {% if group.required_changes %}
+    <p><strong>Required changes</strong>: {{ group.required_changes | join('; ') }}</p>
+    {% endif %}
+    {% if group.surprises %}
+    <p><strong>Surprises</strong>: {{ group.surprises | length }}</p>
+    {% endif %}
+    {% if group.escalations %}
+    <p><strong>Escalations</strong>: {% for e in group.escalations %}<a href="#escalation-{{ (e.id or '')[:12] }}">{{ (e.id or '')[:12] }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% if diffs_enabled %}
+    {% if group.id in group_diffs %}
+    {% set d = group_diffs[group.id] %}
+    <details class="diff" id="diff-{{ group.id }}">
+      <summary>Diff — {{ d.files }} file{{ '' if d.files == 1 else 's' }}, +{{ d.added }}/&minus;{{ d.deleted }} (merge <code>{{ short_sha(group.merge_sha) }}</code>)</summary>
+      {% if d.truncated %}<p class="muted">diff truncated at {{ diff_max_kb }} KB — run <code>git show {{ short_sha(group.merge_sha) }}</code> for the rest</p>{% endif %}
+      <div class="diff-scroll">
+      {% for f in diff_files[group.id] %}
+        <div class="diff-file">
+          <div class="diff-path">{{ f.path }}{% if f.binary %} <span class="muted">(binary)</span>{% endif %}</div>
+          {% if f.rows %}
+          <table class="split-diff">
+            <colgroup><col class="ln"><col><col class="ln"><col></colgroup>
+            <tbody>
+            {% for row in f.rows %}
+              {% if row.kind == 'hunk' %}
+              <tr class="hunk"><td colspan="4">{{ row.old }}</td></tr>
+              {% else %}
+              {% set old_cls = 'del' if row.old is not none and row.kind != 'ctx' else ('' if row.old is not none else 'empty') %}
+              {% set new_cls = 'add' if row.new is not none and row.kind != 'ctx' else ('' if row.new is not none else 'empty') %}
+              <tr class="{{ row.kind }}"><td class="ln {{ old_cls }}">{{ row.old_no if row.old_no is not none else '' }}</td><td class="old txt {{ old_cls }}">{{ row.old if row.old is not none else '' }}</td><td class="ln {{ new_cls }}">{{ row.new_no if row.new_no is not none else '' }}</td><td class="new txt {{ new_cls }}">{{ row.new if row.new is not none else '' }}</td></tr>
+              {% endif %}
+            {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+      {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <p class="muted">no merge commit found for this group</p>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<section id="cost">
+  <h2>Group cost</h2>
+  <table>
+    <thead><tr><th>Group</th><th>Sessions</th><th>Tokens</th><th>Cache-read tokens</th></tr></thead>
+    <tbody>
+    {% for group in facts.groups %}
+      <tr>
+        <td><a href="#group-{{ group.id }}">{{ group.id }}</a>: {{ group.name }}</td>
+        <td>{{ group.sessions | length }}</td>
+        <td>{{ '{:,}'.format(group_tokens[group.id]) }}</td>
+        <td class="muted">{{ '{:,}'.format(group_cache_read[group.id]) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Tokens = input + output + cache-creation. Cache reads are billed separately and listed apart so a warm session does not inflate the headline.</p>
+</section>
+
+<section id="timeline">
+  <h2>Run timeline</h2>
+  <p class="legend"><span><i class="coder"></i>coder</span><span><i class="reviewer"></i>reviewer</span><span>&#x26A0; escalation</span><span>&#x2715; retirement</span><span class="muted">dashed = end not recorded</span></p>
+  {{ timeline_html }}
+</section>
+
+<section id="architecture">
+  <h2>Architecture delta</h2>
+  <figure class="diagram">
+    <div class="diagram-toolbar"><button type="button" data-action="expand">Expand</button><button type="button" data-action="fit">Fit</button><button type="button" data-action="source">Source</button></div>
+    <div class="diagram-shell"><pre class="mermaid">{{ diagrams.architecture_delta }}</pre></div>
+    <details class="diagram-source"><summary>mermaid source</summary><pre>{{ diagrams.architecture_delta }}</pre></details>
+  </figure>
+</section>
+
+<section id="plan-outcome">
+  <h2>Plan → outcome</h2>
+  <figure class="diagram">
+    <div class="diagram-toolbar"><button type="button" data-action="expand">Expand</button><button type="button" data-action="fit">Fit</button><button type="button" data-action="source">Source</button></div>
+    <div class="diagram-shell"><pre class="mermaid">{{ diagrams.plan_outcome }}</pre></div>
+    <details class="diagram-source"><summary>mermaid source</summary><pre>{{ diagrams.plan_outcome }}</pre></details>
+  </figure>
+</section>
+
+<dialog class="diagram-dialog" id="diagram-dialog">
+  <div class="dialog-toolbar"><span class="muted">drag to pan · wheel to zoom · Esc to close</span><span><button type="button" data-action="fit">Fit</button> <button type="button" data-action="close">Close</button></span></div>
+  <div class="dialog-shell"></div>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
+<script type="module">
+  const instances = new Map();
+
+  function attachPanZoom(svg) {
+    if (typeof svgPanZoom !== 'function') return null;
+    const existing = instances.get(svg);
+    if (existing) existing.destroy();
+    const viewBox = svg.viewBox && svg.viewBox.baseVal;
+    if (viewBox && viewBox.width && viewBox.height) {
+      // Safari needs explicit dimensions before svg-pan-zoom measures.
+      svg.setAttribute('width', String(viewBox.width));
+      svg.setAttribute('height', String(viewBox.height));
+    }
+    svg.style.maxWidth = 'none';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    const instance = svgPanZoom(svg, {
+      controlIconsEnabled: true,
+      fit: true,
+      center: true,
+      minZoom: 0.2,
+      maxZoom: 20,
+      zoomScaleSensitivity: 0.3,
+    });
+    instances.set(svg, instance);
+    return instance;
+  }
+
+  function refit(svg) {
+    const instance = instances.get(svg);
+    if (instance) { instance.resize(); instance.fit(); instance.center(); }
+  }
+
+  const dialog = document.getElementById('diagram-dialog');
+  const dialogShell = dialog.querySelector('.dialog-shell');
+  let expanded = null; // { svg, home }
+
+  function collapse() {
+    // Only once the dialog is really closed: a 'close' event delivered late
+    // (after a second Expand) must not pull the new svg out from under it.
+    if (!expanded || dialog.open) return;
+    const { svg, home } = expanded;
+    home.appendChild(svg);
+    expanded = null;
+    attachPanZoom(svg);
+  }
+
+  // Collapse on every way out — the Close button, Esc, and the 'close'
+  // event — synchronously where we can: a queued 'close' event is not always
+  // delivered promptly on a heavy page, and the svg must never stay stranded.
+  function closeDialog() { if (dialog.open) dialog.close(); collapse(); }
+  dialog.addEventListener('close', collapse);
+  dialog.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); closeDialog(); }
+  });
+  dialog.querySelector('[data-action="close"]').addEventListener('click', closeDialog);
+  dialog.querySelector('[data-action="fit"]').addEventListener('click', () => {
+    if (expanded) refit(expanded.svg);
+  });
+
+  for (const figure of document.querySelectorAll('figure.diagram')) {
+    const shell = figure.querySelector('.diagram-shell');
+    const source = figure.querySelector('details.diagram-source');
+    figure.querySelector('[data-action="source"]').addEventListener('click', () => {
+      source.open = !source.open;
+    });
+    figure.querySelector('[data-action="fit"]').addEventListener('click', () => {
+      const svg = shell.querySelector('svg');
+      if (svg) refit(svg);
+    });
+    figure.querySelector('[data-action="expand"]').addEventListener('click', () => {
+      const svg = shell.querySelector('svg');
+      if (!svg) { source.open = true; return; }
+      const home = svg.parentElement;
+      const instance = instances.get(svg);
+      if (instance) { instance.destroy(); instances.delete(svg); }
+      dialogShell.appendChild(svg);
+      expanded = { svg, home };
+      dialog.showModal();
+      attachPanZoom(svg);
+    });
+  }
+
+  try {
+    const mermaidModule = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+    const mermaid = mermaidModule.default;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+      flowchart: { useMaxWidth: false },
+      sequence: { useMaxWidth: false },
+    });
+    await mermaid.run({ querySelector: '.mermaid' });
+    for (const svg of document.querySelectorAll('.diagram-shell svg')) attachPanZoom(svg);
+  } catch (err) {
+    console.warn('mermaid failed to load from the CDN; showing raw diagram source', err);
+  }
+</script>
+
+</body>
+</html>

@@ -240,7 +240,24 @@ def test_finish_opens_a_ready_for_review_pr_against_the_launch_branch(repo, tmp_
     assert argv[argv.index("--head") + 1] == integration_branch(run_id)
 
 
-def test_pr_body_lists_groups_state_summary_sessions_and_unmerged(repo, tmp_path, monkeypatch):
+def _one_pager(run_id: str) -> str:
+    return (
+        f"# Fixture plan — {run_id}\n\n"
+        "## TL;DR\n\n"
+        "- The first group landed (g1)\n"
+        "- The second group failed (g2)\n"
+        "- Nothing else changed (g1)\n\n"
+        "## Problems found\n\n"
+        "- The second group hit boom (g2)\n\n"
+        "## Run notes\n\n"
+        "- Relaunched the second group by hand (g2)\n\n"
+        "## Next steps\n\n"
+        "- Retry the second group (g2)\n\n"
+        "<!-- valid pointers: g1, g2 -->\n"
+    )
+
+
+def test_pr_body_without_one_pager_is_header_lines_link_and_postmortem(repo, tmp_path, monkeypatch):
     run_id = "r3"
     merged = make_group("g1")
     unmerged = make_group("g2")
@@ -271,9 +288,78 @@ def test_pr_body_lists_groups_state_summary_sessions_and_unmerged(repo, tmp_path
     finish_run(repo, run_id, announce=lambda _m: None)
 
     body = body_capture.read_text()
-    assert "g1" in body and "did g1" in body and "completed" in body
-    assert "g2" in body and "did g2" in body and "failed" in body
-    assert "Unmerged groups:" in body and "g2" in body.split("Unmerged groups:")[1]
+    assert body.startswith(f"Orchestrator run `{run_id}`")
+    assert "## Run record" in body
+    assert "**Outcome**: 1/2 groups completed" in body
+    assert "**Scope**" in body and "**Cost**" in body
+    assert f"docs/runs/{run_id}/report.html" in body
+    # No one-pager: no TL;DR section, and none of the old fixed headings.
+    assert "## TL;DR" not in body
+    for heading in ("## Motivation", "## Changes", "## Risks", "## Testing", "## Handoff"):
+        assert heading not in body
+    # g2's real (non-stale) failure landed the run in trouble, so the body
+    # carries a postmortem naming the failure verbatim.
+    assert "## Postmortem" in body
+    assert "boom" in body
+
+
+def test_pr_body_with_one_pager_starts_with_its_tldr_and_ends_with_the_report_link(
+    repo, tmp_path, monkeypatch
+):
+    run_id = "r3c"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch="main")
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=True)
+    write_docs_config(repo, ["html"])
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    out_dir = integration_wt / "docs" / "runs" / run_id
+    out_dir.mkdir(parents=True)
+    facts_pointer_text = _one_pager(run_id).replace("(g2)", "(g1)")
+    (out_dir / "one-pager.md").write_text(facts_pointer_text)
+
+    bin_dir = tmp_path / "fakebin"
+    body_capture = tmp_path / "pr-body.txt"
+    write_fake_gh(bin_dir, body_capture=body_capture)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    body = body_capture.read_text()
+    lines = body.splitlines()
+    assert lines[0] == f"Orchestrator run `{run_id}` — {run_id}"
+    assert lines[2] == "## TL;DR"
+    assert "- The first group landed (g1)" in body
+    assert "## Run notes" in body
+    # The H1 and the scaffold's pointer comment never reach the PR.
+    assert f"# Fixture plan — {run_id}" not in body
+    assert "valid pointers" not in body
+    assert body.index("## Next steps") < body.index("## Run record")
+    assert body.rstrip().endswith(f"(`docs/runs/{run_id}/report.html`)")
+    assert "## Postmortem" not in body
+    # …and the same one-pager was folded into the committed report.html.
+    html = (out_dir / "report.html").read_text()
+    assert "<h2>Summary</h2>" in html
+    assert "The first group landed" in html
+
+
+def test_pr_body_with_no_trouble_omits_postmortem(repo, tmp_path, monkeypatch):
+    run_id = "r3b"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch="main")
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    add_origin(repo, github_url=True)
+    bin_dir = tmp_path / "fakebin"
+    body_capture = tmp_path / "pr-body.txt"
+    write_fake_gh(bin_dir, body_capture=body_capture)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    body = body_capture.read_text()
+    assert "## Postmortem" not in body
 
 
 def test_detached_head_run_still_pushes_and_skips_pr(repo, tmp_path, monkeypatch):
@@ -704,3 +790,155 @@ def test_finish_reports_none_pending_for_an_empty_board(repo, tmp_path):
 
     residue = next(m for m in messages if "surprises pending" in m)
     assert "none pending" in residue
+
+
+# ------------------------------------------------------------------- docs (U5)
+
+
+def write_docs_config(repo: Path, formats: list[str]) -> None:
+    config_dir = repo / ".orchestrator"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    formats_str = ", ".join(f'"{f}"' for f in formats)
+    (config_dir / "config.toml").write_text(f"[docs]\nformats = [{formats_str}]\n")
+
+
+def test_finish_commits_docs_report_before_push_when_formats_configured(
+    repo, tmp_path, monkeypatch
+):
+    run_id = "r-docs-1"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["changelog"])
+
+    branch = integration_branch(run_id)
+    pushed_shas: list[str] = []
+
+    def fake_push(repo_root, run_id):
+        # Captured at the moment `finish` would push — proves the docs commit
+        # already landed on the branch before this call, not after.
+        pushed_shas.append(git(repo_root, "rev-parse", branch).strip())
+
+    monkeypatch.setattr(finish_module, "_push_integration_branch", fake_push)
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    docs_sha, subject = git(repo, "log", "-1", "--format=%H%x1f%s", branch).strip().split("\x1f")
+    assert subject == f"docs(run): report for {run_id}", subject
+    assert pushed_shas == [docs_sha]
+
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    changed = git(integration_wt, "show", "--name-only", "--format=", docs_sha).strip().splitlines()
+    assert changed, "docs commit touched no files"
+    for path in changed:
+        assert path.startswith(f"docs/runs/{run_id}/"), path
+
+
+def test_finish_creates_no_docs_commit_when_formats_empty(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-2"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    # No `.orchestrator/config.toml` at all — `[docs] formats` defaults to [].
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert not subject.startswith("docs(run):")
+
+
+def test_finish_aborts_before_push_on_a_failing_one_pager(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-3"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["facts"])
+
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    out_dir = integration_wt / "docs" / "runs" / run_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "one-pager.md").write_text("# not a valid one-pager\n")
+
+    pushed: list[str] = []
+    monkeypatch.setattr(
+        finish_module, "_push_integration_branch", lambda repo_root, run_id: pushed.append(run_id)
+    )
+
+    with pytest.raises(FinishError, match="one-pager.md failed validation"):
+        finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert pushed == []
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert not subject.startswith("docs(run):")
+
+
+def test_finish_does_not_abort_when_one_pager_is_absent(repo, tmp_path, monkeypatch):
+    run_id = "r-docs-4"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["facts"])
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    branch = integration_branch(run_id)
+    subject = git(repo, "log", "-1", "--format=%s", branch).strip()
+    assert subject == f"docs(run): report for {run_id}"
+
+
+# ------------------------------------------------------- driver notes (v2 U4)
+
+
+def test_finish_copies_driver_notes_into_the_run_dir_when_present(repo, tmp_path):
+    run_id = "r-notes-1"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["facts"])
+    notes = repo / ".orchestrator" / f"notes-{run_id}.md"
+    notes.write_text("# driver notes\n\nfixed the thing by hand\n")
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    copied = paths.run_dir / "driver-notes.md"
+    assert copied.read_text() == notes.read_text()
+    # Never committed to docs/: the docs commit carries only docs/runs/<id>/.
+    branch = integration_branch(run_id)
+    changed = git(repo, "show", "--name-only", "--format=", branch).strip().splitlines()
+    assert changed and all(p.startswith(f"docs/runs/{run_id}/") for p in changed)
+    assert not any(p.endswith("driver-notes.md") for p in changed)
+
+
+def test_finish_without_driver_notes_writes_nothing_and_never_errors(repo, tmp_path):
+    run_id = "r-notes-2"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    assert not (paths.run_dir / "driver-notes.md").exists()
+
+
+def test_finish_never_writes_docs_runlog(repo, tmp_path):
+    run_id = "r-runlog"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch=None)
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    write_docs_config(repo, ["changelog"])
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    integration_wt = worktree_path(repo, run_id, "integration", "integration")
+    assert not (integration_wt / "docs" / "RUNLOG.md").exists()
+    assert not (repo / "docs" / "RUNLOG.md").exists()
+    assert (integration_wt / "docs" / "runs" / run_id / "CHANGELOG-entry.md").is_file()

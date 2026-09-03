@@ -445,6 +445,49 @@ def main(
         help="project label recorded in the bundle (default: the repo directory name)",
     )
 
+    report_cmd = subparsers.add_parser(
+        "report", help="render a human-facing report from a finished run's artifacts"
+    )
+    report_cmd.add_argument("run_id", help="the run to report on")
+    report_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+    report_cmd.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="run directory to read (default: <repo>/.orchestrator/runs/<run_id>); a fixture stand-in",
+    )
+    report_cmd.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output directory (default: <repo>/<[docs] out_dir>/<run_id>/)",
+    )
+    report_cmd.add_argument(
+        "--format",
+        default="facts",
+        choices=["facts", "html", "changelog", "all"],
+        help="report format to render ('all' runs every registered format)",
+    )
+    report_cmd.add_argument(
+        "--update-runlog",
+        action="store_true",
+        help="with --format changelog/all: also rewrite this run's block in docs/RUNLOG.md "
+        "(off by default so a preview never dirties the checkout; `finish` updates it itself)",
+    )
+    report_cmd.add_argument(
+        "--scaffold",
+        choices=["one-pager"],
+        default=None,
+        help="write the one-pager scaffold (trial D) under --out instead of rendering a format",
+    )
+    report_cmd.add_argument(
+        "--validate",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="validate a filled-in one-pager against this run's facts; exit 1 if any rule fails",
+    )
+
     calibrate_cmd = subparsers.add_parser(
         "calibrate", help="compare a finished run's token estimates against what it actually cost"
     )
@@ -491,6 +534,8 @@ def main(
         return _cmd_finish(args)
     if args.command == "export":
         return _cmd_export(args)
+    if args.command == "report":
+        return _cmd_report(args)
     if args.command == "calibrate":
         return _cmd_calibrate(args)
     if args.command == "ui":
@@ -2882,6 +2927,106 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"wrote {destination}")
+    return 0
+
+
+# --------------------------------------------------------------------- report
+
+
+def _write_facts_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+
+    destination = out_dir / "facts.json"
+    atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+    return destination
+
+
+def _write_html_format(facts, out_dir: Path, repo_root: Path, run_dir: Path | None = None) -> Path:
+    # A one-pager already under --out (the driver wrote it there) is folded
+    # into the HTML's Summary; `finish` does the same on the integration branch.
+    # `run_dir` (the --run-dir override, else the default) is where the shared
+    # base-context.md is read from.
+    from orchestrator.execution.finish import render_html_doc
+
+    return render_html_doc(facts, out_dir, repo_root, run_dir=run_dir)
+
+
+def _write_changelog_format(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.finish import render_changelog_doc
+
+    return render_changelog_doc(facts, out_dir, repo_root)
+
+
+def _update_runlog(facts, out_dir: Path, repo_root: Path) -> Path:
+    """Rewrite this run's block in ``docs/RUNLOG.md`` from the entry just
+    written under ``out_dir`` — opt-in via ``--update-runlog`` so a preview
+    `report` never dirties the checkout (report v2 U2)."""
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.markdown import update_runlog
+
+    entry = (out_dir / "CHANGELOG-entry.md").read_text()
+    runlog_path = repo_root / "docs" / "RUNLOG.md"
+    atomic_write_text(runlog_path, update_runlog(runlog_path, facts.run_id, entry))
+    return runlog_path
+
+
+#: format name -> renderer; ``all`` runs every one of these (report U4).
+_REPORT_FORMATS = {
+    "facts": _write_facts_format,
+    "html": _write_html_format,
+    "changelog": _write_changelog_format,
+}
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    """Render a human-facing report format from a finished run's artifacts.
+    Pure read of the run directory, the plan, junit, and git → one atomic
+    write; never an LLM call (plan U1)."""
+    # Local import: export (pulled in by build_facts) needs the Observatory's
+    # snapshot composer (fastapi), which no other CLI path needs.
+    from orchestrator.execution.export import ExportError
+    from orchestrator.report.facts import build_facts
+
+    repo_root = args.repo.resolve()
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    out_dir = args.out or (repo_root / config.docs.out_dir / args.run_id)
+
+    try:
+        facts = build_facts(repo_root, args.run_id, run_dir=args.run_dir)
+    except ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.validate is not None:
+        from orchestrator.report.onepager import validate
+
+        violations = validate(args.validate.read_text(), facts)
+        for violation in violations:
+            print(violation)
+        return 1 if violations else 0
+
+    if args.scaffold is not None:
+        from orchestrator.execution.manifest import atomic_write_text
+        from orchestrator.report.onepager import scaffold
+
+        destination = out_dir / "one-pager.md"
+        atomic_write_text(destination, scaffold(facts))
+        print(f"wrote {destination}")
+        return 0
+
+    formats = _REPORT_FORMATS.keys() if args.format == "all" else [args.format]
+    for name in formats:
+        renderer = _REPORT_FORMATS.get(name)
+        if renderer is None:
+            print(f"error: unknown format {name!r}", file=sys.stderr)
+            return 2
+        if renderer is _write_html_format:
+            destination = renderer(facts, out_dir, repo_root, run_dir=args.run_dir)
+        else:
+            destination = renderer(facts, out_dir, repo_root)
+        print(f"wrote {destination}")
+        if name == "changelog" and args.update_runlog:
+            print(f"updated {_update_runlog(facts, out_dir, repo_root)}")
     return 0
 
 

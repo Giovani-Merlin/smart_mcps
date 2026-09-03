@@ -12,15 +12,13 @@ branch's own history, and the worktree is safe to remove. ``git branch -d``
 
 from __future__ import annotations
 
-import json
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from orchestrator.config import ExecutionConfig
+from orchestrator.config import ExecutionConfig, load_config
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
@@ -113,6 +111,21 @@ def finish_run(
     manifest = store.load() if store.exists() else None
 
     branch = integration_branch(run_id)
+    # Resolved, not constructed: a run started before U2's run-scoping has its
+    # integration worktree at the legacy path, and `git branch -d` has to run
+    # with HEAD at the integration tip for its merge check to mean anything —
+    # the repo root would check against the launch branch and refuse everything.
+    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
+    if integration_wt is None:
+        raise FinishError(
+            f"integration worktree for {run_id} not found at "
+            f"{worktree_path(repo_root, run_id, 'integration', 'integration')} "
+            "or its legacy path; branch teardown needs it to verify merges"
+        )
+
+    _copy_driver_notes(repo_root, run_id, paths, log)
+    _generate_and_commit_docs(repo_root, run_id, integration_wt, paths, log)
+
     tip = _git_ok(repo_root, "rev-parse", branch).strip()
     _push_integration_branch(repo_root, run_id)
     log(f"finish {run_id}: pushed {branch} to origin at {tip}")
@@ -142,17 +155,6 @@ def finish_run(
 
     unmerged: list[str] = []
     kept_branches: list[str] = []
-    # Resolved, not constructed: a run started before U2's run-scoping has its
-    # integration worktree at the legacy path, and `git branch -d` has to run
-    # with HEAD at the integration tip for its merge check to mean anything —
-    # the repo root would check against the launch branch and refuse everything.
-    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
-    if integration_wt is None:
-        raise FinishError(
-            f"integration worktree for {run_id} not found at "
-            f"{worktree_path(repo_root, run_id, 'integration', 'integration')} "
-            "or its legacy path; branch teardown needs it to verify merges"
-        )
     for gid in sorted(state.groups):
         entry = state.groups[gid]
         if not _group_is_merged(repo_root, run_id, tip, gid, entry):
@@ -201,41 +203,157 @@ def _push_integration_branch(repo_root: Path, run_id: str) -> None:
         raise FinishError(f"push of {branch} to origin failed: {result.stderr.strip()[:500]}")
 
 
+# ------------------------------------------------------------ driver notes
+
+DRIVER_NOTES_FILENAME = "driver-notes.md"
+
+
+def driver_notes_source(repo_root: Path, run_id: str) -> Path:
+    """Where the run-driver skill keeps its triage notes for a run."""
+    return repo_root / ".orchestrator" / f"notes-{run_id}.md"
+
+
+def _copy_driver_notes(
+    repo_root: Path, run_id: str, paths: RunPaths, log: Callable[[str], None]
+) -> None:
+    """Copy ``.orchestrator/notes-<run_id>.md`` (the driver session's own
+    record: causes, hand fixes, next steps) into the run dir as
+    ``driver-notes.md`` so the export bundle and future fixtures carry the
+    narrative the one-pager's "Run notes" section is written from (report
+    v2 U4). Never committed to ``docs/``; silently absent when the driver
+    kept no notes."""
+    source = driver_notes_source(repo_root, run_id)
+    if not source.is_file():
+        return
+    destination = paths.run_dir / DRIVER_NOTES_FILENAME
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    log(f"finish {run_id}: copied driver notes to {destination.relative_to(repo_root)}")
+
+
+# -------------------------------------------------------------------- docs
+
+
+def _one_pager_text(out_dir: Path) -> str | None:
+    path = out_dir / "one-pager.md"
+    return path.read_text() if path.is_file() else None
+
+
+def render_facts_doc(facts, out_dir: Path, repo_root: Path) -> Path:
+    from orchestrator.execution.manifest import atomic_write_text
+
+    destination = out_dir / "facts.json"
+    atomic_write_text(destination, facts.model_dump_json(indent=2) + "\n")
+    return destination
+
+
+def render_html_doc(facts, out_dir: Path, repo_root: Path, run_dir: Path | None = None) -> Path:
+    """``report.html`` with the one-pager under ``out_dir`` folded into its
+    Summary when present (report v2 U2), each merged group's diff (git runs
+    in ``repo_root``), and the shared ``base-context.md`` read from
+    ``run_dir`` — the default ``.orchestrator/runs/<run_id>`` when not given
+    (report v2.1). Shared with the CLI's ``report``."""
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.html import render_html
+
+    diagrams = render_all(facts, repo_root)
+    destination = out_dir / "report.html"
+    run_dir = RunPaths(repo_root, facts.run_id, run_dir=run_dir).run_dir
+    atomic_write_text(
+        destination,
+        render_html(
+            facts,
+            diagrams,
+            one_pager=_one_pager_text(out_dir),
+            repo_root=repo_root,
+            run_dir=run_dir,
+        ),
+    )
+    return destination
+
+
+def render_changelog_doc(facts, out_dir: Path, repo_root: Path) -> Path:
+    """``CHANGELOG-entry.md`` only — never ``docs/RUNLOG.md``: `finish` must
+    not commit anything outside ``docs/runs/<run_id>/`` (plan U5), and a
+    preview `report` must not dirty the checkout (report v2 U2). The CLI's
+    ``--update-runlog`` is the one opt-in writer of the run log."""
+    from orchestrator.execution.manifest import atomic_write_text
+    from orchestrator.report.diagrams import render_all
+    from orchestrator.report.markdown import render_changelog_entry
+
+    diagrams = render_all(facts, repo_root)
+    destination = out_dir / "CHANGELOG-entry.md"
+    atomic_write_text(destination, render_changelog_entry(facts, diagrams))
+    return destination
+
+
+#: format name -> renderer, every one scoped to writing only inside
+#: `docs/runs/<run_id>/`. The CLI's `report` command reuses these.
+_DOCS_FORMATS: dict[str, Callable] = {
+    "facts": render_facts_doc,
+    "html": render_html_doc,
+    "changelog": render_changelog_doc,
+}
+
+
+def _generate_and_commit_docs(
+    repo_root: Path,
+    run_id: str,
+    integration_wt: Path,
+    paths: RunPaths,
+    log: Callable[[str], None],
+) -> None:
+    """Render every ``[docs] formats`` entry into ``docs/runs/<run_id>/`` on
+    the integration worktree, validate a present ``one-pager.md`` against
+    this run's facts, then commit — all before `finish` pushes, so the pushed
+    tip already carries the report (plan U5). A config with no formats is a
+    no-op: a run against a foreign repo gets no unsolicited `docs/` commit.
+    """
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    if not config.docs.formats:
+        return
+
+    from orchestrator.report.facts import build_facts
+
+    facts = build_facts(repo_root, run_id, run_dir=paths.run_dir)
+    out_dir = integration_wt / config.docs.out_dir / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Validate the one-pager before the HTML embeds it, so an invalid one
+    # never reaches the branch in any form.
+    one_pager_path = out_dir / "one-pager.md"
+    if one_pager_path.is_file():
+        from orchestrator.report.onepager import validate
+
+        violations = validate(one_pager_path.read_text(), facts)
+        if violations:
+            raise FinishError(
+                f"one-pager.md failed validation for {run_id}:\n"
+                + "\n".join(f"- {v}" for v in violations)
+            )
+
+    for name in config.docs.formats:
+        renderer = _DOCS_FORMATS.get(name)
+        if renderer is None:
+            raise FinishError(
+                f"unknown [docs] format {name!r}; expected one of {sorted(_DOCS_FORMATS)}"
+            )
+        if renderer is render_html_doc:
+            renderer(facts, out_dir, repo_root, run_dir=paths.run_dir)
+        else:
+            renderer(facts, out_dir, repo_root)
+
+    rel_out_dir = out_dir.relative_to(integration_wt).as_posix()
+    _git_ok(integration_wt, "add", rel_out_dir)
+    status = _git_ok(integration_wt, "status", "--porcelain", "--", rel_out_dir)
+    if not status.strip():
+        return
+    _git_ok(integration_wt, "commit", "-m", f"docs(run): report for {run_id}")
+    log(f"finish {run_id}: committed {rel_out_dir}")
+
+
 # ----------------------------------------------------------------------- PR
-
-
-# Deliberately does not match `verdict-g<N>-r<M>-extra.json` — the mandatory
-# second pass a `paired_plus` group earns above `d_hard` (plan U28). A group
-# with such a pass therefore reports its first-pass verdict here; benign today
-# (the Observatory drill-in labels the `-extra` file so an operator can find it),
-# left unchanged rather than widened.
-_VERDICT_RE = re.compile(r"^verdict-g(\d+)-r(\d+)\.json$")
-
-
-def _latest_verdict_status(paths: RunPaths, gid: str) -> str | None:
-    """The most recent reviewer verdict's status for ``gid``, or None when no
-    reviewer round ever ran (e.g. a self_verify group)."""
-    group_dir = paths.group_dir(gid)
-    best_path: Path | None = None
-    best_key = (-1, -1)
-    if not group_dir.is_dir():
-        return None
-    for path in group_dir.glob("verdict-g*-r*.json"):
-        match = _VERDICT_RE.match(path.name)
-        if match is None:
-            continue
-        key = (int(match.group(1)), int(match.group(2)))
-        if key > best_key:
-            best_key = key
-            best_path = path
-    if best_path is None:
-        return None
-    try:
-        payload = json.loads(best_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    status = payload.get("status")
-    return status if isinstance(status, str) else None
 
 
 def _render_pr_body(
@@ -246,24 +364,39 @@ def _render_pr_body(
     manifest: RunManifest | None,
     paths: RunPaths,
 ) -> str:
-    lines = [f"Orchestrator run `{run_id}`, integration tip `{tip[:12]}`.", ""]
-    unmerged: list[str] = []
-    for gid in sorted(state.groups):
-        entry = state.groups[gid]
-        group_entry = manifest.groups.get(gid) if manifest is not None else None
-        summary = group_entry.summary if group_entry is not None else "(no summary recorded)"
-        sessions = len(group_entry.sessions) if group_entry is not None else 0
-        verdict = _latest_verdict_status(paths, gid)
-        verdict_text = f", reviewer verdict: {verdict}" if verdict else ""
-        lines.append(
-            f"- **{gid}** ({entry.state.value}{verdict_text}, {sessions} session(s)): {summary}"
-        )
-        if not _group_is_merged(repo_root, run_id, tip, gid, entry):
-            unmerged.append(gid)
-    if unmerged:
+    """The PR body as a derived view (report v2 U2): the one-pager's body
+    (H1 and pointer comment dropped) when the run has one, then the changelog
+    entry's Outcome/Scope/Cost lines, a link to ``report.html`` on the branch,
+    and the postmortem-lite block when the run had trouble. Without a
+    one-pager it is the header lines and the link only."""
+    from orchestrator.report.facts import build_facts
+    from orchestrator.report.markdown import changelog_header_lines, render_postmortem
+    from orchestrator.report.onepager import body_without_title
+
+    facts = build_facts(repo_root, run_id, run_dir=paths.run_dir)
+    config = load_config(repo_root / ".orchestrator" / "config.toml")
+    integration_wt = existing_worktree_path(repo_root, run_id, "integration", "integration")
+    one_pager: str | None = None
+    if integration_wt is not None:
+        one_pager = _one_pager_text(integration_wt / config.docs.out_dir / run_id)
+
+    lines = [f"Orchestrator run `{facts.run_id}` — {facts.plan_title or facts.run_id}", ""]
+    if one_pager:
+        lines.append(body_without_title(one_pager).rstrip())
         lines.append("")
-        lines.append(f"**Unmerged groups:** {', '.join(unmerged)}")
-    return "\n".join(lines) + "\n"
+    lines.append("## Run record")
+    lines.append("")
+    lines.extend(changelog_header_lines(facts))
+    report_rel = f"{config.docs.out_dir}/{facts.run_id}/report.html"
+    lines.append(
+        f"- **Report**: the complete record is [`{report_rel}`]({report_rel}) on this branch "
+        f"(`{report_rel}`)"
+    )
+    lines.append("")
+    if facts.trouble:
+        lines.append(render_postmortem(facts))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _open_pr(repo_root: Path, run_id: str, launch_branch: str, body: str) -> tuple[bool, str]:

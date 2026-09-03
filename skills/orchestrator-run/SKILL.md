@@ -102,12 +102,15 @@ For a resume: the same, with `resume <run_id>` in place of `run … --run-id`.
 - `run` **blocks** until the run ends; there is no `stop` subcommand.
   Stopping = `kill -INT -<pgid>` (the process group `setsid` created), which
   the CLI logs as `run <id> interrupted (SIGINT)` and leaves resumable.
+
 - **Always pass `--escalation-timeout`.** `timeout_s = None` blocks forever;
   if this session dies, the timeout (`on_timeout = autonomous`) hands the
   group to the speccer instead of wedging the run. Four hours is the default
   budget; shorten it if the human will not be around.
+
 - Record `run id`, `pid`, launch command, and launch commit in
   `.orchestrator/notes-<run_id>.md` immediately.
+
 - Confirm liveness within a minute: `smart-mcps-orchestrate status $RUN`
   should read `a process is driving this run (pid …)`, and `logs/run.log`
   should contain `run <id> started with HITL: intensity=on_stuck`.
@@ -196,17 +199,80 @@ text) to the notes file at the moment you answer it.
 When the process exits (signal **(b)**):
 
 1. `smart-mcps-orchestrate status $RUN` — per-group terminal states.
-2. If every group completed/resolved, the CLI printed
-   `finish when ready with: smart-mcps-orchestrate finish $RUN`. Run it only
-   after the human has seen the summary — it pushes and opens a PR.
-   `smart-mcps-orchestrate export $RUN` writes the ingest bundle if the
-   repo's workflow ingests runs.
-3. If groups failed: say which, why (the `failure:` line), and whether
+2. If groups failed: say which, why (the `failure:` line), and whether
    `smart-mcps-orchestrate retry $RUN <gid>` + `resume` is a sane salvage
    (it is, when the integration tip has since moved past the cause).
-4. Write the summary into `.orchestrator/notes-<run_id>.md`: per-group
-   outcome, every escalation and how it was resolved, elapsed time, and the
-   cost lines from `run.log` if present.
+3. If every group completed/resolved, the CLI printed
+   `finish when ready with: smart-mcps-orchestrate finish $RUN`. **The record
+   the human approves from is the report, not this session's prose** — see
+   `docs/orchestrator-report.md` for the full format contract. Before running
+   `finish`:
+   1. Check `.orchestrator/config.toml` `[docs] formats` — the report is only
+      generated (and committed) when it names at least one format. If the
+      repo wants a report and the block is empty or missing, add
+      `[docs]\nformats = ["facts", "html", "changelog"]` yourself and commit
+      it before launching the *next* run (`finish` reads it fresh, so this
+      run only gets a report if it was already set before launch).
+   2. Preview the computed formats now, so you write the one-pager from real
+      facts: `smart-mcps-orchestrate report $RUN --format all --out /tmp/rr-$RUN`.
+      This writes `facts.json`, `report.html`, and `CHANGELOG-entry.md`
+      there and nothing else — it never touches `docs/RUNLOG.md` unless you
+      add `--update-runlog`, and never writes into a worktree. `finish`
+      re-renders the configured formats itself onto the integration branch.
+   3. Write the one-pager — it IS the PR body and IS the Summary at the top
+      of `report.html`, so it is the record the human approves from. Write it
+      directly into the integration worktree, since that is where `finish`
+      looks for it, and **before the last group merges**: the CLI
+      auto-finishes the moment every group is terminal, and a one-pager
+      written after that only lands if you run `finish` again to refresh the
+      PR body.
+      `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
+      Then fill it in with the extract-then-abstract recipe:
+      - **Extract.** Build one prompt from two XML-delimited sources and
+        nothing else — never a transcript:
+        ```
+        <facts>…contents of /tmp/rr-$RUN/CHANGELOG-entry.md…</facts>
+        <driver_notes>…contents of .orchestrator/notes-$RUN.md…</driver_notes>
+        ```
+        From them list `{pointer, fact quote}` items, one per thing worth
+        saying, each pointer taken from the scaffold's
+        `<!-- valid pointers: … -->` comment. If no pointer supports a
+        statement, leave it out.
+      - **Abstract.** Fill the four sections from that list only — TL;DR
+        (exactly 3 bullets), Problems found (1–8), **Run notes** (1–8: what
+        *you* did — hand fixes, the cause of each escalation, what was
+        recovered; cite escalation ids and `gid/role/genN` session labels),
+        Next steps (1–8). Each section may open with one plain paragraph of
+        context (no pointer). Every top-level bullet ends in `(pointer)`; a
+        bullet may carry indented continuation lines or `  - ` sub-bullets,
+        which need no pointer. Write Next steps as
+        `- <action>: <why it matters and what "done" looks like> (pointer)`,
+        optionally with a `  - how:` sub-bullet naming the first concrete
+        move — a reader acts on these, so give each the context to act. No
+        modal verbs in Problems found or Run notes; 900 words total over
+        paragraphs, bullets and continuations.
+      - **Verify.** Loop
+        `smart-mcps-orchestrate report $RUN --validate .worktrees/$RUN/integration/docs/runs/$RUN/one-pager.md`
+        until it exits 0, fixing **only** the bullets it names — a nonzero
+        exit prints the exact rule that failed, never guess a fix. A present
+        but invalid one-pager makes `finish` abort before it pushes, so do
+        not skip the loop. Leaving `one-pager.md` absent is fine — `finish`
+        generates the other formats without it and the PR body falls back
+        to the run-record lines and the report link.
+   4. Run `smart-mcps-orchestrate finish $RUN` only after the human has seen
+      the one-pager — it copies `.orchestrator/notes-$RUN.md` into the run
+      dir as `driver-notes.md`, renders `[docs] formats` onto the
+      integration branch (the one-pager folded into `report.html`), commits
+      `docs/runs/$RUN/`, pushes, and opens a PR whose body is the one-pager
+      plus the run-record lines. To also record the run in `docs/RUNLOG.md`,
+      run `report $RUN --format changelog --update-runlog` in the main
+      checkout and commit it there. `smart-mcps-orchestrate export $RUN`
+      writes the ingest bundle if the repo's workflow ingests runs.
+4. Keep `.orchestrator/notes-<run_id>.md` as your own triage notes as you go
+   (every escalation and how it was resolved, anything you fixed on the
+   integration branch) — it is scratch for *you* and the raw material for the
+   one-pager's Run notes, not the human-facing record. Do not duplicate the
+   report's computed content there.
 5. Surface anything the plan/deepen skills should learn — a verification item
    that turned out self-referential, a data path the plan named that
    `[workspace]` did not cover, a unit the grouper should have split — as a

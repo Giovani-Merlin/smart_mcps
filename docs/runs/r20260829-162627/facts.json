@@ -1,0 +1,587 @@
+{
+  "run_id": "r20260829-162627",
+  "plan_path": "docs/plans/2026-08-29-001-feat-plan-split-and-deepen-plan.md",
+  "plan_title": "Mechanical plan split and the deepen skill",
+  "plan_objective": "Ship wave 2 of the grouper-speccer-flow requirements — R16 (mechanical plan\nsplit), R17 (`/orchestrator-deepen`), and R18 (its question policy and\nenrichment template, grounded in the R19 research already received) — so that\nthe advisory grouper shipped in wave 1 has somewhere to lead:\n\n- **R16**: `smart-mcps-orchestrate split` turns a chosen seam into N plan\n  documents by moving unit sections and task-map entries **verbatim**, with no\n  LLM regeneration of any prose.\n- **R17/R18**: `/orchestrator-deepen <plan>` is a standalone interactive skill\n  that spawns read-only explorers, grills the human with a capped, EVPI-ranked\n  question set, and writes the answers back into the plan as per-unit\n  enrichment — edge cases, non-goals, and sharpened `Run:`/`Pass:` verification\n  items.\n\nBoth commands write into a plan document, which is the fingerprint-drift bug\nclass this repo has been bitten by before. So both go through **one shared,\ntested plan-surgery module** whose guarantee is byte-level: the task map and\nunit ids either survive a rewrite untouched, or the rewrite is refused.\n\nR19 is already satisfied — both Perplexity reports were received 2026-08-28 and\ntheir findings are folded into the origin brainstorm; this plan consumes them\nrather than re-commissioning them. R20 (the eval harness) stays out of scope,\nblocked on Infinity Skills ingestion.",
+  "origin": "docs/brainstorms/2026-08-28-grouper-speccer-flow-requirements.md",
+  "created_at": "2026-08-29T16:27:54.342873+00:00",
+  "finished_at": null,
+  "pr_url": "https://github.com/Giovani-Merlin/smart_mcps/pull/6",
+  "git_range": {
+    "base_sha": "5eca4f14b65b17100b6a91efd9bbbf005a488492",
+    "tip_sha": "a76fec68bbb368004f96ae8cbf7f5042697a4813",
+    "available": true
+  },
+  "changed_files": [
+    {
+      "path": "docs/orchestrator-grouping.md",
+      "added": 38,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "docs/orchestrator-task-map.md",
+      "added": 25,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "orchestrator/cli.py",
+      "added": 222,
+      "deleted": 3,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/grouping/advisory.py",
+      "added": 23,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/grouping/plan_edit.py",
+      "added": 355,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/grouping/plan_reader.py",
+      "added": 11,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/grouping/plan_sections.py",
+      "added": 22,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "skills/orchestrator-deepen/SKILL.md",
+      "added": 148,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "skills/orchestrator-deepen/explorer-prompt.md",
+      "added": 95,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "skills/orchestrator-plan/SKILL.md",
+      "added": 37,
+      "deleted": 7,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_plan_edit.py",
+      "added": 294,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_plan_sections.py",
+      "added": 138,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_plan_split.py",
+      "added": 466,
+      "deleted": 0,
+      "group_id": "g2"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "plan-edit — verbatim plan surgery and the `plan-check` guard",
+      "summary": "A shared `plan_edit` module that extracts and reassembles unit sections and task-map entries byte-verbatim and refuses…",
+      "report_summary": "Implemented orchestrator/grouping/plan_edit.py as the single verbatim-surgery module: extract_task_map_entries/render_task_map_block for byte-exact task-map entry slicing, split_units for byte-exact unit-section slicing, validate_plan for structural consistency checks, and verify_map_unchanged which diffs two plan documents' surviving task entries (field-level, via YAML) and unit ids, reporting every difference found. Added task_map_block_span to plan_reader.py and locate_units_span/UNIT_HEADING to plan_sections.py as the minimal span helpers plan_edit needed, reusing the existing fence/heading regexes rather than duplicating them. Wired `orchestrate plan-check <plan> [--against <path>]` into cli.py, dispatching before any config/LLM/codegraph setup. All 5 verification items pass, confirmed live against the repo's real 36-unit plan (byte-identical round trip, ~0.8ms per validate_plan call). Full suite is green except 5 pre-existing, unrelated failures traced to sandbox environment issues (cross-device git worktree move, permission-denied mkdir under ~/.claude/projects) that reproduce with zero relation to this diff.",
+      "spec": "# Group g1: plan-edit — verbatim plan surgery and the `plan-check` guard\n\nMembers:\n- u1-plan-edit: plan-edit — verbatim plan surgery and the `plan-check` guard\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g2 consumes `plan-edit` — u2-plan-split: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n- g3 consumes `plan-edit` — u3-deepen-skill: A standalone interactive skill that explores the codebase\n  read-only per group, grills the human with 3–5 EVPI-ranked questions per\n  group, and writes the answers back into the plan as per-unit edge cases,\n  non-goals, and `Run:`/`Pass:` verification items.\n\nContracts (cross-group):\n- g1 provides `plan-edit` — u2-plan-split: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n- g1 provides `plan-edit` — u3-deepen-skill: A standalone interactive skill that explores the codebase\n  read-only per group, grills the human with 3–5 EVPI-ranked questions per\n  group, and writes the answers back into the plan as per-unit edge cases,\n  non-goals, and `Run:`/`Pass:` verification items.\n\nSlice: (none)\n\n\n### U1. plan-edit — verbatim plan surgery and the `plan-check` guard\n\n- **Summary**: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n- **Goal**: `orchestrator/grouping/plan_edit.py` exists and is the single write\n  path for programmatic plan edits. It offers: a task-map block span helper\n  (added to `plan_reader.py` so the fence regex stays in one place), verbatim\n  extraction of each `  - task_id:` entry and each `### U<N>` section, a\n  reassembler that rebuilds a plan document from a chosen subset of units plus\n  a preamble, and `verify_map_unchanged(before, after)` which compares the\n  surviving task entries and unit ids byte-for-byte and reports every\n  difference it finds (not just the first). `orchestrate plan-check <plan>\n  --against <path>` runs the same comparison between two documents and exits\n  non-zero on any drift; with no `--against` it validates the plan's internal\n  consistency alone (map parses, every map task has a section, every section\n  has a map entry). No LLM, no codegraph, no graph build — sub-second like\n  `--price`.\n- **Files**: `orchestrator/grouping/plan_edit.py` *(new, medium)*,\n  `orchestrator/grouping/plan_reader.py`, `orchestrator/cli.py`,\n  `tests/test_plan_edit.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `plan-edit`, `plan-check-cli`\n- **Verification**:\n  - Extracting all units from a plan and reassembling them into one document\n    yields a file whose task-map block and every `### U<N>` section are\n    byte-identical to the original.\n  - `verify_map_unchanged` accepts a rewrite that only adds new bullets inside\n    a unit body, and rejects a rewrite that alters a `depends_on` list, a\n    `size_hints` value, or a `task_id`, naming each altered entry.\n  - `verify_map_unchanged` reports **all** differences in one report, not the\n    first — a document with three altered entries names three.\n  - `orchestrate plan-check <plan>` exits 0 on a well-formed plan and non-zero\n    with a message naming the offending unit when a map task has no `### U<N>`\n    section, and again when a section has no map entry.\n  - `plan-check` completes in under a second on this repo's largest plan and\n    makes no codegraph or LLM call (a stub runner that raises on any call is\n    not invoked).\n\n",
+      "merge_sha": "afe2e3c0685b249014d4521f6131a424b2a41239",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-plan-edit"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/plan_edit.py",
+        "orchestrator/grouping/plan_reader.py",
+        "tests/test_plan_edit.py"
+      ],
+      "touched_files": [
+        "orchestrator/grouping/plan_reader.py",
+        "orchestrator/grouping/plan_sections.py",
+        "tests/test_plan_edit.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-29T16:27:57.038611+00:00",
+          "ended_at": "2026-08-29T16:38:56.565964+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 90,
+            "output": 44893,
+            "cache_creation": 144035
+          },
+          "cache_read_tokens": 5141890
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-29T16:38:56.565964+00:00",
+          "ended_at": "2026-08-29T16:40:14.224+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 26,
+            "output": 3124,
+            "cache_creation": 70817
+          },
+          "cache_read_tokens": 965061
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1527,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g2",
+      "name": "plan-split — `orchestrate split`, seam-addressable and overridable",
+      "summary": "`orchestrate split` partitions a plan into N documents by moving unit sections and task-map entries verbatim, taking it…",
+      "report_summary": "Implemented `orchestrate split`: added `assign_tasks`, `split_plan`, `add_frontmatter_field`, and `add_predecessor_note` to `orchestrator/grouping/plan_edit.py` for verbatim, byte-safe plan partitioning; added `finding_task_groups` to `orchestrator/grouping/advisory.py` to turn a disconnected finding's `task_sets` or a serial finding's direct `tasks_before`/`tasks_after` boundary into a task->document assignment (monolithic findings and valley-only serial findings are correctly reported as not directly addressable); wired a new `split` CLI subcommand in `orchestrator/cli.py` supporting `--seam N` (reads `preview/advisory.json`) and repeatable `--tasks a,b` (which overrides `--seam`), with all-tasks-assigned-exactly-once validation, `<stem>-part<N>-plan.md` output naming, `split_from` frontmatter, a predecessor note on downstream documents of a serial-seam split, and an untouched source plan; also numbered cohesion findings and printed their task sets/boundary cuts in `_print_advisory_report`. Added `tests/test_plan_split.py` (30 tests) covering assignment validation, split correctness/byte-identity, frontmatter helpers, finding-to-groups logic, and full CLI flows including plan-check and price-under-cap on produced documents. Full suite run: 1552 passed, 5 pre-existing failures unrelated to this change (permission-denied on `~/.claude/projects` and a `/tmp` cross-device link in `execution/confinement.py`/`execution/finish.py`, files this group never touched).",
+      "spec": "# Group g2: plan-split — `orchestrate split`, seam-addressable and overridable\n\nMembers:\n- u2-plan-split: plan-split — `orchestrate split`, seam-addressable and overridable\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g1 provides `plan-edit` — u1-plan-edit: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n\nDownstream groups:\n- g3 consumes `split-cli` — u4-planning-contract: `/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.\n\nContracts (cross-group):\n- g2 consumes `plan-edit` — u1-plan-edit: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n- g2 provides `advisory-seams` — u4-planning-contract: `/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.\n- g2 provides `split-cli` — u4-planning-contract: `/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.\n\nSlice: (none)\n\n\n### U2. plan-split — `orchestrate split`, seam-addressable and overridable\n\n- **Summary**: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n- **Goal**: `orchestrate split <plan>` accepts `--seam N` (reads\n  `.orchestrator/groupings/<name>/preview/advisory.json` and uses that\n  finding's `task_sets`, or for a `serial` finding its `boundary` cut, as the\n  task→document assignment) or one `--tasks` flag per output document, which\n  overrides. Every task must be assigned exactly once; an unassigned or\n  double-assigned task is an error listing all of them. Output documents are\n  `<stem>-part<N>-plan.md` beside the original, each carrying the source\n  plan's preamble, its own unit sections and map entries verbatim via U1, and\n  frontmatter recording `split_from`. A split at a `serial` seam additionally\n  writes a one-line predecessor note (\"assumes `<part N-1>` is merged\") into\n  each downstream document — the only new prose the command ever writes. The\n  original is left untouched. To make `--seam N` addressable,\n  `_print_advisory_report` gains a stable index per cohesion finding and prints\n  each finding's task sets (or its boundary cut) rather than only the message.\n- **Files**: `orchestrator/cli.py`, `orchestrator/grouping/advisory.py`,\n  `orchestrator/grouping/plan_edit.py`, `tests/test_plan_split.py`\n  *(new, medium)*, `tests/test_advisory.py`\n- **Symbols**: —\n- **Depends-on**: u1-plan-edit\n- **Slice**: —\n- **Implements / Consumes**: implements `split-cli`, `advisory-seams`;\n  consumes `plan-edit`\n- **Verification**:\n  - `group --advise` output numbers every cohesion finding and prints its task\n    sets (disconnected) or boundary cut (serial), and the numbering is stable\n    across two runs on an unchanged plan.\n  - Splitting a fixture plan with `--seam 1` produces documents whose combined\n    unit sections and task-map entries equal the original's, byte-for-byte,\n    with no unit lost or duplicated.\n  - `--tasks` overrides the seam: given both flags, the assignment used is the\n    one from `--tasks`.\n  - A task assigned to no document, and a task assigned to two, are each\n    rejected with a message naming every offending task.\n  - Each produced document passes `plan-check`, and running\n    `group --price` on each succeeds with every slice under cap.\n  - Splitting at a `serial` seam writes the predecessor note into the\n    downstream document and not into the first.\n  - The source plan file is unmodified after a split (byte-identical).\n\n",
+      "merge_sha": "7dd7ec54e09a064daa3176efc88aca4d8993a8aa",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u2-plan-split"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/advisory.py",
+        "orchestrator/grouping/plan_edit.py",
+        "tests/test_advisory.py",
+        "tests/test_plan_split.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/advisory.py",
+        "orchestrator/grouping/plan_edit.py",
+        "tests/test_plan_split.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-29T16:40:16.792864+00:00",
+          "ended_at": "2026-08-29T16:50:43.407+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 120,
+            "output": 43645,
+            "cache_creation": 152037
+          },
+          "cache_read_tokens": 7991832
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1557,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g3",
+      "name": "deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2",
+      "summary": "2 units: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped, planning-contract — the plan skill and th…",
+      "report_summary": "Implemented U3 (deepen-skill) and U4 (planning-contract) for group g3. Confirmed via new tests in tests/test_plan_sections.py that Edge cases/Non-goals/Run:/Pass: bullets already parse harmlessly through the existing plan_sections/_split_bullets machinery with zero production code changes needed, and that a Run:/Pass: bullet assembles into exactly one VerificationItem. Wrote skills/orchestrator-deepen/SKILL.md and explorer-prompt.md defining the standalone interactive deepen skill (per-group explorer subagents walking a ten-category edge-case taxonomy, 3-5 EVPI-ranked questions per group with candidate answers always offered, grounded Run:/Pass: verification, all writes routed through plan_edit.py + plan-check --against). Updated skills/orchestrator-plan/SKILL.md Phase 7 to offer `split` after the advisory and print the `/orchestrator-deepen` command at the end, removing the 'wave-2 capability that does not exist yet' sentence, and added optional Edge cases/Non-goals/Run:/Pass: slots to its unit template. Documented `split` and `plan-check` (flags, non-destructive/zero-LLM semantics) in docs/orchestrator-grouping.md, and the byte-for-byte split preservation guarantee in docs/orchestrator-task-map.md. Verified every command/flag named in the three docs exists in live `--help` output. Full test suite passes except 5 pre-existing failures unrelated to my changes (tmpfs cross-device-link and CLI banner flakiness, confirmed via git diff that I never touched those files).",
+      "spec": "# Group g3: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped + planning-contract — the plan skill and the contracts learn about wave 2\n\nMembers:\n- u3-deepen-skill: deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped\n- u4-planning-contract: planning-contract — the plan skill and the contracts learn about wave 2\n\nIntra-group order (depends_on):\n- u3-deepen-skill before u4-planning-contract\n\nUpstream groups:\n- g1 provides `plan-edit` — u1-plan-edit: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n- g2 provides `split-cli` — u2-plan-split: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- g3 consumes `advisory-seams` — u2-plan-split: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n- g3 consumes `plan-edit` — u1-plan-edit: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n- g3 consumes `split-cli` — u2-plan-split: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n\nSlice: (none)\n\n\n### U3. deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped\n\n- **Summary**: A standalone interactive skill that explores the codebase\n  read-only per group, grills the human with 3–5 EVPI-ranked questions per\n  group, and writes the answers back into the plan as per-unit edge cases,\n  non-goals, and `Run:`/`Pass:` verification items.\n- **Goal**: `skills/orchestrator-deepen/SKILL.md` defines a fresh-session\n  interactive skill taking a plan path. It reads the plan and, if present, the\n  advisory report; derives group membership deterministically from an existing\n  `groups.json` or a `group --no-spec` run (no new code); spawns one read-only\n  explorer subagent per group using `explorer-prompt.md`, which walks the\n  ten-category edge-case taxonomy (boundary/range, empty/null/missing, error and\n  partial-failure modes, concurrency/ordering, idempotency/retries,\n  duplication/uniqueness, authz/security, performance budget, data invariants,\n  contract compat/versioning) and drafts question candidates by the\n  divergence test — two plausible readings that would produce different code.\n  Candidates are scored (blocking risk × effect size) and capped at **3–5 per\n  group**; each is asked with candidate answers, and \"either is fine\" is\n  recorded as a freed constraint. Every accepted answer lands as an EARS-style\n  Goal line (\"When `<trigger>`, `<unit>` shall `<response>`\"), an `Edge cases`\n  entry, a `Non-goals / must-not` entry, or a verification item — never loose\n  prose. Verification enrichment follows the `Run:` + `Pass:` convention, with\n  `Run:` emitted only when the explorer confirmed the runner idiom is one this\n  repo uses and every path in the command appears in that unit's declared\n  `files`; otherwise the item is `Pass:`-only. Edge cases are written only\n  where they fire — no `N/A` filler. All writes go through U1's module and are\n  followed by `plan-check --against` the pre-edit copy; a refusal aborts the\n  write. The skill stamps each deepened unit with the plan-content hash it was\n  derived from, never touches the YAML task map or unit ids, and is optional for\n  every run.\n- **Files**: `skills/orchestrator-deepen/SKILL.md` *(new, large)*,\n  `skills/orchestrator-deepen/explorer-prompt.md` *(new, medium)*,\n  `orchestrator/grouping/plan_sections.py`, `tests/test_plan_sections.py`\n- **Symbols**: —\n- **Depends-on**: u1-plan-edit\n- **Slice**: —\n- **Implements / Consumes**: implements `deepen-skill`; consumes `plan-edit`\n- **Verification**:\n  - A unit section carrying `Edge cases`, `Non-goals / must-not`, and\n    `Run:`/`Pass:` verification bullets parses without error, and its `summary`,\n    `verification`, `implements`, and `consumes` fields are unchanged from the\n    same section without those bullets.\n  - The new bullets appear verbatim in the assembled group spec for that unit,\n    and the shared digest still contains only the tagged summary lines — no\n    edge-case text leaks into the digest every worker pays for.\n  - A `Run:`/`Pass:` verification bullet becomes exactly one `VerificationItem`\n    whose `description` carries both lines, and the coverage lint still maps it\n    to exactly one group.\n  - `SKILL.md` states the per-group cap of 3–5 questions as dominant over any\n    plan-global figure, and states that candidate answers are always offered.\n  - `SKILL.md` states the two grounding checks a `Run:` command must pass and\n    the `Pass:`-only fallback when either fails.\n  - `SKILL.md` requires every write to go through `plan_edit` followed by\n    `plan-check --against` the pre-edit copy, and forbids editing the task map\n    or unit ids.\n  - `explorer-prompt.md` names all ten taxonomy categories and instructs the\n    explorer to report only categories that fire.\n\n\n\n### U4. planning-contract — the plan skill and the contracts learn about wave 2\n\n- **Summary**: `/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.\n- **Goal**: `skills/orchestrator-plan/SKILL.md` Phase 7 stops saying the\n  mechanical split and deepen are \"wave-2 capability that does not exist yet\":\n  after presenting `--advise` diagnostics it offers to run `split` with the\n  chosen assignment (still asking first, still never splitting silently, still\n  never rewriting unit prose), and it ends by printing the ready-to-run\n  `/orchestrator-deepen <plan>` command as a recommendation. Its unit template\n  gains the optional `Edge cases` and `Non-goals / must-not` slots and the\n  `Run:`/`Pass:` verification convention, marked as deepen's territory so a\n  planning session is not obliged to fill them. `docs/orchestrator-task-map.md`\n  documents that a plan may be split mechanically and what the split preserves\n  byte-for-byte. `docs/orchestrator-grouping.md` documents `split` and\n  `plan-check` alongside the existing zero-LLM commands, including their\n  preview/non-destructive semantics.\n- **Files**: `skills/orchestrator-plan/SKILL.md`,\n  `docs/orchestrator-task-map.md`, `docs/orchestrator-grouping.md`\n- **Symbols**: —\n- **Depends-on**: u2-plan-split, u3-deepen-skill\n- **Slice**: —\n- **Implements / Consumes**: consumes `split-cli`, `deepen-skill`,\n  `advisory-seams`\n- **Verification**:\n  - `skills/orchestrator-plan/SKILL.md` no longer contains the sentence\n    declaring the mechanical split and deepen unavailable, and its Phase 7\n    describes offering `split` after the advisory and printing the deepen\n    command at the end.\n  - The skill's unit template lists `Edge cases` and `Non-goals / must-not` as\n    optional slots and describes the `Run:`/`Pass:` verification convention,\n    stating that a planning session may leave them empty.\n  - `docs/orchestrator-grouping.md` documents both `split` and `plan-check`\n    with their flags, and states that `split` is non-destructive and\n    `plan-check` makes no LLM or codegraph call.\n  - `docs/orchestrator-task-map.md` states what a mechanical split preserves\n    byte-for-byte and that no map field is rewritten by it.\n  - Every command and flag named in the three documents exists in\n    `orchestrate --help` output.\n\n",
+      "merge_sha": "a76fec68bbb368004f96ae8cbf7f5042697a4813",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-deepen-skill",
+        "u4-planning-contract"
+      ],
+      "planned_files": [
+        "docs/orchestrator-grouping.md",
+        "docs/orchestrator-task-map.md",
+        "orchestrator/grouping/plan_sections.py",
+        "skills/orchestrator-deepen/SKILL.md",
+        "skills/orchestrator-deepen/explorer-prompt.md",
+        "skills/orchestrator-plan/SKILL.md",
+        "tests/test_plan_sections.py"
+      ],
+      "touched_files": [
+        "docs/orchestrator-grouping.md",
+        "docs/orchestrator-task-map.md",
+        "skills/orchestrator-deepen/SKILL.md",
+        "skills/orchestrator-deepen/explorer-prompt.md",
+        "skills/orchestrator-plan/SKILL.md",
+        "tests/test_plan_sections.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-29T16:50:46.235147+00:00",
+          "ended_at": "2026-08-29T16:59:07.208359+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 100,
+            "output": 24611,
+            "cache_creation": 123362
+          },
+          "cache_read_tokens": 5445279
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-08-29T16:59:07.208359+00:00",
+          "ended_at": "2026-08-29T17:00:23.102+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 32,
+            "output": 3095,
+            "cache_creation": 67284
+          },
+          "cache_read_tokens": 1156566
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1562,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      }
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-plan-edit",
+      "group_id": "g1",
+      "title": "plan-edit — verbatim plan surgery and the `plan-check` guard",
+      "summary": "A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.",
+      "goal": "`orchestrator/grouping/plan_edit.py` exists and is the single write\n  path for programmatic plan edits. It offers: a task-map block span helper\n  (added to `plan_reader.py` so the fence regex stays in one place), verbatim\n  extraction of each `  - task_id:` entry and each `### U<N>` section, a\n  reassembler that rebuilds a plan document from a chosen subset of units plus\n  a preamble, and `verify_map_unchanged(before, after)` which compares the\n  surviving task entries and unit ids byte-for-byte and reports every\n  difference it finds (not just the first). `orchestrate plan-check <plan>\n  --against <path>` runs the same comparison between two documents and exits\n  non-zero on any drift; with no `--against` it validates the plan's internal\n  consistency alone (map parses, every map task has a section, every section\n  has a map entry). No LLM, no codegraph, no graph build — sub-second like\n  `--price`.",
+      "section_text": "### U1. plan-edit — verbatim plan surgery and the `plan-check` guard\n\n- **Summary**: A shared `plan_edit` module that extracts and reassembles unit\n  sections and task-map entries byte-verbatim and refuses any rewrite that\n  perturbs the map or unit ids, exposed as `orchestrate plan-check`.\n- **Goal**: `orchestrator/grouping/plan_edit.py` exists and is the single write\n  path for programmatic plan edits. It offers: a task-map block span helper\n  (added to `plan_reader.py` so the fence regex stays in one place), verbatim\n  extraction of each `  - task_id:` entry and each `### U<N>` section, a\n  reassembler that rebuilds a plan document from a chosen subset of units plus\n  a preamble, and `verify_map_unchanged(before, after)` which compares the\n  surviving task entries and unit ids byte-for-byte and reports every\n  difference it finds (not just the first). `orchestrate plan-check <plan>\n  --against <path>` runs the same comparison between two documents and exits\n  non-zero on any drift; with no `--against` it validates the plan's internal\n  consistency alone (map parses, every map task has a section, every section\n  has a map entry). No LLM, no codegraph, no graph build — sub-second like\n  `--price`.\n- **Files**: `orchestrator/grouping/plan_edit.py` *(new, medium)*,\n  `orchestrator/grouping/plan_reader.py`, `orchestrator/cli.py`,\n  `tests/test_plan_edit.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `plan-edit`, `plan-check-cli`\n- **Verification**:\n  - Extracting all units from a plan and reassembling them into one document\n    yields a file whose task-map block and every `### U<N>` section are\n    byte-identical to the original.\n  - `verify_map_unchanged` accepts a rewrite that only adds new bullets inside\n    a unit body, and rejects a rewrite that alters a `depends_on` list, a\n    `size_hints` value, or a `task_id`, naming each altered entry.\n  - `verify_map_unchanged` reports **all** differences in one report, not the\n    first — a document with three altered entries names three.\n  - `orchestrate plan-check <plan>` exits 0 on a well-formed plan and non-zero\n    with a message naming the offending unit when a map task has no `### U<N>`\n    section, and again when a section has no map entry.\n  - `plan-check` completes in under a second on this repo's largest plan and\n    makes no codegraph or LLM call (a stub runner that raises on any call is\n    not invoked).\n\n",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "Extracting all units from a plan and reassembling them into one document yields a file whose task-map block and every `### U<N>` section are byte-identical to the original.",
+          "status": "pass",
+          "evidence": "test_all_units_reassembled_yield_byte_identical_map_and_sections + test_real_plan_round_trips_byte_identical (36-unit real plan)"
+        },
+        {
+          "item_id": "g1-2",
+          "description": "`verify_map_unchanged` accepts a rewrite that only adds new bullets inside a unit body, and rejects a rewrite that alters a `depends_on` list, a `size_hints` value, or a `task_id`, naming each altered entry.",
+          "status": "pass",
+          "evidence": "test_accepts_added_bullets_inside_a_unit_body, test_rejects_and_names_altered_depends_on_size_hints_and_task_id"
+        },
+        {
+          "item_id": "g1-3",
+          "description": "`verify_map_unchanged` reports **all** differences in one report, not the first — a document with three altered entries names three.",
+          "status": "pass",
+          "evidence": "test_reports_all_three_altered_entries_in_one_call, test_reports_three_separately_altered_entries"
+        },
+        {
+          "item_id": "g1-4",
+          "description": "`orchestrate plan-check <plan>` exits 0 on a well-formed plan and non-zero with a message naming the offending unit when a map task has no `### U<N>` section, and again when a section has no map entry.",
+          "status": "pass",
+          "evidence": "test_exits_zero_on_well_formed_plan, test_exits_nonzero_naming_offending_unit_missing_section, test_exits_nonzero_naming_offending_unit_missing_map_entry"
+        },
+        {
+          "item_id": "g1-5",
+          "description": "`plan-check` completes in under a second on this repo's largest plan and makes no codegraph or LLM call (a stub runner that raises on any call is not invoked).",
+          "status": "pass",
+          "evidence": "test_completes_under_a_second_on_the_repos_largest_plan (~0.8ms), test_never_touches_codegraph_or_llm"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-plan-split",
+      "group_id": "g2",
+      "title": "plan-split — `orchestrate split`, seam-addressable and overridable",
+      "summary": "`orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.",
+      "goal": "`orchestrate split <plan>` accepts `--seam N` (reads\n  `.orchestrator/groupings/<name>/preview/advisory.json` and uses that\n  finding's `task_sets`, or for a `serial` finding its `boundary` cut, as the\n  task→document assignment) or one `--tasks` flag per output document, which\n  overrides. Every task must be assigned exactly once; an unassigned or\n  double-assigned task is an error listing all of them. Output documents are\n  `<stem>-part<N>-plan.md` beside the original, each carrying the source\n  plan's preamble, its own unit sections and map entries verbatim via U1, and\n  frontmatter recording `split_from`. A split at a `serial` seam additionally\n  writes a one-line predecessor note (\"assumes `<part N-1>` is merged\") into\n  each downstream document — the only new prose the command ever writes. The\n  original is left untouched. To make `--seam N` addressable,\n  `_print_advisory_report` gains a stable index per cohesion finding and prints\n  each finding's task sets (or its boundary cut) rather than only the message.",
+      "section_text": "### U2. plan-split — `orchestrate split`, seam-addressable and overridable\n\n- **Summary**: `orchestrate split` partitions a plan into N documents by moving\n  unit sections and task-map entries verbatim, taking its assignment either\n  from a numbered advisory seam or from explicit `--tasks` groups.\n- **Goal**: `orchestrate split <plan>` accepts `--seam N` (reads\n  `.orchestrator/groupings/<name>/preview/advisory.json` and uses that\n  finding's `task_sets`, or for a `serial` finding its `boundary` cut, as the\n  task→document assignment) or one `--tasks` flag per output document, which\n  overrides. Every task must be assigned exactly once; an unassigned or\n  double-assigned task is an error listing all of them. Output documents are\n  `<stem>-part<N>-plan.md` beside the original, each carrying the source\n  plan's preamble, its own unit sections and map entries verbatim via U1, and\n  frontmatter recording `split_from`. A split at a `serial` seam additionally\n  writes a one-line predecessor note (\"assumes `<part N-1>` is merged\") into\n  each downstream document — the only new prose the command ever writes. The\n  original is left untouched. To make `--seam N` addressable,\n  `_print_advisory_report` gains a stable index per cohesion finding and prints\n  each finding's task sets (or its boundary cut) rather than only the message.\n- **Files**: `orchestrator/cli.py`, `orchestrator/grouping/advisory.py`,\n  `orchestrator/grouping/plan_edit.py`, `tests/test_plan_split.py`\n  *(new, medium)*, `tests/test_advisory.py`\n- **Symbols**: —\n- **Depends-on**: u1-plan-edit\n- **Slice**: —\n- **Implements / Consumes**: implements `split-cli`, `advisory-seams`;\n  consumes `plan-edit`\n- **Verification**:\n  - `group --advise` output numbers every cohesion finding and prints its task\n    sets (disconnected) or boundary cut (serial), and the numbering is stable\n    across two runs on an unchanged plan.\n  - Splitting a fixture plan with `--seam 1` produces documents whose combined\n    unit sections and task-map entries equal the original's, byte-for-byte,\n    with no unit lost or duplicated.\n  - `--tasks` overrides the seam: given both flags, the assignment used is the\n    one from `--tasks`.\n  - A task assigned to no document, and a task assigned to two, are each\n    rejected with a message naming every offending task.\n  - Each produced document passes `plan-check`, and running\n    `group --price` on each succeeds with every slice under cap.\n  - Splitting at a `serial` seam writes the predecessor note into the\n    downstream document and not into the first.\n  - The source plan file is unmodified after a split (byte-identical).\n\n",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "`group --advise` output numbers every cohesion finding and prints its task sets (disconnected) or boundary cut (serial), and the numbering is stable across two runs on an unchanged plan.",
+          "status": "pass",
+          "evidence": "Manually verified _print_advisory_report numbers every finding stably across two calls on the same report and prints task_sets (disconnected) or the tasks_before/tasks_after cut (serial)."
+        },
+        {
+          "item_id": "g2-2",
+          "description": "Splitting a fixture plan with `--seam 1` produces documents whose combined unit sections and task-map entries equal the original's, byte-for-byte, with no unit lost or duplicated.",
+          "status": "pass",
+          "evidence": "tests/test_plan_split.py::TestSplitPlan::test_two_way_split_is_byte_identical_combined and test_no_unit_lost_or_duplicated verify combined task ids/unit ids equal the original's with no loss/duplication, and each entry's/section's bytes are found verbatim in its document."
+        },
+        {
+          "item_id": "g2-3",
+          "description": "`--tasks` overrides the seam: given both flags, the assignment used is the one from `--tasks`.",
+          "status": "pass",
+          "evidence": "test_tasks_overrides_seam_when_both_given confirms --tasks wins when both flags are given."
+        },
+        {
+          "item_id": "g2-4",
+          "description": "A task assigned to no document, and a task assigned to two, are each rejected with a message naming every offending task.",
+          "status": "pass",
+          "evidence": "assign_tasks raises naming every unassigned and doubly-assigned task id in one error; test_missing_or_double_assigned_tasks_named_and_rejected and TestAssignTasks cover both cases plus combined."
+        },
+        {
+          "item_id": "g2-5",
+          "description": "Each produced document passes `plan-check`, and running `group --price` on each succeeds with every slice under cap.",
+          "status": "pass",
+          "evidence": "test_produced_documents_pass_plan_check and test_produced_documents_price_under_cap run `plan-check` and `group --price` against split output documents."
+        },
+        {
+          "item_id": "g2-6",
+          "description": "Splitting at a `serial` seam writes the predecessor note into the downstream document and not into the first.",
+          "status": "pass",
+          "evidence": "test_serial_seam_writes_predecessor_note_only_on_downstream confirms the note appears only in part2, referencing part1's filename."
+        },
+        {
+          "item_id": "g2-7",
+          "description": "The source plan file is unmodified after a split (byte-identical).",
+          "status": "pass",
+          "evidence": "test_original_plan_text_is_never_mutated and the CLI tests assert the source plan's bytes are unchanged after a split."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-deepen-skill",
+      "group_id": "g3",
+      "title": "deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped",
+      "summary": "A standalone interactive skill that explores the codebase\n  read-only per group, grills the human with 3–5 EVPI-ranked questions per\n  group, and writes the answers back into the plan as per-unit edge cases,\n  non-goals, and `Run:`/`Pass:` verification items.",
+      "goal": "`skills/orchestrator-deepen/SKILL.md` defines a fresh-session\n  interactive skill taking a plan path. It reads the plan and, if present, the\n  advisory report; derives group membership deterministically from an existing\n  `groups.json` or a `group --no-spec` run (no new code); spawns one read-only\n  explorer subagent per group using `explorer-prompt.md`, which walks the\n  ten-category edge-case taxonomy (boundary/range, empty/null/missing, error and\n  partial-failure modes, concurrency/ordering, idempotency/retries,\n  duplication/uniqueness, authz/security, performance budget, data invariants,\n  contract compat/versioning) and drafts question candidates by the\n  divergence test — two plausible readings that would produce different code.\n  Candidates are scored (blocking risk × effect size) and capped at **3–5 per\n  group**; each is asked with candidate answers, and \"either is fine\" is\n  recorded as a freed constraint. Every accepted answer lands as an EARS-style\n  Goal line (\"When `<trigger>`, `<unit>` shall `<response>`\"), an `Edge cases`\n  entry, a `Non-goals / must-not` entry, or a verification item — never loose\n  prose. Verification enrichment follows the `Run:` + `Pass:` convention, with\n  `Run:` emitted only when the explorer confirmed the runner idiom is one this\n  repo uses and every path in the command appears in that unit's declared\n  `files`; otherwise the item is `Pass:`-only. Edge cases are written only\n  where they fire — no `N/A` filler. All writes go through U1's module and are\n  followed by `plan-check --against` the pre-edit copy; a refusal aborts the\n  write. The skill stamps each deepened unit with the plan-content hash it was\n  derived from, never touches the YAML task map or unit ids, and is optional for\n  every run.",
+      "section_text": "### U3. deepen-skill — `/orchestrator-deepen`, explorer-grounded and capped\n\n- **Summary**: A standalone interactive skill that explores the codebase\n  read-only per group, grills the human with 3–5 EVPI-ranked questions per\n  group, and writes the answers back into the plan as per-unit edge cases,\n  non-goals, and `Run:`/`Pass:` verification items.\n- **Goal**: `skills/orchestrator-deepen/SKILL.md` defines a fresh-session\n  interactive skill taking a plan path. It reads the plan and, if present, the\n  advisory report; derives group membership deterministically from an existing\n  `groups.json` or a `group --no-spec` run (no new code); spawns one read-only\n  explorer subagent per group using `explorer-prompt.md`, which walks the\n  ten-category edge-case taxonomy (boundary/range, empty/null/missing, error and\n  partial-failure modes, concurrency/ordering, idempotency/retries,\n  duplication/uniqueness, authz/security, performance budget, data invariants,\n  contract compat/versioning) and drafts question candidates by the\n  divergence test — two plausible readings that would produce different code.\n  Candidates are scored (blocking risk × effect size) and capped at **3–5 per\n  group**; each is asked with candidate answers, and \"either is fine\" is\n  recorded as a freed constraint. Every accepted answer lands as an EARS-style\n  Goal line (\"When `<trigger>`, `<unit>` shall `<response>`\"), an `Edge cases`\n  entry, a `Non-goals / must-not` entry, or a verification item — never loose\n  prose. Verification enrichment follows the `Run:` + `Pass:` convention, with\n  `Run:` emitted only when the explorer confirmed the runner idiom is one this\n  repo uses and every path in the command appears in that unit's declared\n  `files`; otherwise the item is `Pass:`-only. Edge cases are written only\n  where they fire — no `N/A` filler. All writes go through U1's module and are\n  followed by `plan-check --against` the pre-edit copy; a refusal aborts the\n  write. The skill stamps each deepened unit with the plan-content hash it was\n  derived from, never touches the YAML task map or unit ids, and is optional for\n  every run.\n- **Files**: `skills/orchestrator-deepen/SKILL.md` *(new, large)*,\n  `skills/orchestrator-deepen/explorer-prompt.md` *(new, medium)*,\n  `orchestrator/grouping/plan_sections.py`, `tests/test_plan_sections.py`\n- **Symbols**: —\n- **Depends-on**: u1-plan-edit\n- **Slice**: —\n- **Implements / Consumes**: implements `deepen-skill`; consumes `plan-edit`\n- **Verification**:\n  - A unit section carrying `Edge cases`, `Non-goals / must-not`, and\n    `Run:`/`Pass:` verification bullets parses without error, and its `summary`,\n    `verification`, `implements`, and `consumes` fields are unchanged from the\n    same section without those bullets.\n  - The new bullets appear verbatim in the assembled group spec for that unit,\n    and the shared digest still contains only the tagged summary lines — no\n    edge-case text leaks into the digest every worker pays for.\n  - A `Run:`/`Pass:` verification bullet becomes exactly one `VerificationItem`\n    whose `description` carries both lines, and the coverage lint still maps it\n    to exactly one group.\n  - `SKILL.md` states the per-group cap of 3–5 questions as dominant over any\n    plan-global figure, and states that candidate answers are always offered.\n  - `SKILL.md` states the two grounding checks a `Run:` command must pass and\n    the `Pass:`-only fallback when either fails.\n  - `SKILL.md` requires every write to go through `plan_edit` followed by\n    `plan-check --against` the pre-edit copy, and forbids editing the task map\n    or unit ids.\n  - `explorer-prompt.md` names all ten taxonomy categories and instructs the\n    explorer to report only categories that fire.\n\n",
+      "verification": [
+        {
+          "item_id": "g3-1",
+          "description": "A unit section carrying `Edge cases`, `Non-goals / must-not`, and `Run:`/`Pass:` verification bullets parses without error, and its `summary`, `verification`, `implements`, and `consumes` fields are unchanged from the same section without those bullets.",
+          "status": "pass",
+          "evidence": "test_known_fields_unchanged_by_new_bullets in tests/test_plan_sections.py"
+        },
+        {
+          "item_id": "g3-2",
+          "description": "The new bullets appear verbatim in the assembled group spec for that unit, and the shared digest still contains only the tagged summary lines — no edge-case text leaks into the digest every worker pays for.",
+          "status": "pass",
+          "evidence": "test_digest_carries_only_tagged_summary_no_edge_case_text and test_new_bullets_appear_verbatim_in_assembled_group_spec"
+        },
+        {
+          "item_id": "g3-3",
+          "description": "A `Run:`/`Pass:` verification bullet becomes exactly one `VerificationItem` whose `description` carries both lines, and the coverage lint still maps it to exactly one group.",
+          "status": "pass",
+          "evidence": "TestRunPassVerificationBullet in tests/test_plan_sections.py"
+        },
+        {
+          "item_id": "g3-4",
+          "description": "`SKILL.md` states the per-group cap of 3–5 questions as dominant over any plan-global figure, and states that candidate answers are always offered.",
+          "status": "pass",
+          "evidence": "SKILL.md Phase 3 + Non-negotiable rules"
+        },
+        {
+          "item_id": "g3-5",
+          "description": "`SKILL.md` states the two grounding checks a `Run:` command must pass and the `Pass:`-only fallback when either fails.",
+          "status": "pass",
+          "evidence": "SKILL.md Phase 4 + explorer-prompt.md step 5"
+        },
+        {
+          "item_id": "g3-6",
+          "description": "`SKILL.md` requires every write to go through `plan_edit` followed by `plan-check --against` the pre-edit copy, and forbids editing the task map or unit ids.",
+          "status": "pass",
+          "evidence": "SKILL.md Phase 4 + Non-negotiable rules"
+        },
+        {
+          "item_id": "g3-7",
+          "description": "`explorer-prompt.md` names all ten taxonomy categories and instructs the explorer to report only categories that fire.",
+          "status": "pass",
+          "evidence": "explorer-prompt.md step 2 lists all ten categories; step 3 restricts reporting to fired ones"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-planning-contract",
+      "group_id": "g3",
+      "title": "planning-contract — the plan skill and the contracts learn about wave 2",
+      "summary": "`/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.",
+      "goal": "`skills/orchestrator-plan/SKILL.md` Phase 7 stops saying the\n  mechanical split and deepen are \"wave-2 capability that does not exist yet\":\n  after presenting `--advise` diagnostics it offers to run `split` with the\n  chosen assignment (still asking first, still never splitting silently, still\n  never rewriting unit prose), and it ends by printing the ready-to-run\n  `/orchestrator-deepen <plan>` command as a recommendation. Its unit template\n  gains the optional `Edge cases` and `Non-goals / must-not` slots and the\n  `Run:`/`Pass:` verification convention, marked as deepen's territory so a\n  planning session is not obliged to fill them. `docs/orchestrator-task-map.md`\n  documents that a plan may be split mechanically and what the split preserves\n  byte-for-byte. `docs/orchestrator-grouping.md` documents `split` and\n  `plan-check` alongside the existing zero-LLM commands, including their\n  preview/non-destructive semantics.",
+      "section_text": "### U4. planning-contract — the plan skill and the contracts learn about wave 2\n\n- **Summary**: `/orchestrator-plan`'s advisory phase can now invoke `split`,\n  and the task-map and grouping contracts document the new unit slots, the\n  `Run:`/`Pass:` convention, and the two new commands.\n- **Goal**: `skills/orchestrator-plan/SKILL.md` Phase 7 stops saying the\n  mechanical split and deepen are \"wave-2 capability that does not exist yet\":\n  after presenting `--advise` diagnostics it offers to run `split` with the\n  chosen assignment (still asking first, still never splitting silently, still\n  never rewriting unit prose), and it ends by printing the ready-to-run\n  `/orchestrator-deepen <plan>` command as a recommendation. Its unit template\n  gains the optional `Edge cases` and `Non-goals / must-not` slots and the\n  `Run:`/`Pass:` verification convention, marked as deepen's territory so a\n  planning session is not obliged to fill them. `docs/orchestrator-task-map.md`\n  documents that a plan may be split mechanically and what the split preserves\n  byte-for-byte. `docs/orchestrator-grouping.md` documents `split` and\n  `plan-check` alongside the existing zero-LLM commands, including their\n  preview/non-destructive semantics.\n- **Files**: `skills/orchestrator-plan/SKILL.md`,\n  `docs/orchestrator-task-map.md`, `docs/orchestrator-grouping.md`\n- **Symbols**: —\n- **Depends-on**: u2-plan-split, u3-deepen-skill\n- **Slice**: —\n- **Implements / Consumes**: consumes `split-cli`, `deepen-skill`,\n  `advisory-seams`\n- **Verification**:\n  - `skills/orchestrator-plan/SKILL.md` no longer contains the sentence\n    declaring the mechanical split and deepen unavailable, and its Phase 7\n    describes offering `split` after the advisory and printing the deepen\n    command at the end.\n  - The skill's unit template lists `Edge cases` and `Non-goals / must-not` as\n    optional slots and describes the `Run:`/`Pass:` verification convention,\n    stating that a planning session may leave them empty.\n  - `docs/orchestrator-grouping.md` documents both `split` and `plan-check`\n    with their flags, and states that `split` is non-destructive and\n    `plan-check` makes no LLM or codegraph call.\n  - `docs/orchestrator-task-map.md` states what a mechanical split preserves\n    byte-for-byte and that no map field is rewritten by it.\n  - Every command and flag named in the three documents exists in\n    `orchestrate --help` output.\n\n",
+      "verification": [
+        {
+          "item_id": "g3-8",
+          "description": "`skills/orchestrator-plan/SKILL.md` no longer contains the sentence declaring the mechanical split and deepen unavailable, and its Phase 7 describes offering `split` after the advisory and printing the deepen command at the end.",
+          "status": "pass",
+          "evidence": "grep confirms 'wave-2'/'does not exist yet' sentence removed; Phase 7 now offers split and prints deepen command"
+        },
+        {
+          "item_id": "g3-9",
+          "description": "The skill's unit template lists `Edge cases` and `Non-goals / must-not` as optional slots and describes the `Run:`/`Pass:` verification convention, stating that a planning session may leave them empty.",
+          "status": "pass",
+          "evidence": "unit template gains optional Edge cases / Non-goals slots and Run:/Pass: convention note"
+        },
+        {
+          "item_id": "g3-10",
+          "description": "`docs/orchestrator-grouping.md` documents both `split` and `plan-check` with their flags, and states that `split` is non-destructive and `plan-check` makes no LLM or codegraph call.",
+          "status": "pass",
+          "evidence": "new 'split and plan-check' section in docs/orchestrator-grouping.md"
+        },
+        {
+          "item_id": "g3-11",
+          "description": "`docs/orchestrator-task-map.md` states what a mechanical split preserves byte-for-byte and that no map field is rewritten by it.",
+          "status": "pass",
+          "evidence": "new 'Mechanical split' section in docs/orchestrator-task-map.md"
+        },
+        {
+          "item_id": "g3-12",
+          "description": "Every command and flag named in the three documents exists in `orchestrate --help` output.",
+          "status": "pass",
+          "evidence": "verified group/run/split/plan-check --help output matches every command/flag named in the three docs"
+        }
+      ],
+      "landed": true
+    }
+  ],
+  "rids": [
+    {
+      "rid": "R16",
+      "units": [
+        "u1",
+        "u2"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R17",
+      "units": [
+        "u3",
+        "u4"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R18",
+      "units": [
+        "u3"
+      ],
+      "landed": true
+    },
+    {
+      "rid": "R19",
+      "units": [],
+      "landed": false
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-08-29T16:27:57.038611+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:38:56.565964+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:38:56.565964+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-08-29T16:40:14.224+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-08-29T16:40:16.792864+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:50:43.407+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:50:46.235147+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:59:07.208359+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-08-29T16:59:07.208359+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-08-29T17:00:23.102+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "reviewer"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": false,
+  "base_context_path": "base-context.md"
+}
