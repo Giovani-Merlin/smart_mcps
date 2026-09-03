@@ -264,7 +264,7 @@ separate plan in the infinity-skills repo consuming this contract.
 - **Files**: `docs/run-bundle-contract.md` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U3
-- **Slice**: bundle-v2
+- **Slice**: —
 - **Implements / Consumes**: consumes `ingest/v2`
 - **Verification**:
   - The doc agrees with the implementation (external oracle: the real
@@ -323,7 +323,7 @@ tasks:
     consumes: ["NeutralEvent"]
   - task_id: u4-contract-doc
     description: Write docs/run-bundle-contract.md — the normative v2 package specification for exporter and adapters
-    slice: bundle-v2
+    slice: null
     files:
       - docs/run-bundle-contract.md
     size_hints:
