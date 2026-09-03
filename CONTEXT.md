@@ -246,6 +246,34 @@ Interrupted groups automatically and never touches a Work Failure.
 _Avoid_: resume (that is the automatic, non-terminal path), rerun (implies
 starting the group over cold)
 
+**Run Bundle**:
+The versioned, self-contained package export of one finished run
+(`<run_dir>/ingest/`: an `ingest.json` manifest plus per-session parsed-event
+files, written by `orchestrate export`) — the entire boundary between an agent
+framework and Infinity Skills. Harness-agnostic by design: the exporter parses
+its own harness's raw transcripts into neutral events, so no consumer ever
+learns the Claude Code jsonl format; and rich by design: it keeps the
+framework's own shapes (groups, generations, verdicts, surprises), normalized
+to the corpus by the Framework Adapter, not the exporter.
+_Avoid_: ingest contract (names the file's role but not the artifact), universal
+schema (rejected — one generic schema per all frameworks loses framework structure)
+
+**Framework Adapter**:
+The mapping-only ingester class inside Infinity Skills that turns one framework's
+Run Bundle into canonical corpus rows. Registered with a manifest (framework name,
+supported schema_version range), validated by a golden fixture contract test, and
+forbidden from interpreting — it maps fields, never re-derives behaviour.
+_Avoid_: plugin (too generic), pipeline (the pipeline is the fixed downstream
+stages the adapter feeds)
+
+**Base-Context Strip**:
+The export-time omission of the shared base-context prefix from each worker's
+parsed event stream, recorded per session and referencing one base-context blob
+keyed by its sha256. Dedup, never erasure: every worker's replay still opens
+with a reference to the blob it actually received. The post-ADR-0007 successor
+to uuid-based fork dedup: fresh workers repeat the base context with new uuids,
+so only the exporter — which knows the exact bytes — can dedup it.
+
 **Failure Policy**:
 What the run does about *other* groups once one has ended without landing its
 work — `halt` (the default: admit nothing further) or `overlap` (admit anything
