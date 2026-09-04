@@ -253,7 +253,13 @@ async def test_resume_terminates_a_matching_orphaned_subprocess(tmp_path):
 @pytest.mark.asyncio
 async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path):
     paths = RunPaths(tmp_path, "r1")
-    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    # Deliberately NOT sys.executable: the interpreter path leaks into the
+    # cmdline, and `_cmdline_matches` treats any cmdline containing "claude" as
+    # a worker. A checkout (or worktree) under a path with "claude" in it —
+    # e.g. a group directory named for a claude-code task — would otherwise make
+    # this bystander look like a worker and the assertion fail for the wrong
+    # reason. /bin/sleep is the honest "unrelated process" this test means.
+    bystander = subprocess.Popen(["/bin/sleep", "60"])
     state = RunState(
         run_id="r1",
         groups={"g1": GroupRunState(state=GroupState.RUNNING)},
