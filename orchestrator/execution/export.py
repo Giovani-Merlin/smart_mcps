@@ -1,32 +1,34 @@
-"""Export a finished run as a framework-agnostic ``ingest.json`` bundle.
+"""Export a finished run as a self-contained, framework-agnostic package.
 
 The Observatory stays the live-run surface; *reading* finished runs moves to
 external analyzers (Infinity Skills first). The boundary is this file's
-contract: a stable, versioned JSON document written into the run directory,
-holding the run → group → session join plus artifact/escalation summaries,
-with transcript paths resolved against ``~/.claude/projects``. Consumers get a
-generic "agent-run bundle" and zero orchestrator-specific code.
-
-Pure read → one atomic write. Everything is derived from what
-``observatory/runs.py:build_snapshot`` already composes (state ⋈ manifest ⋈
-DAG, with ``stale_failure`` normalization), plus the artifact reader's
-tolerant JSON loading and ``classify_denial`` — the same three answers every
-other post-hoc reader of a run already agreed on.
+contract: ``<run_dir>/ingest/`` — a versioned ``ingest.json`` manifest (the
+run -> group -> session join, plan text, assembled specs, rewrite history,
+artifact/escalation summaries) plus one ``events/<session_id>.jsonl.gz`` per
+session, parsed into harness-neutral events by
+``orchestrator.execution.transcript_events``. Consumers never read Claude
+Code jsonl directly.
 
 Tolerance rules for old runs, deliberate and load-bearing:
 
 - ``transcript_path`` may be null or stale (usage-limit retries adopt new
   session ids; some manifests predate the field) — re-resolve by globbing
   ``<transcript_root>/*/<session_id>.jsonl`` and mark ``transcript_missing``
-  rather than fail.
+  rather than fail. A missing transcript writes no events file.
 - a ``failure`` string attached to a completed/resolved state is stale
   (last-writer-wins ``state.json``) — exported as null, flagged, never as a
   failure.
 - absent fields on old manifests export as null, never invented zeros; the
   token counters are the exception because 0 already means "not recorded"
   in the manifest itself.
-- ``surprises.json`` is consumed state, not history — surprises are mined from
-  the report/verdict artifacts instead.
+- ``surprises.json`` is consumed state, not history — surprises are mined
+  from the report/verdict artifacts instead. A rewrite's
+  ``triggering_surprises``/``escalation_ids`` are inferred the same way: the
+  surprises and escalations recorded strictly after the previous
+  ``spec-gen<N>.json`` (exclusive) up to and including this one's generation
+  (inclusive) are attributed to it — there is no field that names the cause
+  of a rewrite directly, so this is a best-effort bucketing by generation,
+  never an invented value.
 """
 
 from __future__ import annotations
@@ -39,28 +41,17 @@ from pydantic import BaseModel, Field
 
 from orchestrator.execution.denial import classify_denial
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.transcript_events import parse_transcript, write_events_gz
 
 #: Bump only on a breaking change to the contract; additive fields are free.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FRAMEWORK = "smart-mcps-orchestrator"
 
 _ARTIFACT_RE = re.compile(r"^(report|verdict)-g(\d+)-r(\d+)\.json$")
+_SPEC_GEN_RE = re.compile(r"^spec-gen(\d+)\.json$")
 
 #: Artifact filenames that are per-group bookkeeping, not round artifacts.
 _ARTIFACT_SKIP = {"heartbeat.json"}
-
-
-class ExportBaseSession(BaseModel):
-    """The run's one shared-context session every group session forked from."""
-
-    session_id: str
-    transcript_path: str | None = None
-    transcript_missing: bool = False
-    #: Relative to the run directory; the frozen shared prefix all groups saw.
-    base_context_path: str | None = None
-    #: Content hash of that file, so a consumer can key shared-context
-    #: summarization across runs of the same grouping.
-    base_context_sha256: str | None = None
 
 
 class ExportTokens(BaseModel):
@@ -75,11 +66,18 @@ class ExportTokens(BaseModel):
 
 class ExportSession(BaseModel):
     session_id: str
-    role: str  # coder | reviewer | base
+    role: str  # coder | reviewer
     generation: int = 1
     name: str = ""
-    transcript_path: str | None = None
     transcript_missing: bool = False
+    #: Relative to the package directory (``events/<session_id>.jsonl.gz``);
+    #: None when the transcript is missing, so no file was written.
+    events_path: str | None = None
+    events_count: int = 0
+    #: True only when this session's first user message began with the
+    #: byte-exact base-context prefix and it was removed from the exported
+    #: events; a non-matching first message exports whole with this False.
+    base_context_stripped: bool = False
     started_at: str | None = None
     ended_at: str | None = None
     rounds_completed: int = 0
@@ -129,6 +127,17 @@ class ExportEscalation(BaseModel):
     answer: str = ""
 
 
+class ExportRewrite(BaseModel):
+    """One ``spec-gen<N>.json`` snapshot: the group's spec as rewritten,
+    plus a best-effort attribution of what triggered it (see module
+    docstring — bucketed by generation, not a recorded link)."""
+
+    generation: int
+    spec: dict = Field(default_factory=dict)
+    triggering_surprises: list[ExportSurprise] = Field(default_factory=list)
+    escalation_ids: list[str] = Field(default_factory=list)
+
+
 class ExportGroup(BaseModel):
     id: str
     name: str = ""
@@ -140,9 +149,32 @@ class ExportGroup(BaseModel):
     #: exported null so no consumer renders a success as failed.
     stale_failure: bool = False
     depends_on: list[str] = Field(default_factory=list)
+    #: The assembled spec from the run's ``groups.json``; null only when the
+    #: group id is absent from that snapshot (never observed in a real run).
+    spec: dict | None = None
+    rewrites: list[ExportRewrite] = Field(default_factory=list)
     sessions: list[ExportSession] = Field(default_factory=list)
     artifacts: list[ExportArtifact] = Field(default_factory=list)
     escalations: list[ExportEscalation] = Field(default_factory=list)
+
+
+class ExportBaseContext(BaseModel):
+    """The shared prefix every worker's first prompt began with. Null when
+    the run predates the file, or wrote it somewhere this export can't find."""
+
+    path: str
+    sha256: str
+    char_len: int
+
+
+class ExportPlan(BaseModel):
+    path: str = ""
+    text: str | None = None
+
+
+class ExportGrouping(BaseModel):
+    name: str | None = None
+    granularity: str | None = None
 
 
 class RunExport(BaseModel):
@@ -153,9 +185,10 @@ class RunExport(BaseModel):
     run_id: str
     repo_root: str
     project: str
-    plan_path: str = ""
+    plan: ExportPlan = Field(default_factory=ExportPlan)
+    grouping: ExportGrouping | None = None
     created_at: str | None = None
-    base_session: ExportBaseSession | None = None
+    base_context: ExportBaseContext | None = None
     groups: list[ExportGroup] = Field(default_factory=list)
 
 
@@ -182,30 +215,6 @@ def _resolve_transcript(
     if matches:
         return str(matches[0]), False
     return recorded, True
-
-
-def _sha256(path: Path) -> str | None:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
-def _base_session(
-    paths: RunPaths, base_session_id: str | None, transcript_root: Path
-) -> ExportBaseSession | None:
-    if not base_session_id:
-        return None
-    transcript, missing = _resolve_transcript(base_session_id, None, transcript_root)
-    base_context = paths.run_dir / "base-context.md"
-    has_context = base_context.is_file()
-    return ExportBaseSession(
-        session_id=base_session_id,
-        transcript_path=transcript,
-        transcript_missing=missing,
-        base_context_path="base-context.md" if has_context else None,
-        base_context_sha256=_sha256(base_context) if has_context else None,
-    )
 
 
 def _artifact(path: Path, run_dir: Path) -> ExportArtifact:
@@ -269,7 +278,7 @@ def _group_artifacts(paths: RunPaths, group_id: str) -> list[ExportArtifact]:
     artifacts = [
         _artifact(path, paths.run_dir)
         for path in sorted(directory.glob("*.json"))
-        if path.name not in _ARTIFACT_SKIP
+        if path.name not in _ARTIFACT_SKIP and not _SPEC_GEN_RE.match(path.name)
     ]
     # Chronological within the group: by (generation, round); "other" files last.
     artifacts.sort(key=lambda a: (a.generation is None, a.generation or 0, a.round or 0, a.path))
@@ -278,41 +287,132 @@ def _group_artifacts(paths: RunPaths, group_id: str) -> list[ExportArtifact]:
 
 def _escalations_by_group(paths: RunPaths) -> dict[str, list[ExportEscalation]]:
     """Request/response pairs off disk, tolerant of malformed files — an
-    escalation another schema wrote should still list with what it has."""
+    escalation another schema wrote should still list with what it has.
+
+    Globs both the run-level ``escalations/`` directory and every
+    ``groups/<gid>/`` directory (newer runs write escalation pairs there
+    too); an id seen in the run-level directory first wins on a collision."""
     from orchestrator.observatory.artifacts import load_json
 
-    directory = paths.escalations_dir
-    if not directory.is_dir():
-        return {}
+    directories = [paths.escalations_dir]
+    groups_root = paths.run_dir / "groups"
+    if groups_root.is_dir():
+        directories.extend(sorted(p for p in groups_root.iterdir() if p.is_dir()))
+
     by_group: dict[str, list[ExportEscalation]] = {}
-    for request_path in sorted(directory.glob("request-*.json")):
-        esc_id = request_path.name[len("request-") : -len(".json")]
-        content, _ = load_json(request_path)
-        request = content if isinstance(content, dict) else {}
-        response_path = directory / f"response-{esc_id}.json"
-        action: str | None = None
-        answer = ""
-        rel_response: str | None = None
-        if response_path.is_file():
-            rel_response = str(response_path.relative_to(paths.run_dir))
-            response, _ = load_json(response_path)
-            if isinstance(response, dict):
-                action = str(response.get("action")) if response.get("action") else None
-                answer = str(response.get("answer") or "")
-        generation = request.get("generation")
-        entry = ExportEscalation(
-            id=str(request.get("id") or esc_id),
-            kind=str(request.get("kind") or ""),
-            generation=int(generation) if isinstance(generation, int) else None,
-            prompt=str(request.get("prompt") or ""),
-            created_at=str(request.get("created_at")) if request.get("created_at") else None,
-            request_path=str(request_path.relative_to(paths.run_dir)),
-            response_path=rel_response,
-            action=action,
-            answer=answer,
-        )
-        by_group.setdefault(str(request.get("group_id") or ""), []).append(entry)
+    seen_ids: set[str] = set()
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for request_path in sorted(directory.glob("request-*.json")):
+            esc_id = request_path.name[len("request-") : -len(".json")]
+            if esc_id in seen_ids:
+                continue
+            seen_ids.add(esc_id)
+            content, _ = load_json(request_path)
+            request = content if isinstance(content, dict) else {}
+            response_path = directory / f"response-{esc_id}.json"
+            action: str | None = None
+            answer = ""
+            rel_response: str | None = None
+            if response_path.is_file():
+                rel_response = str(response_path.relative_to(paths.run_dir))
+                response, _ = load_json(response_path)
+                if isinstance(response, dict):
+                    action = str(response.get("action")) if response.get("action") else None
+                    answer = str(response.get("answer") or "")
+            generation = request.get("generation")
+            entry = ExportEscalation(
+                id=str(request.get("id") or esc_id),
+                kind=str(request.get("kind") or ""),
+                generation=int(generation) if isinstance(generation, int) else None,
+                prompt=str(request.get("prompt") or ""),
+                created_at=str(request.get("created_at")) if request.get("created_at") else None,
+                request_path=str(request_path.relative_to(paths.run_dir)),
+                response_path=rel_response,
+                action=action,
+                answer=answer,
+            )
+            by_group.setdefault(str(request.get("group_id") or ""), []).append(entry)
     return by_group
+
+
+def _group_spec(paths: RunPaths, group_id: str) -> dict | None:
+    from orchestrator.observatory.runs import load_dag
+
+    grouping, _stale = load_dag(paths)
+    if grouping is None:
+        return None
+    for group in grouping.groups:
+        if group.id == group_id:
+            return group.model_dump(mode="json")
+    return None
+
+
+def _group_rewrites(
+    paths: RunPaths,
+    group_id: str,
+    artifacts: list[ExportArtifact],
+    escalations: list[ExportEscalation],
+) -> list[ExportRewrite]:
+    from orchestrator.observatory.artifacts import load_json
+
+    directory = paths.group_dir(group_id)
+    if not directory.is_dir():
+        return []
+    entries: list[tuple[int, Path]] = []
+    for path in directory.glob("spec-gen*.json"):
+        match = _SPEC_GEN_RE.match(path.name)
+        if match:
+            entries.append((int(match.group(1)), path))
+    entries.sort(key=lambda pair: pair[0])
+
+    rewrites: list[ExportRewrite] = []
+    previous_gen = 0
+    for generation, path in entries:
+        content, _error = load_json(path)
+        spec = content if isinstance(content, dict) else {}
+        surprises = [
+            surprise
+            for artifact in artifacts
+            if artifact.generation is not None and previous_gen < artifact.generation <= generation
+            for surprise in artifact.surprises
+        ]
+        escalation_ids = [
+            escalation.id
+            for escalation in escalations
+            if escalation.generation is not None
+            and previous_gen < escalation.generation <= generation
+        ]
+        rewrites.append(
+            ExportRewrite(
+                generation=generation,
+                spec=spec,
+                triggering_surprises=surprises,
+                escalation_ids=escalation_ids,
+            )
+        )
+        previous_gen = generation
+    return rewrites
+
+
+def _grouping_granularity(paths: RunPaths) -> str | None:
+    from orchestrator.observatory.artifacts import load_json
+
+    trace_path = paths.run_dir / "grouping-trace.json"
+    if not trace_path.is_file():
+        return None
+    content, _error = load_json(trace_path)
+    if not isinstance(content, dict):
+        return None
+    config = content.get("config")
+    if not isinstance(config, dict):
+        return None
+    partition = config.get("partition")
+    if not isinstance(partition, dict):
+        return None
+    granularity = partition.get("granularity")
+    return str(granularity) if granularity else None
 
 
 def _session_sort_key(session: ExportSession) -> tuple[bool, str]:
@@ -327,10 +427,24 @@ def _group_sort_key(index: int, group: ExportGroup) -> tuple[bool, str, int]:
 
 
 def build_export(
-    paths: RunPaths, *, project: str, transcript_root: Path | None = None
+    paths: RunPaths,
+    *,
+    project: str,
+    events_dir: Path | None = None,
+    transcript_root: Path | None = None,
 ) -> RunExport:
-    """Compose the contract from the run directory. Raises ``ExportError`` only
-    when there is no run to export; everything else degrades to null fields."""
+    """Compose the contract from the run directory, writing each session's
+    parsed transcript to ``events_dir/<session_id>.jsonl.gz`` as it goes.
+
+    ``events_dir`` is optional: a caller that only wants the run/group/session
+    join (``report.facts.build_facts``, which never reads events) can omit it
+    and skip the transcript parsing entirely — every session then exports
+    with ``events_path`` null and ``base_context_stripped`` false, same as a
+    missing transcript. ``export_run`` always passes it, since the package it
+    writes is the events files' only home.
+
+    Raises ``ExportError`` only when there is no run to export; everything
+    else degrades to null fields."""
     # Local import: observatory.runs pulls fastapi, which the rest of the
     # execution package never needs.
     from orchestrator.observatory.runs import build_snapshot
@@ -338,27 +452,56 @@ def build_export(
     if not paths.run_dir.is_dir():
         raise ExportError(f"no run directory at {paths.run_dir}")
     snapshot = build_snapshot(paths, project)
-    if not snapshot.groups and snapshot.base_session_id is None:
+    if not snapshot.groups:
         raise ExportError(f"run {paths.run_id} has no manifest, state, or DAG to export")
 
     root = transcript_root or default_transcript_root()
     escalations = _escalations_by_group(paths)
 
+    base_context_path = paths.run_dir / "base-context.md"
+    base_context_text: str | None = None
+    base_context: ExportBaseContext | None = None
+    if base_context_path.is_file():
+        base_context_bytes = base_context_path.read_bytes()
+        base_context_text = base_context_bytes.decode("utf-8")
+        base_context = ExportBaseContext(
+            path="base-context.md",
+            sha256=hashlib.sha256(base_context_bytes).hexdigest(),
+            char_len=len(base_context_text),
+        )
+
     groups: list[ExportGroup] = []
     for group in snapshot.groups:
-        sessions = []
+        sessions: list[ExportSession] = []
         for session in group.sessions:
+            if session.role == "orchestrator":
+                # Synthetic rewrite/base rows the snapshot injects for board
+                # display (`_rewrite_sessions`/`_base_session`) — no real
+                # transcript, and `ExportGroup.rewrites` already carries the
+                # rewrite's spec, so nothing here would go unrepresented.
+                continue
             transcript, missing = _resolve_transcript(
                 session.session_id, session.transcript_path, root
             )
+            events_path: str | None = None
+            events_count = 0
+            stripped = False
+            if events_dir is not None and not missing and transcript:
+                parsed = parse_transcript(Path(transcript), strip_prefix=base_context_text)
+                stripped = parsed.strip.applied
+                events_count = len(parsed.events)
+                write_events_gz(events_dir / f"{session.session_id}.jsonl.gz", parsed.events)
+                events_path = f"events/{session.session_id}.jsonl.gz"
             sessions.append(
                 ExportSession(
                     session_id=session.session_id,
                     role=session.role,
                     generation=session.generation,
                     name=session.name,
-                    transcript_path=transcript,
                     transcript_missing=missing,
+                    events_path=events_path,
+                    events_count=events_count,
+                    base_context_stripped=stripped,
                     started_at=session.started_at,
                     ended_at=session.ended_at,
                     rounds_completed=session.rounds_completed,
@@ -373,6 +516,8 @@ def build_export(
                 )
             )
         sessions.sort(key=_session_sort_key)
+        artifacts = _group_artifacts(paths, group.group_id)
+        group_escalations = escalations.get(group.group_id, [])
         groups.append(
             ExportGroup(
                 id=group.group_id,
@@ -384,9 +529,11 @@ def build_export(
                 failure=None if group.stale_failure else group.failure,
                 stale_failure=group.stale_failure,
                 depends_on=list(group.depends_on),
+                spec=_group_spec(paths, group.group_id),
+                rewrites=_group_rewrites(paths, group.group_id, artifacts, group_escalations),
                 sessions=sessions,
-                artifacts=_group_artifacts(paths, group.group_id),
-                escalations=escalations.get(group.group_id, []),
+                artifacts=artifacts,
+                escalations=group_escalations,
             )
         )
     groups = [
@@ -396,13 +543,24 @@ def build_export(
         )
     ]
 
+    plan_text: str | None = None
+    if snapshot.plan_path:
+        plan_file = paths.repo_root / snapshot.plan_path
+        if plan_file.is_file():
+            plan_text = plan_file.read_text(encoding="utf-8")
+
+    grouping: ExportGrouping | None = None
+    if snapshot.grouping is not None or _grouping_granularity(paths) is not None:
+        grouping = ExportGrouping(name=snapshot.grouping, granularity=_grouping_granularity(paths))
+
     return RunExport(
         run_id=paths.run_id,
         repo_root=str(paths.repo_root),
         project=project,
-        plan_path=snapshot.plan_path,
+        plan=ExportPlan(path=snapshot.plan_path, text=plan_text),
+        grouping=grouping,
         created_at=snapshot.created_at.isoformat() if snapshot.created_at else None,
-        base_session=_base_session(paths, snapshot.base_session_id, root),
+        base_context=base_context,
         groups=groups,
     )
 
@@ -413,11 +571,19 @@ def export_run(
     *,
     project: str | None = None,
     transcript_root: Path | None = None,
-    out_path: Path | None = None,
+    out_dir: Path | None = None,
 ) -> Path:
-    """Build the contract and write ``<run_dir>/ingest.json`` atomically."""
+    """Build the contract and write the ``ingest/`` package atomically
+    (``ingest.json`` plus ``events/<session_id>.jsonl.gz``). Returns the
+    package directory."""
     paths = RunPaths(repo_root, run_id)
-    export = build_export(paths, project=project or repo_root.name, transcript_root=transcript_root)
-    destination = out_path or paths.run_dir / "ingest.json"
-    atomic_write_text(destination, export.model_dump_json(indent=2) + "\n")
-    return destination
+    package_dir = out_dir or paths.run_dir / "ingest"
+    events_dir = package_dir / "events"
+    export = build_export(
+        paths,
+        project=project or repo_root.name,
+        events_dir=events_dir,
+        transcript_root=transcript_root,
+    )
+    atomic_write_text(package_dir / "ingest.json", export.model_dump_json(indent=2) + "\n")
+    return package_dir
