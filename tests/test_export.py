@@ -1,10 +1,10 @@
-"""The `export` command's ingest.json contract (Infinity Skills ingestion v1).
+"""The `export` command's ``ingest/`` package contract (Run Bundle v2).
 
 Fixture-run-dir tests: every case builds a run directory the way real runs
 write theirs (ManifestStore + atomic files), then asserts on the composed
-contract — chronological ordering, transcript re-resolution by session id,
-stale-failure normalization, artifact/escalation summarization, and old-run
-tolerance (absent fields → null, never invented values).
+contract — package layout, base-context stripping, rewrite-history
+assembly, escalation collection from both locations, and old-run tolerance
+(absent fields -> null, never invented values).
 """
 
 from __future__ import annotations
@@ -19,15 +19,18 @@ from orchestrator.execution.export import (
     export_run,
 )
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
+from orchestrator.execution.transcript_events import read_events_gz
 from orchestrator.model import (
     CoderReport,
     EscalationContext,
     EscalationKind,
     EscalationRequest,
     EscalationResponse,
+    Group,
     GroupManifestEntry,
+    GroupingResult,
     HumanAction,
-    ReviewerVerdict,
+    ReviewIntensity,
     RunManifest,
     SessionEntry,
     SessionRole,
@@ -35,6 +38,7 @@ from orchestrator.model import (
 )
 
 RUN_ID = "r20260101-000000"
+BASE_CONTEXT = "# Base context\n\nSome shared rules here."
 
 
 def _session(
@@ -56,12 +60,27 @@ def _session(
     )
 
 
+def _group(gid: str, **overrides) -> Group:
+    defaults = dict(
+        id=gid,
+        name=f"group {gid}",
+        summary="s",
+        spec="do the thing",
+        difficulty=0.2,
+        intensity=ReviewIntensity.SELF_VERIFY,
+        dependencies=[],
+    )
+    defaults.update(overrides)
+    return Group(**defaults)
+
+
 def _write_run(
     tmp_path: Path,
     *,
     groups: dict[str, GroupManifestEntry],
     states: dict[str, dict] | None = None,
-    base_session_id: str | None = "base-0000",
+    with_base_context: bool = True,
+    grouping_groups: list[Group] | None = None,
 ) -> RunPaths:
     repo = tmp_path / "repo"
     paths = RunPaths(repo, RUN_ID)
@@ -69,7 +88,7 @@ def _write_run(
     manifest = RunManifest(
         run_id=RUN_ID,
         plan_path="docs/plan.md",
-        base_session_id=base_session_id,
+        base_session_id=None,
         groups=groups,
     )
     ManifestStore(paths).save(manifest)
@@ -85,22 +104,64 @@ def _write_run(
             "interrupted_at": None,
         }
         atomic_write_text(paths.state_path, json.dumps(state))
-    (paths.run_dir / "base-context.md").write_text("shared base context\n")
+    if with_base_context:
+        (paths.run_dir / "base-context.md").write_text(BASE_CONTEXT)
+    grouping = GroupingResult(
+        plan_path="docs/plan.md",
+        groups=grouping_groups if grouping_groups is not None else [_group(gid) for gid in groups],
+    )
+    atomic_write_text(paths.groups_path, grouping.model_dump_json())
     return paths
 
 
-def _export(paths: RunPaths, transcript_root: Path):
-    return build_export(paths, project="proj", transcript_root=transcript_root)
+def _write_transcript(
+    root: Path, slug: str, session_id: str, text_after_base: str | None = None
+) -> Path:
+    directory = root / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.jsonl"
+    first_text = (
+        f"{BASE_CONTEXT}\n\n{text_after_base}"
+        if text_after_base is not None
+        else "no base context here"
+    )
+    lines = [
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": f"{session_id}-u1",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": first_text}]},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "uuid": f"{session_id}-a1",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            }
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _export(paths: RunPaths, transcript_root: Path, events_dir: Path | None = None):
+    return build_export(
+        paths,
+        project="proj",
+        events_dir=events_dir or (paths.run_dir / "ingest" / "events"),
+        transcript_root=transcript_root,
+    )
 
 
 # ---------------------------------------------------------------- composition
 
 
-def test_exports_run_group_session_join(tmp_path: Path) -> None:
+def test_package_layout_and_manifest_shape(tmp_path: Path) -> None:
     root = tmp_path / "projects"
-    (root / "slug").mkdir(parents=True)
-    (root / "slug" / "aaa.jsonl").write_text("{}\n")
-    (root / "slug" / "base-0000.jsonl").write_text("{}\n")
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
     paths = _write_run(
         tmp_path,
         groups={
@@ -115,100 +176,219 @@ def test_exports_run_group_session_join(tmp_path: Path) -> None:
         },
         states={"g1": {"state": "completed"}},
     )
-    export = _export(paths, root)
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    assert destination == paths.run_dir / "ingest"
+    manifest_path = destination / "ingest.json"
+    assert manifest_path.is_file()
+    payload = json.loads(manifest_path.read_text())
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert "base_session" not in payload
+    assert payload["framework"] == "smart-mcps-orchestrator"
+    assert payload["plan"]["path"] == "docs/plan.md"
 
-    assert export.schema_version == SCHEMA_VERSION
-    assert export.framework == "smart-mcps-orchestrator"
-    assert export.project == "proj"
-    assert export.plan_path == "docs/plan.md"
-    assert export.base_session is not None
-    assert export.base_session.session_id == "base-0000"
-    assert export.base_session.transcript_missing is False
-    assert export.base_session.base_context_path == "base-context.md"
-    assert export.base_session.base_context_sha256 is not None
-
-    [group] = export.groups
-    assert (group.id, group.name, group.final_state) == ("g1", "alpha", "completed")
-    # The run's base session is attached to every group's attempt history at
-    # generation 1 — every group's first coder is a fork of it — so a group
-    # carries its own sessions plus that one orchestrator row.
-    assert [session.role for session in group.sessions] == ["coder", "orchestrator"]
-    session = group.sessions[0]
-    assert session.transcript_path == str(root / "slug" / "aaa.jsonl")
-    assert session.transcript_missing is False
-    assert session.tokens.output == 7
+    [group] = payload["groups"]
+    assert group["id"] == "g1"
+    assert group["spec"]["id"] == "g1"
+    [session] = group["sessions"]
+    assert session["events_path"] == "events/aaa.jsonl.gz"
+    events_file = destination / session["events_path"]
+    assert events_file.is_file()
+    events = read_events_gz(events_file)
+    assert len(events) == session["events_count"] > 0
 
 
-def test_transcript_reresolved_by_session_id_and_missing_marked(tmp_path: Path) -> None:
-    """A null or stale recorded path re-globs by session id; nothing on disk
-    marks the session, never fails the export."""
+def test_base_context_recorded_and_hashed(tmp_path: Path) -> None:
     root = tmp_path / "projects"
-    (root / "slug").mkdir(parents=True)
-    (root / "slug" / "found.jsonl").write_text("{}\n")
+    paths = _write_run(
+        tmp_path,
+        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
+    )
+    import hashlib
+
+    expected_sha = hashlib.sha256((paths.run_dir / "base-context.md").read_bytes()).hexdigest()
+    export = _export(paths, root)
+    assert export.base_context is not None
+    assert export.base_context.path == "base-context.md"
+    assert export.base_context.sha256 == expected_sha
+    assert export.base_context.char_len == len(BASE_CONTEXT)
+
+
+def test_no_base_context_file_exports_null(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    paths = _write_run(
+        tmp_path,
+        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
+        with_base_context=False,
+    )
+    export = _export(paths, root)
+    assert export.base_context is None
+
+
+# ---------------------------------------------------------------------- strip
+
+
+def test_strip_applied_when_transcript_opens_with_base_context(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="worker prompt")
     paths = _write_run(
         tmp_path,
         groups={
             "g1": GroupManifestEntry(
                 group_id="g1",
-                group_name="alpha",
+                group_name="a",
                 summary="s",
-                sessions=[
-                    _session("found", SessionRole.CODER, transcript_path="/nonexistent/x.jsonl"),
-                    _session("gone", SessionRole.REVIEWER),
-                ],
+                sessions=[_session("aaa", SessionRole.CODER)],
             )
         },
     )
     [group] = _export(paths, root).groups
-    by_id = {s.session_id: s for s in group.sessions}
-    assert by_id["found"].transcript_path == str(root / "slug" / "found.jsonl")
-    assert by_id["found"].transcript_missing is False
-    assert by_id["gone"].transcript_missing is True
+    [session] = group.sessions
+    assert session.base_context_stripped is True
+    events = read_events_gz(paths.run_dir / "ingest" / "events" / "aaa.jsonl.gz")
+    assert events[0].text == "worker prompt"
 
 
-def test_groups_and_sessions_in_chronological_order(tmp_path: Path) -> None:
+def test_non_matching_transcript_exported_whole(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "bbb", text_after_base=None)  # no base-context prefix
+    paths = _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="a",
+                summary="s",
+                sessions=[_session("bbb", SessionRole.CODER)],
+            )
+        },
+    )
+    [group] = _export(paths, root).groups
+    [session] = group.sessions
+    assert session.base_context_stripped is False
+    events = read_events_gz(paths.run_dir / "ingest" / "events" / "bbb.jsonl.gz")
+    assert events[0].text == "no base context here"
+
+
+# ------------------------------------------------------------------- rewrites
+
+
+def test_rewrite_history_assembled_in_order(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    root.mkdir()
+    paths = _write_run(
+        tmp_path,
+        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
+    )
+    store = ManifestStore(paths)
+    gen1_group = _group("g1", spec="spec v1")
+    gen2_group = _group("g1", spec="spec v2")
+    (paths.group_dir("g1")).mkdir(parents=True, exist_ok=True)
+    atomic_write_text(paths.group_dir("g1") / "spec-gen2.json", gen2_group.model_dump_json())
+    atomic_write_text(paths.group_dir("g1") / "spec-gen1.json", gen1_group.model_dump_json())
+
+    request = EscalationRequest(
+        id="esc-1",
+        run_id=RUN_ID,
+        group_id="g1",
+        generation=1,
+        kind=EscalationKind.CODER_QUESTION,
+        prompt="which db?",
+        context=EscalationContext(),
+    )
+    paths.escalations_dir.mkdir(parents=True)
+    (paths.escalations_dir / "request-esc-1.json").write_text(request.model_dump_json())
+
+    store.save_group_artifact(
+        "g1",
+        "report-g1-r1.json",
+        CoderReport(
+            status="needs_input",
+            question="which db?",
+            surprises=[Surprise(kind="other", description="trigger for gen1")],
+        ),
+    )
+
+    [group] = _export(paths, root).groups
+    assert [r.generation for r in group.rewrites] == [1, 2]
+    assert group.rewrites[0].spec["spec"] == "spec v1"
+    assert group.rewrites[1].spec["spec"] == "spec v2"
+    assert group.rewrites[0].escalation_ids == ["esc-1"]
+    assert [s.description for s in group.rewrites[0].triggering_surprises] == ["trigger for gen1"]
+    assert group.rewrites[1].escalation_ids == []
+
+
+# ------------------------------------------------------------------ escalations
+
+
+def test_escalations_found_in_both_locations(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    root.mkdir()
+    paths = _write_run(
+        tmp_path,
+        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
+    )
+    request_a = EscalationRequest(
+        id="esc-top",
+        run_id=RUN_ID,
+        group_id="g1",
+        generation=1,
+        kind=EscalationKind.CODER_QUESTION,
+        prompt="top-level",
+        context=EscalationContext(),
+    )
+    paths.escalations_dir.mkdir(parents=True)
+    (paths.escalations_dir / "request-esc-top.json").write_text(request_a.model_dump_json())
+    response_a = EscalationResponse(id="esc-top", action=HumanAction.ANSWER, answer="sqlite")
+    (paths.escalations_dir / "response-esc-top.json").write_text(response_a.model_dump_json())
+
+    request_b = EscalationRequest(
+        id="esc-group",
+        run_id=RUN_ID,
+        group_id="g1",
+        generation=2,
+        kind=EscalationKind.PREFLIGHT_FAILED,
+        prompt="group-dir",
+        context=EscalationContext(),
+    )
+    group_dir = paths.group_dir("g1")
+    group_dir.mkdir(parents=True, exist_ok=True)
+    (group_dir / "request-esc-group.json").write_text(request_b.model_dump_json())
+
+    [group] = _export(paths, root).groups
+    ids = {e.id for e in group.escalations}
+    assert ids == {"esc-top", "esc-group"}
+    by_id = {e.id: e for e in group.escalations}
+    assert by_id["esc-top"].action == "answer"
+    assert by_id["esc-top"].answer == "sqlite"
+    assert by_id["esc-group"].response_path is None
+
+
+# ------------------------------------------------------------------ tolerance
+
+
+def test_missing_transcript_writes_no_events_file(tmp_path: Path) -> None:
     root = tmp_path / "projects"
     root.mkdir()
     paths = _write_run(
         tmp_path,
         groups={
-            # Manifest order is g1 first; g2 started earlier and must lead.
             "g1": GroupManifestEntry(
                 group_id="g1",
-                group_name="late",
+                group_name="a",
                 summary="s",
-                sessions=[
-                    _session(
-                        "b2",
-                        SessionRole.CODER,
-                        generation=2,
-                        started_at="2026-01-01T02:00:00+00:00",
-                    ),
-                    _session("b1", SessionRole.CODER, started_at="2026-01-01T01:00:00+00:00"),
-                ],
-            ),
-            "g2": GroupManifestEntry(
-                group_id="g2",
-                group_name="early",
-                summary="s",
-                sessions=[
-                    _session("a1", SessionRole.CODER, started_at="2026-01-01T00:30:00+00:00")
-                ],
-            ),
-            "g3": GroupManifestEntry(group_id="g3", group_name="never-ran", summary="s"),
+                sessions=[_session("gone", SessionRole.CODER)],
+            )
         },
     )
-    export = _export(paths, root)
-    assert [g.id for g in export.groups] == ["g2", "g1", "g3"]
-    # The attached base row carries no start time of its own; chronological
-    # order is asserted over the group's own coder sessions.
-    coders = [s for s in export.groups[1].sessions if s.role == "coder"]
-    assert [s.session_id for s in coders] == ["b1", "b2"]
+    [group] = _export(paths, root).groups
+    [session] = group.sessions
+    assert session.transcript_missing is True
+    assert session.events_path is None
+    assert session.events_count == 0
+    assert not (paths.run_dir / "ingest" / "events" / "gone.jsonl.gz").exists()
 
 
 def test_stale_failure_normalized_to_null(tmp_path: Path) -> None:
-    """A failure string on a completed state is history, not this group's
-    outcome — exported null with the flag set."""
     root = tmp_path / "projects"
     root.mkdir()
     paths = _write_run(
@@ -229,118 +409,9 @@ def test_stale_failure_normalized_to_null(tmp_path: Path) -> None:
     assert by_id["g2"].stale_failure is False
 
 
-# ------------------------------------------------------------------ artifacts
-
-
-def test_artifacts_inline_status_surprises_and_denials(tmp_path: Path) -> None:
+def test_reexport_overwrites_package_idempotently(tmp_path: Path) -> None:
     root = tmp_path / "projects"
-    root.mkdir()
-    paths = _write_run(
-        tmp_path,
-        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
-    )
-    store = ManifestStore(paths)
-    store.save_group_artifact(
-        "g1",
-        "report-g1-r1.json",
-        CoderReport(
-            status="completed",
-            surprises=[Surprise(kind="other", description="found it", affected_groups=["g2"])],
-        ),
-    )
-    store.save_group_artifact(
-        "g1",
-        "report-g2-r1.json",
-        CoderReport(
-            status="permission_denied",
-            denied_command="git push",
-            denial_error="EACCES: permission denied",
-            denial_source="command_error",
-        ),
-    )
-    store.save_group_artifact(
-        "g1",
-        "verdict-g1-r1.json",
-        ReviewerVerdict(status="changes_required", required_changes=["fix the test"]),
-    )
-    # Non-round bookkeeping in the group dir must not become an artifact.
-    (paths.group_dir("g1") / "heartbeat.json").write_text("{}")
-
-    [group] = _export(paths, root).groups
-    assert [(a.kind, a.generation, a.round) for a in group.artifacts] == [
-        ("coder_report", 1, 1),
-        ("reviewer_verdict", 1, 1),
-        ("coder_report", 2, 1),
-    ]
-    report, verdict, denied = group.artifacts
-    assert report.status == "completed"
-    assert report.path == "groups/g1/report-g1-r1.json"
-    assert [s.description for s in report.surprises] == ["found it"]
-    assert report.surprises[0].affected_groups == ["g2"]
-    assert verdict.status == "changes_required"
-    assert verdict.required_changes == ["fix the test"]
-    assert denied.denial_kind == "kernel_denied"
-    assert denied.denied_command == "git push"
-
-
-def test_half_written_artifact_lists_with_error(tmp_path: Path) -> None:
-    root = tmp_path / "projects"
-    root.mkdir()
-    paths = _write_run(
-        tmp_path,
-        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
-    )
-    torn = paths.group_dir("g1") / "report-g1-r1.json"
-    torn.parent.mkdir(parents=True)
-    torn.write_text('{"status": "comp')
-    [group] = _export(paths, root).groups
-    [artifact] = group.artifacts
-    assert artifact.error is not None
-    assert artifact.status is None
-
-
-# ---------------------------------------------------------------- escalations
-
-
-def test_escalations_attach_to_their_group_with_response(tmp_path: Path) -> None:
-    root = tmp_path / "projects"
-    root.mkdir()
-    paths = _write_run(
-        tmp_path,
-        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
-    )
-    request = EscalationRequest(
-        id="esc-1",
-        run_id=RUN_ID,
-        group_id="g1",
-        generation=1,
-        kind=EscalationKind.CODER_QUESTION,
-        prompt="which db?",
-        context=EscalationContext(),
-    )
-    paths.escalations_dir.mkdir(parents=True)
-    (paths.escalations_dir / "request-esc-1.json").write_text(request.model_dump_json())
-    response = EscalationResponse(id="esc-1", action=HumanAction.ANSWER, answer="sqlite")
-    (paths.escalations_dir / "response-esc-1.json").write_text(response.model_dump_json())
-
-    [group] = _export(paths, root).groups
-    [escalation] = group.escalations
-    assert escalation.kind == "coder_question"
-    assert escalation.prompt == "which db?"
-    assert escalation.action == "answer"
-    assert escalation.answer == "sqlite"
-    assert escalation.request_path == "escalations/request-esc-1.json"
-    assert escalation.response_path == "escalations/response-esc-1.json"
-
-
-# ------------------------------------------------------------------ tolerance
-
-
-def test_old_run_missing_fields_export_as_null(tmp_path: Path) -> None:
-    """A manifest written before newer fields existed: no state.json, no
-    started_at, no base-context — nulls, never invented values."""
-    root = tmp_path / "projects"
-    root.mkdir()
+    _write_transcript(root, "slug", "aaa", text_after_base="task")
     paths = _write_run(
         tmp_path,
         groups={
@@ -348,69 +419,24 @@ def test_old_run_missing_fields_export_as_null(tmp_path: Path) -> None:
                 group_id="g1",
                 group_name="a",
                 summary="s",
-                sessions=[_session("old", SessionRole.CODER)],
+                sessions=[_session("aaa", SessionRole.CODER)],
             )
         },
     )
-    (paths.run_dir / "base-context.md").unlink()
-    export = _export(paths, root)
-    assert export.base_session is not None
-    assert export.base_session.base_context_path is None
-    assert export.base_session.base_context_sha256 is None
-    [group] = export.groups
-    assert group.final_state == "pending"  # no state.json → never observed running
-    [session] = [s for s in group.sessions if s.role == "coder"]
-    assert session.started_at is None
-    assert session.ended_at is None
-    assert session.model is None
-
-
-def test_export_run_writes_ingest_json(tmp_path: Path) -> None:
-    root = tmp_path / "projects"
-    root.mkdir()
-    paths = _write_run(
-        tmp_path,
-        groups={"g1": GroupManifestEntry(group_id="g1", group_name="a", summary="s")},
-    )
-    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
-    assert destination == paths.run_dir / "ingest.json"
-    payload = json.loads(destination.read_text())
-    assert payload["schema_version"] == SCHEMA_VERSION
-    assert payload["groups"][0]["id"] == "g1"
+    first = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    second = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    assert first == second
+    payload = json.loads((second / "ingest.json").read_text())
+    assert payload["groups"][0]["sessions"][0]["session_id"] == "aaa"
 
 
 def test_missing_run_dir_is_an_export_error(tmp_path: Path) -> None:
     paths = RunPaths(tmp_path / "repo", "nope")
     try:
-        build_export(paths, project="proj", transcript_root=tmp_path)
+        build_export(
+            paths, project="proj", events_dir=tmp_path / "events", transcript_root=tmp_path
+        )
     except ExportError as exc:
         assert "no run directory" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ExportError")
-
-
-def test_a_run_with_no_base_session_exports_no_base_row(tmp_path: Path) -> None:
-    """ADR 0007: workers start fresh, so there is no base session to export —
-    neither at run level nor in any group's attempt history. `export.py`
-    already typed the field `| None`; this pins the behaviour."""
-    root = tmp_path / "projects"
-    (root / "slug").mkdir(parents=True)
-    (root / "slug" / "aaa.jsonl").write_text("{}\n")
-    paths = _write_run(
-        tmp_path,
-        groups={
-            "g1": GroupManifestEntry(
-                group_id="g1",
-                group_name="alpha",
-                summary="does alpha",
-                sessions=[_session("aaa", SessionRole.CODER)],
-            )
-        },
-        states={"g1": {"state": "completed"}},
-        base_session_id=None,
-    )
-    export = _export(paths, root)
-
-    assert export.base_session is None
-    [group] = export.groups
-    assert [session.role for session in group.sessions] == ["coder"]

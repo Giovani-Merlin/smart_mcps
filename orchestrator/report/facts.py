@@ -550,7 +550,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         {g.id: g for g in grouping_result.groups} if grouping_result else {}
     )
 
-    plan_path = export.plan_path or (grouping_result.plan_path if grouping_result else "")
+    plan_path = export.plan.path or (grouping_result.plan_path if grouping_result else "")
     plan_text = ""
     plan_file = repo_root / plan_path if plan_path else None
     if plan_file is not None and plan_file.is_file():

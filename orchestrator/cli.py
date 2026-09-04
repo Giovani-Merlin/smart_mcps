@@ -429,7 +429,10 @@ def main(
 
     export_cmd = subparsers.add_parser(
         "export",
-        help="write a run's framework-agnostic ingest.json bundle for external analyzers",
+        help=(
+            "write a run's self-contained ingest/ package (ingest.json manifest plus "
+            "events/<session_id>.jsonl.gz per session) for external analyzers"
+        ),
     )
     export_cmd.add_argument("run_id", help="the run to export")
     export_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
@@ -437,7 +440,7 @@ def main(
         "--out",
         type=Path,
         default=None,
-        help="output path (default: <run_dir>/ingest.json)",
+        help="output package directory (default: <run_dir>/ingest)",
     )
     export_cmd.add_argument(
         "--project",
@@ -2909,7 +2912,7 @@ def _cmd_finish(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    """Write the run's ``ingest.json`` contract for external analyzers (Infinity
+    """Write the run's ``ingest/`` package for external analyzers (Infinity
     Skills first). Pure read of the run directory → one atomic write."""
     # Local import: export pulls the Observatory's snapshot composer (fastapi)
     # that no other CLI path needs.
@@ -2921,7 +2924,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             repo_root,
             args.run_id,
             project=args.project,
-            out_path=args.out,
+            out_dir=args.out,
         )
     except ExportError as exc:
         print(f"error: {exc}", file=sys.stderr)
