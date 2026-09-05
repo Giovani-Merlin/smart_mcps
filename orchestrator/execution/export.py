@@ -182,6 +182,19 @@ class ExportLlmCall(BaseModel):
     error: str | None = None
     duration_ms: int | None = None
     session_id: str | None = None
+    #: Which groups the call was about — one id for a mid-run rewrite speccer
+    #: call, every id for the initial mapper/speccer pass. Empty when the record
+    #: predates the ``subject`` field AND the request file could not be read.
+    group_ids: list[str] = Field(default_factory=list)
+    #: WHY the call happened: the surprises/operator verdicts folded into the
+    #: rewrite speccer's ``rewrite_context``, verbatim. Empty for a call with no
+    #: recorded cause (every mapper call, and any speccer call whose cause was
+    #: never written down).
+    rewrite_context: list[str] = Field(default_factory=list)
+    #: Pointers into the run directory, so a consumer can always reach the full
+    #: prompt and raw response; null when the record names no file.
+    request_path: str | None = None
+    raw_path: str | None = None
     transcript_missing: bool = False
     #: Relative to the package directory (``events/<session_id>.jsonl.gz``);
     #: None when the transcript is missing, so no file was written. The
@@ -433,6 +446,48 @@ def _group_rewrites(
     return rewrites
 
 
+def _llm_subject(entry: dict, llm_dir: Path) -> tuple[list[str], list[str]]:
+    """``(group_ids, rewrite_context)`` for one recorded call.
+
+    Prefer the ``subject`` the recorder writes. Runs recorded before that field
+    existed carry the same facts only inside the prompt they sent, so fall back
+    to the request file's ``GROUPS_JSON`` block — keyed by group id, with each
+    group's ``rewrite_context`` verbatim. That backfill is best-effort by
+    design: a prompt that does not match this shape (every mapper call, and any
+    future template change) yields empty lists, never a guess and never an
+    error. It exists so already-recorded runs are not permanently unattributed.
+    """
+    import json
+
+    subject = entry.get("subject")
+    if isinstance(subject, dict):
+        group_ids = [str(g) for g in subject.get("group_ids") or []]
+        context = [str(c) for c in subject.get("rewrite_context") or []]
+        if group_ids or context:
+            return group_ids, context
+
+    request_file = entry.get("request_file")
+    if not request_file:
+        return [], []
+    try:
+        text = (llm_dir / str(request_file)).read_text(encoding="utf-8")
+        # The prompt names GROUPS_JSON twice — once in the instructions, once as
+        # the section header the payload follows; the LAST one starts the data.
+        tail = text[text.rindex("GROUPS_JSON") :]
+        payload = json.loads(tail[tail.index("{") :])
+    except (OSError, ValueError):
+        return [], []
+    if not isinstance(payload, dict):
+        return [], []
+    group_ids: list[str] = []
+    context: list[str] = []
+    for group_id, group in payload.items():
+        group_ids.append(str(group_id))
+        if isinstance(group, dict):
+            context.extend(str(c) for c in group.get("rewrite_context") or [])
+    return group_ids, context
+
+
 def _llm_calls(
     paths: RunPaths,
     *,
@@ -470,6 +525,7 @@ def _llm_calls(
         session_id = str(session_id) if session_id else None
         duration = entry.get("duration_ms")
 
+        group_ids, rewrite_context = _llm_subject(entry, index.parent)
         transcript_missing = session_id is None
         events_path: str | None = None
         events_count = 0
@@ -500,6 +556,10 @@ def _llm_calls(
                 error=str(entry["error"]) if entry.get("error") else None,
                 duration_ms=duration if isinstance(duration, int) else None,
                 session_id=session_id,
+                group_ids=group_ids,
+                rewrite_context=rewrite_context,
+                request_path=_llm_rel(entry.get("request_file"), index.parent, paths.run_dir),
+                raw_path=_llm_rel(entry.get("raw_file"), index.parent, paths.run_dir),
                 transcript_missing=transcript_missing,
                 events_path=events_path,
                 events_count=events_count,
@@ -513,6 +573,14 @@ def _llm_calls(
         )
     calls.sort(key=lambda call: call.seq)
     return calls
+
+
+def _llm_rel(name: object, llm_dir: Path, run_dir: Path) -> str | None:
+    """A recorded file's path relative to the run directory — a pointer, kept
+    even when the file itself is gone (the record is the evidence it existed)."""
+    if not name:
+        return None
+    return str((llm_dir / str(name)).relative_to(run_dir))
 
 
 def _int(value: object) -> int:

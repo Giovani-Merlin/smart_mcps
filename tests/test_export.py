@@ -504,6 +504,90 @@ def _run_with_one_group(tmp_path: Path) -> RunPaths:
     )
 
 
+def _write_rewrite_prompt(paths: RunPaths, name: str, groups: dict) -> None:
+    """The rewrite speccer's prompt as the recorder saved it — instructions that
+    mention GROUPS_JSON, then the GROUPS_JSON payload itself."""
+    (paths.run_dir / "llm").mkdir(parents=True, exist_ok=True)
+    (paths.run_dir / "llm" / name).write_text(
+        "You are the rewrite speccer.\n\nFor every group id in GROUPS_JSON, produce:\n"
+        "- `name`: short kebab-case name.\n\nGROUPS_JSON\n" + json.dumps(groups, indent=2)
+    )
+
+
+def test_llm_call_subject_names_its_group_and_reason(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    _write_llm_index(
+        paths,
+        [
+            _llm_call(
+                1,
+                None,
+                None,
+                subject={
+                    "group_ids": ["g1"],
+                    "rewrite_context": ["[other] the CDN filename is .mjs, not .js"],
+                },
+            )
+        ],
+    )
+
+    export = _export(paths, root)
+    [call] = export.llm_calls
+    assert call.group_ids == ["g1"]
+    assert call.rewrite_context == ["[other] the CDN filename is .mjs, not .js"]
+    assert call.request_path == "llm/01-speccer_output-a0.request.txt"
+    assert call.raw_path == "llm/01-speccer_output-a0.raw.txt"
+
+
+def test_call_recorded_before_subject_existed_is_backfilled_from_its_prompt(
+    tmp_path: Path,
+) -> None:
+    """Every run recorded before the `subject` field would otherwise be
+    permanently unattributed — its group and cause survive only in the prompt."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    _write_rewrite_prompt(
+        paths,
+        "01-speccer_output-a0.request.txt",
+        {
+            "g1": {
+                "tasks": ["u1"],
+                "previous_spec": "the old spec",
+                "rewrite_context": ["[other] the CDN filename is .mjs", "[operator] a flake"],
+            }
+        },
+    )
+    _write_llm_index(paths, [_llm_call(1, None, None)])  # no `subject` key at all
+
+    export = _export(paths, root)
+    [call] = export.llm_calls
+    assert call.group_ids == ["g1"]
+    assert call.rewrite_context == ["[other] the CDN filename is .mjs", "[operator] a flake"]
+
+
+def test_unparseable_prompt_attributes_nothing_rather_than_guessing(tmp_path: Path) -> None:
+    """A mapper prompt, or any future template change, must yield empty lists —
+    a wrong group attribution is worse than none."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    (paths.run_dir / "llm").mkdir(parents=True, exist_ok=True)
+    (paths.run_dir / "llm" / "01-speccer_output-a0.request.txt").write_text(
+        "A prompt of some other shape entirely, with no payload."
+    )
+    _write_llm_index(paths, [_llm_call(1, None, None)])
+
+    export = _export(paths, root)
+    [call] = export.llm_calls
+    assert call.group_ids == []
+    assert call.rewrite_context == []
+    # the pointer still stands, so a human can go read it
+    assert call.request_path == "llm/01-speccer_output-a0.request.txt"
+
+
 def test_llm_calls_exported_in_order_with_events(tmp_path: Path) -> None:
     root = tmp_path / "projects"
     _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")

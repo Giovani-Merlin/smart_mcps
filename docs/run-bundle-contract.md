@@ -200,6 +200,10 @@ has no representation in the bundle at all.
 | `error`              | string \| null            | null on success                                                                                       |
 | `duration_ms`        | int \| null               | null when not recorded                                                                                |
 | `session_id`         | string \| null            | null when the call left no Claude session (a local/failed call)                                       |
+| `group_ids`          | string[]                  | which groups the call was about; `[]` when neither the record nor its prompt says (see below)         |
+| `rewrite_context`    | string[]                  | WHY the call happened — the surprises/operator verdicts, verbatim; `[]` for a call with no cause      |
+| `request_path`       | string \| null            | the recorded prompt, relative to the run directory; null when the record names no file                |
+| `raw_path`           | string \| null            | the recorded raw response, same convention                                                            |
 | `transcript_missing` | bool                      | true when no transcript resolves for `session_id` — or when `session_id` itself is null              |
 | `events_path`        | string \| null            | `events/<session_id>.jsonl.gz`; null whenever `transcript_missing` is true, so no file was written    |
 | `events_count`       | int                       | 0 when no events file was written                                                                    |
@@ -210,6 +214,15 @@ Two properties differ from `ExportSession` and are deliberate:
 - **No `base_context_stripped`.** An orchestrator prompt does not begin with
   the workers' base context, so the strip is never attempted. A consumer must
   not assume a prefix was removed.
+- **`group_ids`/`rewrite_context` are attribution, and attribution can be
+  absent.** They come from the recorder's `subject` field. For a run recorded
+  before that field existed, the exporter backfills them by parsing the
+  recorded prompt's `GROUPS_JSON` block (keyed by group id, each group carrying
+  its own `rewrite_context`) — best-effort by design: a prompt of another shape,
+  including every mapper call, yields `[]` rather than a guess. A consumer must
+  treat `[]` as "not recorded", never as "belongs to no group", and must not
+  assume a call names exactly one group (a mid-run rewrite does; the initial
+  pass does not).
 - **A run with no `llm/` directory exports `llm_calls: []`**, never null and
   never an error. The recorder is inert by contract on the writing side (an
   audit write must never fail a run); the reading side matches — an absent,

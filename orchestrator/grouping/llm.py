@@ -118,6 +118,7 @@ class LlmCallRecorder(Protocol):
         raw: str,
         meta: LlmCallMeta | None,
         error: str | None,
+        subject: dict | None = None,
     ) -> None: ...
 
 
@@ -299,8 +300,13 @@ def call_llm_json(
     max_retries: int = DEFAULT_MAX_RETRIES,
     failure_dir: Path | None = None,
     recorder: LlmCallRecorder | None = None,
+    subject: dict | None = None,
 ) -> T:
-    """Run the LLM, parse JSON, validate; retry with a corrective nudge, capped."""
+    """Run the LLM, parse JSON, validate; retry with a corrective nudge, capped.
+
+    ``subject`` is what the call is ABOUT — for the rewrite speccer, which group
+    is being rewritten and why. It is recorded alongside the call so a consumer
+    can attribute it without parsing the prompt; nothing reads it back."""
     stage = schema.get("title", "llm")
     attempt_prompt = prompt
     last_raw = ""
@@ -321,6 +327,7 @@ def call_llm_json(
                     raw=last_raw,
                     meta=call_meta(last_raw),
                     error=str(exc),
+                    subject=subject,
                 )
             attempt_prompt = (
                 f"{prompt}\n\nYour previous output failed validation: {exc}.\n"
@@ -336,6 +343,7 @@ def call_llm_json(
                     raw=last_raw,
                     meta=call_meta(last_raw),
                     error=None,
+                    subject=subject,
                 )
             return validated
     saved = _save_failure(failure_dir, stage, last_raw)

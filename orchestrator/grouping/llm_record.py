@@ -107,9 +107,10 @@ class JsonlCallRecorder:
         raw: str,
         meta: LlmCallMeta | None,
         error: str | None,
+        subject: dict | None = None,
     ) -> None:
         try:
-            self._record(stage, attempt, prompt, schema, raw, meta, error)
+            self._record(stage, attempt, prompt, schema, raw, meta, error, subject)
         except OSError:
             pass  # inert by contract: never fail a grouping over an audit write
 
@@ -122,6 +123,7 @@ class JsonlCallRecorder:
         raw: str,
         meta: LlmCallMeta | None,
         error: str | None,
+        subject: dict | None = None,
     ) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._seq += 1
@@ -154,6 +156,11 @@ class JsonlCallRecorder:
             "schema_title": schema.get("title"),
             "request_file": prompt_file.name,
             "raw_file": raw_file.name,
+            # What the call is ABOUT (the rewrite speccer's group ids and the
+            # surprises folded in as its rewrite context). Without it a reader
+            # can only re-parse the prompt to learn which group a mid-run
+            # rewrite belonged to, and why it happened at all.
+            "subject": subject or None,
         }
         self.calls.append(record)
         self._write_index()

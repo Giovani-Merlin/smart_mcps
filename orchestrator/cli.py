@@ -2584,6 +2584,7 @@ def _rewrite_group_spec(
     max_retries: int = 2,
     failure_dir: Path | None = None,
     recorder: LlmCallRecorder | None = None,
+    subject: dict | None = None,
 ) -> dict[str, GroupSpec]:
     """Ask the rewrite speccer LLM for a name/summary/spec/verification for every
     skeleton group (one group, in practice — the mid-run rewrite seam).
@@ -2618,6 +2619,7 @@ def _rewrite_group_spec(
         max_retries=max_retries,
         failure_dir=failure_dir,
         recorder=recorder,
+        subject=subject,
     )
 
 
@@ -2637,18 +2639,25 @@ def _rewrite_provider(
     get, so a rewrite's cost, prompt and response survive."""
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
+        rewrite_context = [f"[{surprise.kind}] {surprise.description}" for surprise in surprises]
         skeleton = {
             group.id: {
                 "tasks": group.tasks,
                 "files": group.files,
                 "previous_spec": group.spec,
-                "rewrite_context": [
-                    f"[{surprise.kind}] {surprise.description}" for surprise in surprises
-                ],
+                "rewrite_context": rewrite_context,
             }
         }
         spec = _rewrite_group_spec(
-            plan_text, skeleton, llm_runner, failure_dir=failure_dir, recorder=recorder
+            plan_text,
+            skeleton,
+            llm_runner,
+            failure_dir=failure_dir,
+            recorder=recorder,
+            # The call's own record of which group it rewrote and what forced it —
+            # the only place a bundle consumer can learn either without re-parsing
+            # the prompt it was given.
+            subject={"group_ids": [group.id], "rewrite_context": rewrite_context},
         )[group.id]
         return group.model_copy(
             update={
