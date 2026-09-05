@@ -101,6 +101,12 @@ class ExportArtifact(BaseModel):
     kind: str  # coder_report | reviewer_verdict | other
     generation: int | None = None
     round: int | None = None
+    #: When the orchestrator wrote the artifact, from the file's mtime — these
+    #: files carry no timestamp of their own, and the owning session's
+    #: ``ended_at`` is null on many runs, so without this a consumer has nothing
+    #: to place a round's outcome in time by. Null only if the file vanished
+    #: between listing and stat.
+    recorded_at: str | None = None
     #: Relative to the run directory.
     path: str
     status: str | None = None
@@ -267,6 +273,19 @@ def _resolve_transcript(
     return recorded, True
 
 
+def _mtime_iso(path: Path) -> str | None:
+    """The file's modification time, UTC ISO 8601. Observed, not invented: it is
+    when this process last wrote the file, which for a write-once round artifact
+    is when the round produced it."""
+    import datetime
+
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(stamp, datetime.UTC).isoformat()
+
+
 def _artifact(path: Path, run_dir: Path) -> ExportArtifact:
     from orchestrator.observatory.artifacts import load_json
 
@@ -283,6 +302,7 @@ def _artifact(path: Path, run_dir: Path) -> ExportArtifact:
         kind=kind,
         generation=generation,
         round=round_no,
+        recorded_at=_mtime_iso(path),
         path=str(path.relative_to(run_dir)),
         error=error,
     )
@@ -331,6 +351,8 @@ def _group_artifacts(paths: RunPaths, group_id: str) -> list[ExportArtifact]:
         if path.name not in _ARTIFACT_SKIP and not _SPEC_GEN_RE.match(path.name)
     ]
     # Chronological within the group: by (generation, round); "other" files last.
+    # `recorded_at` orders them in real time, but (generation, round) is the
+    # authoritative sequence — an "other" file's mtime says nothing about rounds.
     artifacts.sort(key=lambda a: (a.generation is None, a.generation or 0, a.round or 0, a.path))
     return artifacts
 

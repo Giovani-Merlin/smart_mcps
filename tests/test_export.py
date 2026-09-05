@@ -9,6 +9,7 @@ assembly, escalation collection from both locations, and old-run tolerance
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 
@@ -440,6 +441,48 @@ def test_missing_run_dir_is_an_export_error(tmp_path: Path) -> None:
         assert "no run directory" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ExportError")
+
+
+def test_artifacts_carry_their_own_recorded_time(tmp_path: Path) -> None:
+    """An artifact records the OUTCOME of a round. Without a time of its own a consumer can only
+    reach for the owning session's `ended_at` — null on many real runs — and then its
+    `started_at`, which sorts every report and verdict above the work it describes."""
+    import os
+
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="alpha",
+                summary="does alpha",
+                # deliberately no ended_at — the shape that exposed the bug
+                sessions=[
+                    _session("aaa", SessionRole.CODER, started_at="2026-01-01T00:00:05+00:00")
+                ],
+            )
+        },
+        states={"g1": {"state": "completed"}},
+    )
+    group_dir = paths.group_dir("g1")
+    group_dir.mkdir(parents=True, exist_ok=True)
+    for name, when in (
+        ("report-g1-r1.json", "2026-01-01T00:10:00+00:00"),
+        ("report-g1-r2.json", "2026-01-01T00:20:00+00:00"),
+    ):
+        path = group_dir / name
+        atomic_write_text(path, json.dumps({"status": "completed"}))
+        stamp = datetime.datetime.fromisoformat(when).timestamp()
+        os.utime(path, (stamp, stamp))
+
+    export = _export(paths, root)
+    [r1, r2] = export.groups[0].artifacts
+    assert r1.recorded_at is not None and r2.recorded_at is not None
+    # a real time, strictly after the session started, and ordered across rounds
+    assert r1.recorded_at < r2.recorded_at
+    assert r1.recorded_at > export.groups[0].sessions[0].started_at
 
 
 # ----------------------------------------------------- orchestrator llm calls

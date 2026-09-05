@@ -135,6 +135,7 @@ the ambiguity, not remove it.
 | ---------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `kind`                 | string                        | `"coder_report"` \| `"reviewer_verdict"` \| `"other"` (filename didn't match the round pattern)                                                        |
 | `generation` / `round` | int \| null                   | null when `kind` is `"other"`                                                                                                                          |
+| `recorded_at`          | string (ISO 8601) \| null     | the artifact file's mtime — null only if the file vanished between listing and stat                                                                    |
 | `path`                 | string, relative to `run_dir` | always present                                                                                                                                         |
 | `status`               | string \| null                | null if the artifact JSON has no `status`                                                                                                              |
 | `surprises`            | `ExportSurprise[]`            | `[]` if none                                                                                                                                           |
@@ -142,6 +143,19 @@ the ambiguity, not remove it.
 | `denied_command`       | string                        | `""` if none                                                                                                                                           |
 | `required_changes`     | string[]                      | `[]` if none                                                                                                                                           |
 | `error`                | string \| null                | non-null when the artifact file was unreadable or half-written; the artifact is still listed (a round happened) even though its content is unavailable |
+
+`recorded_at` is the artifact's **only** placement in time. These files carry
+no timestamp field of their own, and the owning session's `ended_at` is null on
+many runs, so a consumer that falls back to the session's `started_at` will
+sort every round's outcome *above the work that produced it*. Use
+`recorded_at`; where it is null, prefer the end of what the session was
+observed doing over its start. The mtime is an observation (when this process
+wrote the file), not a claim about when the worker finished — for a write-once
+round artifact the two coincide.
+
+Ordering within `artifacts[]` remains `(generation, round)`, which is the
+authoritative sequence; `recorded_at` places them in real time but an `"other"`
+file's mtime says nothing about rounds.
 
 `heartbeat.json` and `spec-gen<N>.json` files are never listed as artifacts —
 the former is per-group bookkeeping, the latter is exposed instead as
