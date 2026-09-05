@@ -274,9 +274,10 @@ def _resolve_transcript(
 
 
 def _mtime_iso(path: Path) -> str | None:
-    """The file's modification time, UTC ISO 8601. Observed, not invented: it is
-    when this process last wrote the file, which for a write-once round artifact
-    is when the round produced it."""
+    """The file's modification time, UTC ISO 8601 — the fallback when the artifact
+    carries no ``recorded_at`` of its own (every run written before
+    ``save_group_artifact`` began stamping one). Observed, not invented, but
+    weaker than the emitted field: a later rewrite of the file would move it."""
     import datetime
 
     try:
@@ -298,11 +299,14 @@ def _artifact(path: Path, run_dir: Path) -> ExportArtifact:
         kind, generation, round_no = "other", None, None
 
     content, error = load_json(path)
+    # The orchestrator stamps `recorded_at` at write time; the mtime stands in for
+    # artifacts written before it did.
+    recorded_at = content.get("recorded_at") if isinstance(content, dict) else None
     artifact = ExportArtifact(
         kind=kind,
         generation=generation,
         round=round_no,
-        recorded_at=_mtime_iso(path),
+        recorded_at=str(recorded_at) if recorded_at else _mtime_iso(path),
         path=str(path.relative_to(run_dir)),
         error=error,
     )

@@ -9,13 +9,14 @@ as the artifacts round triggers point to (pointers, not payloads).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -356,9 +357,20 @@ class ManifestStore:
         atomic_write_text(self.paths.manifest_path, manifest.model_dump_json(indent=2) + "\n")
 
     def save_group_artifact(self, group_id: str, filename: str, payload: BaseModel) -> Path:
-        """Persist a report/verdict; returns the path round triggers ferry as a pointer."""
+        """Persist a report/verdict; returns the path round triggers ferry as a pointer.
+
+        Stamped with ``recorded_at`` — when the orchestrator wrote it, which for a
+        write-once round artifact is when the round produced it. The models
+        themselves stay clean (a write time is not part of the coder's report
+        contract) and every reader ignores unknown keys, but without this the only
+        placement in time a consumer has is the file's mtime, or worse the owning
+        session's ``started_at`` — which sorts a round's outcome above the work
+        that produced it.
+        """
         path = self.paths.group_dir(group_id) / filename
-        atomic_write_text(path, payload.model_dump_json(indent=2) + "\n")
+        content = payload.model_dump(mode="json")
+        content["recorded_at"] = datetime.now(UTC).isoformat()
+        atomic_write_text(path, json.dumps(content, indent=2) + "\n")
         return path
 
 

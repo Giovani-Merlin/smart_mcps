@@ -485,6 +485,43 @@ def test_artifacts_carry_their_own_recorded_time(tmp_path: Path) -> None:
     assert r1.recorded_at > export.groups[0].sessions[0].started_at
 
 
+def test_emitted_recorded_at_wins_over_the_file_mtime(tmp_path: Path) -> None:
+    """`save_group_artifact` stamps the real write time into the artifact. The mtime is only a
+    stand-in for runs written before it did, and it is the weaker of the two — a later rewrite
+    of the file moves it, the stamped field does not."""
+    import os
+
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    group_dir = paths.group_dir("g1")
+    group_dir.mkdir(parents=True, exist_ok=True)
+    path = group_dir / "report-g1-r1.json"
+    atomic_write_text(
+        path,
+        json.dumps({"status": "completed", "recorded_at": "2026-01-01T00:10:00+00:00"}),
+    )
+    # touch it much later, as an unrelated rewrite would
+    later = datetime.datetime.fromisoformat("2026-06-01T00:00:00+00:00").timestamp()
+    os.utime(path, (later, later))
+
+    export = _export(paths, root)
+    [artifact] = export.groups[0].artifacts
+    assert artifact.recorded_at == "2026-01-01T00:10:00+00:00"
+
+
+def test_save_group_artifact_stamps_the_write_time(tmp_path: Path) -> None:
+    """The producing side of the same contract: every report and verdict carries its own time,
+    and the models still round-trip (unknown keys are ignored on read)."""
+    from orchestrator.model import CoderReport
+
+    store = ManifestStore(RunPaths(tmp_path / "repo", RUN_ID))
+    path = store.save_group_artifact("g1", "report-g1-r1.json", CoderReport(status="completed"))
+    payload = json.loads(path.read_text())
+    assert datetime.datetime.fromisoformat(payload["recorded_at"]).tzinfo is not None
+    assert CoderReport.model_validate(payload).status == "completed"
+
+
 # ----------------------------------------------------- orchestrator llm calls
 
 
