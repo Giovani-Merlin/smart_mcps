@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 from orchestrator.execution.denial import classify_denial
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.execution.transcript_events import parse_transcript, write_events_gz
+from orchestrator.grouping.llm_record import INDEX_NAME as LLM_INDEX_NAME
 
 #: Bump only on a breaking change to the contract; additive fields are free.
 SCHEMA_VERSION = 2
@@ -158,6 +159,39 @@ class ExportGroup(BaseModel):
     escalations: list[ExportEscalation] = Field(default_factory=list)
 
 
+class ExportLlmCall(BaseModel):
+    """One call the orchestrator itself made (mapper/speccer), read from
+    ``<run_dir>/llm/calls.json``.
+
+    The recorder writes OTel ``gen_ai.*`` names; this flattens them to the
+    bundle's own naming. Fields absent from an older ``calls.json`` export as
+    null/zero, never invented — and an entry whose ``claude.transcript_path``
+    no longer resolves exports with ``transcript_missing`` set, exactly like a
+    worker session."""
+
+    seq: int
+    recorded_at: str | None = None
+    #: ``gen_ai.operation.name`` — the recorder's ``stage`` (``speccer_output``,
+    #: ``mapper_output``, ...).
+    operation: str = ""
+    #: ``gen_ai.request.model``; null when the call failed before a response.
+    model: str | None = None
+    attempt: int = 0
+    #: ``status.code`` — ``ok`` or ``error``.
+    status: str = ""
+    error: str | None = None
+    duration_ms: int | None = None
+    session_id: str | None = None
+    transcript_missing: bool = False
+    #: Relative to the package directory (``events/<session_id>.jsonl.gz``);
+    #: None when the transcript is missing, so no file was written. The
+    #: base-context strip is deliberately *not* applied — an orchestrator
+    #: prompt never carries the workers' base context.
+    events_path: str | None = None
+    events_count: int = 0
+    tokens: ExportTokens = Field(default_factory=ExportTokens)
+
+
 class ExportBaseContext(BaseModel):
     """The shared prefix every worker's first prompt began with. Null when
     the run predates the file, or wrote it somewhere this export can't find."""
@@ -190,6 +224,9 @@ class RunExport(BaseModel):
     created_at: str | None = None
     base_context: ExportBaseContext | None = None
     groups: list[ExportGroup] = Field(default_factory=list)
+    #: The orchestrator's own LLM calls, in recorded order. Empty for a run
+    #: with no ``llm/`` directory (every run before the recorder shipped).
+    llm_calls: list[ExportLlmCall] = Field(default_factory=list)
 
 
 class ExportError(Exception):
@@ -396,6 +433,92 @@ def _group_rewrites(
     return rewrites
 
 
+def _llm_calls(
+    paths: RunPaths,
+    *,
+    events_dir: Path | None,
+    transcript_root: Path,
+) -> list[ExportLlmCall]:
+    """The orchestrator's own calls off ``<run_dir>/llm/calls.json``.
+
+    Absent, unreadable, or malformed: ``[]`` — the audit trail is inert by
+    contract on the writing side too, and losing it must never fail a bundle.
+    Each call's transcript is parsed and written to the same ``events/``
+    directory as a worker's, so a consumer reads both through one schema.
+    """
+    from orchestrator.observatory.artifacts import load_json
+
+    index = paths.run_dir / "llm" / LLM_INDEX_NAME
+    if not index.is_file():
+        return []
+    content, _error = load_json(index)
+    if not isinstance(content, dict):
+        return []
+    raw_calls = content.get("calls")
+    if not isinstance(raw_calls, list):
+        return []
+
+    calls: list[ExportLlmCall] = []
+    for entry in raw_calls:
+        if not isinstance(entry, dict):
+            continue
+        seq = entry.get("seq")
+        if not isinstance(seq, int):
+            continue
+        status = entry.get("status")
+        session_id = entry.get("claude.session_id")
+        session_id = str(session_id) if session_id else None
+        duration = entry.get("duration_ms")
+
+        transcript_missing = session_id is None
+        events_path: str | None = None
+        events_count = 0
+        if session_id is not None:
+            transcript, transcript_missing = _resolve_transcript(
+                session_id, entry.get("claude.transcript_path"), transcript_root
+            )
+            if events_dir is not None and not transcript_missing and transcript:
+                # No strip_prefix: a speccer prompt does not begin with the
+                # workers' base context, and a partial strip is never correct.
+                parsed = parse_transcript(Path(transcript))
+                events_count = len(parsed.events)
+                write_events_gz(events_dir / f"{session_id}.jsonl.gz", parsed.events)
+                events_path = f"events/{session_id}.jsonl.gz"
+
+        calls.append(
+            ExportLlmCall(
+                seq=seq,
+                recorded_at=str(entry["recorded_at"]) if entry.get("recorded_at") else None,
+                operation=str(entry.get("gen_ai.operation.name") or ""),
+                model=(
+                    str(entry["gen_ai.request.model"])
+                    if entry.get("gen_ai.request.model")
+                    else None
+                ),
+                attempt=entry.get("attempt") if isinstance(entry.get("attempt"), int) else 0,
+                status=str(status.get("code") or "") if isinstance(status, dict) else "",
+                error=str(entry["error"]) if entry.get("error") else None,
+                duration_ms=duration if isinstance(duration, int) else None,
+                session_id=session_id,
+                transcript_missing=transcript_missing,
+                events_path=events_path,
+                events_count=events_count,
+                tokens=ExportTokens(
+                    input=_int(entry.get("gen_ai.usage.input_tokens")),
+                    output=_int(entry.get("gen_ai.usage.output_tokens")),
+                    cache_read=_int(entry.get("claude.usage.cache_read_tokens")),
+                    cache_creation=_int(entry.get("claude.usage.cache_creation_tokens")),
+                ),
+            )
+        )
+    calls.sort(key=lambda call: call.seq)
+    return calls
+
+
+def _int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _grouping_granularity(paths: RunPaths) -> str | None:
     from orchestrator.observatory.artifacts import load_json
 
@@ -562,6 +685,7 @@ def build_export(
         created_at=snapshot.created_at.isoformat() if snapshot.created_at else None,
         base_context=base_context,
         groups=groups,
+        llm_calls=_llm_calls(paths, events_dir=events_dir, transcript_root=root),
     )
 
 

@@ -23,6 +23,11 @@ an existing value is breaking and mints `schema_version = 3` with its own
 contract document — this document is never silently reinterpreted for a
 future version.
 
+Concretely: `llm_calls` was added to `schema_version` 2 **after** the first
+consumers shipped against it, and did not mint a v3. A reader written before
+it existed still reads a bundle that has it, because it only reads keys it
+knows. Adding an optional top-level key is always this kind of change.
+
 ## Package layout
 
 ```
@@ -54,6 +59,7 @@ Top-level (`RunExport`):
 | `created_at`     | string (ISO 8601) \| null   | null on manifests that predate the field                                               |
 | `base_context`   | `ExportBaseContext` \| null | null when the run has no `base-context.md` (pre-ADR-0007 runs, or the file is missing) |
 | `groups`         | `ExportGroup[]`             | always present; empty only if the run truly has none                                   |
+| `llm_calls`      | `ExportLlmCall[]`           | always present; `[]` when the run has no `llm/` directory (added in v2, additively)    |
 
 `ExportPlan`:
 
@@ -174,6 +180,44 @@ generation**: every surprise or escalation recorded strictly after the
 previous generation's snapshot (exclusive) up to and including this
 generation (inclusive) is attributed to it. Treat this as an inference, not a
 recorded causal link.
+
+### `ExportLlmCall` (one per orchestrator LLM call)
+
+The orchestrator's own calls — the mapper and speccer that decide the
+partition and rewrite specs — read from `<run_dir>/llm/calls.json`, in
+recorded (`seq`) order. Every worker session in the bundle is the *result* of
+these calls; without them the reasoning behind a partition or a spec rewrite
+has no representation in the bundle at all.
+
+| field                | type                      | null-tolerance                                                                                       |
+| -------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `seq`                | int                       | always present; 1-based, the recorder's own ordering key                                             |
+| `recorded_at`        | string (ISO 8601) \| null | null on a record that predates the field                                                              |
+| `operation`          | string                    | the recorder's stage — `"speccer_output"`, `"mapper_output"`, …; `""` if absent                     |
+| `model`              | string \| null            | null when the call failed before a response named a model                                             |
+| `attempt`            | int                       | 0-based retry index; a repaired call records every attempt as its own entry                          |
+| `status`             | string                    | `"ok"` \| `"error"`; `""` when the record has no status object                                       |
+| `error`              | string \| null            | null on success                                                                                       |
+| `duration_ms`        | int \| null               | null when not recorded                                                                                |
+| `session_id`         | string \| null            | null when the call left no Claude session (a local/failed call)                                       |
+| `transcript_missing` | bool                      | true when no transcript resolves for `session_id` — or when `session_id` itself is null              |
+| `events_path`        | string \| null            | `events/<session_id>.jsonl.gz`; null whenever `transcript_missing` is true, so no file was written    |
+| `events_count`       | int                       | 0 when no events file was written                                                                    |
+| `tokens`             | `ExportTokens`            | always present; all-zero means "not recorded" (same convention as a session's)                       |
+
+Two properties differ from `ExportSession` and are deliberate:
+
+- **No `base_context_stripped`.** An orchestrator prompt does not begin with
+  the workers' base context, so the strip is never attempted. A consumer must
+  not assume a prefix was removed.
+- **A run with no `llm/` directory exports `llm_calls: []`**, never null and
+  never an error. The recorder is inert by contract on the writing side (an
+  audit write must never fail a run); the reading side matches — an absent,
+  unreadable, or malformed `calls.json` yields `[]`.
+
+An LLM call's events file lives in the same `events/` directory as a worker
+session's, in the same `NeutralEvent` schema, keyed by the same
+`<session_id>.jsonl.gz` name. A consumer reads both through one code path.
 
 ## `NeutralEvent` schema
 

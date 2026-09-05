@@ -440,3 +440,181 @@ def test_missing_run_dir_is_an_export_error(tmp_path: Path) -> None:
         assert "no run directory" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ExportError")
+
+
+# ----------------------------------------------------- orchestrator llm calls
+
+
+def _write_llm_index(paths: RunPaths, calls: list[dict]) -> None:
+    """The recorder's own on-disk shape (`JsonlCallRecorder._write_index`)."""
+    directory = paths.run_dir / "llm"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "calls.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "grouping_run_id": RUN_ID,
+                "produced": None,
+                "calls": calls,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _llm_call(seq: int, session_id: str | None, transcript: Path | None, **overrides) -> dict:
+    call = {
+        "seq": seq,
+        "recorded_at": f"2026-01-01T00:0{seq}:00+00:00",
+        "gen_ai.operation.name": "speccer_output",
+        "gen_ai.request.model": "claude-opus-5",
+        "attempt": 0,
+        "status": {"code": "ok"},
+        "error": None,
+        "claude.session_id": session_id,
+        "claude.transcript_path": str(transcript) if transcript else None,
+        "gen_ai.usage.input_tokens": 4,
+        "gen_ai.usage.output_tokens": 11,
+        "claude.usage.cache_read_tokens": 90,
+        "claude.usage.cache_creation_tokens": 5,
+        "duration_ms": 1234,
+        "schema_title": "speccer_output",
+        "request_file": f"{seq:02d}-speccer_output-a0.request.txt",
+        "raw_file": f"{seq:02d}-speccer_output-a0.raw.txt",
+    }
+    call.update(overrides)
+    return call
+
+
+def _run_with_one_group(tmp_path: Path) -> RunPaths:
+    return _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="alpha",
+                summary="does alpha",
+                sessions=[
+                    _session("aaa", SessionRole.CODER, started_at="2026-01-01T00:00:05+00:00")
+                ],
+            )
+        },
+        states={"g1": {"state": "completed"}},
+    )
+
+
+def test_llm_calls_exported_in_order_with_events(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    resolvable = _write_transcript(root, "slug", "spec-1")
+    paths = _run_with_one_group(tmp_path)
+    _write_llm_index(
+        paths,
+        [
+            _llm_call(2, "spec-1", resolvable),
+            # Out of file order: the export sorts by seq, not by position.
+            _llm_call(1, "gone-forever", tmp_path / "vanished" / "gone-forever.jsonl"),
+        ],
+    )
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+    missing, present = payload["llm_calls"]
+
+    assert [call["seq"] for call in payload["llm_calls"]] == [1, 2]
+    assert present["operation"] == "speccer_output"
+    assert present["model"] == "claude-opus-5"
+    assert present["status"] == "ok"
+    assert present["attempt"] == 0
+    assert present["duration_ms"] == 1234
+    assert present["session_id"] == "spec-1"
+    assert present["tokens"] == {"input": 4, "output": 11, "cache_read": 90, "cache_creation": 5}
+    assert present["transcript_missing"] is False
+    assert present["events_path"] == "events/spec-1.jsonl.gz"
+    events_file = destination / present["events_path"]
+    assert events_file.is_file()
+    assert len(read_events_gz(events_file)) == present["events_count"] > 0
+
+    # An unresolvable transcript is flagged, never faked, and writes no file.
+    assert missing["transcript_missing"] is True
+    assert missing["events_path"] is None
+    assert missing["events_count"] == 0
+    assert not (destination / "events" / "gone-forever.jsonl.gz").exists()
+
+
+def test_llm_call_transcript_keeps_its_whole_first_message(tmp_path: Path) -> None:
+    """No base-context strip: a speccer prompt never carries base context, and
+    a partial strip of a non-matching prefix would silently lose the prompt."""
+    root = tmp_path / "projects"
+    # Deliberately opens with the byte-exact base context anyway.
+    transcript = _write_transcript(root, "slug", "spec-1", text_after_base="rewrite g1")
+    paths = _run_with_one_group(tmp_path)
+    _write_llm_index(paths, [_llm_call(1, "spec-1", transcript)])
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+    [call] = payload["llm_calls"]
+    assert "base_context_stripped" not in call
+    events = read_events_gz(destination / call["events_path"])
+    assert events[0].text == f"{BASE_CONTEXT}\n\nrewrite g1"
+
+
+def test_run_without_llm_dir_exports_empty_list(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    assert not (paths.run_dir / "llm").exists()
+
+    export = _export(paths, root)
+    assert export.llm_calls == []
+    payload = json.loads(export.model_dump_json())
+    assert payload["llm_calls"] == []
+
+
+def test_unreadable_llm_index_degrades_to_empty_list(tmp_path: Path) -> None:
+    """The audit trail is inert by contract on both sides — losing it must
+    never fail a bundle that is otherwise whole."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    (paths.run_dir / "llm").mkdir()
+    (paths.run_dir / "llm" / "calls.json").write_text("{not json")
+
+    export = _export(paths, root)
+    assert export.llm_calls == []
+    assert export.groups[0].sessions[0].events_count > 0
+
+
+def test_failed_llm_call_without_session_is_flagged_missing(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    _write_llm_index(
+        paths,
+        [
+            _llm_call(
+                1,
+                None,
+                None,
+                **{
+                    "gen_ai.request.model": None,
+                    "status": {"code": "error"},
+                    "error": "schema repair exhausted",
+                    "attempt": 2,
+                    "duration_ms": None,
+                },
+            )
+        ],
+    )
+
+    export = _export(paths, root)
+    [call] = export.llm_calls
+    assert call.status == "error"
+    assert call.error == "schema repair exhausted"
+    assert call.attempt == 2
+    assert call.model is None
+    assert call.duration_ms is None
+    assert call.session_id is None
+    assert call.transcript_missing is True
+    assert call.events_path is None
