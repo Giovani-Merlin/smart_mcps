@@ -16,8 +16,10 @@ review (origin R12, R16). Completed groups are never rewritten.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import shutil
 import threading
 import uuid
 from collections.abc import Callable
@@ -46,6 +48,7 @@ from orchestrator.execution.preflight import (
     failing_tests_from_junit,
 )
 from orchestrator.execution.prompting import (
+    CODER_SCRATCH_DIRNAME,
     REVIEW_SCRATCH_DIRNAME,
     render_coder_answer_prompt,
     render_coder_prompt,
@@ -368,6 +371,14 @@ class _GroupExecution:
         # spent as a rewrite, never sent to the speccer.
         self._operator_notes: list[str] = []
         self._env_failure: str | None = None
+        # The merge gate's untracked ladder: a first untracked-only failure is a
+        # cheap same-spec relaunch with a note; a second, consecutive one has
+        # the leftovers archived out of the tree and the merge proceeds. Counts
+        # per group across generations (a relaunch advances the generation).
+        self._untracked_strikes = 0
+        # One automatic gate re-run per generation on an attributable
+        # regression in autonomous mode, before a rewrite is spent on a flake.
+        self._flake_reruns = 0
         # Re-entry discovery (R4): a live coder entry at the persisted generation
         # can only pre-exist the executor on a resumed run — fresh runs start with
         # an empty group entry. One-shot: consumed by the first generation.
@@ -399,6 +410,7 @@ class _GroupExecution:
             while True:
                 merged = await self._run_generation()
                 if merged:
+                    self._log_coder_session_end()
                     self._log(f"group {self.gid}: completed")
                     return GroupState.COMPLETED
                 # a rewrite or a retirement happened inside; loop spawns the next session
@@ -416,6 +428,7 @@ class _GroupExecution:
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
         is_reentry = reentry is not None
+        self._flake_reruns = 0
         # Re-entry (warm-resumed or fallback-forked) continues this generation's
         # numbering rather than starting over, so round-numbered artifacts don't
         # collide with — and silently overwrite — pre-crash ones still on disk.
@@ -447,6 +460,8 @@ class _GroupExecution:
             self.coder_sid = str(uuid.uuid4())
             self.reviewer_sid = None
             self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
+            self.coder_entry.spec_sha256 = _spec_hash(self.group)
+            self.deps.store.save(self.deps.manifest)
             # Logged *before* the fork, not after. `start_fork` blocks for as long
             # as the base session takes to absorb the group's prompt — 21 minutes
             # on a real run — and the old "coder launched" line landed only once it
@@ -632,7 +647,16 @@ class _GroupExecution:
             and entry.generation == self.generation
             and entry.retirement_reason is None
         ]
-        return live[-1] if live else None
+        if not live:
+            return None
+        entry = live[-1]
+        if entry.spec_sha256 is not None and entry.spec_sha256 != _spec_hash(self.group):
+            # The spec was rewritten under the session (an operator wrote a
+            # spec-genN.json after it started): a warm resume would keep a coder
+            # working to a spec nobody holds any more. Fresh coder, new spec.
+            self._reentry_fallback(entry, "spec rewritten since the session started")
+            return None
+        return entry
 
     async def _reenter(self, entry: SessionEntry, *, round_no: int) -> RoundResult | None:
         """Warm-resume the interrupted coder in its worktree (R4). Returns the
@@ -738,6 +762,7 @@ class _GroupExecution:
         entry.total_cache_read_tokens = usage.total_cache_read_tokens
         entry.total_cache_creation_tokens = usage.total_cache_creation_tokens
         entry.base_context_tokens = usage.base_context_tokens
+        entry.total_cost_usd = usage.total_cost_usd
 
     def _persist_coder_usage(self) -> None:
         """Record the active coder's latest context size on its manifest entry
@@ -964,6 +989,7 @@ class _GroupExecution:
             self.ctx.set_state(GroupState.MERGING)
             self._heartbeat.mark_phase("merging into integration")  # F4
             self._log(f"group {self.gid}: merge attempt")
+            self._archive_coder_scratch()
             try:
                 await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
             except MergeConflict as exc:
@@ -994,19 +1020,39 @@ class _GroupExecution:
                 # warrants an LLM call, and the in-place resume is specific to
                 # resolving conflict markers).
                 self._log(f"group {self.gid}: preflight failed ({exc})")
+                if exc.kind == "untracked":
+                    if await self._handle_untracked(exc):
+                        continue  # the tree was cleaned in place: re-run the gate
+                    return False  # relaunched on the same spec
                 diagnosis, attributable = self._classify_preflight(exc)
                 surprise = Surprise(kind="other", description=diagnosis, affected_groups=[self.gid])
                 self._spread([surprise])
                 if attributable:
-                    # A new, real regression — keep today's escalate-then-rewrite
-                    # behaviour (plan U3): the failure is evidence about the diff
-                    # and a rewritten spec can act on it.
+                    if self._should_rerun_for_flake(exc):
+                        self._flake_reruns += 1
+                        self._log(
+                            f"group {self.gid}: preflight: re-running gate once (suspected flake)"
+                        )
+                        continue
+                    # A new, real regression — escalate, then rewrite (plan U3):
+                    # the failure is evidence about the diff and a rewritten
+                    # spec can act on it.
                     response = await self._escalate(
                         EscalationKind.PREFLIGHT_FAILED,
                         prompt=f"preflight failed for {self.gid}: {exc}",
                         surprises=[surprise],
                     )
-                    # `retry` behaves as `answer` here (guides the rewrite).
+                    if _is_retry(response):
+                        if not response.answer.strip():
+                            # The operator fixed the world by hand and the tree
+                            # is unchanged: re-run the gate, no LLM call.
+                            self._log_remerge("operator retry with no text")
+                            continue
+                        # With text: the operator changed something the coder
+                        # must know about (a test, a fixture) — same spec,
+                        # fresh coder, the text as its briefing.
+                        await self._relaunch(response.answer, f"preflight failed: {exc}")
+                        return False
                     extra = [surprise]
                     if response is not None:
                         extra.append(_operator_surprise(self.gid, response.answer))
@@ -1021,11 +1067,98 @@ class _GroupExecution:
                     prompt=f"preflight failed for {self.gid} (not attributable to this diff): {exc}",
                     surprises=[surprise],
                 )
+                if _is_retry(response) and not response.answer.strip():
+                    self._log_remerge("operator retry with no text")
+                    continue
                 if response is not None:
                     diagnosis += f"\n[operator] {response.answer}"
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             return True
+
+    def _log_remerge(self, reason: str) -> None:
+        """The cheap ``preflight_failed`` resolution: refresh + preflight + merge
+        again with no LLM call — the caller ``continue``s the merge loop."""
+        self._log(f"group {self.gid}: re-running the merge gate ({reason})")
+
+    def _should_rerun_for_flake(self, exc: PreflightFailure) -> bool:
+        """One automatic re-run of the gate on an attributable regression when
+        nobody is there to `retry` by hand (autonomous for this kind), so a
+        flaky test does not cost a rewrite plus a coder generation. Capped at
+        one per generation: a second identical failure is a real regression."""
+        if exc.kind != "regression" or self._flake_reruns >= 1:
+            return False
+        policy, broker = self.deps.policy, self.deps.broker
+        autonomous = broker is None or policy is None
+        autonomous = autonomous or not policy.should_escalate(EscalationKind.PREFLIGHT_FAILED)
+        return autonomous
+
+    async def _handle_untracked(self, exc: PreflightFailure) -> bool:
+        """The untracked ladder. Returns True when the gate should simply be
+        re-run (the tree was cleaned in place, by the operator or by archiving),
+        False when a fresh coder was relaunched on the same spec.
+
+        First strike: attributable to the coder, but cheap — no rewrite, no
+        speccer; a same-spec relaunch carrying an operator note that names the
+        paths. Second consecutive strike: the leftovers are moved to the
+        group's ``untracked/`` archive, a surprise records it for the report,
+        and the merge proceeds.
+        """
+        assert self.workspace is not None
+        self._untracked_strikes += 1
+        paths = ", ".join(exc.paths)
+        note = (
+            f"untracked files left in the worktree: {paths} — commit them, move them "
+            f"into {CODER_SCRATCH_DIRNAME}/, or delete them"
+        )
+        if self._untracked_strikes >= 2:
+            archive = self.deps.store.paths.untracked_archive_dir(self.gid)
+            _move_paths(self.workspace, exc.paths, archive)
+            self._log(
+                f"group {self.gid}: UNTRACKED FILES ARCHIVED after a second consecutive "
+                f"untracked-only gate failure — moved to {archive}: {paths}; merging anyway"
+            )
+            self._spread(
+                [
+                    Surprise(
+                        kind="informational",
+                        description=(
+                            f"group {self.gid} left untracked files twice; archived to "
+                            f"{archive} and merged without them: {paths}"
+                        ),
+                        affected_groups=[self.gid],
+                    )
+                ]
+            )
+            self._log_remerge("untracked leftovers archived")
+            return True
+        response = await self._escalate(
+            EscalationKind.PREFLIGHT_FAILED,
+            prompt=f"preflight failed for {self.gid} (untracked files): {exc}",
+        )
+        if _is_retry(response) and not response.answer.strip():
+            self._log_remerge("operator retry with no text")
+            return True
+        if response is not None and response.answer.strip():
+            note = f"{note}\n[operator] {response.answer}"
+        await self._relaunch(note, f"untracked files left in the worktree: {paths}")
+        return False
+
+    def _archive_coder_scratch(self) -> None:
+        """Exclude and archive the coder's scratch directory before the gate
+        runs, mirroring ``_archive_review_scratch`` — same cap, archived beside
+        the group's artifacts. A no-op when it was never created."""
+        assert self.workspace is not None
+        scratch_dir = self.workspace / CODER_SCRATCH_DIRNAME
+        if not scratch_dir.exists():
+            return
+        ensure_excluded(self.workspace, CODER_SCRATCH_DIRNAME)
+        archive_review_scratch(
+            scratch_dir,
+            self.deps.store.paths.coder_scratch_archive_dir(self.gid),
+            cap_bytes=self.deps.execution.review_scratch_cap_bytes,
+            log=self._log,
+        )
 
     def _classify_preflight(self, exc: PreflightFailure) -> tuple[str, bool]:
         """Route a preflight failure by cause (plan U3): ``env``/``timeout``
@@ -1042,7 +1175,7 @@ class _GroupExecution:
         summary_tail = ""
         if exc.output_path is not None and exc.output_path.is_file():
             summary_tail = _short_test_summary(exc.output_path.read_text())
-        if exc.kind in ("env", "timeout"):
+        if exc.kind in ("env", "timeout", "untracked"):
             diagnosis = f"preflight failed ({exc.kind}): {exc.reason}"
             if summary_tail:
                 diagnosis += f"\n{summary_tail}"
@@ -1188,10 +1321,23 @@ class _GroupExecution:
             )
         return None
 
+    def _log_coder_session_end(self) -> None:
+        """One line per coder session with what it cost — the run log used to
+        carry no cost at all, and four of six run notes said so."""
+        if self.coder_entry is None:
+            return
+        entry = self.coder_entry
+        rounds = "round" if entry.rounds_completed == 1 else "rounds"
+        self._log(
+            f"group {self.gid} generation {self.generation}: coder session ended — "
+            f"{entry.rounds_completed} {rounds}, ${entry.total_cost_usd:.2f}"
+        )
+
     async def _retire(self, reason: str) -> None:
         assert self.coder_entry is not None
         self.coder_entry.retirement_reason = reason
         self.deps.store.save(self.deps.manifest)
+        self._log_coder_session_end()
         self._log(f"group {self.gid} generation {self.generation}: coder retired ({reason})")
         if self.generation >= self.deps.breaker.max_generations:
             # Terminal give-up: escalate before failing. An answer grants one more
@@ -1528,6 +1674,29 @@ def _context_surprise(group_id: str, description: str) -> Surprise:
     """Escalation context handed to the speccer when the group itself triggered
     the rewrite (blocked/too_hard/structural) and no upstream surprise exists."""
     return Surprise(kind="other", description=description, affected_groups=[group_id])
+
+
+def _spec_hash(group: Group) -> str:
+    """Identity of the spec a coder was launched on (see ``SessionEntry.spec_sha256``)."""
+    return hashlib.sha256(group.model_dump_json().encode()).hexdigest()
+
+
+def _move_paths(worktree: Path, paths: list[str], dest_dir: Path) -> None:
+    """Move ``paths`` (relative, as ``git status --porcelain`` names them — a
+    directory carries a trailing slash) out of ``worktree`` into ``dest_dir``,
+    keeping their relative layout."""
+    for rel in paths:
+        source = worktree / rel.rstrip("/")
+        if not source.exists():
+            continue
+        target = dest_dir / rel.rstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        shutil.move(str(source), str(target))
 
 
 def _is_retry(response: EscalationResponse | None) -> bool:

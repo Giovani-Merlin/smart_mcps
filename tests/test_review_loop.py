@@ -1099,6 +1099,7 @@ def seed_reentry_session(
     session_id: str = "sess-warm",
     generation: int = 1,
     context_tokens: int = 0,
+    spec_sha256: str | None = None,
 ) -> None:
     """Plant a live coder entry as if a prior process had already recorded it —
     the manifest state a plain ``resume`` finds after an INTERRUPTED restart."""
@@ -1112,9 +1113,59 @@ def seed_reentry_session(
                 role=SessionRole.CODER,
                 generation=generation,
                 last_context_tokens=context_tokens,
+                spec_sha256=spec_sha256,
             )
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_reentry_forks_fresh_when_the_spec_was_rewritten_under_the_session(tmp_path):
+    """An operator wrote a spec-genN.json after the coder started: the entry's
+    spec hash no longer matches the group in force, so the warm resume would
+    continue a coder on a spec nobody holds — fork fresh on the new spec."""
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness, spec_sha256="0" * 64)  # hash of the spec that was
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]  # fresh coder
+    assert runner.prompts["sess-warm"] == []  # the stale session is never resumed
+    stale = harness.manifest.groups["g1"].sessions[0]
+    assert stale.retirement_reason == "re-entry fallback: spec rewritten since the session started"
+    lines = run_log_lines(harness)
+    assert any("spec rewritten since the session started" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_reentry_warm_resumes_when_the_spec_hash_matches(tmp_path):
+    from orchestrator.execution.review import _spec_hash
+
+    runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
+    runner.prompts["sess-warm"] = []
+    runner.session_queues["sess-warm"] = [coder_report()]
+    harness = Harness(tmp_path, runner)
+    group = make_group()
+    seed_reentry_session(harness, spec_sha256=_spec_hash(group))
+    state = await harness.run(group)
+    assert state == GroupState.COMPLETED
+    assert runner.forks == ["r1-g1-reviewer-g1"]  # warm path kept
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_coder_entry_records_the_spec_hash(tmp_path):
+    from orchestrator.execution.review import _spec_hash
+
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner)
+    group = make_group()
+    await harness.run(group)
+    coder = harness.manifest.groups["g1"].sessions[0]
+    assert coder.spec_sha256 == _spec_hash(group)
 
 
 @pytest.mark.asyncio

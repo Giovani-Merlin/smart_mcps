@@ -152,7 +152,12 @@ def classify_denial(
     if denied_command and _matches_deny_rules(denied_command, deny_rules):
         return DenialKind.POLICY_FORBIDDEN
 
-    haystack = "\n".join([denial_error, *observed])
+    # The wire carries every tool result of the session, not just the denied
+    # call's. A coder whose `google-chrome` was refused by a Bash rule and whose
+    # *fallback* then hit a Landlock EACCES would otherwise be classified by the
+    # fallback's errno. Only entries that name the denied command's program get
+    # to corroborate; the report's own quoted error is never filtered.
+    haystack = "\n".join([denial_error, *_observed_about(denied_command, observed)])
     if _KERNEL_RE.search(haystack):
         return DenialKind.KERNEL_DENIED
     if denial_source == "tool_refused":
@@ -166,6 +171,24 @@ def classify_denial(
         # behind it.
         return DenialKind.KERNEL_DENIED
     return DenialKind.UNKNOWN
+
+
+def _observed_about(denied_command: str, observed: Sequence[str]) -> list[str]:
+    """The ``observed`` entries that mention the denied command's program.
+
+    "Program" is the command's first token, matched as a whole word, or its
+    basename (``/usr/bin/google-chrome`` → ``google-chrome``). With no command
+    to anchor on there is nothing to filter by, so every entry passes.
+    """
+    program = denied_command.split(maxsplit=1)[0] if denied_command.strip() else ""
+    if not program:
+        return list(observed)
+    names = {program, program.rsplit("/", 1)[-1]}
+    pattern = re.compile(
+        "|".join(rf"(?<![\w.-]){re.escape(name)}(?![\w-])" for name in names if name),
+        re.IGNORECASE,
+    )
+    return [entry for entry in observed if pattern.search(entry)]
 
 
 def _matches_deny_rules(denied_command: str, deny_rules: Sequence[str]) -> bool:

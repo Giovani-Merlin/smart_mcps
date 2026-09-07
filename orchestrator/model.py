@@ -87,6 +87,12 @@ class SessionEntry(BaseModel):
     name: str = ""  # display-name convention: <run_id>-<group_id>-<role>-g<generation>
     retirement_reason: str | None = None
     transcript_path: str | None = None
+    # SHA-256 of the group spec this coder was launched on. A resume compares it
+    # with the spec in force now: an operator `spec-genN.json` written after the
+    # session started means the warm re-entry would continue a coder on a spec
+    # it never saw — so it forks fresh instead. None for entries recorded before
+    # the field existed, which keep the warm path.
+    spec_sha256: str | None = None
     # Latest-round context size, persisted every round (R5): in-memory usage dies
     # with the process, and re-entry needs a pre-check against the breaker limit
     # before warm-resuming an interrupted coder.
@@ -102,6 +108,9 @@ class SessionEntry(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Summed from each round envelope's `total_cost_usd`. 0.0 on manifests that
+    # predate the field, same "not recorded" convention as the token counters.
+    total_cost_usd: float = 0.0
     # The context this session started from (F10): round 1 turn 1's
     # cache_read + cache_creation — the prefix it inherited and cannot shrink,
     # reported apart from total_cache_read_tokens so the two are never

@@ -932,6 +932,52 @@ def test_hitl_retry_relaunches_the_same_spec_through_the_file_broker(repo, fake_
     assert "fixed: the missing extra is installed" in g2_calls[0]["prompt"]
 
 
+def test_untracked_leftovers_relaunch_once_then_are_archived_and_merged(repo, fake_home):
+    """The merge gate's untracked ladder end to end (run-notes sweep C/D): a
+    coder that leaves an untracked file gets one same-spec relaunch carrying a
+    note that names it; when the relaunched coder leaves it again, the file is
+    archived beside the group's artifacts and the merge proceeds. No rewrite,
+    no speccer call, no third coder."""
+    run_id = "ru"
+    write_run_artifacts(repo, [make_group("g1")])
+    write_config(repo, fake_home)
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "work\n"}, commit="g1: work", stray={"probe.log": "x\n"}),
+    )
+    script_session(fake_home, name_of(run_id, "g1", "reviewer"), verdict_entry("approved"))
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder", generation=2),
+        coder_entry(stray={"probe.log": "x again\n"}),
+    )
+    script_session(
+        fake_home, name_of(run_id, "g1", "reviewer", generation=2), verdict_entry("approved")
+    )
+    llm = StubLlm()
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--review-intensity", "paired"],
+        llm_runner=llm,
+    )
+    assert exit_code == 0
+    assert state_of(repo, run_id)["groups"]["g1"]["state"] == "completed"
+    assert llm.prompts == []  # never rewritten
+    run_log = (repo / ".orchestrator" / "runs" / run_id / "logs" / "run.log").read_text()
+    assert "preflight failed" in run_log and "untracked files: probe.log" in run_log
+    assert "relaunching on the same spec" in run_log
+    assert "UNTRACKED FILES ARCHIVED" in run_log
+    assert "rewriting spec" not in run_log
+    g2_calls = [c for c in calls_of(fake_home) if name_of(run_id, "g1", "coder", 2) in c["argv"]]
+    assert g2_calls and "## Operator note" in g2_calls[0]["prompt"]
+    assert "untracked files left in the worktree: probe.log" in g2_calls[0]["prompt"]
+    archived = (
+        repo / ".orchestrator" / "runs" / run_id / "groups" / "g1" / "untracked" / "probe.log"
+    )
+    assert archived.read_text() == "x again\n"
+    assert "g1.out" in git(repo, "ls-tree", "--name-only", f"orchestrator/run-{run_id}")
+
+
 def test_hitl_escalation_timeout_releases_the_wait_when_no_operator_answers(repo, fake_home):
     """The run-driver session's safety net: with `--escalation-timeout` set and
     nobody answering (the driver session died), the wait releases per

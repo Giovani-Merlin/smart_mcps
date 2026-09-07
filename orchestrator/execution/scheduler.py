@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
@@ -194,6 +194,24 @@ class GroupRunState(BaseModel):
     quarantined: bool = False
 
 
+class LivePid(BaseModel):
+    """What the scheduler knew about a worker subprocess when it spawned it.
+
+    ``context`` is the session's own description (display-only for the
+    observatory). ``cmdline_head`` and ``starttime`` are read off ``/proc`` at
+    spawn so that a resume can tell the *same* process from a reused pid
+    without guessing from substrings: the kernel's process start time (field 22
+    of ``/proc/<pid>/stat``) is unique for the pid's lifetime, and argv[0]'s
+    basename pins the binary. Both are ``None`` when ``/proc`` was unreadable,
+    or for records written by an older orchestrator that only stored the
+    context string.
+    """
+
+    context: str = ""
+    cmdline_head: str | None = None
+    starttime: str | None = None
+
+
 class RunState(BaseModel):
     """Crash-resumable run snapshot, persisted after every transition."""
 
@@ -202,7 +220,9 @@ class RunState(BaseModel):
     # a resume across a schema break must fail loudly rather than coerce or drop fields.
     schema_version: int = RUN_STATE_SCHEMA_VERSION
     groups: dict[str, GroupRunState] = Field(default_factory=dict)
-    live_pids: dict[int, str] = Field(default_factory=dict)  # pid → session context
+    #: pid → what was known at spawn. Older state files stored a bare context
+    #: string per pid; those load as context-only records (see the validator).
+    live_pids: dict[int, LivePid] = Field(default_factory=dict)
     # Set when the process driving this run was interrupted, cleared when a
     # driver picks it up again. Without it a Ctrl-C leaves `state.json` reading
     # exactly like a healthy run — groups RUNNING, `live_pids` empty, because
@@ -212,6 +232,16 @@ class RunState(BaseModel):
     # the groups really were running, and inventing an INTERRUPTED state for them
     # would collide with the classification the scheduler already owns.
     interrupted_at: str | None = None
+
+    @field_validator("live_pids", mode="before")
+    @classmethod
+    def _accept_context_only_records(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        return {
+            pid: ({"context": record} if isinstance(record, str) else record)
+            for pid, record in value.items()
+        }
 
 
 @dataclass
@@ -332,8 +362,9 @@ class Scheduler:
             )
 
     def _record_pid(self, pid: int, context: str) -> None:
+        record = _describe_process(pid, context)
         with self._lock:
-            self.state.live_pids[pid] = context
+            self.state.live_pids[pid] = record
             self._persist()
 
     def _forget_pid(self, pid: int) -> None:
@@ -346,12 +377,12 @@ class Scheduler:
     def _reap_orphans(self) -> None:
         """Terminate worker subprocesses that survived a crashed orchestrator.
 
-        A recorded PID is killed only if its current cmdline still matches the
-        recorded session context (or the claude binary) — PID reuse must never
-        kill an innocent process.
+        A recorded PID is killed only if the process behind it is still the one
+        recorded at spawn (same kernel start time, same argv[0]) — PID reuse
+        must never kill an innocent process.
         """
-        for pid, context in list(self.state.live_pids.items()):
-            if _cmdline_matches(pid, context):
+        for pid, record in list(self.state.live_pids.items()):
+            if _is_same_process(pid, record):
                 _terminate(pid)
         with self._lock:
             self.state.live_pids.clear()
@@ -825,14 +856,56 @@ class _SchedulerPidTracker:
         self._scheduler._forget_pid(pid)
 
 
-def _cmdline_matches(pid: int, context: str) -> bool:
+def _proc_cmdline_head(pid: int) -> str | None:
+    """argv[0] of ``/proc/<pid>/cmdline``, or ``None`` when unreadable."""
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
+        return None
+    head = raw.split(b"\0", 1)[0].decode(errors="replace")
+    return head or None
+
+
+def _proc_starttime(pid: int) -> str | None:
+    """Field 22 of ``/proc/<pid>/stat`` (process start time in clock ticks since
+    boot), or ``None`` when unreadable. The comm field is parenthesised and may
+    contain spaces, so split after its closing paren rather than on whitespace."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    _, _, rest = stat.rpartition(")")
+    fields = rest.split()
+    # ``rest`` starts at field 3 (state), so field 22 is index 19.
+    return fields[19] if len(fields) > 19 else None
+
+
+def _describe_process(pid: int, context: str) -> LivePid:
+    return LivePid(
+        context=context,
+        cmdline_head=_proc_cmdline_head(pid),
+        starttime=_proc_starttime(pid),
+    )
+
+
+def _is_same_process(pid: int, record: LivePid) -> bool:
+    """Is the process at ``pid`` still the one ``record`` was written for?
+
+    With a full record: the kernel start time must match (pid reuse gets a new
+    one) and argv[0]'s basename must equal the recorded head. A context-only
+    record (older state files) can only compare the context's last token
+    against argv[0]'s basename — never a substring over the whole cmdline, which
+    is what once matched a bystander whose *path* contained "claude".
+    """
+    head = _proc_cmdline_head(pid)
+    if head is None:
         return False  # process already gone
-    cmdline = raw.replace(b"\0", b" ").decode(errors="replace")
-    token = context.rsplit(" ", 1)[-1] if context else ""
-    return (bool(token) and token in cmdline) or "claude" in cmdline
+    if record.starttime is not None and _proc_starttime(pid) != record.starttime:
+        return False
+    if record.cmdline_head is not None:
+        return Path(head).name == Path(record.cmdline_head).name
+    token = record.context.rsplit(" ", 1)[-1] if record.context else ""
+    return bool(token) and Path(head).name == Path(token).name
 
 
 def _terminate(pid: int, grace_s: float = 2.0) -> None:

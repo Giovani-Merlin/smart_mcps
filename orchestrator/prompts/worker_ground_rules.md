@@ -11,7 +11,20 @@ follows it.
 - Your worktree owns its own environment: dependency changes require `uv sync`
   run inside the worktree, and any verification item that imports a new
   dependency must pass there, in that worktree — never against the parent
-  checkout's environment.
+  checkout's environment. Always sync with the project's extras
+  (`uv sync --all-extras`, or whatever the project's own instructions name):
+  a plain `uv sync` strips the extras, the optional dependencies disappear
+  from the venv, and tests that import them skip at module level — a green
+  run that verified nothing.
+- Verification outputs, logs, and temporary scripts go in `.coder-scratch/`
+  at the root of your worktree — it is git-ignored for you and archived with
+  the group's artifacts. Anything else left untracked in the worktree fails
+  the merge gate: commit it, move it into `.coder-scratch/`, or delete it
+  before you report.
+- Run long or real verification (a full suite, a pipeline over real data, a
+  render) in the **foreground** and wait for it. A background task is killed
+  when your session ends its turn, so a verification you backgrounded never
+  finishes and its `pass` is a guess.
 - Data and large binaries never go through git. Directories that appear in
   your worktree as symlinks (the run's shared data directories) are shared
   live with every other group and the integration tree: put downloads,

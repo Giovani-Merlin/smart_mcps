@@ -160,6 +160,38 @@ def test_the_observed_signal_corroborates_but_is_never_required():
     assert classify_denial(denied_command="uv sync") == DenialKind.UNKNOWN
 
 
+def test_the_observed_signal_only_corroborates_the_denied_command():
+    """The wire carries every tool result of the session. A Bash-rule refusal of
+    `google-chrome` followed by a Landlock EACCES from the *fallback* tool is an
+    allowlist problem, not a kernel one — the errno belongs to another command."""
+    kind = classify_denial(
+        denied_command="google-chrome --headless --dump-dom http://localhost:5173",
+        denial_error="Bash(google-chrome:*) requires approval",
+        denial_source="tool_refused",
+        observed=[
+            "Claude requested permissions to use Bash, but you haven't granted it yet.",
+            "agent-browser: EACCES: permission denied, mkdir '/home/op/.agent-browser'",
+        ],
+    )
+    assert kind == DenialKind.HARNESS_ALLOWLIST
+
+    # The same wire text does corroborate when it is about the denied program —
+    # matched by basename, so an absolute path in the report still anchors.
+    assert (
+        classify_denial(
+            denied_command="/usr/local/bin/agent-browser open http://localhost:5173",
+            denial_error=NO_ERROR_TEXT,
+            observed=["agent-browser: EACCES: permission denied, mkdir '/home/op/.agent-browser'"],
+        )
+        == DenialKind.KERNEL_DENIED
+    )
+    # And with no command to anchor on, nothing is filtered out.
+    assert (
+        classify_denial(denied_command="", denial_error="", observed=[LIVE_CACHE_EACCES])
+        == DenialKind.KERNEL_DENIED
+    )
+
+
 def test_every_kind_has_a_remedy():
     """The point of attributing is telling an operator what to do, so a kind with
     no remedy is a kind that buys nothing."""

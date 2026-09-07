@@ -122,6 +122,7 @@ content is already carried by `rewrites`.
 | `retirement_reason`       | string \| null            | null if the session never retired                                                                                                                                                    |
 | `model`                   | string \| null            | null if not recorded                                                                                                                                                                 |
 | `tokens`                  | `ExportTokens`            | all-zero means "not recorded", not "zero spent" — see below                                                                                                                          |
+| `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it       |
 
 `ExportTokens` (`input`, `output`, `cache_read`, `cache_creation`, all int):
 this is the one place the contract deliberately uses `0` instead of `null`

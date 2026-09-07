@@ -12,6 +12,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from orchestrator.config import PreflightConfig
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.worktrees import (
     create_worktree,
@@ -96,6 +97,87 @@ class TestIntegrationWorktreeProvisioned:
         merger.tip()
         merger.tip()
         assert len(calls) == 1
+
+
+class TestReprovisionAfterMerge:
+    """A merge that changes what the environment is built from re-syncs the
+    integration worktree (run-notes sweep B): `_provision_once` alone left the
+    venv stale for every later gate run and for the driver."""
+
+    @staticmethod
+    def _rig(repo, monkeypatch):
+        calls: list[dict] = []
+
+        def fake_provision_env(path, *, log=None, env=None, extra_args=None, on_state=None, **kw):
+            calls.append({"path": path, "extra_args": list(extra_args or []), **kw})
+            if on_state is not None:
+                on_state("provisioned", ["uv", "sync", *(extra_args or [])])
+            return True
+
+        monkeypatch.setattr("orchestrator.execution.merge.provision_env", fake_provision_env)
+        monkeypatch.setattr("orchestrator.execution.merge.provision_node_env", lambda *a, **k: None)
+        logged: list[str] = []
+        merger = IntegrationMerger(
+            repo,
+            "r1",
+            provision_args=["--all-extras"],
+            log=logged.append,
+            provision_strict=True,
+            preflight_config=PreflightConfig(check_command=["true"]),
+        )
+        return merger, calls, logged
+
+    @staticmethod
+    def _merge_commit(repo, merger, gid, filename, content):
+        from orchestrator.execution.worktrees import create_worktree, group_branch
+
+        group = make_group(gid, files=[filename])
+        wt = create_worktree(
+            repo,
+            run_id="r1",
+            group_id=gid,
+            name=group.name,
+            branch=group_branch("r1", gid),
+            start_point=merger.tip(),
+        )
+        (wt / filename).parent.mkdir(parents=True, exist_ok=True)
+        (wt / filename).write_text(content)
+        git(wt, "add", "-A")
+        git(wt, "commit", "-m", f"feat: {gid}")
+        merger.merge_group(group, wt)
+
+    def test_a_merge_touching_pyproject_resyncs_once_more(self, repo, monkeypatch):
+        merger, calls, logged = self._rig(repo, monkeypatch)
+        self._merge_commit(
+            repo, merger, "g1", "pyproject.toml", "[project]\nname = 'x'\nversion='1'\n"
+        )
+        assert len(calls) == 2  # ensure() once, then the post-merge re-sync
+        assert calls[1]["extra_args"] == ["--all-extras"]  # same provision args
+        assert calls[1]["strict"] is False  # a failed re-sync never fails a landed merge
+        assert any(
+            "re-provisioned after merge(g1): pyproject.toml changed" in line for line in logged
+        )
+
+    def test_a_merge_touching_nothing_environmental_does_not_resync(self, repo, monkeypatch):
+        merger, calls, _logged = self._rig(repo, monkeypatch)
+        self._merge_commit(repo, merger, "g1", "src.py", "print('hi')\n")
+        assert len(calls) == 1
+
+    def test_a_nested_package_json_counts(self, repo, monkeypatch):
+        merger, calls, logged = self._rig(repo, monkeypatch)
+        self._merge_commit(repo, merger, "g1", "frontend/package.json", '{"name": "web"}\n')
+        assert len(calls) == 2
+        assert "frontend/package.json changed" in "\n".join(logged)
+
+    def test_a_second_process_provisions_again_on_resume(self, repo, monkeypatch):
+        """The once-per-process flag is per merger instance, so a resumed run's
+        first `ensure()` re-syncs — the venv picks up whatever merged before
+        the crash without any extra code path."""
+        merger, calls, _ = self._rig(repo, monkeypatch)
+        merger.ensure()
+        resumed, calls2, _ = self._rig(repo, monkeypatch)
+        resumed.ensure()
+        assert len(calls) == 1 and len(calls2) == 1
 
 
 class TestProvisioningLogLine:

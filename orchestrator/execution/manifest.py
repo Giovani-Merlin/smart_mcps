@@ -246,6 +246,15 @@ class RunPaths:
         worktree (plan U6)."""
         return self.group_dir(group_id) / "review-scratch"
 
+    def coder_scratch_archive_dir(self, group_id: str) -> Path:
+        """Where a coder's ``.coder-scratch/`` lands once archived at merge time."""
+        return self.group_dir(group_id) / "coder-scratch"
+
+    def untracked_archive_dir(self, group_id: str) -> Path:
+        """Where untracked files a coder left behind twice in a row are moved so
+        the merge can proceed (the merge gate's untracked ladder)."""
+        return self.group_dir(group_id) / "untracked"
+
     @property
     def driver_lock_path(self) -> Path:
         """The advisory lock a driver process holds for its lifetime (plan U11).

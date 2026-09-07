@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import WorkspaceConfig
+from orchestrator.config import DEFAULT_FRONTEND_DIRS, WorkspaceConfig
 from orchestrator.execution.manifest import atomic_write_text
 
 #: Where a worktree's provisioning outcome is recorded (plan U32): a plain JSON
@@ -488,22 +488,28 @@ def provision_node_env(
     log: Callable[[str], None] | None = None,
     env: dict[str, str] | None = None,
     on_state: Callable[[str, list[str]], None] | None = None,
+    frontend_dirs: Sequence[str] = DEFAULT_FRONTEND_DIRS,
 ) -> bool:
-    """Provision ``ui/node_modules`` via ``npm ci`` — ``provision_env``'s
-    contract, for the JavaScript half of the checkout.
+    """Provision the frontend's ``node_modules`` via ``npm ci`` —
+    ``provision_env``'s contract, for the JavaScript half of the checkout.
 
     A worktree is a fresh checkout and ``node_modules/`` is gitignored, so
     without this the merge gate's ``vitest``/``tsc`` steps never resolve and
-    silently skip (``detect_check_steps`` requires ``ui/node_modules``). Runs
-    only when ``ui/package.json`` exists; anything else is skipped silently.
+    silently skip (``detect_check_steps`` requires ``<dir>/node_modules``).
+    Runs in the first of ``frontend_dirs`` that has a ``package.json`` — the
+    same list, in the same order, the gate detects with; anything else is
+    skipped silently.
 
     Non-fatal by the same reasoning as ``provision_env``, and here it matters
     more: a failed install leaves the UI steps skipped, which is a *weaker*
     gate, never a failed run. A machine without npm must not be able to halt a
     run under ``on-failure halt``.
     """
-    ui = worktree / "ui"
-    if not (ui / "package.json").is_file():
+    ui = next(
+        (worktree / name for name in frontend_dirs if (worktree / name / "package.json").is_file()),
+        None,
+    )
+    if ui is None:
         if on_state is not None:
             on_state("skipped", [])
         return False

@@ -431,6 +431,40 @@ def test_reexport_overwrites_package_idempotently(tmp_path: Path) -> None:
     assert payload["groups"][0]["sessions"][0]["session_id"] == "aaa"
 
 
+def test_session_cost_is_exported_additively_and_reads_zero_on_older_manifests(
+    tmp_path: Path,
+) -> None:
+    """`cost_usd` is an additive v2 field: present on every session, filled from
+    the manifest's `total_cost_usd`, and `0.0` for a manifest that predates it."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="task")
+    _write_transcript(root, "slug", "bbb", text_after_base="task")
+    priced = _session("aaa", SessionRole.CODER)
+    priced.total_cost_usd = 1.84
+    paths = _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="a",
+                summary="s",
+                sessions=[priced, _session("bbb", SessionRole.REVIEWER)],
+            )
+        },
+    )
+    # An older manifest never wrote the field: strip it from disk before export.
+    text = paths.manifest_path.read_text()
+    assert '"total_cost_usd": 0.0' in text  # the reviewer entry, as written today
+    paths.manifest_path.write_text(text.replace('"total_cost_usd": 0.0,\n', ""))
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+    assert payload["schema_version"] == 2
+    by_id = {s["session_id"]: s for s in payload["groups"][0]["sessions"]}
+    assert by_id["aaa"]["cost_usd"] == 1.84
+    assert by_id["bbb"]["cost_usd"] == 0.0
+    assert by_id["aaa"]["tokens"] == {"input": 0, "output": 7, "cache_read": 0, "cache_creation": 0}
+
+
 def test_missing_run_dir_is_an_export_error(tmp_path: Path) -> None:
     paths = RunPaths(tmp_path / "repo", "nope")
     try:

@@ -25,7 +25,7 @@ from orchestrator.execution.manifest import (
     archive_review_scratch,
     effective_group,
 )
-from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME
+from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, REVIEW_SCRATCH_DIRNAME
 from orchestrator.execution.review import format_residue_report, surprise_residue
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.execution.worktrees import (
@@ -479,15 +479,19 @@ def _teardown_group(repo_root: Path, run_id: str, gid: str, paths: RunPaths) -> 
     worktree = existing_worktree_path(repo_root, run_id, gid, _group_name(paths, gid))
     if worktree is None:
         return
-    scratch_dir = worktree / REVIEW_SCRATCH_DIRNAME
-    if scratch_dir.exists():
-        ensure_excluded(worktree, REVIEW_SCRATCH_DIRNAME)
-        archive_review_scratch(
-            scratch_dir,
-            paths.review_scratch_archive_dir(gid),
-            cap_bytes=ExecutionConfig().review_scratch_cap_bytes,
-            log=None,
-        )
+    for dirname, archive_dir in (
+        (REVIEW_SCRATCH_DIRNAME, paths.review_scratch_archive_dir(gid)),
+        (CODER_SCRATCH_DIRNAME, paths.coder_scratch_archive_dir(gid)),
+    ):
+        scratch_dir = worktree / dirname
+        if scratch_dir.exists():
+            ensure_excluded(worktree, dirname)
+            archive_review_scratch(
+                scratch_dir,
+                archive_dir,
+                cap_bytes=ExecutionConfig().review_scratch_cap_bytes,
+                log=None,
+            )
     if is_dirty(worktree):
         _write_leftover_patch(worktree, paths.group_dir(gid) / "leftover.patch")
     remove_worktree(repo_root, worktree, force=True)

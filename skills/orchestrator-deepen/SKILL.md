@@ -194,7 +194,9 @@ tool):
 
 - A verification item follows the `Run:` + `Pass:` convention: two lines
   inside one `- ` bullet, `Run:` present only when the explorer grounded it,
-  `Pass:` always present. This is a convention inside the existing
+  `Pass:` always present. A `Pass:` on a real-model output (an LLM's answer,
+  a transcription, a generated summary) never uses a hard `= 0`: write
+  "< baseline" with the baseline named, or "≤ N with the residuals listed". This is a convention inside the existing
   `Verification` bullet text — it changes no schema; `VerificationItem`, the
   assembler, and the prompt contract are untouched (a `Run:`/`Pass:` bullet
   still assembles into exactly one `VerificationItem`, whose `description`

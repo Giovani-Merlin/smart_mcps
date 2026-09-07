@@ -25,6 +25,7 @@ from orchestrator.execution.scheduler import (
     GroupRunState,
     GroupState,
     HoldReason,
+    LivePid,
     NoProgressError,
     ResolveConflict,
     ResolveDeps,
@@ -33,6 +34,7 @@ from orchestrator.execution.scheduler import (
     RunState,
     Scheduler,
     SchedulerError,
+    _describe_process,
 )
 from orchestrator.execution.sessions import ReportError, SessionError
 from orchestrator.execution.worktrees import WorktreeError, WorktreeRefreshConflict
@@ -234,7 +236,7 @@ async def test_resume_terminates_a_matching_orphaned_subprocess(tmp_path):
     state = RunState(
         run_id="r1",
         groups={"g1": GroupRunState(state=GroupState.RUNNING)},
-        live_pids={orphan.pid: "--resume sess-abc123"},
+        live_pids={orphan.pid: _describe_process(orphan.pid, "--resume sess-abc123")},
     )
     atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
 
@@ -252,18 +254,31 @@ async def test_resume_terminates_a_matching_orphaned_subprocess(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path):
+    """A pid recorded for a worker that now belongs to something else is left
+    alone — including when the something else runs from a path containing
+    "claude", which the old substring rule mistook for a worker (a worktree
+    named after a "Claude Code jsonl" unit killed the bystander in this test).
+    """
     paths = RunPaths(tmp_path, "r1")
-    # Deliberately NOT sys.executable: the interpreter path leaks into the
-    # cmdline, and `_cmdline_matches` treats any cmdline containing "claude" as
-    # a worker. A checkout (or worktree) under a path with "claude" in it —
-    # e.g. a group directory named for a claude-code task — would otherwise make
-    # this bystander look like a worker and the assertion fail for the wrong
-    # reason. /bin/sleep is the honest "unrelated process" this test means.
+    claude_dir = tmp_path / "claude-code-jsonl"
+    claude_dir.mkdir()
+    sleeper = claude_dir / "claude-sleep"
+    sleeper.symlink_to("/bin/sleep")
     bystander = subprocess.Popen(["/bin/sleep", "60"])
+    claude_pathed = subprocess.Popen([str(sleeper), "60"], cwd=claude_dir)
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    worker_record = _describe_process(worker.pid, "coder g1")
+    # The worker record's pid is reused by an unrelated process later on: same
+    # argv[0] is not enough — the kernel start time differs.
+    reused = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     state = RunState(
         run_id="r1",
         groups={"g1": GroupRunState(state=GroupState.RUNNING)},
-        live_pids={bystander.pid: "--resume sess-zzz999"},
+        live_pids={
+            bystander.pid: "--resume sess-zzz999",  # legacy context-only record
+            claude_pathed.pid: "--resume sess-yyy888",
+            reused.pid: worker_record.model_copy(update={"starttime": "1"}),
+        },
     )
     atomic_write_text(paths.state_path, state.model_dump_json() + "\n")
     try:
@@ -274,10 +289,20 @@ async def test_resume_never_kills_a_reused_pid_with_a_different_cmdline(tmp_path
             resume=True,
         )
         await scheduler.run()
-        assert bystander.poll() is None  # cmdline matched neither session nor claude
+        assert bystander.poll() is None
+        assert claude_pathed.poll() is None  # a "claude" in the path is not a worker
+        assert reused.poll() is None  # same binary, different start time: pid reuse
+        assert scheduler.state.live_pids == {}
     finally:
-        bystander.kill()
-        bystander.wait()
+        for proc in (bystander, claude_pathed, worker, reused):
+            proc.kill()
+            proc.wait()
+
+
+def test_context_only_live_pid_records_still_load():
+    """State files written before ``LivePid`` stored a bare context string."""
+    state = RunState.model_validate({"run_id": "r1", "live_pids": {"42": "coder g1"}})
+    assert state.live_pids[42] == LivePid(context="coder g1")
 
 
 @pytest.mark.asyncio

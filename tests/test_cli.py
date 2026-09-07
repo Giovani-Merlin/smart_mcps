@@ -969,11 +969,64 @@ class TestPrintOutcomes:
                 "g2": GroupRunState(state=GroupState.COMPLETED),
             },
         )
-        assert _print_outcomes(state) == 1  # not "all completed" — g1 needs inspection
+        # The same predicate `_maybe_auto_finish` uses: a resolved group is
+        # done, so this run is complete — it must not read "did not complete"
+        # right after the CLI auto-finished it.
+        assert _print_outcomes(state) == 0
         out = capsys.readouterr().out
         assert "g1: resolved" in out
         assert "g2: completed" in out
         assert "g1: completed" not in out
+        assert "run complete (1 completed, 1 resolved by operator)" in out
+        assert "all groups completed" not in out
+
+    def test_a_resolved_group_beside_a_failed_one_still_does_not_complete(self, capsys):
+        state = RunState(
+            run_id="r12",
+            groups={
+                "g1": GroupRunState(state=GroupState.RESOLVED),
+                "g2": GroupRunState(state=GroupState.FAILED, failure="GroupFailure: blocked"),
+            },
+        )
+        assert _print_outcomes(state) == 1
+        assert "did not complete" in capsys.readoureaderr().err if False else True
+        assert "did not complete" in capsys.readouterr().err
+
+    def test_run_cost_line_is_printed_from_the_manifest(self, tmp_path, capsys):
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.model import (
+            GroupManifestEntry,
+            RunManifest,
+            SessionEntry,
+            SessionRole,
+        )
+
+        paths = RunPaths(tmp_path, "r13")
+        store = ManifestStore(paths)
+        store.save(
+            RunManifest(
+                run_id="r13",
+                plan_path="p.md",
+                groups={
+                    "g1": GroupManifestEntry(
+                        group_id="g1",
+                        group_name="g1",
+                        summary="",
+                        sessions=[
+                            SessionEntry(
+                                session_id="a", role=SessionRole.CODER, total_cost_usd=1.5
+                            ),
+                            SessionEntry(
+                                session_id="b", role=SessionRole.REVIEWER, total_cost_usd=0.25
+                            ),
+                        ],
+                    )
+                },
+            )
+        )
+        state = RunState(run_id="r13", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+        assert _print_outcomes(state, paths) == 0
+        assert "run cost: $1.75 across 2 sessions" in capsys.readouterr().out
 
     def test_omitting_paths_skips_the_residue_section_unchanged(self, capsys):
         # Every test above calls _print_outcomes(state) with no paths, exactly

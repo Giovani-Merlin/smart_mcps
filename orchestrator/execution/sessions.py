@@ -208,6 +208,10 @@ class RoundSpend:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    #: What the CLI's own envelope says this round cost (``total_cost_usd``),
+    #: the one figure nobody had to reconstruct from token classes and a price
+    #: table. ``0.0`` when the envelope carries none.
+    cost_usd: float = 0.0
     #: The prefix this round's first turn started from, ``cache_read +
     #: cache_creation`` of turn 1 (F10) — context the session inherited rather
     #: than produced, and cannot shrink. The *sum* is the honest figure: a
@@ -241,6 +245,7 @@ class RoundSpend:
             output_tokens=int(usage.get("output_tokens", 0) or 0),
             cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
             cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            cost_usd=float(envelope.get("total_cost_usd") or 0.0),
             base_context_tokens=base_context,
         )
 
@@ -275,6 +280,7 @@ class SessionUsage:
     #: what "shared base context" should read as.
     base_context_tokens: int = 0
     last_context_tokens: int = 0
+    total_cost_usd: float = 0.0
 
     def add(self, usage: RoundUsage, spend: RoundSpend) -> None:
         if self.rounds == 0:
@@ -284,6 +290,7 @@ class SessionUsage:
         self.total_output_tokens += spend.output_tokens
         self.total_cache_read_tokens += spend.cache_read_input_tokens
         self.total_cache_creation_tokens += spend.cache_creation_input_tokens
+        self.total_cost_usd += spend.cost_usd
         self.last_context_tokens = usage.context_tokens
 
 

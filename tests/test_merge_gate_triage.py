@@ -25,6 +25,7 @@ from tests.test_review_loop import (
     answer,
     coder_report,
     make_group,
+    retry,
     verdict,
 )
 
@@ -128,13 +129,16 @@ async def test_new_attributable_failure_advances_generation_exactly_once(tmp_pat
     harness = Harness(tmp_path, runner)
     # No baseline captured at all — cannot be attributed as pre-existing, so
     # this is the "new and attributable" path, same as an absent baseline.
-    harness.merge_failures.append(
-        PreflightFailure(
-            f"check command uv run pytest exited 1 — output at {log_path}",
-            kind="regression",
-            output_path=log_path,
+    # Queued twice: an autonomous gate re-runs once on a suspected flake, and a
+    # regression is one that fails the re-run too.
+    for _ in range(2):
+        harness.merge_failures.append(
+            PreflightFailure(
+                f"check command uv run pytest exited 1 — output at {log_path}",
+                kind="regression",
+                output_path=log_path,
+            )
         )
-    )
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
     assert harness.generations == [2]  # exactly one advance
@@ -169,6 +173,151 @@ async def test_new_failure_absent_from_baseline_is_attributable(tmp_path):
         captured=True,
         tests={"tests/test_other.py::test_ok": "passed"},
     )
+    for _ in range(2):  # survives the one automatic flake re-run
+        harness.merge_failures.append(
+            PreflightFailure(
+                f"check command uv run pytest exited 1 — output at {log_path}",
+                kind="regression",
+                output_path=log_path,
+            )
+        )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.generations == [2]
+    assert len(harness.rewritten) == 1
+
+
+@pytest.mark.asyncio
+async def test_autonomous_regression_that_passes_on_rerun_is_a_flake(tmp_path):
+    """A flaky test used to cost a rewrite plus a coder generation. In
+    autonomous mode the gate re-runs once; a pass on the re-run merges with no
+    LLM call, no generation advance, no rewrite."""
+    test_id = "tests/test_foo.py::test_bar"
+    log_path = _write_preflight_output(tmp_path, "g1", test_id=test_id)
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner)
+    harness.merge_failures.append(
+        PreflightFailure(
+            f"check command uv run pytest exited 1 — output at {log_path}",
+            kind="regression",
+            output_path=log_path,
+        )
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]
+    assert harness.generations == []
+    assert harness.rewritten == []
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]  # no extra session
+    log = harness.store.paths.event_log_path.read_text()
+    assert "re-running gate once (suspected flake)" in log
+
+
+@pytest.mark.asyncio
+async def test_flake_rerun_is_capped_at_one_per_generation(tmp_path):
+    """Three identical failures: the re-run happens once, then the regression is
+    real and takes the escalate-then-rewrite path — never a rerun loop."""
+    test_id = "tests/test_foo.py::test_bar"
+    log_path = _write_preflight_output(tmp_path, "g1", test_id=test_id)
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict()],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict()],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    for _ in range(2):
+        harness.merge_failures.append(
+            PreflightFailure(
+                f"check command uv run pytest exited 1 — output at {log_path}",
+                kind="regression",
+                output_path=log_path,
+            )
+        )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert len(harness.rewritten) == 1
+    log = harness.store.paths.event_log_path.read_text()
+    assert log.count("suspected flake") == 1
+
+
+@pytest.mark.asyncio
+async def test_hitl_regression_does_not_rerun_on_its_own(tmp_path):
+    """With an operator on the kind, the flake re-run is theirs to ask for
+    (`retry` with no text) — the gate escalates on the first failure."""
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: answer("noted")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
+    test_id = "tests/test_foo.py::test_bar"
+    log_path = _write_preflight_output(tmp_path, "g1", test_id=test_id)
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict()],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict()],
+        }
+    )
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
+    harness.merge_failures.append(
+        PreflightFailure(
+            f"check command uv run pytest exited 1 — output at {log_path}",
+            kind="regression",
+            output_path=log_path,
+        )
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert len(broker.raised) == 1
+    assert len(harness.rewritten) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_with_no_text_reruns_the_gate_without_a_session(tmp_path):
+    """`answer --action retry` with no text on a preflight_failed escalation:
+    the operator fixed the world by hand and the tree is unchanged — refresh,
+    preflight, merge again; no coder, no rewrite."""
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: retry("")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
+    test_id = "tests/test_foo.py::test_bar"
+    log_path = _write_preflight_output(tmp_path, "g1", test_id=test_id)
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
+    harness.merge_failures.append(
+        PreflightFailure(
+            f"check command uv run pytest exited 1 — output at {log_path}",
+            kind="regression",
+            output_path=log_path,
+        )
+    )
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]
+    assert harness.generations == []
+    assert harness.rewritten == []
+    assert len(broker.raised) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_with_text_relaunches_the_same_spec_with_the_text(tmp_path):
+    """`retry` *with* text: the operator changed something the coder must know
+    about (a test) — a fresh coder on the unchanged spec with the text as its
+    operator note. No rewrite, no speccer."""
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: retry("I fixed the fixture")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
+    test_id = "tests/test_foo.py::test_bar"
+    log_path = _write_preflight_output(tmp_path, "g1", test_id=test_id)
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict()],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict()],
+        }
+    )
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
     harness.merge_failures.append(
         PreflightFailure(
             f"check command uv run pytest exited 1 — output at {log_path}",
@@ -179,7 +328,102 @@ async def test_new_failure_absent_from_baseline_is_attributable(tmp_path):
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
     assert harness.generations == [2]
-    assert len(harness.rewritten) == 1
+    assert harness.rewritten == []
+    second_prompt = runner.prompts[runner.session_ids["r1-g1-coder-g2"]][0]
+    assert "## Operator note" in second_prompt
+    assert "I fixed the fixture" in second_prompt
+
+
+@pytest.mark.asyncio
+async def test_retry_with_no_text_on_a_non_attributable_failure_reruns_the_gate(tmp_path):
+    """The same cheap path for an `env` failure the operator repaired by hand."""
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: retry("")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
+    harness.merge_failures.append(PreflightFailure("collection failed: ImportError", kind="env"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]
+
+
+def _untracked(*paths: str) -> PreflightFailure:
+    return PreflightFailure(
+        f"worktree has untracked files: {', '.join(paths)}", kind="untracked", paths=list(paths)
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_untracked_failure_relaunches_the_same_spec_with_a_note(tmp_path):
+    """Rung 1 of the untracked ladder: attributable, but a relaunch (fresh
+    coder, unchanged spec, note naming the paths) — never a rewrite."""
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict()],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict()],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    harness.merge_failures.append(_untracked("out/verify.log", "tmp_probe.py"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.generations == [2]
+    assert harness.rewritten == []
+    second_prompt = runner.prompts[runner.session_ids["r1-g1-coder-g2"]][0]
+    assert "## Operator note" in second_prompt
+    assert "untracked files left in the worktree: out/verify.log, tmp_probe.py" in second_prompt
+    assert ".coder-scratch/" in second_prompt
+    assert harness.merged == ["g1"]
+
+
+@pytest.mark.asyncio
+async def test_second_consecutive_untracked_failure_archives_and_merges(tmp_path):
+    """Rung 2: the relaunched coder left the litter again — move it to the
+    group's `untracked/` archive, surface a surprise, re-run the gate, merge."""
+    runner = StubRunner(
+        {
+            "r1-g1-coder-g1": [coder_report()],
+            "r1-g1-reviewer-g1": [verdict()],
+            "r1-g1-coder-g2": [coder_report()],
+            "r1-g1-reviewer-g2": [verdict()],
+        }
+    )
+    harness = Harness(tmp_path, runner)
+    (harness.workspace / "out").mkdir()
+    (harness.workspace / "out" / "verify.log").write_text("13k lines of scratch\n")
+    (harness.workspace / "tmp_probe.py").write_text("print('probe')\n")
+    harness.merge_failures.append(_untracked("out/", "tmp_probe.py"))
+    harness.merge_failures.append(_untracked("out/", "tmp_probe.py"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]
+    assert harness.generations == [2]  # one relaunch, then archived — no third coder
+    assert harness.rewritten == []
+    archive = harness.store.paths.untracked_archive_dir("g1")
+    assert (archive / "out" / "verify.log").read_text() == "13k lines of scratch\n"
+    assert (archive / "tmp_probe.py").is_file()
+    assert not (harness.workspace / "out").exists()
+    assert not (harness.workspace / "tmp_probe.py").exists()
+    log = harness.store.paths.event_log_path.read_text()
+    assert "UNTRACKED FILES ARCHIVED" in log
+
+
+@pytest.mark.asyncio
+async def test_untracked_failure_with_operator_retry_no_text_reruns_the_gate(tmp_path):
+    """The operator cleaned the tree by hand: `retry` with no text re-runs the
+    gate, no relaunch."""
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: retry("")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
+    harness.merge_failures.append(_untracked("stray.log"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.generations == []
+    assert runner.forks == ["r1-g1-coder-g1", "r1-g1-reviewer-g1"]
 
 
 @pytest.mark.asyncio

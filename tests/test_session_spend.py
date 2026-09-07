@@ -205,6 +205,16 @@ def test_base_context_is_recorded_once_not_summed_across_rounds():
 
 
 def test_no_dollar_figures_are_computed_here():
-    """This unit reports token classes only; RoundSpend carries no cost field."""
-    assert not hasattr(RoundSpend(), "cost_usd")
+    """This unit never *computes* a cost from token classes and a price table.
+    The one dollar figure it carries, ``cost_usd``, is read verbatim off the
+    CLI envelope's ``total_cost_usd`` (run-notes sweep I) and defaults to 0.0
+    when the envelope has none — no price constants live here."""
+    import inspect
+
+    from orchestrator.execution import sessions
+
+    assert RoundSpend().cost_usd == 0.0
     assert not hasattr(RoundSpend(), "dollars")
+    source = inspect.getsource(sessions)
+    for banned in ("per_million", "PRICE", "price_per", "usd_per"):
+        assert banned not in source, f"a price table ({banned!r}) crept into sessions.py"

@@ -155,6 +155,12 @@ passed. Both lines live inside one bullet and assemble into a single
 planning session may write plain behavioural sentences instead and leave the
 `Run:`/`Pass:` split to `/orchestrator-deepen`.
 
+A `Pass:` on a **real-model output** (an LLM's answer, a transcription, a
+generated summary) never uses a hard `= 0` — "0 hallucinations", "0 errors"
+is unfalsifiable in one run and a coder facing it either fakes the pass or
+gives up. Write "< baseline" with the baseline named, or "≤ N with the
+residuals listed", so the item is checkable and an honest miss is reportable.
+
 ## Task Map
 
 <The fenced YAML block per docs/orchestrator-task-map.md, generated **1:1 from
@@ -175,7 +181,16 @@ Any divergence is a bug the verifier will catch.>
   quietly absorbed: `group` fails loudly naming the slice, its members, their
   work, the cap, and the overshoot, unless the plan is run with
   `--allow-oversized-slice` (which keeps it whole as one flagged group instead).
-  Size it to fit; don't rely on the splitter to bail you out.
+  Size it to fit; don't rely on the splitter to bail you out. **Size-check
+  before you write it**: sum the slice's per-task estimates and compare
+  against `[estimator] token_budget` in `.orchestrator/config.toml` — a
+  slice over budget is a preflight refusal at `group` time, after the plan is
+  already written.
+- **A unit that runs a parser or pipeline at scale for the first time lists
+  that module in `Files`.** The grouper places units by their declared files;
+  a unit whose real work is "run X over the whole corpus" but whose `Files`
+  name only the driver script lands away from X's owner and its surprises
+  reach the wrong group.
 - **Inter-slice `depends_on` should still be acyclic** — a cycle between slices
   becomes a group-DAG cycle. This is no longer a hard failure: `build_group_dag`
   repairs it automatically (merging the cyclic SCC, then re-splitting it back

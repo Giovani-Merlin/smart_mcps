@@ -348,6 +348,12 @@ class ExecutionConfig(BaseModel):
     review_scratch_cap_bytes: int = 100_000_000
 
 
+#: Top-level directories the gate looks in, in order, for a JavaScript
+#: frontend (``package.json`` + ``node_modules``); the first match is the one
+#: whose suites run and whose ``node_modules`` gets provisioned.
+DEFAULT_FRONTEND_DIRS = ("ui", "frontend", "web", "app")
+
+
 class PreflightConfig(BaseModel):
     """The mechanical, LLM-free merge gate (plan U4).
 
@@ -356,9 +362,20 @@ class PreflightConfig(BaseModel):
     (``preflight.detect_check_command``); ``None`` when neither applies means
     no check command is run at all — Preflight still enforces the clean-tree
     check alone.
+
+    ``frontend_dirs`` — where a frontend's ``package.json`` may live, tried in
+    order; the gate used to hardcode ``ui/`` and a consumer with ``frontend/``
+    got no vitest/tsc step and no ``node_modules``, silently.
+
+    ``extra_check_commands`` — appended to whatever was configured or
+    detected as ``configured-N`` steps, so a second suite can be added without
+    losing detection (``check_command`` alone *replaces* the detected root
+    step). Their failures are regressions, evidence about the diff.
     """
 
     check_command: list[str] | None = None
+    frontend_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_FRONTEND_DIRS))
+    extra_check_commands: list[list[str]] = Field(default_factory=list)
     # A hung check command holds IntegrationMerger's lock and stalls every
     # other group's merge — the same silent-stall class this work closes.
     # A timeout is therefore always a failure, never a degrade to "no check

@@ -34,6 +34,7 @@ from orchestrator.config import (
     EscalationConfig,
     ExecutionConfig,
     OrchestratorConfig,
+    PreflightConfig,
     SessionConfig,
     UsageLimitConfig,
     WorkspaceConfig,
@@ -82,7 +83,7 @@ from orchestrator.execution.preflight import (
     save_baseline,
 )
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
-from orchestrator.execution.prompting import render_conflict_resolve_prompt
+from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.review import (
     MergeConflict,
@@ -118,6 +119,7 @@ from orchestrator.execution.worktrees import (
     commit_all,
     create_worktree,
     data_layer_write_paths,
+    ensure_excluded,
     group_branch,
     provision_env,
     provision_node_env,
@@ -2177,7 +2179,7 @@ def _cmd_run(
             atomic_write_text(paths.groups_path, groups_path.read_text())
 
         workspace_for, base_ref_for, provisioning_failure_for = _workspace_seams(
-            repo_root, run_id, merger, paths, config.session, config.workspace
+            repo_root, run_id, merger, paths, config.session, config.workspace, config.preflight
         )
         deps = ReviewDeps(
             run_id=run_id,
@@ -2326,6 +2328,7 @@ def _workspace_seams(
     paths: RunPaths,
     session: SessionConfig,
     workspace: WorkspaceConfig | None = None,
+    preflight: PreflightConfig | None = None,
 ):
     """The workspace_for / base_ref_for / provisioning_failure_for triple,
     sharing one tip capture per group.
@@ -2357,6 +2360,9 @@ def _workspace_seams(
             workspace=workspace,
             log=lambda message: log_event(paths, message),
         )
+        # The coder's scratch directory is git-ignored for it from the start, so
+        # verification outputs and logs never show up as untracked at the gate.
+        ensure_excluded(path, CODER_SCRATCH_DIRNAME)
 
         # Captured before provisioning (which never commits) so `_record` can
         # persist it: once the group merges, a live merge-base recompute
@@ -2396,6 +2402,7 @@ def _workspace_seams(
             path,
             log=lambda message: log_event(paths, message),
             env=cache_env,
+            frontend_dirs=(preflight or PreflightConfig()).frontend_dirs,
         )
         return path
 
@@ -2697,9 +2704,23 @@ def _print_outcomes(state: RunState, paths: RunPaths | None = None) -> int:
         print(line)
     if paths is not None:
         print(format_residue_report(surprise_residue(paths, state)))
-    completed = all(entry.state == GroupState.COMPLETED for entry in state.groups.values())
-    if completed:
-        print("all groups completed; merge the integration branch when ready")
+        cost_line = _run_cost_line(paths)
+        if cost_line:
+            print(cost_line)
+    # The same predicate `_maybe_auto_finish` uses (`run_is_finishable`): a
+    # RESOLVED group — the operator merged it by hand — is done, and a run whose
+    # last group was resolved must not read "did not complete" right after the
+    # CLI auto-finished it.
+    completed = sum(entry.state == GroupState.COMPLETED for entry in state.groups.values())
+    resolved = sum(entry.state == GroupState.RESOLVED for entry in state.groups.values())
+    if completed + resolved == len(state.groups):
+        if resolved:
+            print(
+                f"run complete ({completed} completed, {resolved} resolved by operator); "
+                "merge the integration branch when ready"
+            )
+        else:
+            print("all groups completed; merge the integration branch when ready")
         return 0
 
     # Invert each group's persisted holds into "who does gid hold, and on what":
@@ -2768,6 +2789,22 @@ def _print_outcomes(state: RunState, paths: RunPaths | None = None) -> int:
         return 2
     print("run did not complete — inspect `status`, fix, then `resume`", file=sys.stderr)
     return 1
+
+
+def _run_cost_line(paths: RunPaths) -> str | None:
+    """``run cost: $X across N sessions`` from the manifest's per-session
+    ``total_cost_usd``; None when there is no manifest or nothing recorded."""
+    if not paths.manifest_path.is_file():
+        return None
+    try:
+        manifest = ManifestStore(paths).load()
+    except (OSError, ValueError):
+        return None
+    sessions = [session for group in manifest.groups.values() for session in group.sessions]
+    total = sum(session.total_cost_usd for session in sessions)
+    if not sessions or total <= 0:
+        return None
+    return f"run cost: ${total:.2f} across {len(sessions)} sessions"
 
 
 # --------------------------------------------------------------------- status

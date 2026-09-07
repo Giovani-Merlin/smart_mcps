@@ -27,7 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from orchestrator.config import PreflightConfig
+from orchestrator.config import DEFAULT_FRONTEND_DIRS, PreflightConfig
 from orchestrator.execution.worktrees import is_dirty
 
 # pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html):
@@ -48,7 +48,7 @@ _COLLECTION_ERROR_MARKERS = (
     "ImportError",
 )
 
-PreflightFailureKind = Literal["env", "timeout", "regression"]
+PreflightFailureKind = Literal["env", "timeout", "regression", "untracked"]
 
 
 class PreflightFailure(Exception):
@@ -62,7 +62,10 @@ class PreflightFailure(Exception):
     treating every failure identically: ``"env"`` covers a dirty worktree, a
     collection-phase failure, or an interrupted/internal/usage pytest exit —
     none of which are evidence about the diff; ``"timeout"`` is a hung check
-    command; ``"regression"`` is tests that actually ran and actually failed.
+    command; ``"regression"`` is tests that actually ran and actually failed;
+    ``"untracked"`` is a tree whose *only* dirt is untracked files (``??``) —
+    the coder's own leftovers, which cost a cheap same-spec relaunch to clean
+    up rather than a rewrite, and which ``paths`` names.
 
     ``comparison`` is the baseline comparison the gate already performed
     before deciding to raise (``None`` when it never got that far — a dirty
@@ -83,6 +86,7 @@ class PreflightFailure(Exception):
         output_path: Path | None = None,
         comparison: "BaselineComparison | None" = None,
         step_name: str | None = None,
+        paths: Sequence[str] = (),
     ):
         super().__init__(reason)
         self.reason = reason
@@ -90,6 +94,7 @@ class PreflightFailure(Exception):
         self.output_path = output_path
         self.comparison = comparison
         self.step_name = step_name
+        self.paths = list(paths)
 
 
 def _classify_step_failure(step: "CheckStep", returncode: int, output: str) -> PreflightFailureKind:
@@ -158,6 +163,7 @@ def detect_check_steps(
     output_dir: Path,
     junit_stem: str = "preflight-junit",
     uv_run_args: Sequence[str] = (),
+    frontend_dirs: Sequence[str] = DEFAULT_FRONTEND_DIRS,
 ) -> list[CheckStep]:
     """Resolve every check step this checkout's own markers imply (plan R7).
 
@@ -167,12 +173,14 @@ def detect_check_steps(
       only before it) and ``--junitxml=`` pointing outside the worktree.
     - ``package.json`` at the root, and no uv markers -> ``npm test`` (the
       pre-existing behaviour for a node-only checkout).
-    - ``ui/package.json`` **and** ``ui/node_modules`` -> the dashboard's own
+    - ``<dir>/package.json`` **and** ``<dir>/node_modules``, for the first
+      ``dir`` in ``frontend_dirs`` that has both -> that frontend's own
       suites: ``vitest`` when it is a devDependency (JUnit reporter, ids
-      prefixed ``ui::``), otherwise ``npm test``; plus ``tsc --noEmit`` when
-      ``typescript`` is a devDependency and ``ui/tsconfig.json`` exists.
+      prefixed ``<dir>::``), otherwise ``npm test``; plus ``tsc --noEmit``
+      when ``typescript`` is a devDependency and ``<dir>/tsconfig.json``
+      exists.
 
-    ``ui/node_modules`` is required rather than provisioned here: a fresh
+    ``<dir>/node_modules`` is required rather than provisioned here: a fresh
     worktree has none until ``provision_node_env`` has run, and a machine
     without npm must not be able to fail a merge (see ``run_preflight``).
 
@@ -206,25 +214,67 @@ def detect_check_steps(
     elif (root / "package.json").is_file():
         steps.append(CheckStep(name="npm-test", argv=["npm", "test"]))
 
-    ui = root / "ui"
-    if (ui / "package.json").is_file() and (ui / "node_modules").is_dir():
+    frontend = detect_frontend_dir(root, frontend_dirs)
+    if frontend is not None:
+        ui = root / frontend
         dev = _dev_dependencies(ui / "package.json")
         if "vitest" in dev:
-            ui_junit = output_dir / f"{junit_stem}-ui.xml"
+            ui_junit = output_dir / f"{junit_stem}-{frontend}.xml"
             steps.append(
                 CheckStep(
                     name="vitest",
                     argv=["npx", "vitest", "run", "--reporter=junit", f"--outputFile={ui_junit}"],
-                    subdir="ui",
+                    subdir=frontend,
                     junit_path=ui_junit,
-                    id_prefix="ui::",
+                    id_prefix=f"{frontend}::",
                 )
             )
         else:
-            steps.append(CheckStep(name="npm-test-ui", argv=["npm", "test"], subdir="ui"))
+            steps.append(
+                CheckStep(name=f"npm-test-{frontend}", argv=["npm", "test"], subdir=frontend)
+            )
         if "typescript" in dev and (ui / "tsconfig.json").is_file():
-            steps.append(CheckStep(name="tsc", argv=["npx", "tsc", "--noEmit"], subdir="ui"))
+            steps.append(CheckStep(name="tsc", argv=["npx", "tsc", "--noEmit"], subdir=frontend))
     return steps
+
+
+def detect_frontend_dir(root: Path, frontend_dirs: Sequence[str]) -> str | None:
+    """The first of ``frontend_dirs`` with both ``package.json`` and
+    ``node_modules`` — the one whose suites the gate runs."""
+    for name in frontend_dirs:
+        if (root / name / "package.json").is_file() and (root / name / "node_modules").is_dir():
+            return name
+    return None
+
+
+def frontend_detection_notes(root: Path, frontend_dirs: Sequence[str]) -> list[str]:
+    """What the gate will and will not see of this checkout's frontends, for
+    the baseline capture log: the detected dir (if any), and a warning per
+    top-level ``package.json`` that is *not* the one provisioned — either its
+    dir is not in ``frontend_dirs`` or it has no ``node_modules`` — so a
+    consumer whose frontend lives somewhere unexpected finds out at launch
+    rather than by a suite that silently never ran."""
+    detected = detect_frontend_dir(root, frontend_dirs)
+    notes = [
+        f"preflight baseline: frontend detected in {detected}/ (vitest/tsc steps apply)"
+        if detected is not None
+        else "preflight baseline: no frontend detected "
+        f"(looked for package.json + node_modules in {', '.join(frontend_dirs)})"
+    ]
+    for child in sorted(root.iterdir()):
+        if child.name == detected or not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name == "node_modules" or not (child / "package.json").is_file():
+            continue
+        if child.name not in frontend_dirs:
+            why = f"{child.name!r} is not in [preflight] frontend_dirs"
+        else:
+            why = f"no {child.name}/node_modules"
+        notes.append(
+            f"preflight baseline: warning — {child.name}/package.json exists but is not "
+            f"provisioned or gated ({why})"
+        )
+    return notes
 
 
 def configured_check_step(
@@ -281,19 +331,26 @@ def _resolve_steps(
     uv_run_args: Sequence[str] = (),
 ) -> list[CheckStep]:
     if config.check_command:
-        return [
+        steps = [
             configured_check_step(
                 config.check_command, output_dir=output_dir, junit_stem=junit_stem
             )
         ]
-    if uv_run_args:
-        return detect_check_steps(
-            root, output_dir=output_dir, junit_stem=junit_stem, uv_run_args=uv_run_args
+    else:
+        # Only non-default values are passed: tests (and any caller) that stand
+        # in for ``detect_check_steps`` with a two-keyword double keep working.
+        kwargs: dict[str, object] = {}
+        if uv_run_args:
+            kwargs["uv_run_args"] = uv_run_args
+        if list(config.frontend_dirs) != list(DEFAULT_FRONTEND_DIRS):
+            kwargs["frontend_dirs"] = config.frontend_dirs
+        steps = detect_check_steps(root, output_dir=output_dir, junit_stem=junit_stem, **kwargs)
+    for index, command in enumerate(config.extra_check_commands, start=1):
+        step = configured_check_step(
+            command, output_dir=output_dir, junit_stem=f"{junit_stem}-configured-{index}"
         )
-    # Kept as the exact pre-existing call when there is nothing to pass: tests
-    # (and any caller) that stand in for ``detect_check_steps`` with a
-    # two-keyword double keep working.
-    return detect_check_steps(root, output_dir=output_dir, junit_stem=junit_stem)
+        steps.append(step.model_copy(update={"name": f"configured-{index}"}))
+    return steps
 
 
 # ----------------------------------------------------------------- the gate
@@ -354,10 +411,17 @@ def run_preflight(
             f"preflight: {len(missing)} declared file(s) not present in the worktree "
             f"(reported, not blocking): {', '.join(sorted(missing))}"
         )
-    dirty_paths = _dirty_paths(worktree)
-    if dirty_paths:
+    dirty = _dirty_entries(worktree)
+    if dirty:
+        paths = [path for _status, path in dirty]
+        if all(status == "??" for status, _path in dirty):
+            raise PreflightFailure(
+                f"worktree {worktree} has untracked files: {', '.join(paths)}",
+                kind="untracked",
+                paths=paths,
+            )
         raise PreflightFailure(
-            f"worktree {worktree} is not clean: {', '.join(dirty_paths)}", kind="env"
+            f"worktree {worktree} is not clean: {', '.join(paths)}", kind="env", paths=paths
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -504,7 +568,7 @@ def _warn_on_skipped_baseline_steps(
 ) -> None:
     """Say it out loud when the gate is weaker here than it was at launch.
 
-    The UI steps are *skipped*, never failed, when ``ui/node_modules`` is
+    The frontend steps are *skipped*, never failed, when its ``node_modules`` is
     absent — an ``env``-kind failure raises ``GroupFailure``, which under
     ``on-failure halt`` kills the whole run, and a machine without npm must not
     be able to do that. The asymmetry is loud instead of silent.
@@ -515,21 +579,31 @@ def _warn_on_skipped_baseline_steps(
     for recorded in baseline.steps:
         if recorded.name in present:
             continue
-        reason = (
-            "no ui/node_modules"
-            if not (worktree / "ui" / "node_modules").is_dir()
-            else "not detected in this checkout"
+        frontend = next(
+            (
+                name
+                for name in DEFAULT_FRONTEND_DIRS
+                if (worktree / name / "package.json").is_file()
+                and not (worktree / name / "node_modules").is_dir()
+            ),
+            None,
         )
+        reason = f"no {frontend}/node_modules" if frontend else "not detected in this checkout"
         log(f"preflight: step '{recorded.name}' was in the baseline but is skipped here ({reason})")
 
 
-def _dirty_paths(worktree: Path) -> list[str]:
+def _dirty_entries(worktree: Path) -> list[tuple[str, str]]:
+    """``(status, path)`` per ``git status --porcelain`` line; ``??`` is untracked."""
     if not is_dirty(worktree):
         return []
     result = subprocess.run(
         ["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True
     )
-    return [line[3:] for line in result.stdout.splitlines() if line.strip()]
+    return [(line[:2], line[3:]) for line in result.stdout.splitlines() if line.strip()]
+
+
+def _dirty_paths(worktree: Path) -> list[str]:
+    return [path for _status, path in _dirty_entries(worktree)]
 
 
 def failing_tests_from_junit(xml_path: Path, *, id_prefix: str = "") -> frozenset[str]:
@@ -671,6 +745,8 @@ def capture_preflight_baseline(
     """
     _log = log or (lambda _text: None)
     output_dir.mkdir(parents=True, exist_ok=True)
+    for note in frontend_detection_notes(repo_root, config.frontend_dirs):
+        _log(note)
     steps = _resolve_steps(
         repo_root,
         config=config,

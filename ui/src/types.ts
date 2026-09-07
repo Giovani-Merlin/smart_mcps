@@ -88,6 +88,8 @@ export interface ManifestSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  // Summed `total_cost_usd` of the session's round envelopes; 0 = not recorded.
+  total_cost_usd?: number;
   base_context_tokens?: number;
   model?: string | null;
   started_at?: string | null;
@@ -279,6 +281,8 @@ export interface SnapshotSession {
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
+  // Summed `total_cost_usd` of the session's round envelopes; 0 = not recorded.
+  total_cost_usd?: number;
   // The context the session started from (F10) — round 1 turn 1's
   // cache_read + cache_creation. Its own figure, distinct from
   // total_cache_read_tokens: context this session did not create and cannot

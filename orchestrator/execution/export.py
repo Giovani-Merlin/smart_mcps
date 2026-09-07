@@ -85,6 +85,10 @@ class ExportSession(BaseModel):
     retirement_reason: str | None = None
     model: str | None = None
     tokens: ExportTokens = Field(default_factory=ExportTokens)
+    #: Summed `total_cost_usd` of the session's round envelopes. Added
+    #: additively under schema_version 2; ``0.0`` means "not recorded" on the
+    #: same convention as ``tokens``.
+    cost_usd: float = 0.0
 
 
 class ExportSurprise(BaseModel):
@@ -730,6 +734,7 @@ def build_export(
                         cache_read=session.total_cache_read_tokens,
                         cache_creation=session.total_cache_creation_tokens,
                     ),
+                    cost_usd=session.total_cost_usd,
                 )
             )
         sessions.sort(key=_session_sort_key)

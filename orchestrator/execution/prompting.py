@@ -21,6 +21,10 @@ from orchestrator.prompts import load_template
 # it and exclude it via the worktree's own `.git/info/exclude`, never the
 # target repo's tracked `.gitignore`.
 REVIEW_SCRATCH_DIRNAME = ".review-scratch"
+#: Where a coder's verification outputs, logs and temporary scripts go. Excluded
+#: from git per worktree at creation, archived beside the group's artifacts at
+#: merge time — anything untracked *outside* it fails the merge gate.
+CODER_SCRATCH_DIRNAME = ".coder-scratch"
 
 
 def _attr(value: str) -> str:

@@ -14,7 +14,9 @@ State lives under ``$FAKE_CLAUDE_HOME``:
   may set ``result``, ``usage``, ``is_error``, ``exit_code``, ``stderr``,
   ``delay_s``, plus side effects performed in the caller's cwd before replying:
   ``files`` ({relative path: content} writes) and ``commit`` (git add -A +
-  commit) — a scripted coder that actually produces commits for merge scenarios.
+  commit) — a scripted coder that actually produces commits for merge scenarios;
+  ``stray`` ({relative path: content}) is written after the commit and left
+  untracked.
   An empty/missing queue yields a default OK response.
 - ``scripts/<name>.jsonl`` — per-session queues keyed by ``--name``. A session
   started or forked with a name that has a script file is bound to it (recorded
@@ -402,6 +404,12 @@ def main() -> int:
             if done.returncode != 0:
                 print(f"scripted commit failed: {done.stderr}", file=sys.stderr)
                 return finish(1)
+        # ``stray``: files written *after* the commit, so they are left
+        # untracked in the worktree — a coder that litters its tree.
+        for rel_path, content in (scripted.get("stray") or {}).items():
+            target = Path.cwd() / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
 
         result_text = scripted.get("result", "OK")
 
@@ -423,7 +431,7 @@ def main() -> int:
             "session_id": session_id,
             "num_turns": 1,
             "usage": {**DEFAULT_USAGE, **scripted.get("usage", {})},
-            "total_cost_usd": 0.0,
+            "total_cost_usd": float(scripted.get("total_cost_usd", 0.0)),
             "modelUsage": {},
         }
         print(json.dumps(envelope))

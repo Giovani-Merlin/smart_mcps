@@ -79,7 +79,7 @@ Pick the run id up front so every path is known before the process exists:
 
 ```sh
 mkdir -p .orchestrator/runs/$RUN/logs
-setsid nohup python -u -m orchestrator.cli run --repo "$(pwd)" --run-id $RUN \
+setsid nohup smart-mcps-orchestrate run --repo "$(pwd)" --run-id $RUN \
   --hitl --intensity on_stuck --escalation-timeout 14400 \
   [--grouping NAME] \
   > .orchestrator/runs/$RUN/logs/driver.log 2>&1 < /dev/null &
@@ -87,6 +87,12 @@ echo $!
 ```
 
 For a resume: the same, with `resume <run_id>` in place of `run … --run-id`.
+
+- **Always the `smart-mcps-orchestrate` console script, never
+  `python -m orchestrator.cli`.** When the run targets another repo the
+  orchestrator package is not on that repo's path, and `python -m` resolves
+  to whatever interpreter is current there — the console script is the one
+  entry point that works from any checkout.
 
 - **Serial is the default — do not pass `--concurrency`.** Omitting it leaves
   the config default of 1: each group's worktree is cut from the integration
@@ -144,9 +150,17 @@ Greppable anchors, all in `logs/run.log`:
 | escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                             |
 | retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`           |
 | spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                 |
+| coder launched       | `group <gid> generation <n>: coder launching, …`                       |
+| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`               |
+| reviewer verdict     | `… reviewer verdict <status>`                                          |
+| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                 |
+| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>` |
+| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                   |
 | group done           | `group <gid>: completed`                                               |
 | group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …` |
 | run ended by you     | `run <id> aborted by operator: …`                                      |
+
+Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)" logs/run.log`.
 
 ## Phase 3 — Triage every escalation
 
@@ -171,7 +185,10 @@ it blocks (the `blocks` clause on the raise line):
 | `coder_question` (`needs_input`)            | answerable from docs                                      | `answer` — a warm resume; the text becomes the coder's next prompt verbatim             |
 | same                                        | not answerable                                            | ask the human, then `answer`                                                            |
 | `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                    |
-| `merge_conflict` / `preflight_failed`       | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                |
+| `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                |
+| `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite               |
+| same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                |
+| same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)    |
 | `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                     |
 | `group_resolve`                             | a FAILED group's stranded work                            | inspect the worktree; commit what is salvageable; `answer`. **Never clean it.**         |
 | `respawn` / `group_start` / `merge_approve` | interactive tier only                                     | not raised at `on_stuck`; if seen, `answer` = proceed                                   |
@@ -202,10 +219,16 @@ When the process exits (signal **(b)**):
 2. If groups failed: say which, why (the `failure:` line), and whether
    `smart-mcps-orchestrate retry $RUN <gid>` + `resume` is a sane salvage
    (it is, when the integration tip has since moved past the cause).
-3. If every group completed/resolved, the CLI printed
-   `finish when ready with: smart-mcps-orchestrate finish $RUN`. **The record
-   the human approves from is the report, not this session's prose** — see
-   `docs/orchestrator-report.md` for the full format contract. Before running
+3. If every group completed/resolved, the CLI **auto-finished** (push + PR)
+   the moment the last group went terminal — `run complete (N completed, M
+   resolved by operator)` on stdout and the PR URL in `logs/run.log`. It
+   prints `finish when ready with: smart-mcps-orchestrate finish $RUN` only
+   in the not-finishable case (a group whose branch is not on the integration
+   tip), and that is the only time you run `finish` by hand. The one-pager /
+   report step below therefore happens **on the PR after the fact**: write it,
+   then re-run `finish` to refresh the PR body. **The record the human
+   approves from is the report, not this session's prose** — see
+   `docs/orchestrator-report.md` for the full format contract. Before (re-)running
    `finish`:
    1. Check `.orchestrator/config.toml` `[docs] formats` — the report is only
       generated (and committed) when it names at least one format. If the
@@ -259,12 +282,17 @@ When the process exits (signal **(b)**):
         not skip the loop. Leaving `one-pager.md` absent is fine — `finish`
         generates the other formats without it and the PR body falls back
         to the run-record lines and the report link.
-   4. Run `smart-mcps-orchestrate finish $RUN` only after the human has seen
-      the one-pager — it copies `.orchestrator/notes-$RUN.md` into the run
-      dir as `driver-notes.md`, renders `[docs] formats` onto the
-      integration branch (the one-pager folded into `report.html`), commits
-      `docs/runs/$RUN/`, pushes, and opens a PR whose body is the one-pager
-      plus the run-record lines. To also record the run in `docs/RUNLOG.md`,
+   4. Before the integration worktree is removed, list what the run produced
+      **outside git** there — `git -C .worktrees/$RUN/integration status
+      --ignored --porcelain` — and move anything worth keeping (rendered
+      chapters, exported media, generated reports) somewhere durable. `finish`
+      removes the worktree and everything ignored or untracked goes with it.
+   5. Run `smart-mcps-orchestrate finish $RUN` (again, to refresh the PR body)
+      only after the human has seen the one-pager — it copies
+      `.orchestrator/notes-$RUN.md` into the run dir as `driver-notes.md`,
+      renders `[docs] formats` onto the integration branch (the one-pager
+      folded into `report.html`), commits `docs/runs/$RUN/`, pushes, and opens
+      or updates a PR whose body is the one-pager plus the run-record lines. To also record the run in `docs/RUNLOG.md`,
       run `report $RUN --format changelog --update-runlog` in the main
       checkout and commit it there. `smart-mcps-orchestrate export $RUN`
       writes the ingest bundle if the repo's workflow ingests runs.

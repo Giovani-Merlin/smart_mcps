@@ -32,6 +32,7 @@ from orchestrator.execution.prompting import (
 from orchestrator.execution.sessions import (
     PreflightError,
     ReportError,
+    RoundSpend,
     RoundUsage,
     SessionError,
     SessionRunner,
@@ -240,6 +241,23 @@ def test_cumulative_usage_keeps_the_token_classes_apart(fake_home, tmp_path):
     assert usage.total_input_tokens == 12  # uncached input only, not 12 + cache_creation
     assert usage.total_cache_read_tokens == 3000
     assert usage.total_cache_creation_tokens == 400
+
+
+def test_cost_is_read_off_the_envelope_and_summed_per_session(fake_home, tmp_path):
+    """`total_cost_usd` is the one cost figure the CLI computes itself; nothing
+    used to read it, and "no cost lines in run.log" was in four of six run notes."""
+    runner = make_runner(fake_home)
+    base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
+    script(fake_home, {"total_cost_usd": 1.25}, {"total_cost_usd": 0.5})
+    fork = runner.start_fork(base_id=base.session_id, prompt="a", name="n", cwd=tmp_path)
+    runner.resume(session_id=fork.session_id, prompt="b", cwd=tmp_path)
+    assert runner.usage_of(fork.session_id).total_cost_usd == 1.75
+
+
+def test_round_spend_reads_cost_and_tolerates_an_envelope_without_one():
+    assert RoundSpend.from_envelope({"usage": {}, "total_cost_usd": 0.42}).cost_usd == 0.42
+    assert RoundSpend.from_envelope({"usage": {}}).cost_usd == 0.0
+    assert RoundSpend.from_envelope({"usage": {}, "total_cost_usd": None}).cost_usd == 0.0
 
 
 def test_multi_turn_envelope_reports_last_turn_context_not_the_round_sum():
@@ -1117,6 +1135,25 @@ def test_provision_node_env_runs_npm_ci_only_when_ui_package_json_exists(tmp_pat
     assert calls == [["npm", "ci", "--no-audit", "--fund=false"]]
 
 
+def test_provision_node_env_walks_frontend_dirs_in_order(tmp_path):
+    """The same list, in the same order, the gate detects with: a consumer
+    whose frontend is `frontend/` gets its node_modules; one configured to
+    look only in `ui/` does not."""
+    cwds: list[Path] = []
+
+    def fake_run(argv, *, cwd, **kwargs):
+        cwds.append(cwd)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    repo = tmp_path / "repo"
+    (repo / "frontend").mkdir(parents=True)
+    (repo / "frontend" / "package.json").write_text("{}")
+    assert provision_node_env(repo, runner=fake_run) is True  # default list has it
+    assert cwds == [repo / "frontend"]
+    assert provision_node_env(repo, runner=fake_run, frontend_dirs=["ui"]) is False
+    assert len(cwds) == 1
+
+
 def test_provision_node_env_failure_is_non_fatal(tmp_path):
     """A machine without npm must weaken the merge gate, never halt the run."""
     ui_repo = tmp_path / "ui-repo"
@@ -1155,12 +1192,12 @@ def test_start_worker_prepends_the_base_context_verbatim_and_never_forks(fake_ho
     base_context = "# Base context\n\n## Worker ground rules\n\nbe careful\n"
     result = runner.start_worker(
         base_context=base_context,
-        prompt="<run-manifest run_id=\"r1\">…</run-manifest>",
+        prompt='<run-manifest run_id="r1">…</run-manifest>',
         name="r1-g1-coder-g1",
         cwd=tmp_path,
     )
     call = calls(fake_home)[-1]
-    assert call["prompt"] == base_context + "\n\n" + "<run-manifest run_id=\"r1\">…</run-manifest>"
+    assert call["prompt"] == base_context + "\n\n" + '<run-manifest run_id="r1">…</run-manifest>'
     assert call["prompt"].startswith("# Base context")
     assert "--resume" not in call["argv"]
     assert "--fork-session" not in call["argv"]

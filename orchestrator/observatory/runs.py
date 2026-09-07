@@ -92,6 +92,8 @@ class SnapshotSession(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    # Summed `total_cost_usd` of the session's round envelopes; 0.0 = not recorded.
+    total_cost_usd: float = 0.0
     # The context the session started from (F10) — round 1 turn 1's
     # cache_read + cache_creation. Its own figure, distinct from
     # total_cache_read_tokens.
@@ -468,6 +470,7 @@ def _base_session(
             total_output_tokens=entry.total_output_tokens,
             total_cache_read_tokens=entry.total_cache_read_tokens,
             total_cache_creation_tokens=entry.total_cache_creation_tokens,
+            total_cost_usd=entry.total_cost_usd,
             base_context_tokens=entry.base_context_tokens,
             model=entry.model,
             started_at=entry.started_at,
@@ -645,6 +648,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                             total_output_tokens=session.total_output_tokens,
                             total_cache_read_tokens=session.total_cache_read_tokens,
                             total_cache_creation_tokens=session.total_cache_creation_tokens,
+                            total_cost_usd=session.total_cost_usd,
                             base_context_tokens=session.base_context_tokens,
                             model=session.model,
                             started_at=session.started_at,
@@ -693,5 +697,5 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
         usage_limit=_usage_limit(paths),
         # Recorded for display only — the read path never checks whether these
         # pids are alive, which is what lets a crashed run render (R9).
-        live_pids=dict(state.live_pids) if state else {},
+        live_pids={pid: record.context for pid, record in state.live_pids.items()} if state else {},
     )

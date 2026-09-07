@@ -66,6 +66,26 @@ def test_capture_records_command_sha_and_one_entry_per_test(tmp_path):
     assert baseline.failing_tests == frozenset({"test_sample::test_b"})
 
 
+def test_capture_logs_which_frontend_dir_was_detected(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _pytest_project(repo, "def test_a():\n    assert True\n")
+    (repo / "frontend").mkdir()
+    (repo / "frontend" / "package.json").write_text("{}")
+    logged: list[str] = []
+    capture_preflight_baseline(
+        repo,
+        config=PreflightConfig(frontend_dirs=["ui"]),
+        output_dir=tmp_path / "out",
+        commit_sha="abc",
+        log=logged.append,
+    )
+    assert any("no frontend detected" in line for line in logged)
+    assert any(
+        "frontend/package.json exists but is not provisioned or gated" in line for line in logged
+    )
+
+
 def test_baseline_round_trips_through_save_and_load(tmp_path):
     repo = tmp_path / "repo"
     _init_repo(repo)

@@ -18,9 +18,12 @@ from orchestrator.execution.preflight import (
     CheckStep,
     PreflightBaseline,
     PreflightFailure,
+    _classify_step_failure,
+    _resolve_steps,
     configured_check_step,
     detect_check_command,
     detect_check_steps,
+    frontend_detection_notes,
     run_preflight,
 )
 from orchestrator.execution.review import MergeConflict
@@ -97,7 +100,27 @@ def test_dirty_worktree_fails_and_names_the_dirty_paths(tmp_path):
     (worktree / "litter.txt").write_text("uncommitted\n")
     with pytest.raises(PreflightFailure, match="litter.txt") as excinfo:
         run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out", log=None)
-    assert excinfo.value.kind == "env"
+    # Untracked-only dirt is its own kind: the coder's leftovers, routed to the
+    # cheap same-spec relaunch rather than failing the group as `env`.
+    assert excinfo.value.kind == "untracked"
+    assert excinfo.value.paths == ["litter.txt"]
+
+
+def test_modified_tracked_file_is_env_dirt_not_untracked(tmp_path):
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    git(worktree, "init", "-b", "main")
+    git(worktree, "config", "user.email", "t@t")
+    git(worktree, "config", "user.name", "t")
+    (worktree / "tracked.txt").write_text("v1\n")
+    git(worktree, "add", "tracked.txt")
+    git(worktree, "commit", "-m", "init")
+    (worktree / "tracked.txt").write_text("v2\n")
+    (worktree / "litter.txt").write_text("uncommitted\n")
+    with pytest.raises(PreflightFailure, match="tracked.txt") as excinfo:
+        run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out", log=None)
+    assert excinfo.value.kind == "env"  # a modified tracked file is not "just leftovers"
+    assert sorted(excinfo.value.paths) == ["litter.txt", "tracked.txt"]
 
 
 def test_clean_worktree_with_no_check_command_passes(tmp_path):
@@ -607,7 +630,9 @@ def _ui_project(root: Path, *, node_modules: bool = True, dev: dict | None = Non
     ui = root / "ui"
     ui.mkdir(parents=True, exist_ok=True)
     (ui / "package.json").write_text(
-        json.dumps({"devDependencies": dev if dev is not None else {"vitest": "^4", "typescript": "^5"}})
+        json.dumps(
+            {"devDependencies": dev if dev is not None else {"vitest": "^4", "typescript": "^5"}}
+        )
     )
     (ui / "tsconfig.json").write_text("{}")
     if node_modules:
@@ -666,6 +691,95 @@ def test_ui_steps_are_skipped_not_failed_without_node_modules(tmp_path):
         "step 'vitest' was in the baseline but is skipped here (no ui/node_modules)" in line
         for line in logged
     )
+
+
+def test_frontend_in_a_non_ui_dir_is_detected_via_frontend_dirs(tmp_path):
+    """A real consumer keeps its frontend in `frontend/`; the hardcoded `ui/`
+    gave it no vitest/tsc step, silently. The configured list is walked in
+    order and the first dir with package.json + node_modules wins."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n")
+    fe = root / "frontend"
+    fe.mkdir()
+    (fe / "package.json").write_text(
+        json.dumps({"devDependencies": {"vitest": "^4", "typescript": "^5"}})
+    )
+    (fe / "tsconfig.json").write_text("{}")
+    (fe / "node_modules").mkdir()
+    out_dir = tmp_path / "out"
+
+    assert [s.name for s in detect_check_steps(root, output_dir=out_dir)] == [
+        "pytest",
+        "vitest",
+        "tsc",
+    ]  # "frontend" is in the default list
+    steps = detect_check_steps(root, output_dir=out_dir, frontend_dirs=["ui"])
+    assert [s.name for s in steps] == ["pytest"]  # not in the list: not seen
+    steps = detect_check_steps(root, output_dir=out_dir, frontend_dirs=["ui", "frontend"])
+    _, vitest_step, tsc_step = steps
+    assert vitest_step.subdir == "frontend"
+    assert vitest_step.id_prefix == "frontend::"
+    assert vitest_step.junit_path == out_dir / "preflight-junit-frontend.xml"
+    assert tsc_step.subdir == "frontend"
+
+
+def test_only_the_first_matching_frontend_dir_is_gated(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    for name in ("ui", "web"):
+        _ui_project(root)  # ui/
+        d = root / name
+        d.mkdir(exist_ok=True)
+        (d / "package.json").write_text(json.dumps({"devDependencies": {"vitest": "^4"}}))
+        (d / "node_modules").mkdir(exist_ok=True)
+    steps = detect_check_steps(root, output_dir=tmp_path / "out")
+    assert [s.subdir for s in steps if s.name == "vitest"] == ["ui"]
+
+
+def test_extra_check_commands_are_appended_as_regression_steps(tmp_path):
+    """`check_command` replaces the detected root step; `extra_check_commands`
+    are appended, so a second suite can be added without losing detection."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n")
+    config = PreflightConfig(extra_check_commands=[["make", "lint"], ["make", "e2e"]])
+    steps = _resolve_steps(root, config=config, output_dir=tmp_path / "out", junit_stem="pj")
+    assert [s.name for s in steps] == ["pytest", "configured-1", "configured-2"]
+    assert steps[1].argv == ["make", "lint"]
+    assert steps[2].argv == ["make", "e2e"]
+    # Their failures are evidence about the diff — never the pytest exit table.
+    assert _classify_step_failure(steps[1], 2, "") == "regression"
+    assert _classify_step_failure(steps[0], 2, "") == "env"
+    # With a root check_command too: it replaces detection, extras still append.
+    config = PreflightConfig(
+        check_command=["make", "test"], extra_check_commands=[["make", "lint"]]
+    )
+    steps = _resolve_steps(root, config=config, output_dir=tmp_path / "out", junit_stem="pj")
+    assert [s.name for s in steps] == ["configured", "configured-1"]
+
+
+def test_frontend_detection_notes_name_the_dir_and_warn_on_ungated_package_json(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _ui_project(root)
+    (root / "site").mkdir()
+    (root / "site" / "package.json").write_text("{}")
+    (root / "web").mkdir()
+    (root / "web" / "package.json").write_text("{}")  # in the list, but no node_modules
+    notes = frontend_detection_notes(root, ["ui", "frontend", "web"])
+    assert notes[0] == "preflight baseline: frontend detected in ui/ (vitest/tsc steps apply)"
+    assert any("site/package.json exists but is not provisioned or gated" in n for n in notes)
+    assert any("'site' is not in [preflight] frontend_dirs" in n for n in notes)
+    assert any("web/package.json" in n and "no web/node_modules" in n for n in notes)
+    assert not any("ui/package.json" in n for n in notes)
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "pyproject.toml").write_text("[project]\n")
+    assert frontend_detection_notes(bare, ["ui"]) == [
+        "preflight baseline: no frontend detected (looked for package.json + node_modules in ui)"
+    ]
 
 
 def _inject_steps(monkeypatch, steps: list[CheckStep]) -> None:
@@ -731,7 +845,7 @@ def _tsc_step() -> CheckStep:
         argv=[
             "python3",
             "-c",
-            "import sys\nprint(\"src/types.ts(3,7): error TS2322\")\nsys.exit(1)\n",
+            'import sys\nprint("src/types.ts(3,7): error TS2322")\nsys.exit(1)\n',
         ],
     )
 
@@ -845,7 +959,9 @@ def test_a_configured_pytest_check_command_gets_a_junitxml(tmp_path):
 
     # A non-pytest command is left exactly as configured, but still gets the
     # canonical report path — it may write one itself.
-    other = configured_check_step(["make", "check"], output_dir=out_dir, junit_stem="preflight-junit")
+    other = configured_check_step(
+        ["make", "check"], output_dir=out_dir, junit_stem="preflight-junit"
+    )
     assert other.argv == ["make", "check"]
     assert other.junit_path == out_dir / "preflight-junit.xml"
 

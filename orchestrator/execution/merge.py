@@ -40,6 +40,14 @@ class MergeError(Exception):
     """A git operation failed for a reason other than a content conflict."""
 
 
+#: Files whose change means the environment built from them is now stale.
+_ENV_MANIFESTS = ("pyproject.toml", "uv.lock", "package.json", "package-lock.json")
+
+
+def _is_env_manifest(path: str) -> bool:
+    return path.rsplit("/", 1)[-1] in _ENV_MANIFESTS
+
+
 def commits_ahead(worktree: Path, base: str, branch: str) -> int:
     """Commits on ``branch`` not yet reachable from ``base``.
 
@@ -148,7 +156,42 @@ class IntegrationMerger:
         # The JavaScript half: the integration worktree runs the same merge
         # gate a group's does, and its UI steps need `ui/node_modules` too. No
         # `on_state` — the provisioning record holds one command, the venv's.
-        provision_node_env(path, log=self._log, env=self._provision_env_vars)
+        provision_node_env(
+            path,
+            log=self._log,
+            env=self._provision_env_vars,
+            frontend_dirs=self._preflight_config.frontend_dirs,
+        )
+
+    def _reprovision_if_manifests_changed(self, path: Path, group_id: str, *, since: str) -> None:
+        """Re-sync the integration environment when a merge changed what it is
+        built from (plan: run-notes sweep B). ``_provision_once`` runs once per
+        process, so a group that added a dependency used to leave the venv
+        stale for every later gate run and for the driver (yt-dlp missing,
+        twice, on drummAI). Never strict: the merge already landed, and a
+        failed re-sync is a logged problem for the next gate to surface, not a
+        reason to fail a merge that already happened."""
+        changed = _git_ok(path, "diff", "--name-only", since, "HEAD").splitlines()
+        manifests = [name for name in changed if _is_env_manifest(name)]
+        if not manifests:
+            return
+        self._log(
+            f"integration worktree re-provisioned after merge({group_id}): "
+            f"{', '.join(sorted(manifests))} changed"
+        )
+        provision_env(
+            path,
+            log=self._log,
+            env=self._provision_env_vars,
+            extra_args=self._provision_args,
+            strict=False,
+        )
+        provision_node_env(
+            path,
+            log=self._log,
+            env=self._provision_env_vars,
+            frontend_dirs=self._preflight_config.frontend_dirs,
+        )
 
     def tip(self) -> str:
         """Current integration-branch commit — the branch point for a group's
@@ -198,6 +241,7 @@ class IntegrationMerger:
                 uv_run_args=self._provision_args,
             )
             message = f"merge({self.run_id}): {group.id} {group.name}"
+            tip_before = _git_ok(integration_wt, "rev-parse", "HEAD").strip()
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)
             if result.returncode != 0:
                 conflicted = _git_ok(
@@ -213,6 +257,7 @@ class IntegrationMerger:
             # A group may have registered a new large file mid-run; the
             # integration tree gets its link now rather than at the next ensure().
             materialize_data_layer(integration_wt, self.repo_root, self._workspace, log=self._log)
+            self._reprovision_if_manifests_changed(integration_wt, group.id, since=tip_before)
             try:
                 # Cleanup only after a clean merge; a dirty worktree (uncommitted
                 # leftovers) is left in place for inspection rather than forced.
