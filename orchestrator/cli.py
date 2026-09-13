@@ -937,6 +937,7 @@ def _cmd_group(
         _append_metrics_log(repo_root, recorder.trace)
         _warn_self_modification(outcome.mapper_out.flags)
         _print_partition_report(recorder.trace)
+        _print_next_step(plan_path, wrote_grouping=False)
         return 0
 
     try:
@@ -971,6 +972,7 @@ def _cmd_group(
         _write_edge_provenance(preview_dir, provenance_recorder)
         _append_metrics_log(repo_root, recorder.trace)
         _print_report(result)
+        _print_next_step(plan_path, wrote_grouping=False)
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -981,7 +983,18 @@ def _cmd_group(
     _append_metrics_log(repo_root, recorder.trace)
     print(f"wrote {out_dir / 'groups.json'} and {out_dir / 'base-context.md'}")
     _print_report(result)
+    _print_next_step(plan_path, wrote_grouping=True)
     return 0
+
+
+def _print_next_step(plan_path: Path, *, wrote_grouping: bool) -> None:
+    """Close every `group` report with the ready-to-paste next command, plan path
+    filled in — the human should never have to reconstruct it from the docs."""
+    if not wrote_grouping:
+        print(f"\nnext: smart-mcps-orchestrate group {plan_path}  (writes groups.json)")
+        print(f"      then run it with the orchestrator: /orchestrator-run {plan_path}")
+    else:
+        print(f"\nnext: run it with the orchestrator: /orchestrator-run {plan_path}")
 
 
 def _write_edge_provenance(out_dir: Path, recorder: EdgeProvenanceRecorder) -> None:

@@ -119,9 +119,21 @@ each fired category, per unit:
 ```
 ### <unit_id> — <category name>
 
+- **Today**: <what the code does now on this point, one or two sentences,
+  with the file:line you read it from — the calling skill quotes this to
+  the human as the ground for the question>
 - **Reading A**: <what the plan could mean, and the code it implies>
 - **Reading B**: <the other plausible reading, and the code it implies>
 - **Score**: blocking_risk=<1-3> effect_size=<1-3>
+- **Handle**: the unit's plan heading, copied verbatim minus the `###`
+  (`U14. rerender-acceptance — six chapters once into artifacts-0911, three
+  EPUBs, acceptance report with the judges' measures`). Never shorten or
+  re-summarize it — the skill quotes this field to the human as-is.
+- **Stakes**: <one clause: what goes wrong if the human answers this wrong>
+- **Consequence A / B**: <one concrete effect per reading — a number, a
+  file, a user-visible behavior — never an adjective like "stricter">
+- **Scenario** (optional): <one concrete situation that makes the two
+  readings diverge, when the abstract question is hard to picture>
 - **Candidate question**: <one sentence, framed so a non-expert can answer it>
   - Candidate answer 1: <label> — <one line>
   - Candidate answer 2: <label> — <one line>

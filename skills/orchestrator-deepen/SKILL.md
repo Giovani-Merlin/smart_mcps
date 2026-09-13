@@ -88,7 +88,9 @@ the inline pass) — never a second agent per group, which would re-derive the
 context the explorer already holds.
 
 Scope it honestly when asking: **name each research-worthy group with a tag
-and a one-phrase reason**, so the human sees exactly what the spend buys:
+and a one-phrase reason**, so the human sees exactly what the spend buys —
+and, as everywhere else, the group is `g4` plus the full plan heading of the
+member unit(s) that trigger the tag, never `g4` alone:
 
 - `[external]` — a member unit touches a third-party library, an OS/system
   API, a wire protocol, or an external service
@@ -158,16 +160,52 @@ many fired candidates, never more than 5. A large plan with many groups will
 therefore exceed a plan-wide total in the tens; that is intended; no
 low-scoring group loses its questions to a cross-group ranking.
 
-For each question:
+Question wording follows `skills/orchestrator-plan/question-format.md` —
+read it once before the first group. For each question:
 
 - Ask via `AskUserQuestion`, **one group's batch at a time** (up to the tool's
   own 4-per-call limit, so a group's 5 questions span two calls).
+- **Open every group with its legend**: a group is never `g4` in chat — it
+  is `g4 — <n> units` followed by the **full plan heading of every member
+  unit, verbatim**, one per line
+  (`- U14. rerender-acceptance — six chapters once into artifacts-0911, three EPUBs, acceptance report with the judges' measures`).
+  Each stem then **repeats that full heading** before the stakes clause the
+  explorer scored (`U14. rerender-acceptance — six chapters once into
+  artifacts-0911, three EPUBs, acceptance report with the judges' measures ·
+  if wrong: the acceptance report scores stale renders. …`). `U14`, `U14
+  rerender-acceptance`, and any paraphrase of the goal are all forbidden —
+  the explorer's `Handle` field is the heading copied from the plan, so
+  quote it, never re-summarize it. Only the header chip abbreviates
+  (`U14 rerend`), because the tool caps it at 12 chars; it is never the
+  group id or a question number.
+- **Visuals only when relational**: a preview table when a question spans
+  3+ units/files and hinges on order, coverage, or lifecycle; a ≤ 6-node
+  Mermaid *mechanism* diagram (the explorer's two readings drawn as two
+  small flows, or one lifecycle with the disputed transition marked) when
+  the readings differ in how something flows — one page per plan,
+  republished per group. Never the group DAG.
 - **Candidate answers are always offered** — never a bare free-form prompt.
+  The `(Recommended)` option is the reading the repo's existing convention
+  or the plan's own text favors, when one does; otherwise lead with the
+  lower-effect-size reading and say so.
   Include an explicit "either is fine" option whenever the explorer's two
   readings are genuinely both acceptable; recording that answer frees the
   constraint rather than forcing an arbitrary pick.
+- **Hard questions carry a card** (format doc §3b): when the explorer
+  scored `blocking_risk` ≥ 2, or Reading A and Reading B differ in how a
+  mechanism flows rather than in a parameter, print the four-line card in
+  chat right before the call — *Today* (what the code does now, from the
+  explorer's `Today` field with its file:line), *The fork* (both readings
+  in plain words, each with one concrete consequence), *Our view* (the
+  reading we favor, the plan unit or code that tipped it, a confidence
+  word, and what would change our mind). The explorer deliberately gives no
+  recommendation; forming and **stating** that view is this skill's job,
+  and the `(Recommended)` option must be the same reading the card names.
+  Run the self-check: if the fork cannot be restated in one sentence from
+  the card alone, rewrite the card before asking.
 - Frame the question in plain language — the human answering may not have
-  read the explorer's report.
+  read the explorer's report, and will not open the code to decode a term
+  the plan never used.
 
 ## Phase 4 — Write the answers back, through plan_edit
 
@@ -230,17 +268,38 @@ asked, "either is fine" answers, units enriched) and point back at
 still parses clean. If any existing prose was refined (not merely appended
 to), remind the human to regenerate the grouping with
 `smart-mcps-orchestrate group <plan>` before running — the persisted
-`groups.json` was derived from the pre-deepen plan. The next step is
-`/orchestrator-run <plan>` (it regenerates a stale grouping itself in its
-preflight), not a bare `smart-mcps-orchestrate run`.
+`groups.json` was derived from the pre-deepen plan.
+
+**Always close with the launch line.** The very last thing this skill
+prints — after the final group's write-back and the summary — is the
+ready-to-paste next step, with the plan's real path substituted, never a
+placeholder:
+
+```
+Deepening done — 4 groups, 17 questions, 3 "either is fine".
+Next: run it with the orchestrator:
+
+  /orchestrator-run docs/plans/2026-09-13-rerender-acceptance.md
+```
+
+That is the next step — `/orchestrator-run <plan>` regenerates a stale
+grouping itself in its preflight — not a bare `smart-mcps-orchestrate run`.
+If the human asked to stop after some groups, print the same block with
+"deepened g1–g2 of 4" in the first line; the launch line does not change.
 
 ## Non-negotiable rules
 
 - **The task map and unit ids are never rewritten** — every write goes
   through `plan_edit.py` and is checked with `plan-check --against` the
   pre-edit copy; a refusal aborts.
+- **Every hard question is explained before it is asked** — card in chat
+  (today / the fork / our view with confidence), plain words, one concrete
+  consequence per reading; a terse hard question is a bug.
 - **3–5 questions per group, always with candidate answers**, dominant over
-  any plan-global cap.
+  any plan-global cap — worded per
+  `skills/orchestrator-plan/question-format.md`: legend first, the unit's
+  full plan heading (verbatim) and stakes in every stem, no bare `U3`, no
+  `U3 package-writer`, no `g4` without its member headings.
 - **A `Run:` command is written only when grounded** (real runner idiom, every
   path in the unit's declared `Files`); otherwise `Pass:`-only.
 - **Edge cases only where they fire** — no `N/A` filler.

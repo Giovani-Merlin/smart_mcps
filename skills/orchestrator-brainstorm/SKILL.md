@@ -35,8 +35,14 @@ Interview the user until you share an understanding of what they actually want.
 Walk down each branch of the design tree, resolving dependencies between
 decisions one by one.
 
-Rules of engagement:
+Rules of engagement (question wording follows
+`skills/orchestrator-plan/question-format.md` — handles, legend, stakes,
+running decisions list, visual rule — read it once before the first round):
 
+- **Name every decision before asking about it.** There are no IDs yet, so
+  the handle is `Decision · <name>` (`Decision · retry policy`). Between
+  rounds print the running one-line-per-decision list; later questions
+  refer to entries by that name, never by "the earlier question".
 - **Batch independent questions, explain the stakes.** Group questions that
   don't depend on each other's answer into a single `AskUserQuestion` call —
   up to 4 questions per call, the tool's own limit. Only serialize when a
@@ -54,6 +60,11 @@ Rules of engagement:
   no-s — as valuable as the yes-s).
 - **Stress-test with concrete scenarios.** Invent specific situations that probe
   edge cases and force precision about boundaries between concepts.
+- **Draw the mechanism when words drift.** When a question is about how
+  something flows (a lifecycle, a request path, a failure cascade) and the
+  two of you may hold different pictures, render a ≤ 6-node Mermaid
+  mechanism diagram per the format doc's visual rule — one page per topic,
+  republished as the discussion moves. Never the unit/group DAG.
 - **Cross-reference claims against code.** When the user states how something
   works today, check whether the code agrees; surface contradictions
   immediately ("the code does X, but you just said Y — which is right?").
@@ -120,10 +131,13 @@ topic: <topic-slug>
 ## Requirements
 
 <Grouped under subheadings when natural. Every requirement gets a stable ID —
-`R1.`, `R2.`, … — that /orchestrator-plan will carry through to plan units.>
+`R1.`, `R2.`, … — **and a short tag** (1–3 kebab-case words, as stable as
+the ID) that /orchestrator-plan will carry through to plan units: a unit
+that mainly implements an R-ID reuses its tag as the unit slug, and every
+question in every later phase cites `R2 · bundle-v2 · <gist>`, never `R2`.>
 
-- R1. ...
-- R2. ...
+- R1. `flow-doc` — **Concise flow doc.** <one gist sentence, then detail>
+- R2. `bundle-v2` — **Run Bundle contract v2.** ...
 
 ## Non-Goals
 
@@ -139,8 +153,8 @@ goal.>
 Run `/orchestrator-plan docs/brainstorms/YYYY-MM-DD-<topic>-requirements.md`.
 ```
 
-**R-IDs are stable forever** — never renumber on edit; retire IDs by marking
-them, append new ones at the end.
+**R-IDs and their tags are stable forever** — never renumber or rename on
+edit; retire IDs by marking them, append new ones at the end.
 
 ## Phase 5 — Self-review, then the user gate
 
@@ -152,8 +166,8 @@ Before presenting, re-read the document end to end and fix inline:
 - **Ambiguity** — any sentence two readers would implement differently.
 - **Scope creep** — requirements nobody asked for and no decision justifies.
 
-Then present the summary, the decisions, and the R-ID list to the user for
-review. **The document is not done until the user approves it.** End by pointing
+Then present the summary, the decisions, and the R-ID list (as
+`R2 · bundle-v2 · gist` lines) to the user for review. **The document is not done until the user approves it.** End by pointing
 at `/orchestrator-plan <path>`.
 
 ## Non-negotiable rules
@@ -162,6 +176,8 @@ at `/orchestrator-plan <path>`.
   document and `CONTEXT.md`.
 - Batch independent questions per `AskUserQuestion` call (max 4 per call);
   serialize only on genuine dependency. Each question carries a recommended
-  answer and a short explanation.
+  answer and a short explanation, and follows
+  `skills/orchestrator-plan/question-format.md`: named decisions, stakes in
+  the stem, a legend before the call, no bare IDs.
 - Explore instead of asking whenever the codebase can answer.
 - Update `CONTEXT.md` inline as terms resolve; glossary only, never a spec.

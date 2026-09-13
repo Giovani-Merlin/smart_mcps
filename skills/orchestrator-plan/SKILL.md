@@ -20,8 +20,10 @@ ______________________________________________________________________
 ## Phase 1 — Origin
 
 - If `$ARGUMENTS` is (or names) a brainstorm requirements doc, read it and
-  **carry its R-IDs** — every requirement must be traceable to plan units, and
-  the verifier checks coverage.
+  **carry its R-IDs and their tags** — every requirement must be traceable to
+  plan units, and the verifier checks coverage. A unit that mainly
+  implements one R-ID takes that R-ID's tag as its slug, so the human meets
+  one name across brainstorm, plan, and deepen.
 - If it's a direct description, run a **short bootstrap grill** (same
   one-question-at-a-time discipline as below) covering only: objective, scope
   in/out, and success criteria. Don't re-run a full brainstorm — if the topic is
@@ -57,10 +59,25 @@ For **every area the plan will touch**, establish ground truth before grilling:
 ## Phase 3 — Grill
 
 Interview the user relentlessly about every load-bearing aspect of the design,
-walking down each branch of the decision tree:
+walking down each branch of the decision tree. Question wording follows
+[`question-format.md`](./question-format.md) — read it once before the
+first question:
 
 - **One question at a time** via `AskUserQuestion`, **each with a recommended
   answer** (first option, labeled `(Recommended)`).
+- **No bare IDs, no short forms, ever.** Cite a requirement or unit by its
+  own document line, verbatim — `R2. bundle-v2 — export writes a
+  self-contained ingest/ package`, `U3. package-writer — v2 export writes
+  <run_dir>/ingest/ as a self-contained package` — never `U3` or
+  `U3 package-writer`; print the legend (full headings) for the IDs a
+  question touches right before the call; put the stakes clause in the stem;
+  header chip is ID + slug (`U3 package`), never `Q2`. Keep the running
+  "decisions so far" list between rounds.
+- **Visuals per the format doc's rule** — a preview table when a question
+  spans 3+ handles and hinges on order/coverage/lifecycle; a ≤ 6-node
+  Mermaid *mechanism* diagram (one page per plan, republished) when the
+  question is about how something flows and the two pictures may differ.
+  Never the unit/group DAG — the orchestrator renders that.
 - **Stress-test with concrete scenarios** that probe edge cases and force
   precision.
 - **Cross-reference claims against code** — when the user asserts how something
@@ -119,7 +136,12 @@ belongs here.>
 
 Unit headings and task ids are the same identity in two forms — heading
 `### U<N>. <name>` ↔ task id `u<N>-<slug>` — the parser and the digest builder
-both key off this pairing, so a mismatch is a bug, not a style choice. Every
+both key off this pairing, so a mismatch is a bug, not a style choice. The
+whole heading line — `U<N>. <slug> — <goal in one line>` — is quoted
+verbatim as the unit's handle in every later question, so make the slug a
+memorable noun for what ships (`package-writer`, `event-parser`),
+never a filler like `misc-2`; reuse the origin R-ID's tag when the unit
+mainly implements that requirement. Every
 unit's **`Summary:`** line is required: it is the only piece of the unit that
 ships into every other worker's shared context (the full unit body ships only
 to workers on that unit's own group), so write it as a self-contained sentence
@@ -307,7 +329,9 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   explicit assignment instead — every task id in the plan's task map must
   appear in exactly one `--tasks` group.
 
-  Then present the plan summary + unit list to the user, and point at:
+  Then present the plan summary + unit list to the user — each unit's
+  full heading (`U3. package-writer — <goal>`) on its own line, with the
+  R-ID tags each covers — and point at:
 
   ```sh
   smart-mcps-orchestrate group docs/plans/<the-plan>.md --dry-run
@@ -338,3 +362,6 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   ADRs, `STATUS.md`/`docs/session-log.md` on interruption.
 - Explore instead of asking whenever the codebase can answer.
 - Never hand-edit `groups.json` to fix a grouping — fix the plan's map instead.
+- Questions follow [`question-format.md`](./question-format.md): no bare
+  IDs, legend before the call, stakes in the stem, visuals only when
+  relational.

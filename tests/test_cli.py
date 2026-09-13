@@ -311,6 +311,17 @@ class TestScorecardAndMetricsLogCli:
         assert "modularity:" in out
         assert "slice integrity:" in out
 
+    def test_report_closes_with_the_launch_command(self, tmp_path, capsys):
+        repo, plan = self._repo(tmp_path)
+        exit_code = main(
+            ["group", str(plan), "--repo", str(repo), "--no-spec"],
+            client=CodegraphClient(repo_root=repo, runner=_stub_codegraph_runner),
+        )
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert f"smart-mcps-orchestrate group {plan}" in out
+        assert out.rstrip().endswith(f"/orchestrator-run {plan}")
+
     def test_printed_scorecard_matches_the_trace(self, tmp_path, capsys):
         from orchestrator.grouping.trace import GroupingTrace
 
