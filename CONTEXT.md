@@ -283,3 +283,46 @@ tip. In-flight groups are never cancelled to effect a halt; they run to their ow
 outcome first.
 _Avoid_: fail-fast (says nothing about the groups already running), abort (that
 is the operator stopping the whole run)
+
+**Sign of Life**:
+Evidence that a worker child is doing something, read by the orchestrator every
+heartbeat tick: a stream-json event of any type from the child, a live process
+whose parent is the child (a tool call in flight), or the child's own CPU ticks
+advancing. Any one suffices; none is a judgement about the work's quality or
+speed.
+_Avoid_: heartbeat (that is the driver's own tick, which advances whether or not
+the child does anything), progress (implies the work is nearer done)
+
+**Liveness Window**:
+The maximum age of the freshest Sign of Life before a child is reported Not
+Live — a cap on the *signal's* freshness, never on the round or the work, which
+carry no wall-clock limit (R7). Default ten minutes, config-overridable.
+_Avoid_: timeout (implies the work is cut off), round limit, stall threshold
+
+**Not Live**:
+The reported condition of a child with no Sign of Life for a whole Liveness
+Window. A fact the orchestrator writes and `status`, the run log and the
+Observatory show with its evidence; it changes group state only in one case —
+after a detected machine suspend, when the driver kills the child and warm-resumes
+it in-process.
+_Avoid_: stalled, wedged, dead, hung (all four were used interchangeably for
+"alive but silent", "silent but working", and "process gone")
+
+**Operator Decision**:
+A human answer to a `coder_question` escalation, binding by default: it amends
+the group's spec for every later coder, handoff, reviewer and speccer prompt of
+that group, derived at prompt time from the escalation record itself — never a
+second file. Work that follows it is never "self-invented"; work that
+contradicts it is `changes_required`. An answer given with `--guidance` is
+advice for the warm session only and does not bind.
+_Avoid_: operator note (that is the one-shot `retry` note, cleared after one
+prompt), guidance (the explicit non-binding opt-out)
+
+**Suspend Cure**:
+The one automatic recovery the orchestrator performs on a Not Live child: only
+after a detected machine suspend, and only when the child has shown no Sign of
+Life since the wake for a whole Liveness Window, the driver kills the child's
+process group and warm-resumes the same session in-process. Counted per group and
+generation, capped, and never a Re-entry.
+_Avoid_: watchdog kill (implies any silence can trigger it), restart (the
+session and worktree are kept)
