@@ -183,6 +183,27 @@ class TestAnswer:
         assert "already answered" in second.json()["detail"]
         assert written.read_bytes() == before
 
+    def test_binding_false_writes_a_non_binding_record(self, client, repo):
+        raise_escalation(repo, "e-nonbinding")
+        response = client.post(
+            f"{RUN}/escalations/e-nonbinding/answer",
+            json={"action": "answer", "text": "x", "binding": False},
+        )
+        assert response.status_code == 200
+        written = Path(response.json()["response_path"])
+        parsed = EscalationResponse.model_validate_json(written.read_text())
+        assert parsed.binding is False
+
+    def test_a_body_without_binding_writes_a_binding_record(self, client, repo):
+        raise_escalation(repo, "e-binding")
+        response = client.post(
+            f"{RUN}/escalations/e-binding/answer", json={"action": "answer", "text": "x"}
+        )
+        assert response.status_code == 200
+        written = Path(response.json()["response_path"])
+        parsed = EscalationResponse.model_validate_json(written.read_text())
+        assert parsed.binding is True
+
 
 class TestSharedWithTheCli:
     def test_the_route_and_the_cli_produce_the_same_response_file(self, client, repo, tmp_path):

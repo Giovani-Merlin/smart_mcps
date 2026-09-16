@@ -401,3 +401,29 @@ class TestAnswerEscalation:
         answer_escalation(paths, "e-stdout", HumanAction.SKIP, "not worth it")
         out = capsys.readouterr().out
         assert "e-stdout" in out and "skip" in out
+
+    def test_binding_defaults_true(self, tmp_path):
+        paths = self._with_request(tmp_path, "e-binding-default")
+        written = answer_escalation(paths, "e-binding-default", HumanAction.ANSWER, "use JWT")
+        response = EscalationResponse.model_validate_json(written.read_text())
+        assert response.binding is True
+
+    def test_binding_false_is_written(self, tmp_path):
+        paths = self._with_request(tmp_path, "e-nonbinding")
+        written = answer_escalation(
+            paths, "e-nonbinding", HumanAction.ANSWER, "just a heads up", binding=False
+        )
+        assert '"binding": false' in written.read_text()
+        response = EscalationResponse.model_validate_json(written.read_text())
+        assert response.binding is False
+
+    def test_a_response_file_lacking_binding_loads_as_binding_true(self, tmp_path):
+        paths = self._with_request(tmp_path, "e-old")
+        atomic_write_text(
+            paths.escalations_dir / "response-e-old.json",
+            '{"id": "e-old", "action": "answer", "answer": "ok"}',
+        )
+        response = EscalationResponse.model_validate_json(
+            (paths.escalations_dir / "response-e-old.json").read_text()
+        )
+        assert response.binding is True
