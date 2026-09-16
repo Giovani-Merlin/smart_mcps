@@ -19,8 +19,17 @@ lookup or a hook failure must never take down a round, the same contract
 from __future__ import annotations
 
 import datetime
+import os
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from orchestrator.config import LivenessConfig
+    from orchestrator.execution.heartbeat import RoundHeartbeat
 
 #: How much of the last assistant turn's text is worth keeping. This rides on
 #: an in-memory record, not a report, so it is capped generously but still
@@ -30,6 +39,29 @@ _LAST_ASSISTANT_TEXT_MAX_CHARS = 2000
 
 def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+
+
+def _humanize_age(seconds: float) -> str:
+    """Same rendering as ``heartbeat._humanize``, duplicated rather than
+    imported: ``heartbeat.py`` already imports ``ChildActivity`` from this
+    module, and importing back would make the two circular."""
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _parse_ts(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -123,3 +155,366 @@ class ActivityRegistry:
         with self._lock:
             child = self._children.get(pid)
             return bool(child is not None and child.cured)
+
+
+# --------------------------------------------------------------- /proc reads
+#
+# Plan U2: pure helpers over a swappable ``proc_root`` so tests can point them
+# at a fake tree under ``tmp_path`` instead of the real ``/proc``. A read that
+# races a process's exit (the directory vanishes between listing and opening
+# a file inside it, or the file is gone by the time it is read) is exactly as
+# likely on the real kernel as it is contrived in a fixture, so every helper
+# here treats ENOENT/OSError as "nothing to report", never an exception.
+
+
+@dataclass
+class ProcChild:
+    """One live, non-zombie process found under ``/proc`` whose parent is the
+    pid being probed."""
+
+    pid: int
+    cmdline: str
+
+
+def _read_stat_fields(pid: int, proc_root: Path) -> list[str] | None:
+    """The space-split remainder of ``/proc/<pid>/stat`` after its
+    parenthesised ``comm`` field, which itself may contain spaces (and even
+    unbalanced parens) — splitting on the *last* ``)`` is the only reliable
+    way in, and is what the kernel's own documentation recommends."""
+    try:
+        text = (proc_root / str(pid) / "stat").read_text()
+    except OSError:
+        return None
+    try:
+        idx = text.rindex(")")
+    except ValueError:
+        return None
+    return text[idx + 1 :].split()
+
+
+def _read_cmdline(pid: int, proc_root: Path) -> str:
+    try:
+        raw = (proc_root / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return ""
+    parts = [part.decode(errors="replace") for part in raw.split(b"\x00") if part]
+    return " ".join(parts)
+
+
+def cpu_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """utime + stime (fields 14 and 15 of ``stat``), or ``None`` when the pid
+    cannot be read at all — a process that has since exited, most commonly."""
+    fields = _read_stat_fields(pid, proc_root)
+    if fields is None or len(fields) < 13:
+        return None
+    try:
+        return int(fields[11]) + int(fields[12])
+    except ValueError:
+        return None
+
+
+def children_of(pid: int, *, proc_root: Path = Path("/proc")) -> list[ProcChild]:
+    """Live, non-zombie processes whose ``ppid`` is *pid*. A pid whose stat
+    file cannot be read (raced exit) is silently skipped, not raised on."""
+    out: list[ProcChild] = []
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return out
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        child_pid = int(entry.name)
+        fields = _read_stat_fields(child_pid, proc_root)
+        if fields is None or len(fields) < 2:
+            continue
+        state = fields[0]
+        try:
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        if ppid != pid or state == "Z":
+            continue
+        out.append(ProcChild(pid=child_pid, cmdline=_read_cmdline(child_pid, proc_root)))
+    return out
+
+
+def descendants(pid: int, *, proc_root: Path = Path("/proc")) -> list[ProcChild]:
+    """Every live, non-zombie descendant of *pid*, breadth-first. Used by the
+    Suspend Cure (plan U5) to kill a child's whole pid tree; U2 ships it
+    alongside ``children_of`` because both walk the same ``/proc`` listing."""
+    result: list[ProcChild] = []
+    seen = {pid}
+    frontier = [pid]
+    while frontier:
+        next_frontier: list[int] = []
+        for parent in frontier:
+            for child in children_of(parent, proc_root=proc_root):
+                if child.pid in seen:
+                    continue
+                seen.add(child.pid)
+                result.append(child)
+                next_frontier.append(child.pid)
+        frontier = next_frontier
+    return result
+
+
+# ------------------------------------------------------------ sign of life
+
+
+@dataclass
+class SignOfLife:
+    """One tick's evaluation of the three signals against a group's child.
+
+    ``at`` is the timestamp the winning signal fired at (``None`` when no
+    signal fired this tick — the caller decides whether to keep the previous
+    ``last_sign_of_life_at`` or not, this module never remembers state across
+    calls). ``cpu_ticks`` is always returned when readable, signal or not, so
+    the caller can feed it back in as next tick's ``prev_cpu`` even on a tick
+    that reported no signal.
+    """
+
+    at: str | None
+    signal: str | None  # "event" | "tool_child" | "cpu" | None
+    evidence: str
+    cpu_ticks: int | None
+
+
+def sign_of_life(
+    child: ChildActivity,
+    *,
+    prev_cpu: int | None,
+    now: float,
+    window_s: float,
+    proc_root: Path = Path("/proc"),
+) -> SignOfLife:
+    """Evaluate the three signals, in priority order, against one child:
+
+    (a) a stream event within the Liveness Window,
+    (b) a live, non-zombie process whose parent is the child, or
+    (c) CPU ticks having advanced since the last sample.
+
+    Facts only — this never decides "stuck", it decides whether *this tick*
+    saw evidence of life and, if so, what kind.
+    """
+    current_cpu = cpu_ticks(child.pid, proc_root=proc_root)
+    at = datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat(timespec="milliseconds")
+
+    event_at = _parse_ts(child.last_event_at)
+    if event_at is not None and (now - event_at) <= window_s:
+        evidence = f"event {child.last_event_type} {_humanize_age(now - event_at)} ago"
+        return SignOfLife(at=at, signal="event", evidence=evidence, cpu_ticks=current_cpu)
+
+    kids = children_of(child.pid, proc_root=proc_root)
+    if kids:
+        head = kids[0].cmdline or f"pid {kids[0].pid}"
+        evidence = f'tool child "{head}" running'
+        return SignOfLife(at=at, signal="tool_child", evidence=evidence, cpu_ticks=current_cpu)
+
+    if current_cpu is not None and prev_cpu is not None and current_cpu > prev_cpu:
+        return SignOfLife(at=at, signal="cpu", evidence="cpu advancing", cpu_ticks=current_cpu)
+
+    return SignOfLife(at=None, signal=None, evidence="no signal", cpu_ticks=current_cpu)
+
+
+# ------------------------------------------------------------ liveness probe
+
+#: Phases whose meaning is "nothing has happened yet" rather than "the round
+#: is under way" — flipped to a `round N running`-class phase the moment the
+#: first assistant event lands, because the CLI's `system` init event arrives
+#: within a second and would otherwise make the launch phase meaningless for
+#: the whole round.
+LAUNCH_PHASES: dict[str, str] = {
+    "starting the coder": "running",
+    "forking the base session": "running",
+    "resuming the interrupted coder": "running",
+    "reviewer verifying the report": "review running",
+}
+
+
+class LivenessProbe:
+    """Evaluates Sign of Life once per heartbeat tick and writes the facts
+    into that heartbeat (plan U2/U3).
+
+    Install with ``heartbeat.add_tick_hook(probe.tick)`` — never assign to
+    ``heartbeat.on_tick``: that slot belongs to the review loop's transcript
+    probe (F9), which is toggled on and off through a round, while this probe
+    must keep running for the group's entire life.
+    """
+
+    def __init__(
+        self,
+        heartbeat: RoundHeartbeat,
+        config: LivenessConfig,
+        activity_provider: Callable[[], ChildActivity | None],
+        log: Callable[[str], None] | None = None,
+        *,
+        proc_root: Path = Path("/proc"),
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.heartbeat = heartbeat
+        self.config = config
+        self.activity_provider = activity_provider
+        self._log = log
+        self.proc_root = proc_root
+        self._clock = clock
+        self._prev_cpu: dict[int, int] = {}
+        self._not_live_since: float | None = None
+
+    def tick(self) -> None:
+        now = self._clock()
+        child = self._current_activity()
+        if child is None:
+            self._clear_not_live_on_exit()
+            return
+
+        prev = self._prev_cpu.get(child.pid)
+        result = sign_of_life(
+            child,
+            prev_cpu=prev,
+            now=now,
+            window_s=self.config.window_seconds,
+            proc_root=self.proc_root,
+        )
+        if result.cpu_ticks is not None:
+            self._prev_cpu[child.pid] = result.cpu_ticks
+
+        # `last_sign_of_life_at` is the one fact that outlives a quiet tick —
+        # it is the baseline every reader ages against, and a tick with no
+        # signal must not reset it to "now". `sign_of_life_signal` and
+        # `sign_of_life_evidence` always reflect *this* tick's own evaluation,
+        # signal or not, since they describe what was just observed.
+        if result.signal is None:
+            last_sign_of_life_at = self.heartbeat.liveness_facts().get("last_sign_of_life_at")
+        else:
+            last_sign_of_life_at = result.at
+
+        facts = {
+            "last_sign_of_life_at": last_sign_of_life_at,
+            "sign_of_life_signal": result.signal,
+            "sign_of_life_evidence": result.evidence,
+            "liveness_window_s": self.config.window_seconds,
+            "cures": 0,
+            "max_cures_per_generation": self.config.max_cures_per_generation,
+        }
+        self.heartbeat.set_liveness_facts(facts)
+
+        self._check_phase_flip(child)
+        self._check_transition(facts, now, child)
+
+    def _current_activity(self) -> ChildActivity | None:
+        try:
+            return self.activity_provider()
+        except Exception:  # noqa: BLE001 - evidence is never worth a round
+            return None
+
+    def _check_phase_flip(self, child: ChildActivity) -> None:
+        if child.last_event_type != "assistant":
+            return
+        phase = self.heartbeat.current_phase()
+        if phase is None:
+            return
+        suffix = LAUNCH_PHASES.get(phase)
+        if suffix is None:
+            return
+        self.heartbeat.mark_phase(f"round {self.heartbeat.round_no} {suffix}")
+
+    def _check_transition(self, facts: dict, now: float, child: ChildActivity) -> None:
+        window = facts["liveness_window_s"]
+        baseline_raw = facts["last_sign_of_life_at"] or child.spawned_at
+        baseline = _parse_ts(baseline_raw)
+        age = now - baseline if baseline is not None else 0.0
+        gid = self.heartbeat.group_id
+        generation = self.heartbeat.generation_no
+        phase = self.heartbeat.current_phase() or "unknown phase"
+
+        if age > window and self._not_live_since is None:
+            self._not_live_since = now
+            self._log_line(
+                f"group {gid} generation {generation}: not live for "
+                f"{_humanize_age(age)} in {phase} — {facts['sign_of_life_evidence']}"
+            )
+        elif age <= window and self._not_live_since is not None:
+            self._not_live_since = None
+            self._log_line(
+                f"group {gid} generation {generation}: live again: "
+                f"{facts['sign_of_life_signal']} {_humanize_age(age)} ago"
+            )
+
+    def _clear_not_live_on_exit(self) -> None:
+        if self._not_live_since is None:
+            return
+        self._not_live_since = None
+        gid = self.heartbeat.group_id
+        generation = self.heartbeat.generation_no
+        self._log_line(f"group {gid} generation {generation}: live again: child exited")
+
+    def _log_line(self, line: str) -> None:
+        if self._log is None:
+            return
+        try:
+            self._log(line)
+        except Exception:  # noqa: BLE001 - evidence is never worth a round
+            pass
+
+
+# --------------------------------------------------------- reader-side facts
+
+
+def not_live_age(heartbeat: dict, *, now: float) -> float | None:
+    """Seconds past the Liveness Window since *heartbeat*'s child last showed
+    a Sign of Life, or ``None`` when the child is live, there is no child, or
+    the file predates these facts (``liveness_window_s`` absent).
+
+    The single derivation rule every reader — ``liveness_line``, the driver's
+    group count, the Observatory's client-side render — applies identically,
+    so "Not Live" is never persisted anywhere, only ever computed from facts.
+    """
+    if heartbeat.get("child_pid") is None:
+        return None
+    window = heartbeat.get("liveness_window_s")
+    if window is None:
+        return None
+    candidates = [
+        _parse_ts(heartbeat.get("last_sign_of_life_at")),
+        _parse_ts(heartbeat.get("child_spawned_at")),
+    ]
+    baselines = [c for c in candidates if c is not None]
+    if not baselines:
+        return None
+    age = now - max(baselines)
+    return age if age > window else None
+
+
+def liveness_line(heartbeat: dict, *, now: float) -> str:
+    """One human-readable line for `status` and the Observatory, derived
+    entirely from a heartbeat's own facts — see ``not_live_age``."""
+    if heartbeat.get("liveness_window_s") is None:
+        return "(no liveness facts)"
+    phase = heartbeat.get("phase") or "unknown phase"
+    if heartbeat.get("child_pid") is None:
+        return f"no worker child ({phase})"
+    age = not_live_age(heartbeat, now=now)
+    if age is not None:
+        evidence = heartbeat.get("sign_of_life_evidence") or "no evidence recorded"
+        return f"NOT LIVE for {_humanize_age(age)} in {phase} — {evidence}"
+    signal = heartbeat.get("sign_of_life_signal")
+    last = _parse_ts(heartbeat.get("last_sign_of_life_at"))
+    live_age = now - last if last is not None else 0.0
+    return f"live: {signal} {_humanize_age(live_age)} ago"
+
+
+def cures_exhausted_line(heartbeat: dict, run_id: str, driver_pid: int) -> str | None:
+    """The manual-intervention line once a generation has used up its Suspend
+    Cures, or ``None`` below the cap. ``<pgid>`` is read from the *driver's*
+    pid, not the child's — this is the command an operator runs against the
+    process group Ctrl-C would already reach."""
+    cures = heartbeat.get("cures")
+    max_cures = heartbeat.get("max_cures_per_generation")
+    if cures is None or max_cures is None or cures < max_cures:
+        return None
+    pgid = os.getpgid(driver_pid)
+    return (
+        f"cures exhausted ({cures}/{max_cures} this generation) — "
+        f"kill -INT -{pgid} then smart-mcps-orchestrate resume {run_id}"
+    )

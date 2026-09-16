@@ -9,22 +9,39 @@ it: an unwritable directory loses the evidence, not the work.
 
 from __future__ import annotations
 
+import datetime
 import json
 import time
 
 import pytest
 
+from orchestrator.config import LivenessConfig
 from orchestrator.execution.heartbeat import (
     HEARTBEAT_NAME,
     RoundHeartbeat,
     heartbeat_path,
     read_heartbeat,
 )
-from orchestrator.execution.liveness import ChildActivity
+from orchestrator.execution.liveness import ChildActivity, LivenessProbe
 from orchestrator.execution.manifest import RunPaths
 
-# Anything that would turn evidence into a de facto state.
-FORBIDDEN_KEYS = ("stalled", "stall", "hung", "hang", "stuck", "is_alive", "healthy")
+# Anything that would turn evidence into a de facto state. `live` is
+# deliberately not included: it is a genuine substring of the liveness facts
+# this same plan writes (`liveness_window_s`), so it cannot be a forbidden
+# *substring* the way the others are — `not_live`/`stalled` being absent as a
+# literal key is what Decisions actually requires, and `not_live` covers that.
+FORBIDDEN_KEYS = (
+    "stalled",
+    "stall",
+    "hung",
+    "hang",
+    "stuck",
+    "is_alive",
+    "healthy",
+    "not_live",
+    "wedged",
+    "dead",
+)
 
 
 def _paths(tmp_path) -> RunPaths:
@@ -404,3 +421,118 @@ def test_periodic_log_line_renders_both_round_elapsed_and_paused(tmp_path):
     assert lines, "a round in progress must produce a periodic line"
     assert "elapsed" in lines[0]
     assert "paused" in lines[0]
+
+
+# =========================================================== plan U2: probe
+
+
+def _write_fake_child(
+    proc_root, pid: int, ppid: int, *, cmdline=None, utime: int = 0, stime: int = 0
+) -> None:
+    d = proc_root / str(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    rest = ["R", str(ppid), "1", "1", "0", "-1", "0", "0", "0", "0", "0", str(utime), str(stime)]
+    rest += ["0", "0", "20", "0", "1", "0", "1000"]
+    (d / "stat").write_text(f"{pid} (proc) " + " ".join(rest) + "\n")
+    if cmdline is not None:
+        (d / "cmdline").write_bytes(b"\x00".join(part.encode() for part in cmdline) + b"\x00")
+
+
+def _iso(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).isoformat(
+        timespec="milliseconds"
+    )
+
+
+def test_sign_of_life_event_then_tool_child_then_null_preserves_the_previous_timestamp(tmp_path):
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, "g1")
+    proc_root = tmp_path / "proc"
+    config = LivenessConfig(window_seconds=60)
+    state: dict = {"child": None}
+    probe = LivenessProbe(hb, config, lambda: state["child"], proc_root=proc_root)
+
+    now = time.time()
+    spawned = _iso(now - 100)
+
+    # Tick 1: a fresh event -> "event".
+    state["child"] = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=spawned,
+        last_event_at=_iso(now),
+        last_event_type="assistant",
+    )
+    probe.tick()
+    payload = hb.snapshot()
+    assert payload["sign_of_life_signal"] == "event"
+    assert payload["last_sign_of_life_at"] is not None
+
+    # Tick 2: a stale event but a live fake tool child under pid 1 -> "tool_child",
+    # naming the child's cmdline head. Also give pid 1 a CPU reading so the next
+    # tick has a genuine "flat" baseline to compare against, not just a missing one.
+    _write_fake_child(proc_root, 1, ppid=0, utime=1, stime=1)
+    _write_fake_child(proc_root, 2, ppid=1, cmdline=["uv", "run", "pytest", "tests/"])
+    state["child"] = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=spawned,
+        last_event_at=_iso(now - 3600),
+        last_event_type="assistant",
+    )
+    probe.tick()
+    payload = hb.snapshot()
+    assert payload["sign_of_life_signal"] == "tool_child"
+    assert "uv run pytest" in payload["sign_of_life_evidence"]
+    preserved_timestamp = payload["last_sign_of_life_at"]
+
+    # Tick 3: the tool child is gone and CPU is flat (same reading as tick 2)
+    # -> null, and the previous last_sign_of_life_at is left untouched.
+    (proc_root / "2").rename(proc_root / "2-gone")
+    probe.tick()
+    payload = hb.snapshot()
+    assert payload["sign_of_life_signal"] is None
+    assert payload["last_sign_of_life_at"] == preserved_timestamp
+
+
+def test_phase_flip_from_launch_phase_to_round_running_on_first_assistant_event(tmp_path):
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, "g1")
+    hb.mark_round(generation=1, round_no=1)
+    hb.mark_phase("starting the coder")
+    config = LivenessConfig(window_seconds=600)
+    state: dict = {"child": None}
+    probe = LivenessProbe(hb, config, lambda: state["child"], proc_root=tmp_path / "proc")
+    hb.add_tick_hook(probe.tick)
+
+    transcript_calls: list[str] = []
+    hb.on_tick = lambda: transcript_calls.append("transcript")
+
+    now = time.time()
+    at = _iso(now)
+    state["child"] = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=at,
+        last_event_at=at,
+        last_event_type="system",
+    )
+    hb._maybe_on_tick()
+    assert hb.snapshot()["phase"] == "starting the coder"
+    assert transcript_calls == ["transcript"]
+
+    state["child"] = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=at,
+        last_event_at=at,
+        last_event_type="assistant",
+    )
+    hb._maybe_on_tick()
+    assert hb.snapshot()["phase"] == "round 1 running"
+    # The pre-existing transcript-probe hook still ran on the same tick.
+    assert transcript_calls == ["transcript", "transcript"]
