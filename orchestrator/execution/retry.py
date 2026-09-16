@@ -36,6 +36,14 @@ class RetryError(Exception):
     """``retry`` was refused; ``state.json`` is unchanged."""
 
 
+def _release_note() -> str:
+    """The failure text a retried group carries until it re-enters and the
+    scheduler's ``set_state(RUNNING)`` overwrites it (plan U11) — status must
+    never show a stale pre-retry failure as if it were still true."""
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"released by operator at {ts}; resume to continue"
+
+
 class RetryConflictError(RetryError):
     """Refreshing the group's branch onto the integration tip hit a real content
     conflict. The branch is left at its pre-refresh commit and ``paths`` names
@@ -123,7 +131,7 @@ def _retry_failed(
 
     _backup_state(repo_root, run_id, group_id, paths)
     entry.state = GroupState.PENDING
-    entry.failure = None
+    entry.failure = _release_note()
     entry.holds = []
     entry.resolve_settled = False
     atomic_write_text(paths.state_path, state.model_dump_json(indent=2) + "\n")
@@ -139,5 +147,6 @@ def _retry_quarantined(
     _backup_state(paths.repo_root, run_id, group_id, paths)
     entry.quarantined = False
     entry.reentry_count = 0
+    entry.failure = _release_note()
     atomic_write_text(paths.state_path, state.model_dump_json(indent=2) + "\n")
     log_event(paths, f"group {group_id}: quarantine cleared by operator — resume will re-enter it")
