@@ -365,6 +365,12 @@ def main() -> int:
 
         exit_code = int(scripted.get("exit_code", 0))
         if exit_code:
+            # A round that streamed real turns before the child died nonzero
+            # (e.g. a content-filtered round, plan U10) — emitted first so
+            # `StreamOutcome.last_assistant_text` carries the pre-failure text
+            # the same way it would for a real mid-stream death.
+            if streaming and scripted.get("turns"):
+                _emit_streamed_turns(scripted, session_id)
             # A usage-limit failure exits non-zero with an *empty* stderr but a
             # populated JSON envelope on stdout (plan U4) — "stdout" lets a
             # scripted entry reproduce that shape exactly, distinct from the

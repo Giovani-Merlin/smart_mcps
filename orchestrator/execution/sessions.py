@@ -143,6 +143,46 @@ class SuspendCured(SessionError):
         self.session_id = session_id
 
 
+class ContentFiltered(SessionError):
+    """The API's content filter blocked the round's output (plan U10).
+
+    A distinct type because the right response is neither "retry the same
+    session" (``_reenter``'s fallback) nor "fork a fresh generation and hope"
+    (a plain ``SessionError``): the review loop escalates this as a blocked
+    coder quoting the last thing the model actually said, then either
+    relaunches on the same spec (operator fixed something upstream) or
+    rewrites with the filter named as a surprise. Never warm-resumed — the
+    session that produced the blocked output is not one to resume as-is.
+
+    ``last_assistant_text`` is ``StreamOutcome.last_assistant_text`` (plan
+    U1) — the child may never have produced an envelope at all (a filtered
+    nonzero exit) or produced one whose own ``result`` *is* the filter
+    notice, so the stream's own record of the last real turn is the only
+    place the pre-filter text can come from.
+    """
+
+    def __init__(self, message: str, last_assistant_text: str = ""):
+        super().__init__(message)
+        self.last_assistant_text = last_assistant_text
+
+
+#: How the API's content filter announces itself on the wire — evidence, not
+#: guesswork, per the wording actually seen (learning_podcast run
+#: r20260907-123644 g1): ``API Error: Output blocked by content filtering
+#: policy``. Matched against the same failure text ``is_usage_limit`` reads,
+#: on both the nonzero-exit and the ``is_error`` envelope paths.
+_CONTENT_FILTER_RE = re.compile(
+    r"content filter(?:ing)? policy|blocked by content filter",
+    re.IGNORECASE,
+)
+
+
+def is_content_filtered(detail: str) -> bool:
+    """Whether a failure detail is the API's content filter rather than an
+    ordinary broken call or a usage limit."""
+    return bool(_CONTENT_FILTER_RE.search(detail))
+
+
 #: How a usage limit announces itself on the wire. It exits non-zero with an
 #: *empty* stderr and the text in the stdout envelope's `result`, which is why
 #: this is matched against `_error_detail`'s output rather than stderr.
@@ -779,8 +819,8 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        returncode, stdout, stderr, deny_signals, first_turn, pid = self._spawn(
-            argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
+        returncode, stdout, stderr, deny_signals, first_turn, pid, last_assistant_text = (
+            self._spawn(argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt)
         )
         if returncode != 0:
             # Plan U5: a liveness probe kills a suspended child by pid, which
@@ -796,7 +836,13 @@ class SessionRunner:
             message = f"claude exited {returncode} ({context}): {detail}"
             # Typed, not just worded: `_reenter` needs to tell "this session is
             # unreachable, fork a new one" from "the account is out of budget,
-            # forking changes nothing".
+            # forking changes nothing". Content filter is checked first: its
+            # wording ("blocked by content filtering policy") never overlaps
+            # the usage-limit or auth phrasing, but the reverse is not
+            # guaranteed, and content filter is the one kind that must never
+            # be mistaken for a retryable/resumable failure.
+            if is_content_filtered(detail):
+                raise ContentFiltered(message, last_assistant_text)
             if is_usage_limit(detail):
                 raise UsageLimit(message, detail)
             if is_auth_error(detail):
@@ -809,7 +855,12 @@ class SessionRunner:
         if not isinstance(envelope, dict) or "result" not in envelope:
             raise SessionError("claude envelope is missing the 'result' field")
         if envelope.get("is_error"):
-            raise SessionError(f"claude reported an error result: {str(envelope['result'])[:500]}")
+            result_text = str(envelope["result"])
+            if is_content_filtered(result_text):
+                raise ContentFiltered(
+                    f"claude reported an error result: {result_text[:500]}", last_assistant_text
+                )
+            raise SessionError(f"claude reported an error result: {result_text[:500]}")
         session_id = str(envelope.get("session_id", ""))
         usage = RoundUsage.from_envelope(envelope)
         spend = RoundSpend.from_envelope(envelope, first_turn=first_turn)
@@ -830,7 +881,7 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         prompt: str | None = None,
-    ) -> tuple[int, str, str, list[str], TurnUsage | None, int | None]:
+    ) -> tuple[int, str, str, list[str], TurnUsage | None, int | None, str]:
         """One tracked subprocess, read incrementally rather than a single
         blocking ``communicate()`` (plan U1): the tracker still sees the PID for
         exactly the round's lifetime (spawned once, exited once — plan U6's
@@ -844,7 +895,11 @@ class SessionRunner:
         ``RoundUsage.from_envelope``'s ``iterations[-1]`` fallback — is unchanged.
         The trailing ``pid`` (plan U1) is ``None`` only if the child never
         spawned at all; ``_invoke`` needs it to ask the activity registry
-        whether this exit was a Suspend Cure rather than a real failure.
+        whether this exit was a Suspend Cure rather than a real failure. The
+        final ``last_assistant_text`` (plan U10) is ``StreamOutcome``'s own
+        record of the last assistant turn, independent of whether an envelope
+        ever arrived — ``_invoke`` needs it on both the nonzero-exit and the
+        ``is_error`` envelope path to quote a content-filtered round.
         """
         preexec_fn = None
         if self.confine:
@@ -903,6 +958,7 @@ class SessionRunner:
                 outcome.deny_signals,
                 outcome.first_turn,
                 pid,
+                outcome.last_assistant_text,
             )
         return (
             outcome.returncode,
@@ -911,6 +967,7 @@ class SessionRunner:
             outcome.deny_signals,
             outcome.first_turn,
             pid,
+            outcome.last_assistant_text,
         )
 
 
