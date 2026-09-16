@@ -75,6 +75,7 @@ from orchestrator.execution.scheduler import (
     RunState,
 )
 from orchestrator.execution.sessions import (
+    ContentFiltered,
     RoundResult,
     SessionError,
     SessionRunner,
@@ -116,6 +117,19 @@ class MergeConflict(Exception):
     def __init__(self, message: str, affected_groups: list[str] | None = None):
         super().__init__(message)
         self.affected_groups = affected_groups or []
+
+
+class _ContentFilterStop(Exception):
+    """Loop-internal signal (plan U10): `_worker_call` converts a
+    `ContentFiltered` into this before it can reach a caller's own
+    `except SessionError` — deliberately *not* a `SessionError` subclass, so
+    `_reenter`'s fallback (which catches `SessionError`) never mistakes a
+    content-filtered session for merely unreachable. `_run_generation`
+    catches it once, at the top of every generation."""
+
+    def __init__(self, exc: ContentFiltered):
+        super().__init__(str(exc))
+        self.exc = exc
 
 
 _logger = logging.getLogger(__name__)
@@ -422,6 +436,13 @@ class _GroupExecution:
         # round started; the writing happens on its own daemon thread and nothing
         # here reads it back.
         self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
+        # The round number `_round_tag` most recently rendered (plan U10):
+        # `_on_content_filtered` needs the number of the round that was in
+        # flight when `ContentFiltered` hit, and every site that starts or
+        # ends a round already renders its tag through `_round_tag` — so
+        # recording it there, as a side effect, is the one place that number
+        # is always current with no separate bookkeeping to keep in sync.
+        self._current_round_no = 0
 
     def _decisions_text(self) -> str:
         """Binding operator decisions for this group, rendered fresh from disk
@@ -440,18 +461,25 @@ class _GroupExecution:
         sites pass one that resumes with the re-review prompt (per the U5
         decision) — the wrapper itself is role-agnostic.
 
-        Any other exception — a plain ``SessionError``, ``UsageLimit``, a
-        future ``ContentFiltered`` — propagates unchanged; this wrapper is
-        transparent to everything but ``SuspendCured``. A ``SuspendCured``
-        from a first launch whose session never registered on disk still
-        carries a real ``session_id`` (read off the argv the failed call
-        actually used, not off the transcript), so ``recover`` resumes it the
-        same as any other cure; being a ``SessionError`` subclass, it would
-        fall through to the ordinary failure handling regardless if it ever
-        turned up somewhere this wrapper does not reach.
+        A ``ContentFiltered`` (plan U10) is converted here to a loop-internal
+        ``_ContentFilterStop`` before it can reach a caller's own
+        ``except SessionError`` — most importantly ``_reenter``'s fallback,
+        which must never treat a content-filtered session as merely
+        unreachable and fork a fresh one from it. Any other exception — a
+        plain ``SessionError``, ``UsageLimit`` — propagates unchanged; this
+        wrapper is transparent to everything but ``SuspendCured`` and
+        ``ContentFiltered``. A ``SuspendCured`` from a first launch whose
+        session never registered on disk still carries a real ``session_id``
+        (read off the argv the failed call actually used, not off the
+        transcript), so ``recover`` resumes it the same as any other cure;
+        being a ``SessionError`` subclass, it would fall through to the
+        ordinary failure handling regardless if it ever turned up somewhere
+        this wrapper does not reach.
         """
         try:
             return await asyncio.to_thread(thunk)
+        except ContentFiltered as exc:
+            raise _ContentFilterStop(exc) from exc
         except SuspendCured as exc:
             self._log(
                 f"group {self.gid} generation {self.generation}: "
@@ -493,7 +521,21 @@ class _GroupExecution:
     # ------------------------------------------------------------ generation
 
     async def _run_generation(self) -> bool:
-        """One coder session's lifetime. True → merged; False → respawn/rewritten."""
+        """One coder session's lifetime. True → merged; False → respawn/rewritten.
+
+        A ``_ContentFilterStop`` (plan U10) can surface from any worker call
+        this generation makes — first launch, coder nudge, needs_input
+        resume, revision resume, or a reviewer call inside ``_review_round``
+        — so it is caught here, at the one place that wraps every one of
+        them, rather than at each call site individually.
+        """
+        try:
+            return await self._run_generation_body()
+        except _ContentFilterStop as exc:
+            await self._on_content_filtered(exc.exc)
+            return False
+
+    async def _run_generation_body(self) -> bool:
         assert self.workspace is not None
         self.ctx.set_state(GroupState.RUNNING)
         first: RoundResult | None = None
@@ -1576,6 +1618,31 @@ class _GroupExecution:
         await self._rewrite(f"coder needs input: {question}", extra=extra)
         return None
 
+    async def _on_content_filtered(self, exc: ContentFiltered) -> None:
+        """The API's content filter blocked a coder or reviewer round (plan
+        U10) — routed like a blocked coder, quoting the last thing the model
+        actually said, and never warm-resumed: the session that produced the
+        blocked output is not one to retry as-is."""
+        self._log(f"{self._round_tag(self._current_round_no)}: ended (content filter)")
+        text = exc.last_assistant_text[:1000]
+        response = await self._escalate(
+            EscalationKind.CODER_BLOCKED,
+            prompt=f'coder for {self.gid} hit the API content filter — last assistant message: "{text}"',
+            want_diff=True,
+        )
+        if _is_retry(response):
+            await self._relaunch(response.answer, "API content filter")
+            return
+        extra = [
+            _context_surprise(
+                self.gid,
+                f"API content filter blocked the coder's output; last message: {text}",
+            )
+        ]
+        if response is not None:
+            extra.append(_operator_surprise(self.gid, response.answer))
+        await self._rewrite("content filter", extra=extra)
+
     async def _on_coder_stuck(self, report: CoderReport, report_path: Path) -> None:
         """A blocked/failed coder report: escalate, then rewrite (guided if answered)
         — or relaunch the same spec when the operator says ``retry``."""
@@ -1692,6 +1759,10 @@ class _GroupExecution:
         atomic_write_text(path, self.group.model_dump_json(indent=2) + "\n")
 
     def _round_tag(self, round_no: int) -> str:
+        # Side effect: records the round currently in flight (plan U10), so
+        # `_on_content_filtered` can log the round a `ContentFiltered` ended
+        # without a second, separate tracker to keep in sync with this one.
+        self._current_round_no = round_no
         return f"group {self.gid} generation {self.generation} round {round_no}"
 
     # ------------------------------------------------------------ bookkeeping
