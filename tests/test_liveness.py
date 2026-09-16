@@ -28,15 +28,20 @@ from orchestrator.execution.liveness import (
     ActivityRegistry,
     ChildActivity,
     LivenessProbe,
+    SuspendFacts,
     SuspendMonitor,
     cpu_ticks,
     cures_exhausted_line,
+    descendants,
+    kill_tree,
     liveness_line,
     read_suspend_facts,
+    should_cure,
     sign_of_life,
 )
 from orchestrator.execution.manifest import RunPaths
 from orchestrator.execution.sessions import SessionError, SessionRunner, SuspendCured
+from orchestrator.execution.streaming import StreamingProcess
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
 
@@ -52,6 +57,19 @@ def make_runner(fake_home: Path, **kwargs) -> SessionRunner:
     env = {"FAKE_CLAUDE_HOME": str(fake_home), **kwargs.pop("env", {})}
     kwargs.setdefault("transcript_root", fake_home / "projects")
     return SessionRunner(claude_bin=[sys.executable, str(FAKE_CLAUDE)], env=env, **kwargs)
+
+
+STREAM_ARGV = [
+    sys.executable,
+    str(FAKE_CLAUDE),
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--input-format",
+    "stream-json",
+]
 
 
 def script(fake_home: Path, entry: dict) -> None:
@@ -645,3 +663,232 @@ def test_real_clock_oracle_boottime_minus_monotonic_is_stable_across_one_second(
     time.sleep(1.0)
     second = time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
     assert abs(second - first) < 0.5
+
+
+# =========================================================== plan U5
+
+
+def _iso(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).isoformat(
+        timespec="milliseconds"
+    )
+
+
+# ------------------------------------------------------- cure predicate
+
+
+def test_cure_predicate_no_wake_recorded_is_never_a_cure_even_after_two_windows():
+    """R7's last sentence: Not Live alone, with no machine wake behind it, is
+    never a cure — no matter how long the silence has run."""
+    now = 10_000.0
+    window = 60.0
+    assert (
+        should_cure(
+            last_wake_at=None,
+            last_sign_of_life_at=_iso(now - 3 * window),
+            child_spawned_at=_iso(now - 3 * window),
+            now=now,
+            window_s=window,
+        )
+        is False
+    )
+
+
+def test_cure_predicate_sign_of_life_after_the_wake_is_never_a_cure():
+    now = 10_000.0
+    window = 60.0
+    wake = now - 2 * window
+    assert (
+        should_cure(
+            last_wake_at=_iso(wake),
+            last_sign_of_life_at=_iso(wake + 5),  # life seen after the wake
+            child_spawned_at=_iso(wake - 100),
+            now=now,
+            window_s=window,
+        )
+        is False
+    )
+
+
+def test_cure_predicate_fires_after_a_whole_window_of_silence_since_the_wake():
+    now = 10_000.0
+    window = 60.0
+    wake = now - window - 1
+    assert (
+        should_cure(
+            last_wake_at=_iso(wake),
+            last_sign_of_life_at=_iso(wake - 10),  # last life was before the wake
+            child_spawned_at=_iso(wake - 200),
+            now=now,
+            window_s=window,
+        )
+        is True
+    )
+
+
+def test_cure_predicate_at_the_cap_kills_nothing_and_logs_exactly_one_exhausted_line(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    hb = RoundHeartbeat(paths, "g1")
+    config = LivenessConfig(window_seconds=60, max_cures_per_generation=1)
+    now = 10_000.0
+    wake = now - 61  # past the window since the wake — otherwise eligible
+
+    def clock() -> float:
+        return now
+
+    def activity_provider() -> ChildActivity:
+        return _child(
+            pid=1,
+            spawned_at=_iso(wake - 200),
+            last_event_at=_iso(wake - 100),  # too old to count as Sign of Life
+            last_event_type="assistant",
+        )
+
+    logs: list[str] = []
+    killed: list[int] = []
+
+    probe = LivenessProbe(
+        hb,
+        config,
+        activity_provider,
+        log=logs.append,
+        proc_root=tmp_path / "proc",
+        clock=clock,
+        suspend_facts_provider=lambda: SuspendFacts(
+            last_wake_at=_iso(wake), last_suspend_gap_s=100.0, suspends=1
+        ),
+        cures_provider=lambda: 1,  # already at the cap (max_cures_per_generation=1)
+        kill=lambda pid, sig: killed.append(pid),
+    )
+
+    probe.tick()
+
+    assert killed == []
+    exhausted = [line for line in logs if "cures exhausted" in line]
+    assert len(exhausted) == 1
+    assert "1/1" in exhausted[0]
+
+    # A second tick must not repeat the line — logged exactly once.
+    probe.tick()
+    exhausted = [line for line in logs if "cures exhausted" in line]
+    assert len(exhausted) == 1
+
+
+def test_cure_predicate_below_the_cap_kills_and_calls_on_cure(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    hb = RoundHeartbeat(paths, "g1")
+    config = LivenessConfig(window_seconds=60, max_cures_per_generation=2)
+    now = 10_000.0
+    wake = now - 61
+
+    def clock() -> float:
+        return now
+
+    def activity_provider() -> ChildActivity:
+        return _child(
+            pid=42,
+            session_id="cured-session",
+            spawned_at=_iso(wake - 200),
+            last_event_at=_iso(wake - 100),
+            last_event_type="assistant",
+        )
+
+    killed: list[tuple[int, int]] = []
+    cured_calls: list[tuple[int, int, str]] = []
+    registry = ActivityRegistry()
+    registry.spawned(42, session_id="cured-session", cwd="/work/g1")
+
+    probe = LivenessProbe(
+        hb,
+        config,
+        activity_provider,
+        log=lambda line: None,
+        proc_root=tmp_path / "proc",
+        clock=clock,
+        suspend_facts_provider=lambda: SuspendFacts(
+            last_wake_at=_iso(wake), last_suspend_gap_s=100.0, suspends=1
+        ),
+        cures_provider=lambda: 0,
+        on_cure=lambda pid, generation, session_id: cured_calls.append(
+            (pid, generation, session_id)
+        ),
+        activity=registry,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
+
+    probe.tick()
+
+    assert killed  # SIGTERM reached at least the child itself
+    assert killed[0][0] == 42
+    assert cured_calls == [(42, 0, "cured-session")]
+    assert registry.was_cured(42) is True
+
+
+# --------------------------------------------------------------- kill_tree
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the real /proc oracle is Linux-only")
+def test_kill_tree_signals_the_shell_and_both_sleeps_and_all_three_pids_vanish():
+    proc = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60; wait"])
+    try:
+        time.sleep(0.3)
+        parent_pid = proc.pid
+        kids = descendants(parent_pid)
+        assert kids  # at least one `sleep` found as a descendant before the kill
+
+        signalled = kill_tree(parent_pid, grace_s=5.0)
+        assert parent_pid in signalled
+
+        proc.wait(timeout=10)
+        time.sleep(0.2)
+        for pid in [parent_pid, *[k.pid for k in kids]]:
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_kill_tree_skips_a_pid_that_already_exited_without_raising():
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=5)
+
+    signalled = kill_tree(proc.pid, grace_s=1.0)
+
+    assert signalled == []
+
+
+# ---------------------------------------------------- real kernel cure oracle
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the real /proc oracle is Linux-only")
+def test_cure_returns_kill_tree_of_a_real_worker_child_makes_wait_nonzero_and_registry_cured(
+    fake_home, tmp_path
+):
+    """The `_is_same_process`/`kill_tree` interplay g8-6 asks for: a real
+    `claude`-shaped child (`fake_claude.py` spawned through `StreamingProcess`,
+    exactly the way `SessionRunner._spawn` does it) is killed by `kill_tree`,
+    and both halves of what the review loop relies on hold — the stream
+    reports a nonzero exit promptly, and the activity registry (marked cured
+    the same way the probe would) still answers for the dead pid."""
+    script(fake_home, {"result": "OK", "delay_s": 30})
+    argv = [*STREAM_ARGV, "--session-id", "66666666-6666-6666-6666-666666666666"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    grace_s = 2.0
+
+    registry = ActivityRegistry()
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+    stream.start(prompt="go")
+    registry.spawned(stream.pid, session_id="s1", cwd=str(tmp_path))
+    time.sleep(0.3)  # let the child actually start sleeping on its delay
+
+    start = time.monotonic()
+    kill_tree(stream.pid, grace_s=grace_s)
+    registry.mark_cured(stream.pid)
+    outcome = stream.wait()
+    elapsed = time.monotonic() - start
+
+    assert outcome.returncode != 0
+    assert elapsed < grace_s + 2.0
+    assert registry.was_cured(stream.pid) is True

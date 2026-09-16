@@ -78,6 +78,7 @@ from orchestrator.execution.sessions import (
     RoundResult,
     SessionError,
     SessionRunner,
+    SuspendCured,
     UsageLimit,
     nudge_until_report,
     session_display_name,
@@ -428,6 +429,36 @@ class _GroupExecution:
         subsequent coder, handoff, reviewer and re-review prompt."""
         return render_decisions_section(decision_ledger(self.deps.store.paths, self.gid))
 
+    async def _worker_call(self, thunk: Callable[[], object], *, recover: Callable[[str], object]):
+        """Runs one worker call in a thread; on a Suspend Cure (plan U5) — the
+        liveness probe having killed this child because it showed no Sign of
+        Life since a detected machine wake — logs the recovery and re-issues
+        ``recover(cured_session_id)`` in *this call's* place, itself routed
+        back through ``_worker_call`` so a second cure re-issues again until
+        the probe's own per-generation cap stops curing. Coder call sites pass
+        a ``recover`` that warm-resumes with the re-entry prompt; reviewer
+        sites pass one that resumes with the re-review prompt (per the U5
+        decision) — the wrapper itself is role-agnostic.
+
+        Any other exception — a plain ``SessionError``, ``UsageLimit``, a
+        future ``ContentFiltered`` — propagates unchanged; this wrapper is
+        transparent to everything but ``SuspendCured``. A ``SuspendCured``
+        from a first launch whose session never registered on disk still
+        carries a real ``session_id`` (read off the argv the failed call
+        actually used, not off the transcript), so ``recover`` resumes it the
+        same as any other cure; being a ``SessionError`` subclass, it would
+        fall through to the ordinary failure handling regardless if it ever
+        turned up somewhere this wrapper does not reach.
+        """
+        try:
+            return await asyncio.to_thread(thunk)
+        except SuspendCured as exc:
+            self._log(
+                f"group {self.gid} generation {self.generation}: "
+                f"warm-resuming session {exc.session_id} after suspend cure"
+            )
+            return await self._worker_call(partial(recover, exc.session_id), recover=recover)
+
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
         await self._approve_gate(
@@ -527,13 +558,22 @@ class _GroupExecution:
                 "forking the base session" if self.deps.fork_base_session else "starting the coder"
             )
             self._watch_transcript(self.coder_entry)
-            first = await asyncio.to_thread(
-                self._launch_call(),
-                prompt=prompt,
-                name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
-                cwd=self.workspace,
-                session_id=self.coder_sid,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            coder_on_turn = self._make_coder_on_turn(self.coder_entry)
+            first = await self._worker_call(
+                partial(
+                    self._launch_call(),
+                    prompt=prompt,
+                    name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
+                    cwd=self.workspace,
+                    session_id=self.coder_sid,
+                    on_turn=coder_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=coder_on_turn,
+                ),
             )
             self._adopt_actual_session_id(first)
             self._refresh_transcript(self.coder_entry)
@@ -552,13 +592,27 @@ class _GroupExecution:
             # later. Each pass through this loop is the coder producing (or
             # being nudged toward) its report.
             self._heartbeat.mark_phase("coder working toward a report")
-            report, result = await asyncio.to_thread(
-                nudge_until_report,
-                self.deps.runner,
-                result,
-                CoderReport,
-                cwd=self.workspace,
-                verification_ids=verification_ids,
+
+            def _coder_nudge(round_result: RoundResult) -> tuple[CoderReport, RoundResult]:
+                return nudge_until_report(
+                    self.deps.runner,
+                    round_result,
+                    CoderReport,
+                    cwd=self.workspace,
+                    verification_ids=verification_ids,
+                )
+
+            def _coder_nudge_recover(sid: str) -> tuple[CoderReport, RoundResult]:
+                resumed = self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=self._make_coder_on_turn(self.coder_entry),
+                )
+                return _coder_nudge(resumed)
+
+            report, result = await self._worker_call(
+                partial(_coder_nudge, result), recover=_coder_nudge_recover
             )
             self._persist_coder_usage()
 
@@ -665,12 +719,21 @@ class _GroupExecution:
             self.ctx.set_state(GroupState.RUNNING)
             self._log(f"{self._round_tag(rounds + 1)}: started")
             self._heartbeat.mark_round(self.generation, rounds + 1)
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.coder_sid,
-                prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            revision_on_turn = self._make_coder_on_turn(self.coder_entry)
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.coder_sid,
+                    prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
+                    cwd=self.workspace,
+                    on_turn=revision_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=revision_on_turn,
+                ),
             )
 
     # ------------------------------------------------------------ re-entry (R4–R6)
@@ -736,13 +799,22 @@ class _GroupExecution:
         self._log(f"{self._round_tag(round_no)}: started")
         self._heartbeat.mark_round(self.generation, round_no)
         self._heartbeat.mark_phase("resuming the interrupted coder")
+        reentry_on_turn = self._make_coder_on_turn(entry)
         try:
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=entry.session_id,
-                prompt=render_reentry_prompt(self.group),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(entry),
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=entry.session_id,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=reentry_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=reentry_on_turn,
+                ),
             )
         except UsageLimit:
             # Not a fallback case. The fallback exists for a session that has
@@ -943,32 +1015,59 @@ class _GroupExecution:
         assert self.workspace is not None
         self.ctx.set_state(GroupState.REVIEWING)
         self._heartbeat.mark_phase("reviewer verifying the report")  # F4
-        if self.reviewer_sid is None:
-            first = await asyncio.to_thread(
-                self._launch_call(),
-                prompt=render_reviewer_prompt(
-                    self.deps.run_id,
-                    self.group,
-                    report_path=str(report_path),
-                    base_ref=self.deps.base_ref_for(self.group),
-                    scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
-                    decisions=self._decisions_text(),
-                ),
-                name=session_display_name(self.deps.run_id, self.gid, "reviewer", self.generation),
+
+        def _reviewer_recover(sid: str) -> RoundResult:
+            return self.deps.runner.resume(
+                session_id=sid,
+                prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
+            )
+
+        if self.reviewer_sid is None:
+            first = await self._worker_call(
+                partial(
+                    self._launch_call(),
+                    prompt=render_reviewer_prompt(
+                        self.deps.run_id,
+                        self.group,
+                        report_path=str(report_path),
+                        base_ref=self.deps.base_ref_for(self.group),
+                        scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
+                        decisions=self._decisions_text(),
+                    ),
+                    name=session_display_name(
+                        self.deps.run_id, self.gid, "reviewer", self.generation
+                    ),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
             self.reviewer_sid = first.session_id
             self._record(SessionRole.REVIEWER, first.session_id)
             result = first
         else:
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.reviewer_sid,
-                prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
-                cwd=self.workspace,
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.reviewer_sid,
+                    prompt=render_re_review_prompt(
+                        str(report_path), decisions=self._decisions_text()
+                    ),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
-        verdict, result = await asyncio.to_thread(
-            nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
+
+        def _reviewer_nudge(round_result: RoundResult) -> tuple[ReviewerVerdict, RoundResult]:
+            return nudge_until_report(
+                self.deps.runner, round_result, ReviewerVerdict, cwd=self.workspace
+            )
+
+        def _reviewer_nudge_recover(sid: str) -> tuple[ReviewerVerdict, RoundResult]:
+            return _reviewer_nudge(_reviewer_recover(sid))
+
+        verdict, result = await self._worker_call(
+            partial(_reviewer_nudge, result), recover=_reviewer_nudge_recover
         )
         self._persist_reviewer_usage(self.reviewer_sid)
         verdict_path = self.deps.store.save_group_artifact(
@@ -984,14 +1083,17 @@ class _GroupExecution:
         ):
             # Above d_hard: one mandatory extra verification round (origin R15).
             self.extra_pass_done = True
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.reviewer_sid,
-                prompt=render_extra_pass_prompt(),
-                cwd=self.workspace,
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.reviewer_sid,
+                    prompt=render_extra_pass_prompt(),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
-            verdict, result = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
+            verdict, result = await self._worker_call(
+                partial(_reviewer_nudge, result), recover=_reviewer_nudge_recover
             )
             self._persist_reviewer_usage(self.reviewer_sid)
             verdict_path = self.deps.store.save_group_artifact(
@@ -1449,12 +1551,21 @@ class _GroupExecution:
         )
         if response is not None and not downgraded:
             self.ctx.set_state(GroupState.RUNNING)
-            return await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.coder_sid,
-                prompt=render_coder_answer_prompt(response.answer),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            answer_on_turn = self._make_coder_on_turn(self.coder_entry)
+            return await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.coder_sid,
+                    prompt=render_coder_answer_prompt(response.answer),
+                    cwd=self.workspace,
+                    on_turn=answer_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=answer_on_turn,
+                ),
             )
         if _is_retry(response):
             await self._relaunch(response.answer, f"coder needs input: {question}")
