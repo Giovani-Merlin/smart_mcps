@@ -37,8 +37,15 @@ import time
 from pathlib import Path
 
 from orchestrator.execution.heartbeat import read_heartbeat
-from orchestrator.execution.liveness import not_live_age
-from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.liveness import SuspendMonitor, not_live_age
+from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
+
+#: Default gap, in seconds, above which a boot-time-vs-monotonic divergence
+#: between two record ticks is read as a machine suspend rather than clock
+#: jitter (plan U4). Mirrors ``LivenessConfig.suspend_gap_seconds`` — kept as
+#: its own default here (not imported from ``config.py``) so every existing
+#: ``DriverLock(paths)`` caller and test keeps working unchanged.
+DEFAULT_SUSPEND_GAP_SECONDS = 60.0
 
 #: How often the driver record's `updated_at` is refreshed. Independent of the
 #: heartbeat's tick rate — this is evidence a *driver* is alive, checked at a
@@ -126,13 +133,21 @@ class DriverLock:
     not a queue to wait in.
     """
 
-    def __init__(self, paths: RunPaths, *, record_interval: float = RECORD_INTERVAL_SECONDS):
+    def __init__(
+        self,
+        paths: RunPaths,
+        *,
+        record_interval: float = RECORD_INTERVAL_SECONDS,
+        suspend_gap_s: float = DEFAULT_SUSPEND_GAP_SECONDS,
+    ):
         self.paths = paths
         self.record_interval = record_interval
+        self.suspend_gap_s = suspend_gap_s
         self._fd: int | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._started_at: str | None = None
+        self._suspend_monitor: SuspendMonitor | None = None
 
     def acquire(self) -> None:
         fd = _open_lock_fd(self.paths)
@@ -145,6 +160,12 @@ class DriverLock:
             ) from exc
         self._fd = fd
         self._started_at = _now()
+        self._suspend_monitor = SuspendMonitor(
+            self.paths,
+            gap_s=self.suspend_gap_s,
+            interval_s=self.record_interval,
+            log=lambda message: log_event(self.paths, message),
+        )
         self._write_record()
         self._thread = threading.Thread(target=self._loop, name="driver-lock", daemon=True)
         self._thread.start()
@@ -154,6 +175,7 @@ class DriverLock:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=1.0)
+        self._suspend_monitor = None
         if self._fd is not None:
             fd, self._fd = self._fd, None
             with contextlib.suppress(OSError):
@@ -170,6 +192,8 @@ class DriverLock:
     def _loop(self) -> None:
         while not self._stop.wait(self.record_interval):
             self._write_record()
+            if self._suspend_monitor is not None:
+                self._suspend_monitor.sample()
 
     def _write_record(self) -> None:
         """Best-effort, like the heartbeat: an unwritable run directory loses

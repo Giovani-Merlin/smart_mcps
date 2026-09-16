@@ -19,6 +19,7 @@ lookup or a hook failure must never take down a round, the same contract
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import threading
 import time
@@ -26,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
 if TYPE_CHECKING:
     from orchestrator.config import LivenessConfig
@@ -518,3 +521,138 @@ def cures_exhausted_line(heartbeat: dict, run_id: str, driver_pid: int) -> str |
         f"cures exhausted ({cures}/{max_cures} this generation) — "
         f"kill -INT -{pgid} then smart-mcps-orchestrate resume {run_id}"
     )
+
+
+# ---------------------------------------------------------- suspend detection
+
+#: Schema for the suspend facts merged into the run-scoped heartbeat file.
+#: Independent of ``heartbeat.SCHEMA_VERSION`` — this module never imports
+#: ``heartbeat.py`` (that module imports this one, for ``ChildActivity``), so
+#: bumping one on its own never forces a bump of the other.
+SUSPEND_SCHEMA_VERSION = 1
+
+
+def _run_heartbeat_path(paths: RunPaths) -> Path:
+    """Same file ``heartbeat.heartbeat_path(paths, group_id=None)`` names,
+    duplicated rather than imported: ``heartbeat.py`` already imports
+    ``ChildActivity`` from this module, and importing back would make the two
+    circular. Post-ADR-0007 runs never write a run-scoped heartbeat for phase
+    facts, which is exactly what leaves this file free for suspend facts."""
+    return paths.run_dir / "heartbeat.json"
+
+
+@dataclass
+class SuspendFacts:
+    """What ``<run>/heartbeat.json`` says about machine suspends so far."""
+
+    last_wake_at: str | None
+    last_suspend_gap_s: float | None
+    suspends: int
+
+
+def read_suspend_facts(paths: RunPaths) -> SuspendFacts | None:
+    """The suspend facts on disk, or ``None`` when none have ever been
+    written — tolerant of a missing, malformed, or pre-suspend-facts file,
+    same contract as ``heartbeat.read_heartbeat``."""
+    try:
+        payload = json.loads(_run_heartbeat_path(paths).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or "last_wake_at" not in payload:
+        return None
+    return SuspendFacts(
+        last_wake_at=payload.get("last_wake_at"),
+        last_suspend_gap_s=payload.get("last_suspend_gap_s"),
+        suspends=payload.get("suspends", 0),
+    )
+
+
+class SuspendMonitor:
+    """Detects a machine suspend by comparing ``CLOCK_MONOTONIC`` (frozen
+    while suspended) against ``CLOCK_BOOTTIME`` (keeps advancing) between two
+    samples, with a wall-clock fallback for a platform where the two clocks
+    do not diverge across a suspend (WSL2).
+
+    ``sample()`` is pure and side-effect-free except for the detection path:
+    it always advances the monitor's own baseline, and only when it detects a
+    gap does it write the run-scoped heartbeat file and log a line. The first
+    call after construction only establishes the baseline — there is nothing
+    to compare against yet — so it never reports a suspend.
+    """
+
+    def __init__(
+        self,
+        paths: RunPaths,
+        *,
+        gap_s: float,
+        interval_s: float,
+        log: Callable[[str], None],
+        clock: Callable[[], float] = time.monotonic,
+        boottime: Callable[[], float] = lambda: time.clock_gettime(time.CLOCK_BOOTTIME),
+        wall: Callable[[], float] = time.time,
+    ) -> None:
+        self.paths = paths
+        self.gap_s = gap_s
+        self.interval_s = interval_s
+        self._log = log
+        self._clock = clock
+        self._boottime = boottime
+        self._wall = wall
+        self._prev_mono: float | None = None
+        self._prev_boot: float | None = None
+        self._prev_wall: float | None = None
+
+    def sample(self) -> float | None:
+        mono = self._clock()
+        boot = self._boottime()
+        wall = self._wall()
+        gap: float | None = None
+        if self._prev_mono is not None:
+            mono_delta = mono - self._prev_mono
+            boot_delta = boot - self._prev_boot
+            wall_delta = wall - self._prev_wall
+            boot_gap = boot_delta - mono_delta
+            if boot_gap > self.gap_s:
+                gap = boot_gap
+            elif wall_delta > 5 * self.interval_s:
+                gap = wall_delta
+        self._prev_mono = mono
+        self._prev_boot = boot
+        self._prev_wall = wall
+        if gap is not None:
+            self._record(gap, wall)
+        return gap
+
+    def _record(self, gap: float, wall_now: float) -> None:
+        """Best-effort, like the heartbeat: an unwritable run directory loses
+        the evidence, never the run."""
+        try:
+            path = _run_heartbeat_path(self.paths)
+            try:
+                existing = json.loads(path.read_text())
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            now_iso = datetime.datetime.fromtimestamp(wall_now, tz=datetime.UTC).isoformat(
+                timespec="seconds"
+            )
+            existing.update(
+                {
+                    "schema_version": SUSPEND_SCHEMA_VERSION,
+                    "last_wake_at": now_iso,
+                    "last_suspend_gap_s": gap,
+                    "suspends": existing.get("suspends", 0) + 1,
+                    "updated_at": now_iso,
+                }
+            )
+            atomic_write_text(path, json.dumps(existing, indent=2) + "\n")
+        except Exception:  # noqa: BLE001 - evidence is never worth the run
+            pass
+        self._log_line(f"machine suspend detected: {_humanize_age(gap)}")
+
+    def _log_line(self, line: str) -> None:
+        try:
+            self._log(line)
+        except Exception:  # noqa: BLE001 - evidence is never worth the run
+            pass

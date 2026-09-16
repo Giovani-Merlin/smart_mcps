@@ -31,6 +31,7 @@ from orchestrator.execution.driver import (
     is_driving,
     read_driver_record,
 )
+from orchestrator.execution.liveness import read_suspend_facts
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
 
@@ -313,3 +314,53 @@ class TestLivenessCounts:
             assert "2 active groups live" in line
         finally:
             lock.release()
+
+
+class TestSuspendDetection:
+    """Plan U4: `DriverLock`'s record thread also samples for a machine
+    suspend, and `read_suspend_facts` exposes what it finds."""
+
+    def test_driver_record_still_written_and_no_suspend_facts_until_a_sample_fires(self, paths):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        try:
+            _wait_for(lambda: read_driver_record(paths) is not None)
+            assert read_suspend_facts(paths) is None
+        finally:
+            lock.release()
+
+    def test_forcing_the_clocks_to_diverge_makes_suspend_facts_appear_within_one_interval(
+        self, paths
+    ):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        try:
+            _wait_for(
+                lambda: (
+                    lock._suspend_monitor is not None
+                    and lock._suspend_monitor._prev_mono is not None
+                )
+            )
+            monitor = lock._suspend_monitor
+            # Fixed target values, not a formula re-evaluated from the moving
+            # `_prev_*` baseline: once sampled once, the deltas collapse back
+            # to zero, so this fires exactly one suspend, not one per tick.
+            target_mono = monitor._prev_mono + 10.0
+            target_boot = monitor._prev_boot + 400.0
+            target_wall = monitor._prev_wall + 10.0
+            monitor._clock = lambda: target_mono
+            monitor._boottime = lambda: target_boot
+            monitor._wall = lambda: target_wall
+
+            _wait_for(lambda: read_suspend_facts(paths) is not None, timeout=2.0)
+            facts = read_suspend_facts(paths)
+            assert facts.suspends == 1
+            assert facts.last_wake_at is not None
+        finally:
+            lock.release()
+
+    def test_release_joins_the_thread(self, paths):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        lock.release()
+        assert lock._thread is None

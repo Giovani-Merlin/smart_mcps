@@ -28,9 +28,11 @@ from orchestrator.execution.liveness import (
     ActivityRegistry,
     ChildActivity,
     LivenessProbe,
+    SuspendMonitor,
     cpu_ticks,
     cures_exhausted_line,
     liveness_line,
+    read_suspend_facts,
     sign_of_life,
 )
 from orchestrator.execution.manifest import RunPaths
@@ -527,3 +529,119 @@ def test_liveness_line_cures_exhausted_line():
         f"cures exhausted (2/2 this generation) — "
         f"kill -INT -{pgid} then smart-mcps-orchestrate resume r1"
     )
+
+
+# ---------------------------------------------------------- suspend detection
+
+
+class _FakeClock:
+    def __init__(self, start: float = 0.0) -> None:
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+
+def _make_monitor(paths, *, gap_s=60.0, interval_s=10.0, mono=0.0, boot=0.0, wall=0.0, log=None):
+    mono_clock = _FakeClock(mono)
+    boot_clock = _FakeClock(boot)
+    wall_clock = _FakeClock(wall)
+    monitor = SuspendMonitor(
+        paths,
+        gap_s=gap_s,
+        interval_s=interval_s,
+        log=log if log is not None else (lambda message: None),
+        clock=mono_clock,
+        boottime=boot_clock,
+        wall=wall_clock,
+    )
+    return monitor, mono_clock, boot_clock, wall_clock
+
+
+def test_suspend_detected_from_monotonic_vs_boottime_divergence(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    monitor, mono_clock, boot_clock, wall_clock = _make_monitor(paths, gap_s=60.0, interval_s=10.0)
+
+    assert monitor.sample() is None  # baseline only
+
+    mono_clock.value += 10.0
+    boot_clock.value += 400.0
+    wall_clock.value += 10.0
+
+    gap = monitor.sample()
+    assert gap == pytest.approx(390.0)
+
+
+def test_suspend_detected_from_wall_clock_fallback_when_clocks_are_frozen(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    monitor, mono_clock, boot_clock, wall_clock = _make_monitor(paths, gap_s=60.0, interval_s=10.0)
+
+    assert monitor.sample() is None
+
+    wall_clock.value += 200.0  # mono and boot stay frozen (WSL2 path)
+
+    gap = monitor.sample()
+    assert gap == pytest.approx(200.0)
+
+
+def test_no_suspend_when_monotonic_and_boottime_advance_together(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    monitor, mono_clock, boot_clock, wall_clock = _make_monitor(paths, gap_s=60.0, interval_s=10.0)
+
+    assert monitor.sample() is None
+
+    mono_clock.value += 10.0
+    boot_clock.value += 10.0
+    wall_clock.value += 10.0
+
+    assert monitor.sample() is None
+
+
+def test_a_detection_writes_last_wake_at_and_increments_suspends(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    logged = []
+    monitor, mono_clock, boot_clock, wall_clock = _make_monitor(
+        paths, gap_s=60.0, interval_s=10.0, log=logged.append
+    )
+
+    assert monitor.sample() is None
+    assert read_suspend_facts(paths) is None
+
+    mono_clock.value += 10.0
+    boot_clock.value += 400.0
+    wall_clock.value += 10.0
+    monitor.sample()
+
+    facts = read_suspend_facts(paths)
+    assert facts is not None
+    assert facts.last_wake_at is not None
+    assert facts.suspends == 1
+    assert len(logged) == 1
+    assert "machine suspend detected" in logged[0]
+
+    mono_clock.value += 10.0
+    boot_clock.value += 400.0
+    wall_clock.value += 10.0
+    monitor.sample()
+
+    facts = read_suspend_facts(paths)
+    assert facts.suspends == 2
+    assert len(logged) == 2
+
+
+def test_awake_host_default_monitor_reports_no_suspend():
+    paths = RunPaths(Path("/nonexistent-does-not-matter"), "r1")
+    log_calls = []
+    monitor = SuspendMonitor(paths, gap_s=60.0, interval_s=1.0, log=log_calls.append)
+
+    assert monitor.sample() is None
+    time.sleep(1.0)
+    assert monitor.sample() is None
+    assert log_calls == []
+
+
+def test_real_clock_oracle_boottime_minus_monotonic_is_stable_across_one_second():
+    first = time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+    time.sleep(1.0)
+    second = time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+    assert abs(second - first) < 0.5
