@@ -135,14 +135,15 @@ smart-mcps-orchestrate answer $RUN $ESC --action answer --text "Use the LRU cach
 Ask the human only when the question is a product choice, and hand them 2–3
 concrete candidates.
 
-**A `coder_question` answer lives only in that coder's session.** If the
-answer changes scope or acceptance (fewer chapters, a threshold reported
-instead of cleared), a later generation's coder and reviewer never see it —
-r20260913 g5's gen2 reviewer called the human's four-chapter decision
-"self-invented" and forced a revert. Until the orchestrator carries it: when
-the coder retires or the group reaches a new generation, expect the conflict,
-and settle it with a spec-rewrite `answer` that quotes the human verbatim.
-Write every such decision in the notes file the moment it is made.
+**`answer` binds by default.** Every `coder_question` answer becomes an
+Operator Decision, carried verbatim into every later coder, handoff,
+reviewer, re-review and rewrite-speccer prompt of the group — a later
+generation's reviewer treats it as a spec amendment, not something to second-
+guess as "self-invented". Use `--guidance` only when the text is advice that
+changes no scope, acceptance, or deliverable (a style nudge, a pointer to a
+file) — a `--guidance` answer is not carried forward the same way, so never
+use it for anything you would mind a later generation forgetting. Write
+every binding decision in the notes file the moment it is made.
 
 ### `merge_conflict`
 
@@ -203,6 +204,24 @@ branch or the plan is wrong. Do not answer group by group:
 3. Fix on the launch branch (and on `orchestrator/run-$RUN` — a `resume` forks
    later groups from the integration tip, not from the launch commit).
 4. `smart-mcps-orchestrate resume $RUN …` with the same HITL flags, detached.
+
+## When status reports Not Live
+
+`status` derives its liveness line from the same facts as the `not live for`
+and `live again` lines in `logs/run.log` (plan U2/U3). Three cases:
+
+- **Live again on its own.** A `not live for …` line followed later by
+  `live again: …` with no action from you — the child was slow, not dead.
+  Nothing to do.
+- **Not live after a machine suspend, with Suspend Cures left.** A
+  `machine suspend detected: …` line precedes it and `status` (or
+  `cures exhausted`, see below) shows cures remaining this generation — the
+  probe will cure the child itself (kill and warm-resume in place). Wait for
+  the `suspend cure <k>/<max> — …` line rather than intervening.
+- **Not live with cures exhausted, or no suspend detected at all.** `status`
+  prints the `cures exhausted (<k>/<max> this generation) — kill -INT -<pgid> then smart-mcps-orchestrate resume <run_id>` line, or there was never a
+  `machine suspend detected` line to explain the silence. This is the one
+  case left that needs your hand: `kill -INT -<pgid>`, then `resume`.
 
 ## When a terminal `failed` line appears without an escalation
 

@@ -140,40 +140,54 @@ that fires on any of:
   `group <gid>: resolved (…)`, `group <gid>: terminal failed — …`,
   `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`.
 
-Plus a slow heartbeat (20–30 min) that runs `smart-mcps-orchestrate status $RUN` and checks the driver line: `progressing (Ns since last heartbeat)` is
-healthy — but only for the driver, not the work: after a machine suspend
-the driver can keep heartbeating while the coder child is dead and the phase
-never moves (r20260908: 18 min in `starting the coder`). If a phase has not
-changed across two heartbeats **and** the group's worktree and transcript
-have no new writes, it is a wedge: `kill -INT -<pgid>`, then `resume`. The
-inverse also happens (r20260913 g16 showed `starting the coder` for 14 min
-while editing files), so check the worktree before killing anything.
-`heartbeat is stale` for more than one round length is a wedge;
-`no process is driving this run` with unfinished groups means the process
-died — inspect `driver.log`, then `resume`. A run paused on a usage limit
-announces itself on the group heartbeats and reads as *paused*, not wedged —
-wait it out.
+There is no manual wedge check to run here anymore. The Liveness probe
+watches the worker child itself — a real Sign of Life inside a configurable
+window, not the driver's own heartbeat mtime — and writes evidence straight
+into `logs/run.log` the moment a group's status actually changes. Do not
+compare phases by hand across status calls or poll the worktree/transcript
+yourself; the probe already does both and only speaks up when something
+happened. The one recurring check left is a `status $RUN` fallback, run at
+most once an hour, purely as a backstop for a missed Monitor condition — the
+liveness lines below are the primary signal. A run paused on a usage limit
+announces itself on the group heartbeats and reads as *paused*, not Not
+Live — wait it out.
 
 Greppable anchors, all in `logs/run.log`:
 
-| event                | line                                                                   |
-| -------------------- | ---------------------------------------------------------------------- |
-| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)           |
-| escalation answered  | `ESCALATION <id> answered: <action>`                                   |
-| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                             |
-| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`           |
-| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                 |
-| coder launched       | `group <gid> generation <n>: coder launching, …`                       |
-| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`               |
-| reviewer verdict     | `… reviewer verdict <status>`                                          |
-| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                 |
-| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>` |
-| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                   |
-| group done           | `group <gid>: completed`                                               |
-| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …` |
-| run ended by you     | `run <id> aborted by operator: …`                                      |
+| event                | line                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)                                                               |
+| escalation answered  | `ESCALATION <id> answered: <action>`                                                                                       |
+| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                 |
+| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                               |
+| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                     |
+| coder launched       | `group <gid> generation <n>: coder launching, …`                                                                           |
+| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                   |
+| reviewer verdict     | `… reviewer verdict <status>`                                                                                              |
+| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                     |
+| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>`                                                     |
+| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                                                                       |
+| group not live       | `group <gid> generation <n>: not live for <age> in <phase> — <evidence>`                                                   |
+| group live again     | `group <gid> generation <n>: live again: <signal> <age> ago` (or `child exited`)                                           |
+| machine suspend      | `machine suspend detected: <gap>`                                                                                          |
+| suspend cure         | `group <gid> generation <n>: suspend cure <k>/<max> — no sign of life since wake at <ts>; killing session <sid> pid <pid>` |
+| cures exhausted      | `group <gid> generation <n>: cures exhausted (<k>/<max>); reporting only`                                                  |
+| group done           | `group <gid>: completed`                                                                                                   |
+| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                     |
+| run ended by you     | `run <id> aborted by operator: …`                                                                                          |
 
-Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)" logs/run.log`.
+- **`not live for`** is evidence, not an alarm to act on by itself — see
+  `triage-guide.md`, "When status reports Not Live", for the three cases and
+  when manual intervention (`kill -INT -<pgid>`, `resume`) is actually
+  warranted.
+- **`machine suspend detected`** followed by **`suspend cure`** means the
+  probe already killed and warm-resumed a child with no Sign of Life since
+  the wake — no action needed unless `cures exhausted` follows.
+- **`cures exhausted`** is the one line here that does ask you to act: the
+  probe has used its budget for this generation and will only keep
+  reporting from here.
+
+Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend" logs/run.log`.
 
 ## Phase 3 — Triage every escalation
 
@@ -189,22 +203,22 @@ it blocks (the `blocks` clause on the raise line):
    per-kind recipes, templates, and the "fix in worktree AND integration"
    procedure are in `triage-guide.md`.
 
-| kind                                        | the cause is…                                             | action                                                                                  |
-| ------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `coder_blocked` / `reviewer_too_hard`       | environment, deps, data, config, a hand-committable patch | fix it in the group's worktree **and** on the integration branch, then `--action retry` |
-| same                                        | spec ambiguity answerable from the plan / brainstorm docs | `--action answer --text …` (costs one rewrite — by design, the spec was wrong)          |
-| same                                        | a product / scope decision                                | `AskUserQuestion` with candidate answers, then `answer` with the human's words          |
-| same                                        | truly impossible in this run                              | `skip` with a note; `abort` if it invalidates the run                                   |
-| `coder_question` (`needs_input`)            | answerable from docs                                      | `answer` — a warm resume; the text becomes the coder's next prompt verbatim             |
-| same                                        | not answerable                                            | ask the human, then `answer`                                                            |
-| `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                    |
-| `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                |
-| `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite               |
-| same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                |
-| same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)    |
-| `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                     |
-| `group_resolve`                             | a FAILED group's stranded work                            | inspect the worktree; commit what is salvageable; `answer`. **Never clean it.**         |
-| `respawn` / `group_start` / `merge_approve` | interactive tier only                                     | not raised at `on_stuck`; if seen, `answer` = proceed                                   |
+| kind                                        | the cause is…                                             | action                                                                                                                                                               |
+| ------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coder_blocked` / `reviewer_too_hard`       | environment, deps, data, config, a hand-committable patch | fix it in the group's worktree **and** on the integration branch, then `--action retry`                                                                              |
+| same                                        | spec ambiguity answerable from the plan / brainstorm docs | `--action answer --text …` (costs one rewrite — by design, the spec was wrong)                                                                                       |
+| same                                        | a product / scope decision                                | `AskUserQuestion` with candidate answers, then `answer` with the human's words                                                                                       |
+| same                                        | truly impossible in this run                              | `skip` with a note; `abort` if it invalidates the run                                                                                                                |
+| `coder_question` (`needs_input`)            | answerable from docs                                      | `answer` — binding Operator Decision carried into every later prompt of the group; use `--guidance` only for advice that changes no scope, acceptance or deliverable |
+| same                                        | not answerable                                            | ask the human, then `answer`                                                                                                                                         |
+| `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                                                                                                 |
+| `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                                                                                             |
+| `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite                                                                                            |
+| same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                                                                                             |
+| same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)                                                                                 |
+| `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                                                                                                  |
+| `group_resolve`                             | a FAILED group's stranded work                            | inspect the worktree; commit what is salvageable; `answer`. **Never clean it.**                                                                                      |
+| `respawn` / `group_start` / `merge_approve` | interactive tier only                                     | not raised at `on_stuck`; if seen, `answer` = proceed                                                                                                                |
 
 Rules that override the table:
 
@@ -233,8 +247,7 @@ When the process exits (signal **(b)**):
    `smart-mcps-orchestrate retry $RUN <gid>` + `resume` is a sane salvage
    (it is, when the integration tip has since moved past the cause).
 3. If every group completed/resolved, the CLI **auto-finished** (push + PR)
-   the moment the last group went terminal — `run complete (N completed, M
-   resolved by operator)` on stdout and the PR URL in `logs/run.log`. It
+   the moment the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`. It
    prints `finish when ready with: smart-mcps-orchestrate finish $RUN` only
    in the not-finishable case (a group whose branch is not on the integration
    tip), and that is the only time you run `finish` by hand. The one-pager /
@@ -280,7 +293,7 @@ When the process exits (signal **(b)**):
         recovered; cite escalation ids and `gid/role/genN` session labels),
         Next steps (1–8). Each section may open with one plain paragraph of
         context (no pointer). Every top-level bullet ends in `(pointer)`; a
-        bullet may carry indented continuation lines or `  - ` sub-bullets,
+        bullet may carry indented continuation lines or ` -` sub-bullets,
         which need no pointer. Write Next steps as
         `- <action>: <why it matters and what "done" looks like> (pointer)`,
         optionally with a `  - how:` sub-bullet naming the first concrete
@@ -332,7 +345,7 @@ When the process exits (signal **(b)**):
 - **Detached, id known in advance.** `setsid` + `--run-id`; the process must
   outlive this session, and the notes file names it before it exists.
 - **Event-driven watching.** `Monitor` on new request files / process exit /
-  terminal log lines, plus a 20–30 min `status` heartbeat. No tight loops.
+  terminal log lines, plus a `status` fallback at most once an hour. No tight loops.
 - **Fix, then `retry`; decide, then `answer`; ask only for product.**
   Environment, config, data, and plan defects are yours to fix. Scope and
   product trade-offs are the human's, asked with candidate answers.
