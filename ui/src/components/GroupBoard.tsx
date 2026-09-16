@@ -6,9 +6,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
-import { summariseAttempts } from "../attempts";
+import { summariseAttempts, timeMs } from "../attempts";
 import { failureIsCurrent, formatDuration, statusOf } from "../status";
-import type { GroupState, RunSnapshot, SnapshotGroup } from "../types";
+import type { ActivityEntry, GroupState, RunSnapshot, SnapshotGroup, SnapshotSession } from "../types";
 import "./GroupBoard.css";
 
 // Labels come from `status.ts`, which is the one place a state becomes a label
@@ -80,6 +80,82 @@ function phaseLine(group: SnapshotGroup): { phase: string; elapsed: string; paus
       ? formatDuration(heartbeat.paused_s * 1000)
       : null;
   return { phase: heartbeat.phase, elapsed, paused };
+}
+
+/** Same rendering as `heartbeat._humanize` / `liveness._humanize_age`. */
+function humanizeAge(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return `${hours}h${String(minutes).padStart(2, "0")}m`;
+  if (minutes) return `${minutes}m${String(secs).padStart(2, "0")}s`;
+  return `${secs}s`;
+}
+
+/**
+ * Seconds past the Liveness Window since the child last showed a Sign of
+ * Life, or `null` when it is live, there is no child, or the heartbeat
+ * predates these facts — the client-side twin of `liveness.not_live_age`.
+ */
+function notLiveAgeS(heartbeat: NonNullable<SnapshotGroup["heartbeat"]>, nowS: number): number | null {
+  if (heartbeat.child_pid == null) return null;
+  const window = heartbeat.liveness_window_s;
+  if (window == null) return null;
+  const baselines = [
+    timeMs(heartbeat.last_sign_of_life_at) ?? undefined,
+    timeMs(heartbeat.child_spawned_at) ?? undefined,
+  ].filter((value): value is number => value !== undefined);
+  if (baselines.length === 0) return null;
+  const age = nowS - Math.max(...baselines) / 1000;
+  return age > window ? age : null;
+}
+
+/**
+ * One human-readable line for the board, derived entirely from the
+ * heartbeat's own facts — the same four shapes and the same derivation rule
+ * `orchestrator/execution/liveness.py`'s `liveness_line` applies for `status`,
+ * so the two surfaces can never disagree. Never a state the backend sent.
+ */
+function livenessLine(group: SnapshotGroup): { text: string; notLive: boolean } | null {
+  const heartbeat = group.heartbeat;
+  if (!heartbeat || heartbeat.liveness_window_s == null) return null;
+  const phase = heartbeat.phase || "unknown phase";
+  if (heartbeat.child_pid == null) return { text: `no worker child (${phase})`, notLive: false };
+  const nowS = Date.now() / 1000;
+  const age = notLiveAgeS(heartbeat, nowS);
+  if (age !== null) {
+    const evidence = heartbeat.sign_of_life_evidence || "no evidence recorded";
+    return { text: `NOT LIVE for ${humanizeAge(age)} in ${phase} — ${evidence}`, notLive: true };
+  }
+  const lastMs = timeMs(heartbeat.last_sign_of_life_at);
+  const liveAge = lastMs != null ? nowS - lastMs / 1000 : 0;
+  return { text: `live: ${heartbeat.sign_of_life_signal} ${humanizeAge(liveAge)} ago`, notLive: false };
+}
+
+/** The group's newest session by generation, then by whichever wrote most
+ * recently within that generation — what "the group's newest session" means
+ * for the activity tail. */
+function newestSession(group: SnapshotGroup): SnapshotSession | null {
+  let newest: SnapshotSession | null = null;
+  for (const session of group.sessions) {
+    if (!newest) {
+      newest = session;
+      continue;
+    }
+    if (session.generation !== newest.generation) {
+      if (session.generation > newest.generation) newest = session;
+      continue;
+    }
+    const a = timeMs(session.transcript_mtime) ?? timeMs(session.started_at) ?? 0;
+    const b = timeMs(newest.transcript_mtime) ?? timeMs(newest.started_at) ?? 0;
+    if (a >= b) newest = session;
+  }
+  return newest;
+}
+
+function activityTailOf(group: SnapshotGroup): ActivityEntry[] {
+  return newestSession(group)?.activity_tail ?? [];
 }
 
 function curveOf(line: EdgeLine): string {
@@ -240,6 +316,32 @@ function GroupBoard({ snapshot, revision, loading }: GroupBoardProps) {
                               ({phase.paused} paused)
                             </span>
                           )}
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const liveness = livenessLine(group);
+                      if (!liveness) return null;
+                      return (
+                        <div
+                          className={`group-card__liveness${
+                            liveness.notLive ? " group-card__liveness--not-live" : ""
+                          }`}
+                        >
+                          {liveness.text}
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const tail = activityTailOf(group);
+                      if (tail.length === 0) return null;
+                      return (
+                        <div className="group-card__activity">
+                          {tail.map((entry, index) => (
+                            <div key={index} className="group-card__activity-entry">
+                              {entry.tool} {entry.input_head} [{entry.returned ? "returned" : "running"}]
+                            </div>
+                          ))}
                         </div>
                       );
                     })()}

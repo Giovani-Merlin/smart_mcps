@@ -267,6 +267,16 @@ export interface RunInfo {
   updated_at?: string | null;
 }
 
+// ActivityEntry (transcript_events.py) — one worker tool call, for a short
+// human-readable activity tail (plan U6). Nothing here is persisted; it is
+// re-read from the transcript on every snapshot.
+export interface ActivityEntry {
+  at?: string | null;
+  tool: string;
+  input_head: string;
+  returned: boolean;
+}
+
 // One board card: scheduler state joined to the manifest's group entry (runs.py).
 export interface SnapshotSession {
   session_id: string;
@@ -299,6 +309,11 @@ export interface SnapshotSession {
   transcript_mtime?: string | null;
   // Per-round history when the manifest carries it; see `ManifestSession`.
   rounds?: RoundUsage[] | null;
+  // The last five tool calls this session's transcript recorded (plan U6/U7);
+  // `[]` when there is no transcript to read yet. Optional rather than
+  // required so every snapshot fixture predating this field keeps building —
+  // absence reads as empty, never as an error.
+  activity_tail?: ActivityEntry[];
 }
 
 // GroupHeartbeat (runs.py) — `heartbeat.json` passed through unchanged.
@@ -325,6 +340,22 @@ export interface GroupHeartbeat {
   // so the UI must not render an absent value as "no pause happened".
   paused_s?: number | null;
   round_elapsed_s?: number | null;
+  // Sign-of-life facts (plan U2), passed through unchanged — absent entirely
+  // until a LivenessProbe has ticked at least once. Facts only, same rule as
+  // everything else on this type: no "not_live"/"stalled" field, ever. The
+  // client derives that itself; see `livenessLine` in `GroupBoard.tsx`, the
+  // same rule `orchestrator/execution/liveness.py`'s `liveness_line` applies
+  // server-side for `status`.
+  last_event_at?: string | null;
+  last_event_type?: string | null;
+  child_pid?: number | null;
+  child_spawned_at?: string | null;
+  last_sign_of_life_at?: string | null;
+  sign_of_life_signal?: string | null;
+  sign_of_life_evidence?: string | null;
+  liveness_window_s?: number | null;
+  cures?: number | null;
+  max_cures_per_generation?: number | null;
 }
 
 // WorktreeProvisioning (runs.py) — `provisioning.json` passed through
