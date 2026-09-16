@@ -20,6 +20,7 @@ from orchestrator.execution.heartbeat import (
     heartbeat_path,
     read_heartbeat,
 )
+from orchestrator.execution.liveness import ChildActivity
 from orchestrator.execution.manifest import RunPaths
 
 # Anything that would turn evidence into a de facto state.
@@ -335,6 +336,56 @@ def test_a_new_round_resets_the_paused_accumulator(tmp_path):
 
     hb.mark_round(generation=1, round_no=2)
     assert hb.snapshot()["paused_s"] == 0.0
+
+
+# ------------------------------------------------------------ child activity
+
+
+def test_snapshot_carries_activity_facts_from_the_provider(tmp_path):
+    activity = ChildActivity(
+        pid=4242,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at="2026-09-16T00:00:00.000Z",
+        last_event_at="2026-09-16T00:00:05.000Z",
+        last_event_type="assistant",
+    )
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", activity_provider=lambda: activity)
+
+    payload = hb.snapshot()
+    assert payload["last_event_at"] == "2026-09-16T00:00:05.000Z"
+    assert payload["last_event_type"] == "assistant"
+    assert payload["child_pid"] == 4242
+    assert payload["child_spawned_at"] == "2026-09-16T00:00:00.000Z"
+    assert not any(key in payload for key in FORBIDDEN_KEYS)
+
+
+def test_snapshot_activity_fields_are_null_with_no_provider(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+
+    payload = hb.snapshot()
+    assert payload["last_event_at"] is None
+    assert payload["last_event_type"] is None
+    assert payload["child_pid"] is None
+    assert payload["child_spawned_at"] is None
+
+
+def test_snapshot_activity_fields_are_null_when_the_provider_returns_none(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", activity_provider=lambda: None)
+
+    payload = hb.snapshot()
+    assert payload["last_event_at"] is None
+    assert payload["child_pid"] is None
+
+
+def test_a_raising_activity_provider_cannot_fail_the_snapshot(tmp_path):
+    def boom():
+        raise RuntimeError("registry lookup exploded")
+
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", activity_provider=boom)
+
+    payload = hb.snapshot()  # must not raise
+    assert payload["last_event_at"] is None
 
 
 def test_periodic_log_line_renders_both_round_elapsed_and_paused(tmp_path):

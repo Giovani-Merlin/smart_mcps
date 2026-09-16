@@ -18,7 +18,10 @@ module's callers need.
 No per-round timeout here either, for the same reason ``_spawn`` never had one
 (sessions.py's R7 note): a token ceiling is a proxy for cost, not for stuck,
 and wall-clock is a terrible proxy for either. A hung stream is only detected
-by the process itself exiting or by the caller closing stdin/killing it.
+by the process itself exiting or by the caller closing stdin/killing it. This
+remains true after plan U1: ``on_event`` stamps evidence of activity for a
+liveness probe to read elsewhere, but it enforces nothing here and this
+module still never kills or times out a child of its own accord.
 """
 
 from __future__ import annotations
@@ -76,6 +79,26 @@ _DENY_SIGNAL_MAX_CHARS = 500
 _DENY_SIGNAL_MAX_COUNT = 10
 
 
+#: How much of the last assistant event's text is worth carrying on the
+#: outcome. Same cap and same reasoning as ``liveness._LAST_ASSISTANT_TEXT_MAX_CHARS``
+#: — this is evidence riding on a completed round, not a report, so it must
+#: stay bounded regardless of how chatty the round was.
+_LAST_ASSISTANT_TEXT_MAX_CHARS = 2000
+
+
+def _assistant_text(event: dict) -> str:
+    """Flatten an ``assistant`` stream event's text content blocks. A turn
+    that only called a tool carries none, and that is a legitimate "last
+    assistant event had no text" — not an error to work around."""
+    blocks = ((event.get("message") or {}).get("content")) or []
+    parts = [
+        block.get("text", "")
+        for block in blocks
+        if isinstance(block, dict) and isinstance(block.get("text"), str)
+    ]
+    return "\n".join(part for part in parts if part)
+
+
 def _tool_result_text(content: object) -> str:
     """Flatten a ``tool_result`` block's ``content`` to text.
 
@@ -115,6 +138,11 @@ class StreamOutcome:
     #: the model's own account of what happened. Never the sole basis for a
     #: classification — the CLI owns this wording and may change it.
     deny_signals: list[str] = field(default_factory=list)
+    #: Text blocks of the round's *last* ``assistant`` event, capped (plan U1).
+    #: Empty when the round produced no assistant event with text — including
+    #: a last turn that was tool-call-only, or a round with no assistant event
+    #: at all.
+    last_assistant_text: str = ""
 
 
 class SubprocessTracker(Protocol):
@@ -147,6 +175,7 @@ class StreamingProcess:
         cwd: Path,
         env: dict[str, str],
         on_turn: Callable[[TurnUsage], None] | None = None,
+        on_event: Callable[[str], None] | None = None,
         tracker: SubprocessTracker | None = None,
         context: str = "",
         preexec_fn: Callable[[], None] | None = None,
@@ -155,12 +184,19 @@ class StreamingProcess:
         self._cwd = cwd
         self._env = env
         self.on_turn = on_turn
+        #: Fired once per parsed stream line, with that line's ``type`` — the
+        #: raw activity signal U1 exists to produce. Called before any other
+        #: handling of the event, so it observes even a line that later
+        #: dispatch drops on the floor. Never allowed to break the reader:
+        #: see ``_safe_on_event``.
+        self.on_event = on_event
         self._tracker = tracker
         self._context = context
         self._preexec_fn = preexec_fn
         self._proc: subprocess.Popen[str] | None = None
         self._result_envelope: dict | None = None
         self._first_turn_usage: TurnUsage | None = None
+        self._last_assistant_text: str = ""
         self._stderr_lines: list[str] = []
         self._deny_signals: list[str] = []
         self._stdout_thread: threading.Thread | None = None
@@ -221,7 +257,10 @@ class StreamingProcess:
             except json.JSONDecodeError:
                 continue
             event_type = event.get("type")
+            if event_type is not None:
+                self._safe_on_event(event_type)
             if event_type == "assistant":
+                self._last_assistant_text = _assistant_text(event)[:_LAST_ASSISTANT_TEXT_MAX_CHARS]
                 usage = ((event.get("message") or {}).get("usage")) or {}
                 if usage:
                     turn = TurnUsage.from_message_usage(usage)
@@ -253,6 +292,18 @@ class StreamingProcess:
         # open here, or a child that failed without a `result` wedges `wait()`.
         with self._lock:
             self._close_stdin_locked()
+
+    def _safe_on_event(self, event_type: str) -> None:
+        """Call ``on_event``, if any, never letting it break the reader. This
+        is activity evidence for a liveness probe, not part of the round's
+        own control flow — a hook that raises must not stop the stream from
+        being read, exactly like ``_collect_deny_signals`` below."""
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(event_type)
+        except Exception:  # noqa: BLE001 - evidence must never break the reader
+            pass
 
     def _collect_deny_signals(self, event: dict) -> None:
         """Harvest refusal/errno text from a ``user`` event's ``tool_result`` blocks.
@@ -350,4 +401,5 @@ class StreamingProcess:
             stderr="".join(self._stderr_lines),
             deny_signals=list(self._deny_signals),
             first_turn=self._first_turn_usage,
+            last_assistant_text=self._last_assistant_text,
         )

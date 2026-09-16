@@ -204,12 +204,19 @@ def _emit_streamed_turns(scripted: dict, session_id: str) -> None:
     turn using the top-level ``usage``), each carrying its own usage — the
     per-turn signal ``StreamingProcess.on_turn`` fires on.
 
+    A turn dict's own ``text`` key (plan U1), if present, becomes that event's
+    text content block — the field ``StreamOutcome.last_assistant_text`` reads
+    off the *last* such event. Popped out before the rest of the dict is used
+    as usage, so it never leaks into the usage fields.
+
     ``tool_results`` interleaves ``user``/``tool_result`` events after the turns,
     which is the channel a denial's evidence arrives on.
     """
     turns = scripted.get("turns") or [scripted.get("usage", {})]
-    for turn_usage in turns:
-        _emit_assistant_turn(turn_usage, session_id)
+    for turn in turns:
+        text = turn.get("text", "") if isinstance(turn, dict) else ""
+        usage = {k: v for k, v in turn.items() if k != "text"} if isinstance(turn, dict) else turn
+        _emit_assistant_turn(usage, session_id, text=text)
     for text in scripted.get("tool_results") or []:
         _emit_tool_result(text, session_id)
 

@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from orchestrator.execution.liveness import ChildActivity
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
 HEARTBEAT_NAME = "heartbeat.json"
@@ -85,9 +86,15 @@ class RoundHeartbeat:
         interval: float = DEFAULT_INTERVAL_SECONDS,
         log: Callable[[str], None] | None = None,
         log_interval: float = DEFAULT_LOG_INTERVAL_SECONDS,
+        activity_provider: Callable[[], ChildActivity | None] | None = None,
     ) -> None:
         self.paths = paths
         self.group_id = group_id
+        # Plan U1: the review loop hangs a lookup of this group's live child
+        # off here (`ActivityRegistry.current`, bound to the group's cwd), so
+        # `snapshot()` can carry what the child last did without this module
+        # knowing anything about sessions or registries itself.
+        self.activity_provider = activity_provider
         # What the periodic line calls the thing it is reporting on. A run-scoped
         # heartbeat has no group to name, and "group None" would be worse than
         # nothing in the one log an operator reads while waiting.
@@ -206,19 +213,34 @@ class RoundHeartbeat:
                 else None
             )
             paused = round(self._paused_seconds_locked(now), 1)
-            return {
-                "schema_version": SCHEMA_VERSION,
-                "group_id": self.group_id,
-                "started_at": self._started_at,
-                "generation": self._generation,
-                "round": self._round,
-                "round_started_at": self._round_started_at,
-                "phase": phase,
-                "phase_elapsed_s": round(now - phase_since, 1),
-                "round_elapsed_s": round_elapsed,
-                "paused_s": paused,
-                "updated_at": _now(),
-            }
+        activity = self._current_activity()
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "group_id": self.group_id,
+            "started_at": self._started_at,
+            "generation": self._generation,
+            "round": self._round,
+            "round_started_at": self._round_started_at,
+            "phase": phase,
+            "phase_elapsed_s": round(now - phase_since, 1),
+            "round_elapsed_s": round_elapsed,
+            "paused_s": paused,
+            "last_event_at": activity.last_event_at if activity else None,
+            "last_event_type": activity.last_event_type if activity else None,
+            "child_pid": activity.pid if activity else None,
+            "child_spawned_at": activity.spawned_at if activity else None,
+            "updated_at": _now(),
+        }
+
+    def _current_activity(self) -> ChildActivity | None:
+        """Best-effort by the same contract as everything else here: an
+        activity lookup must never fail a snapshot, let alone a round."""
+        if self.activity_provider is None:
+            return None
+        try:
+            return self.activity_provider()
+        except Exception:  # noqa: BLE001 - evidence is never worth a round
+            return None
 
     def _due_log_line(self) -> str | None:
         """The periodic "still here" line, or None when one is not due yet.
