@@ -176,7 +176,23 @@ def test_not_live_detected_and_cleared_on_a_real_sigstopped_child(liveness_repo:
             "cure predicate no longer requires a recorded wake"
         )
 
-        # 4. Thaw it and confirm the run notices and finishes.
+        # 4. `status` derives Not Live from the heartbeat's facts at read time;
+        # the probe logs the transition only on its own next tick (≤ 15 s
+        # later). Thawing before that tick would leave nothing to be "live
+        # again" from, so wait for the entering line first — it is asserted too.
+        entered_deadline = time.time() + NOT_LIVE_POLL_DEADLINE_S
+        while time.time() < entered_deadline:
+            if (
+                paths.event_log_path.is_file()
+                and "not live for" in paths.event_log_path.read_text()
+            ):
+                break
+            time.sleep(1)
+        assert paths.event_log_path.is_file() and (
+            "not live for" in paths.event_log_path.read_text()
+        ), f"the probe never logged entering Not Live\n{log_path.read_text()}"
+
+        # 5. Thaw it and confirm the run notices and finishes.
         os.kill(child_pid, signal.SIGCONT)
         live_again_deadline = time.time() + RUN_TIMEOUT_S
         while time.time() < live_again_deadline:

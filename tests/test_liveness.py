@@ -324,7 +324,7 @@ def test_sign_of_life_b_fires_only_for_the_live_nonzombie_child_with_matching_pp
     # A pid with a different ppid must never be picked up.
     _write_proc_stat(proc_root, 103, ppid=999, state="R", comm="unrelated")
 
-    child = _child(pid=parent_pid)
+    child = _child(pid=parent_pid, first_assistant_at="2020-01-01T00:00:01.000+00:00")
     result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root)
 
     assert result.signal == "tool_child"
@@ -416,7 +416,8 @@ def test_sign_of_life_real_proc_reports_tool_child_naming_sleep():
     proc = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
     try:
         time.sleep(0.3)
-        child = _child(pid=proc.pid)
+        first_assistant = datetime.datetime.fromtimestamp(time.time() - 5, tz=datetime.UTC)
+        child = _child(pid=proc.pid, first_assistant_at=first_assistant.isoformat())
         result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600)
         assert result.signal == "tool_child"
         assert "sleep" in result.evidence
@@ -892,3 +893,79 @@ def test_cure_returns_kill_tree_of_a_real_worker_child_makes_wait_nonzero_and_re
     assert outcome.returncode != 0
     assert elapsed < grace_s + 2.0
     assert registry.was_cured(stream.pid) is True
+
+
+# ------------------------------------------- tool children vs session children
+
+
+def _write_btime(proc_root: Path, btime: int) -> None:
+    proc_root.mkdir(parents=True, exist_ok=True)
+    (proc_root / "stat").write_text(f"cpu  0 0 0 0\nbtime {btime}\n")
+
+
+def test_sign_of_life_b_ignores_every_child_before_the_first_assistant_event(tmp_path):
+    # An MCP server `claude` boots at launch is a child from the first second;
+    # until the model has spoken it cannot have launched a tool.
+    proc_root = tmp_path / "proc"
+    _write_proc_stat(proc_root, 300, ppid=1)
+    _write_proc_stat(proc_root, 301, ppid=300, comm="node")
+    _write_proc_cmdline(proc_root, 301, ["node", "mcp-server.js"])
+
+    result = sign_of_life(
+        _child(pid=300), prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root
+    )
+
+    assert result.signal is None
+
+
+def test_sign_of_life_b_ignores_a_session_child_started_before_the_first_assistant_event(
+    tmp_path,
+):
+    proc_root = tmp_path / "proc"
+    tick = os.sysconf("SC_CLK_TCK")
+    btime = 1_700_000_000
+    _write_btime(proc_root, btime)
+    _write_proc_stat(proc_root, 400, ppid=1)
+    # stat's starttime is the fake line's last field, fixed at 1000 ticks.
+    _write_proc_stat(proc_root, 401, ppid=400, comm="node")
+    _write_proc_cmdline(proc_root, 401, ["uv", "run", "smart-mcps-codegraph"])
+    mcp_started = btime + 1000 / tick
+    first_assistant = datetime.datetime.fromtimestamp(mcp_started + 30, tz=datetime.UTC)
+
+    child = _child(pid=400, first_assistant_at=first_assistant.isoformat())
+    result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root)
+    assert result.signal is None
+
+    earlier = datetime.datetime.fromtimestamp(mcp_started - 30, tz=datetime.UTC)
+    child = _child(pid=400, first_assistant_at=earlier.isoformat())
+    result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root)
+    assert result.signal == "tool_child"
+    assert "smart-mcps-codegraph" in result.evidence
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the real /proc oracle is Linux-only")
+def test_sign_of_life_real_proc_ignores_a_child_older_than_the_first_assistant_event():
+    proc = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
+    try:
+        time.sleep(1.5)
+        # The model "spoke" after `sleep` was already running — a session
+        # child, not a tool child.
+        first_assistant = datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC)
+        child = _child(pid=proc.pid, first_assistant_at=first_assistant.isoformat())
+        result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600)
+        assert result.signal != "tool_child"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_registry_stamps_first_assistant_at_once():
+    registry = ActivityRegistry()
+    registry.spawned(7, session_id="s", cwd="/w")
+    registry.note_event(7, "system")
+    assert registry.current("/w").first_assistant_at is None
+    registry.note_event(7, "assistant")
+    first = registry.current("/w").first_assistant_at
+    assert first is not None
+    registry.note_event(7, "assistant")
+    assert registry.current("/w").first_assistant_at == first

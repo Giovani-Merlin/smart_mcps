@@ -81,6 +81,11 @@ class ChildActivity:
     spawned_at: str
     last_event_at: str | None = None
     last_event_type: str | None = None
+    # When the child's first `assistant` event arrived: the earliest moment the
+    # model could have launched a tool. Children started before it (the MCP
+    # servers `claude` boots at session start and keeps for its whole life)
+    # are never tool children — see `sign_of_life` signal (b).
+    first_assistant_at: str | None = None
     last_assistant_text: str = ""
     cured: bool = False
 
@@ -123,6 +128,8 @@ class ActivityRegistry:
                 return
             child.last_event_at = _now()
             child.last_event_type = event_type
+            if event_type == "assistant" and child.first_assistant_at is None:
+                child.first_assistant_at = child.last_event_at
 
     def note_assistant_text(self, pid: int, text: str) -> None:
         """Record the text of the child's last assistant turn. A no-op for an
@@ -203,6 +210,31 @@ def _read_cmdline(pid: int, proc_root: Path) -> str:
         return ""
     parts = [part.decode(errors="replace") for part in raw.split(b"\x00") if part]
     return " ".join(parts)
+
+
+#: Slack on the tool-child start-time comparison: ``btime`` is whole seconds
+#: and ``starttime`` is clock ticks, so a child launched right at the first
+#: assistant event can read as up to a second earlier than it was.
+_START_TIME_SLACK_S = 1.0
+
+
+def start_time(pid: int, *, proc_root: Path = Path("/proc")) -> float | None:
+    """Wall-clock epoch seconds the process started (``stat`` field 22 over
+    the ``btime`` line of ``<proc_root>/stat``), or ``None`` when either read
+    fails — a raced exit, or a fake tree with no ``btime``."""
+    fields = _read_stat_fields(pid, proc_root)
+    if fields is None or len(fields) < 20:
+        return None
+    try:
+        ticks = int(fields[19])
+        btime = next(
+            int(line.split()[1])
+            for line in (proc_root / "stat").read_text().splitlines()
+            if line.startswith("btime ")
+        )
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+    return btime + ticks / os.sysconf("SC_CLK_TCK")
 
 
 def cpu_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
@@ -338,6 +370,18 @@ class SignOfLife:
     cpu_ticks: int | None
 
 
+def _tool_children(child: ChildActivity, proc_root: Path) -> list[ProcChild]:
+    first_assistant = _parse_ts(child.first_assistant_at)
+    if first_assistant is None:
+        return []
+    kids = []
+    for kid in children_of(child.pid, proc_root=proc_root):
+        started = start_time(kid.pid, proc_root=proc_root)
+        if started is None or started >= first_assistant - _START_TIME_SLACK_S:
+            kids.append(kid)
+    return kids
+
+
 def sign_of_life(
     child: ChildActivity,
     *,
@@ -349,7 +393,10 @@ def sign_of_life(
     """Evaluate the three signals, in priority order, against one child:
 
     (a) a stream event within the Liveness Window,
-    (b) a live, non-zombie process whose parent is the child, or
+    (b) a live, non-zombie process whose parent is the child and which started
+        after the child's first assistant event — something the model
+        launched, not an MCP server booted with the session (a child whose
+        start time cannot be read is given the benefit of the doubt), or
     (c) CPU ticks having advanced since the last sample.
 
     Facts only — this never decides "stuck", it decides whether *this tick*
@@ -363,7 +410,7 @@ def sign_of_life(
         evidence = f"event {child.last_event_type} {_humanize_age(now - event_at)} ago"
         return SignOfLife(at=at, signal="event", evidence=evidence, cpu_ticks=current_cpu)
 
-    kids = children_of(child.pid, proc_root=proc_root)
+    kids = _tool_children(child, proc_root)
     if kids:
         head = kids[0].cmdline or f"pid {kids[0].pid}"
         evidence = f'tool child "{head}" running'

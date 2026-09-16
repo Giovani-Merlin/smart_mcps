@@ -63,7 +63,11 @@ from orchestrator.execution.driver import (
     unfinished_runs,
 )
 from orchestrator.execution.heartbeat import RoundHeartbeat, read_heartbeat
-from orchestrator.execution.liveness import cures_exhausted_line, liveness_line
+from orchestrator.execution.liveness import (
+    ActivityRegistry,
+    cures_exhausted_line,
+    liveness_line,
+)
 from orchestrator.execution.transcript_events import activity_tail, format_activity_tail
 from orchestrator.execution.manifest import (
     GroupingNameError,
@@ -1665,6 +1669,7 @@ def build_session_runner(
     auth_ladder: AuthLadder | None = None,
     auth_gate: UsageLimitGate | None = None,
     repo_root: Path | None = None,
+    activity: ActivityRegistry | None = None,
 ) -> SessionRunner:
     """The one place a production ``SessionRunner`` is built.
 
@@ -1702,6 +1707,7 @@ def build_session_runner(
         gate=gate,
         auth_ladder=auth_ladder,
         auth_gate=auth_gate,
+        activity=activity,
     )
 
 
@@ -1961,8 +1967,18 @@ def _cmd_run(
             config.session.auth, log=lambda message: log_event(paths, message)
         )
         auth_gate = build_auth_gate(config, auth_ladder, paths)
+        # One registry for the whole run (plan U1/U2): the runner stamps every
+        # child's spawn, events and exit into it, and each group's liveness
+        # probe reads it back by worktree. Built here, not inside the runner,
+        # so the review loop sees the very same instance.
+        activity = ActivityRegistry()
         runner = build_session_runner(
-            config, gate, auth_ladder=auth_ladder, auth_gate=auth_gate, repo_root=repo_root
+            config,
+            gate,
+            auth_ladder=auth_ladder,
+            auth_gate=auth_gate,
+            repo_root=repo_root,
+            activity=activity,
         )
         try:
             runner.preflight()
@@ -2264,6 +2280,8 @@ def _cmd_run(
             # plan U3: read back regardless of resume, so a resumed run's merge
             # gate still knows what was already red on the launch branch.
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
+            activity=activity,
+            liveness=config.liveness,
         )
         executor_slot.append(make_executor(deps))
 
