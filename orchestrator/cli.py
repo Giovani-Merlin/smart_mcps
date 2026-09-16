@@ -19,6 +19,7 @@ import json
 import os
 import signal
 import sys
+import time
 import tomllib
 import uuid
 from collections.abc import Callable
@@ -53,13 +54,17 @@ from orchestrator.execution.escalation import (
     answer_escalation,
     pending_escalations,
 )
+from orchestrator.execution.decisions import decision_ledger
 from orchestrator.execution.driver import (
     DriverAlreadyRunning,
     DriverLock,
     driver_status_line,
+    read_driver_record,
     unfinished_runs,
 )
-from orchestrator.execution.heartbeat import RoundHeartbeat
+from orchestrator.execution.heartbeat import RoundHeartbeat, read_heartbeat
+from orchestrator.execution.liveness import cures_exhausted_line, liveness_line
+from orchestrator.execution.transcript_events import activity_tail, format_activity_tail
 from orchestrator.execution.manifest import (
     GroupingNameError,
     GroupingSelectionError,
@@ -172,6 +177,7 @@ from orchestrator.model import (
     CoderReport,
     Group,
     GroupingResult,
+    GroupManifestEntry,
     GroupSpec,
     HumanAction,
     ReviewIntensity,
@@ -421,6 +427,15 @@ def main(
         help=(
             "read the guidance from a file, or `-` for stdin — use it for any text "
             "with backticks, quotes or `$`, which a double-quoted --text loses to the shell"
+        ),
+    )
+    answer_cmd.add_argument(
+        "--guidance",
+        action="store_true",
+        help=(
+            "this answer is not a binding Operator Decision — it will not be carried "
+            "into later coder/reviewer prompts of the group. Valid only with --action answer "
+            "(the default); every other action already has no later prompt to carry it into"
         ),
     )
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
@@ -2240,6 +2255,7 @@ def _cmd_run(
                 with_usage_limit_retry(_speccer_json_runner(llm_runner, config), gate),
                 orch_dir / "failures",
                 recorder=JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
+                paths=paths,
             ),
             base_ref_for=base_ref_for,
             provisioning_failure_for=provisioning_failure_for,
@@ -2669,11 +2685,15 @@ def _rewrite_provider(
     llm_runner: JsonRunner,
     failure_dir: Path,
     recorder: JsonlCallRecorder | None = None,
+    paths: RunPaths | None = None,
 ):
     """rewrite_spec seam: one-group skeleton through the mid-run rewrite speccer,
     with the surprises folded in as rewrite context (they are never empty on
     escalation paths — Phase B synthesizes a context surprise for
-    blocked/too_hard/etc.).
+    blocked/too_hard/etc.) and, when ``paths`` is given, the group's binding
+    Operator Decisions (plan U12) — the same ledger the review loop already
+    renders into every coder/reviewer prompt, so a rewrite honours guidance
+    the operator already gave this group.
 
     ``recorder``, when given, appends each rewrite speccer call to the run's own
     ``llm/calls.json`` (plan U14) — the same record shape mapper calls already
@@ -2681,12 +2701,19 @@ def _rewrite_provider(
 
     def rewrite_spec(group: Group, surprises: list[Surprise]) -> Group:
         rewrite_context = [f"[{surprise.kind}] {surprise.description}" for surprise in surprises]
+        ledger = decision_ledger(paths, group.id) if paths is not None else []
+        operator_decisions = [
+            f"[{decision.escalation_id} @ {decision.at}] Q: {decision.question}\n"
+            f"A: {decision.answer}"
+            for decision in ledger
+        ]
         skeleton = {
             group.id: {
                 "tasks": group.tasks,
                 "files": group.files,
                 "previous_spec": group.spec,
                 "rewrite_context": rewrite_context,
+                "operator_decisions": operator_decisions,
             }
         }
         spec = _rewrite_group_spec(
@@ -2698,7 +2725,11 @@ def _rewrite_provider(
             # The call's own record of which group it rewrote and what forced it —
             # the only place a bundle consumer can learn either without re-parsing
             # the prompt it was given.
-            subject={"group_ids": [group.id], "rewrite_context": rewrite_context},
+            subject={
+                "group_ids": [group.id],
+                "rewrite_context": rewrite_context,
+                "operator_decisions": len(operator_decisions),
+            },
         )[group.id]
         return group.model_copy(
             update={
@@ -2844,6 +2875,33 @@ def _run_cost_line(paths: RunPaths) -> str | None:
 # --------------------------------------------------------------------- status
 
 
+def _print_liveness(paths: RunPaths, gid: str, group_entry: GroupManifestEntry) -> None:
+    """Plan U12: the liveness line, cures-exhausted line and activity tail for
+    one active group, printed after its session lines. A group without a
+    heartbeat yet (nothing has ticked, or this run predates the liveness
+    facts) prints nothing extra."""
+    heartbeat = read_heartbeat(paths, gid)
+    if heartbeat is None or heartbeat.get("liveness_window_s") is None:
+        return
+    now = time.time()
+    print(f"  liveness: {liveness_line(heartbeat, now=now)}")
+    record = read_driver_record(paths)
+    driver_pid = record.get("pid") if record else None
+    if driver_pid is not None:
+        exhausted = cures_exhausted_line(heartbeat, paths.run_id, driver_pid)
+        if exhausted is not None:
+            print(f"  {exhausted}")
+    newest_session = None
+    for session in group_entry.sessions:
+        if session.transcript_path:
+            newest_session = session
+    print("  activity:")
+    if newest_session is None:
+        print(format_activity_tail([]))
+    else:
+        print(format_activity_tail(activity_tail(Path(newest_session.transcript_path), n=5)))
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     repo_root = args.repo.resolve()
     runs_dir = repo_root / ".orchestrator" / "runs"
@@ -2914,6 +2972,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
                     f" (retired: {session.retirement_reason})" if session.retirement_reason else ""
                 )
                 print(f"  session {session.name} [{session.role.value}]{retired}")
+            if entry.state in (GroupState.RUNNING, GroupState.REVIEWING, GroupState.MERGING):
+                _print_liveness(paths, gid, group_entry)
 
     pending = pending_escalations(paths)
     if pending:
@@ -2933,6 +2993,13 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     resolve an escalation without touching the running process. The write itself
     lives in ``escalation.answer_escalation`` so the CLI and the Observatory's
     HTTP endpoint share one implementation of the contract."""
+    if args.guidance and args.action != HumanAction.ANSWER.value:
+        print(
+            f"error: --guidance is only valid with --action {HumanAction.ANSWER.value} "
+            f"(got --action {args.action})",
+            file=sys.stderr,
+        )
+        return 2
     paths = RunPaths(args.repo.resolve(), args.run_id)
     text = args.text
     if args.text_file is not None:
@@ -2942,7 +3009,7 @@ def _cmd_answer(args: argparse.Namespace) -> int:
             print(f"error: cannot read --text-file: {exc}", file=sys.stderr)
             return 1
     try:
-        answer_escalation(paths, args.esc_id, args.action, text)
+        answer_escalation(paths, args.esc_id, args.action, text, binding=not args.guidance)
     except EscalationError as exc:
         print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1

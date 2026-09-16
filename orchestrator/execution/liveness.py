@@ -372,7 +372,12 @@ def sign_of_life(
     if current_cpu is not None and prev_cpu is not None and current_cpu > prev_cpu:
         return SignOfLife(at=at, signal="cpu", evidence="cpu advancing", cpu_ticks=current_cpu)
 
-    return SignOfLife(at=None, signal=None, evidence="no signal", cpu_ticks=current_cpu)
+    # A readable-but-unmoving cpu reading (a suspended real process, most
+    # commonly SIGSTOP) is a distinct piece of evidence from a pid this probe
+    # cannot read at all — the latter says nothing about whether the process
+    # is stuck, the former is direct proof that it is.
+    evidence = "cpu flat" if current_cpu is not None else "no signal"
+    return SignOfLife(at=None, signal=None, evidence=evidence, cpu_ticks=current_cpu)
 
 
 # ------------------------------------------------------------ liveness probe
