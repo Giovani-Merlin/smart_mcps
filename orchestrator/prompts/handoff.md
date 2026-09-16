@@ -22,8 +22,11 @@ This worktree owns its own environment: dependency changes require `uv sync`
 run inside the worktree, and any verification item that imports a new dependency
 must pass here, in this worktree.
 
+If an `## Operator decisions (binding)` section appears below, it is binding: it
+overrides the spec above wherever they differ.
+
 Address the outstanding items and finish the spec. Verification items:
 
 $verification
 
-$report_contract
+$report_contract$decisions

@@ -15,6 +15,10 @@ following the worker ground rules in the base context above.
   or data rather than a mock. Items the coder marked `skipped` are fine if the
   reason holds; items marked `pass` on a mocked dependency are not.
 - Scratch directory for this round, if you need one: $scratch_dir
+- If an `## Operator decisions (binding)` section is present below, each decision
+  amends the spec for this group: work that follows it is never self-invented or
+  out of scope, and work that contradicts it is `changes_required`, with the
+  required change citing that decision's escalation id.
 
 $verification
 
@@ -24,4 +28,4 @@ End your final message with EXACTLY ONE verdict block, after any prose:
 {"status": "approved", "required_changes": [], "surprises": [], "notes": "..."}
 </run-report>
 
-Tail restatement: the `<run-report>` tag, `status` one of approved | changes_required | too_hard | structural, exactly one block, valid JSON, nothing after it.
+Tail restatement: the `<run-report>` tag, `status` one of approved | changes_required | too_hard | structural, exactly one block, valid JSON, nothing after it.$decisions

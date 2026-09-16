@@ -14,6 +14,10 @@ For every group id in GROUPS_JSON, produce:
 - `verification`: concrete acceptance checks the worker must satisfy, each with a
   stable `id` (prefix it with the group id) and a `description`.
 
+A group's entry in GROUPS_JSON may carry `operator_decisions`: binding human
+decisions already given to a coder in this group. Incorporate them verbatim into
+the rewritten `spec` and never contradict them.
+
 Return ONLY JSON matching the schema — no prose, no fences.
 
 Plan document:
