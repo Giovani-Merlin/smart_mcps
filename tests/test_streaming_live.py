@@ -121,3 +121,24 @@ def test_a_session_id_is_spent_by_its_first_use_and_the_cli_refuses_the_second(
     )
     combined = f"{second_outcome.stderr}{second_outcome.envelope or ''}"
     assert "already in use" in combined, combined[:400]
+
+
+def test_on_event_sees_a_system_event_before_the_first_assistant_event(tmp_path: Path) -> None:
+    """Plan U1's real-CLI oracle: `fake_claude.py` never emits a `system` init
+    event, so only the real binary can prove `on_event` observes it, ahead of
+    the first `assistant` turn — the ordering the launch-phase rule (plan U2)
+    depends on."""
+    stream = StreamingProcess(ARGV, cwd=tmp_path, env=dict(os.environ))
+    seen: list[str] = []
+    stream.on_event = seen.append
+    started = time.time()
+    stream.start(prompt="Reply with exactly: PONG")
+    outcome = stream.wait()
+    elapsed = time.time() - started
+
+    assert elapsed < ROUND_TIMEOUT_S, f"round did not terminate ({elapsed:.0f}s)"
+    assert outcome.returncode == 0, outcome.stderr
+    assert "system" in seen, seen
+    assert "assistant" in seen, seen
+    assert seen.index("system") < seen.index("assistant")
+    assert outcome.last_assistant_text != ""

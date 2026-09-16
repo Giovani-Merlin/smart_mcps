@@ -16,6 +16,11 @@ Mechanics pinned by the plan's Key Technical Decisions and verified by the U5 sp
 - Usage comes from the JSON envelope. The breaker's context signal is the latest
   round's input + cache_read + cache_creation + output — ``input_tokens`` alone
   counts only non-cached input and grossly understates context.
+
+R7 still holds after plan U1: this module enforces no round or work wall-clock
+limit of its own. ``activity`` (an ``ActivityRegistry``) only stamps evidence
+of what a child last did — liveness is a separate, evidence-only concern that
+a later probe reads, never something this module decides or acts on.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from orchestrator.execution.prompting import (
 )
 from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.auth import AuthLadder, is_auth_error
+from orchestrator.execution.liveness import ActivityRegistry
 from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 from orchestrator.model import CoderReport
@@ -118,6 +124,23 @@ class AuthExpired(SessionError):
     def __init__(self, message: str, detail: str = ""):
         super().__init__(message)
         self.detail = detail or message
+
+
+class SuspendCured(SessionError):
+    """The child exited because a liveness probe killed it as a Suspend Cure
+    (plan U5) — not a broken call.
+
+    ``_invoke`` raises this instead of the generic ``SessionError`` when the
+    exit was nonzero and ``ActivityRegistry.was_cured`` says this pid's death
+    was the probe's doing, not the child's own failure. ``session_id`` is the
+    argv's session id, so a caller (the review loop's worker-call wrapper, plan
+    U5) can warm-resume the exact same session rather than falling back to a
+    fresh generation the way a plain ``SessionError`` does.
+    """
+
+    def __init__(self, message: str, session_id: str):
+        super().__init__(message)
+        self.session_id = session_id
 
 
 #: How a usage limit announces itself on the wire. It exits non-zero with an
@@ -345,6 +368,7 @@ class SessionRunner:
         gate: UsageLimitGate | None = None,
         auth_ladder: AuthLadder | None = None,
         auth_gate: UsageLimitGate | None = None,
+        activity: ActivityRegistry | None = None,
     ):
         self._bin = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
         # Plan U17: the fork/resume (worker) model. ``base_model`` is applied only
@@ -391,6 +415,10 @@ class SessionRunner:
         # usage-limit gate).
         self.auth_ladder = auth_ladder
         self.auth_gate = auth_gate
+        # Plan U1: fed by `_spawn`, read by `RoundHeartbeat` and the liveness
+        # probe (plan U2). `None` — the default — restores exactly today's
+        # behaviour: no activity is recorded anywhere.
+        self.activity = activity
         self._fork_lock = threading.Lock()
         self._usage: dict[str, SessionUsage] = {}
         self._confinement_warned = False
@@ -751,10 +779,19 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
-        returncode, stdout, stderr, deny_signals, first_turn = self._spawn(
+        returncode, stdout, stderr, deny_signals, first_turn, pid = self._spawn(
             argv, cwd=cwd, context=context, on_turn=on_turn, prompt=prompt
         )
         if returncode != 0:
+            # Plan U5: a liveness probe kills a suspended child by pid, which
+            # surfaces here as an ordinary nonzero exit. Checked before any
+            # text-matched classification below, since the probe's kill signal
+            # produces no wording of its own to match against.
+            if self.activity is not None and pid is not None and self.activity.was_cured(pid):
+                raise SuspendCured(
+                    f"claude exited {returncode} ({context}): killed as a suspend cure",
+                    _session_id_from_context(context),
+                )
             detail = _error_detail(stdout, stderr)
             message = f"claude exited {returncode} ({context}): {detail}"
             # Typed, not just worded: `_reenter` needs to tell "this session is
@@ -793,7 +830,7 @@ class SessionRunner:
         context: str,
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         prompt: str | None = None,
-    ) -> tuple[int, str, str, list[str], TurnUsage | None]:
+    ) -> tuple[int, str, str, list[str], TurnUsage | None, int | None]:
         """One tracked subprocess, read incrementally rather than a single
         blocking ``communicate()`` (plan U1): the tracker still sees the PID for
         exactly the round's lifetime (spawned once, exited once — plan U6's
@@ -805,6 +842,9 @@ class SessionRunner:
         parsed: ``stdout`` is the terminal ``result`` stream event re-serialized
         as one JSON line, so every downstream envelope-parsing rule — including
         ``RoundUsage.from_envelope``'s ``iterations[-1]`` fallback — is unchanged.
+        The trailing ``pid`` (plan U1) is ``None`` only if the child never
+        spawned at all; ``_invoke`` needs it to ask the activity registry
+        whether this exit was a Suspend Cure rather than a real failure.
         """
         preexec_fn = None
         if self.confine:
@@ -824,31 +864,53 @@ class SessionRunner:
                 self._confinement_warned = warn_once(
                     result, already_warned=self._confinement_warned
                 )
+        session_id = _session_id_from_context(context)
+        tracker = self.tracker
+        if self.activity is not None:
+            tracker = _ActivityTracker(self.tracker, self.activity, session_id, cwd)
         stream = StreamingProcess(
             argv,
             cwd=cwd,
             env=self._env,
-            tracker=self.tracker,
+            tracker=tracker,
             context=context,
             preexec_fn=preexec_fn,
         )
         if on_turn is not None:
             stream.on_turn = lambda usage: on_turn(usage, stream.send)
+        if self.activity is not None:
+            activity = self.activity
+
+            def _on_event(event_type: str, _stream: StreamingProcess = stream) -> None:
+                activity.note_event(_stream.pid, event_type)
+
+            stream.on_event = _on_event
         stream.start(prompt=prompt)
         try:
             outcome = stream.wait()
         except StreamError as exc:
             raise SessionError(f"claude stream failed ({context}): {exc}") from exc
+        pid = stream.pid
+        if self.activity is not None:
+            self.activity.note_assistant_text(pid, outcome.last_assistant_text)
         if outcome.envelope is None:
             if outcome.returncode == 0:
                 raise SessionError(f"claude stream ended without a terminal result ({context})")
-            return outcome.returncode, "", outcome.stderr, outcome.deny_signals, outcome.first_turn
+            return (
+                outcome.returncode,
+                "",
+                outcome.stderr,
+                outcome.deny_signals,
+                outcome.first_turn,
+                pid,
+            )
         return (
             outcome.returncode,
             json.dumps(outcome.envelope),
             outcome.stderr,
             outcome.deny_signals,
             outcome.first_turn,
+            pid,
         )
 
 
@@ -940,6 +1002,44 @@ def _argv_context(extra: list[str]) -> str:
         if flag in extra:
             return f"{flag} {extra[extra.index(flag) + 1]}"
     return "new session"
+
+
+def _session_id_from_context(context: str) -> str:
+    """The session id out of an ``_argv_context`` string, or "" for a plain
+    new session ("--session-id <id>" and "--resume <id>" are the only two
+    shapes that string ever takes besides the literal "new session")."""
+    prefix, _, value = context.partition(" ")
+    if prefix in ("--session-id", "--resume"):
+        return value
+    return ""
+
+
+class _ActivityTracker:
+    """Adapts ``SessionRunner.tracker`` (if any) and an ``ActivityRegistry``
+    into the single ``SubprocessTracker`` shape ``StreamingProcess`` expects,
+    so plan U1 needs no second, registry-shaped hook on that class."""
+
+    def __init__(
+        self,
+        inner: SubprocessTracker | None,
+        activity: ActivityRegistry,
+        session_id: str,
+        cwd: Path,
+    ) -> None:
+        self._inner = inner
+        self._activity = activity
+        self._session_id = session_id
+        self._cwd = str(cwd)
+
+    def spawned(self, pid: int, context: str) -> None:
+        if self._inner is not None:
+            self._inner.spawned(pid, context)
+        self._activity.spawned(pid, session_id=self._session_id, cwd=self._cwd)
+
+    def exited(self, pid: int) -> None:
+        if self._inner is not None:
+            self._inner.exited(pid)
+        self._activity.exited(pid)
 
 
 _REPORT_RE = re.compile(r"<run-report\b[^>]*>(.*?)</run-report>", re.DOTALL)

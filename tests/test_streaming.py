@@ -7,15 +7,28 @@ live CLI calls, zero tokens (plan R24).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from orchestrator.execution.sessions import SessionError, SessionRunner
-from orchestrator.execution.streaming import TurnUsage
+from orchestrator.execution.streaming import StreamingProcess, TurnUsage
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
+
+STREAM_ARGV = [
+    sys.executable,
+    str(FAKE_CLAUDE),
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--input-format",
+    "stream-json",
+]
 
 
 @pytest.fixture
@@ -237,10 +250,83 @@ def test_a_malformed_user_event_cannot_fail_the_round(fake_home, tmp_path, monke
     assert result.deny_signals == []
 
 
+# -------------------------------------------------------- activity evidence
+
+
+def test_on_event_sees_every_stream_line_in_order_including_result(fake_home, tmp_path):
+    """Plan U1: the raw activity signal a liveness probe stands on. `assistant`,
+    `user` (tool_result) and `result` cover the event shapes `fake_claude.py`
+    can script, and `on_event` must see all three, in order, ending on the
+    terminal `result` line."""
+    script(fake_home, {"result": "OK", "tool_results": ["3 files changed"]})
+    argv = [*STREAM_ARGV, "--session-id", "11111111-1111-1111-1111-111111111111"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+    seen: list[str] = []
+    stream.on_event = seen.append
+    stream.start(prompt="go")
+    outcome = stream.wait()
+
+    assert outcome.envelope is not None
+    assert len(set(seen)) >= 3, seen
+    assert seen[-1] == "result"
+    assert seen == sorted(seen, key=seen.index)  # arrival order preserved
+
+
+def test_a_raising_on_event_hook_does_not_prevent_wait_from_returning(fake_home, tmp_path):
+    script(fake_home, {"result": "OK"})
+    argv = [*STREAM_ARGV, "--session-id", "22222222-2222-2222-2222-222222222222"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+
+    def boom(_event_type: str) -> None:
+        raise RuntimeError("hook exploded")
+
+    stream.on_event = boom
+    stream.start(prompt="go")
+    outcome = stream.wait()
+
+    assert outcome.envelope is not None
+    assert outcome.envelope.get("result") == "OK"
+
+
+def test_last_assistant_text_is_captured_from_the_final_assistant_event(fake_home, tmp_path):
+    script(
+        fake_home,
+        {
+            "result": "OK",
+            "turns": [
+                {"input_tokens": 1, "output_tokens": 1, "text": "first turn"},
+                {"input_tokens": 1, "output_tokens": 1, "text": "last turn"},
+            ],
+        },
+    )
+    argv = [*STREAM_ARGV, "--session-id", "33333333-3333-3333-3333-333333333333"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+    stream.start(prompt="go")
+    outcome = stream.wait()
+
+    assert outcome.last_assistant_text == "last turn"
+
+
+def test_last_assistant_text_is_capped_at_2000_chars(fake_home, tmp_path):
+    script(fake_home, {"result": "OK", "turns": [{"text": "x" * 3000}]})
+    argv = [*STREAM_ARGV, "--session-id", "44444444-4444-4444-4444-444444444444"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+    stream.start(prompt="go")
+    outcome = stream.wait()
+
+    assert len(outcome.last_assistant_text) == 2000
+
+
 def test_tool_result_text_accepts_both_shapes_the_field_takes():
     from orchestrator.execution.streaming import _tool_result_text
 
     assert _tool_result_text("plain string") == "plain string"
-    assert _tool_result_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+    assert (
+        _tool_result_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+    )
     assert _tool_result_text(None) == ""
     assert _tool_result_text([{"type": "image"}]) == ""
