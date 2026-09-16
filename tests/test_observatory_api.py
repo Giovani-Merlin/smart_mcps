@@ -329,6 +329,18 @@ class TestStallEvidence:
             "phase_elapsed_s": None,
             "paused_s": None,
             "round_elapsed_s": None,
+            # Same story for the liveness facts (plan U2/U7): absent until a
+            # LivenessProbe has ticked at least once, so they read null too.
+            "last_event_at": None,
+            "last_event_type": None,
+            "child_pid": None,
+            "child_spawned_at": None,
+            "last_sign_of_life_at": None,
+            "sign_of_life_signal": None,
+            "sign_of_life_evidence": None,
+            "liveness_window_s": None,
+            "cures": None,
+            "max_cures_per_generation": None,
         }
         # 23 minutes of silence is for the client to interpret; the server never
         # says so, and there is no field here in which it could.
@@ -377,6 +389,145 @@ class TestStallEvidence:
         response = client.get("/api/projects/proj/runs/torn/snapshot")
         assert response.status_code == 200
         assert response.json()["groups"][0]["heartbeat"] is None
+
+
+class TestLivenessAndActivityTail:
+    """Plan U7: `GroupHeartbeat` passes the liveness facts g6's `LivenessProbe`
+    writes straight through, and every session with a transcript gets a
+    five-entry `activity_tail` from g9's `transcript_events.activity_tail`.
+    Both are facts only — a run predating either field must still serve `200`
+    with `null`s / `[]`, never an error."""
+
+    def test_liveness_facts_are_served_verbatim(self, tmp_path, repo):
+        run_dir = install_run(repo, "live")
+        heartbeat = {
+            "schema_version": 1,
+            "group_id": "g1",
+            "started_at": "2026-09-16T10:00:00.000+00:00",
+            "generation": 2,
+            "round": 3,
+            "round_started_at": "2026-09-16T10:31:00.000+00:00",
+            "updated_at": "2026-09-16T10:54:00.000+00:00",
+            "last_event_at": "2026-09-16T10:53:58.000+00:00",
+            "last_event_type": "assistant",
+            "child_pid": 4242,
+            "child_spawned_at": "2026-09-16T10:31:05.000+00:00",
+            "last_sign_of_life_at": "2026-09-16T10:53:58.000+00:00",
+            "sign_of_life_signal": "event assistant",
+            "sign_of_life_evidence": "event assistant 2s ago",
+            "liveness_window_s": 600,
+            "cures": 1,
+            "max_cures_per_generation": 2,
+        }
+        group_dir = run_dir / "groups" / "g1"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        (group_dir / "heartbeat.json").write_text(json.dumps(heartbeat))
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = {
+            g["group_id"]: g
+            for g in client.get("/api/projects/proj/runs/live/snapshot").json()["groups"]
+        }
+        beat = groups["g1"]["heartbeat"]
+        assert beat["last_event_at"] == "2026-09-16T10:53:58.000+00:00"
+        assert beat["last_event_type"] == "assistant"
+        assert beat["child_pid"] == 4242
+        assert beat["child_spawned_at"] == "2026-09-16T10:31:05.000+00:00"
+        assert beat["last_sign_of_life_at"] == "2026-09-16T10:53:58.000+00:00"
+        assert beat["sign_of_life_signal"] == "event assistant"
+        assert beat["sign_of_life_evidence"] == "event assistant 2s ago"
+        assert beat["liveness_window_s"] == 600
+        assert beat["cures"] == 1
+        assert beat["max_cures_per_generation"] == 2
+        assert "not_live" not in json.dumps(beat)
+        assert "stalled" not in json.dumps(beat)
+
+    def test_a_run_predating_liveness_facts_serves_nulls_not_an_error(self, client):
+        """The post-mortem fixture's heartbeat.json (if any) predates the
+        liveness fields entirely — this run has none at all, so `heartbeat`
+        itself is `None` (covered above), and here a heartbeat that exists but
+        predates the fields still serves nulls for them."""
+        response = client.get("/api/projects/proj/runs/smoke1/snapshot")
+        assert response.status_code == 200
+        assert all(group["heartbeat"] is None for group in response.json()["groups"])
+
+    def test_five_entry_activity_tail_from_a_real_transcript(self, tmp_path, repo):
+        run_dir = install_run(repo, "activity")
+        transcript = tmp_path / "session.jsonl"
+        lines = [
+            {
+                "type": "user",
+                "uuid": "u0",
+                "timestamp": "2026-09-16T10:00:00.000Z",
+                "message": {"role": "user", "content": "go"},
+            }
+        ]
+        for i in range(6):
+            lines.append(
+                {
+                    "type": "assistant",
+                    "uuid": f"a{i}",
+                    "timestamp": f"2026-09-16T10:0{i}:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": f"tool{i}",
+                                "name": "Bash",
+                                "input": {"command": f"echo step-{i}"},
+                            }
+                        ],
+                    },
+                }
+            )
+            lines.append(
+                {
+                    "type": "user",
+                    "uuid": f"r{i}",
+                    "timestamp": f"2026-09-16T10:0{i}:05.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": f"tool{i}",
+                                "content": "ok",
+                            }
+                        ],
+                    },
+                }
+            )
+        transcript.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        first_group = next(iter(manifest["groups"].values()))
+        first_group["sessions"][0]["transcript_path"] = str(transcript)
+        manifest_path.write_text(json.dumps(manifest))
+
+        registry = write_registry(tmp_path, [("proj", repo)])
+        client = TestClient(create_app(registry_path=registry, dist_dir=tmp_path / "no-dist"))
+
+        groups = client.get("/api/projects/proj/runs/activity/snapshot").json()["groups"]
+        session = next(
+            s for g in groups for s in g["sessions"] if s["transcript_path"] == str(transcript)
+        )
+        tail = session["activity_tail"]
+        assert len(tail) == 5
+        assert [entry["tool"] for entry in tail] == ["Bash"] * 5
+        # Oldest-first, capped at the last 5 of the 6 tool calls the transcript has.
+        assert tail[0]["input_head"] == "echo step-1"
+        assert tail[-1]["input_head"] == "echo step-5"
+        assert all(entry["returned"] for entry in tail)
+
+    def test_a_session_with_no_transcript_gets_an_empty_activity_tail(self, client):
+        body = client.get("/api/projects/proj/runs/smoke1/snapshot").json()
+        sessions = [s for g in body["groups"] for s in g["sessions"]]
+        assert sessions, "fixture must carry at least one session"
+        for session in sessions:
+            assert session["activity_tail"] == []
 
     def test_transcript_mtime_is_served_when_the_file_still_exists(self, tmp_path, repo):
         """The other half of the evidence, recorded by the runner all along and

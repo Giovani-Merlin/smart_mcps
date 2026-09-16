@@ -29,6 +29,7 @@ from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
 from orchestrator.execution.review import surprise_residue
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
+from orchestrator.execution.transcript_events import ActivityEntry, activity_tail
 from orchestrator.execution.worktrees import read_provisioning_record
 from orchestrator.model import GroupingResult, RunManifest, Surprise
 from orchestrator.observatory.registry import Project, find_project, load_registry
@@ -105,6 +106,10 @@ class SnapshotSession(BaseModel):
     # a session is still producing anything. Recorded for free by the runner and
     # until now read by nobody. None when the path is unset or already gone.
     transcript_mtime: datetime | None = None
+    # The last five tool calls this session's transcript recorded (plan U6/U7),
+    # read fresh from the transcript on every snapshot — nothing here is
+    # persisted. Empty when there is no transcript to read yet.
+    activity_tail: list[ActivityEntry] = Field(default_factory=list)
 
 
 class GroupHeartbeat(BaseModel):
@@ -134,6 +139,23 @@ class GroupHeartbeat(BaseModel):
     # from before these fields shipped must not be read as "no pause happened".
     paused_s: float | None = None
     round_elapsed_s: float | None = None
+    # Sign-of-life facts (plan U2), passed through unchanged like everything
+    # else here — absent entirely until a `LivenessProbe` has ticked at least
+    # once, which is what lets a reader tell a pre-liveness heartbeat apart
+    # from a live one with no signal. Still facts only: no "not_live"/"stalled"
+    # key is ever written, and the client derives that itself (see
+    # `livenessLine` in `GroupBoard.tsx`, the same rule `liveness.py`'s
+    # `liveness_line` applies server-side for `status`).
+    last_event_at: str | None = None
+    last_event_type: str | None = None
+    child_pid: int | None = None
+    child_spawned_at: str | None = None
+    last_sign_of_life_at: str | None = None
+    sign_of_life_signal: str | None = None
+    sign_of_life_evidence: str | None = None
+    liveness_window_s: float | None = None
+    cures: int | None = None
+    max_cures_per_generation: int | None = None
 
 
 class WorktreeProvisioning(BaseModel):
@@ -372,6 +394,15 @@ def load_dag(paths: RunPaths) -> tuple[GroupingResult | None, bool]:
     return None, True
 
 
+def _session_activity_tail(transcript_path: str | None) -> list[ActivityEntry]:
+    """The last five tool calls of a session's transcript, or `[]` when there is
+    no transcript to read — a session that never wrote one, and every session
+    recorded before this field shipped, look identical here."""
+    if not transcript_path:
+        return []
+    return activity_tail(Path(transcript_path), n=5)
+
+
 def _transcript_mtime(transcript_path: str | None) -> datetime | None:
     """Last write to a session's transcript, or None if there is nothing to stat."""
     if not transcript_path:
@@ -476,6 +507,7 @@ def _base_session(
             started_at=entry.started_at,
             ended_at=entry.ended_at,
             transcript_mtime=_transcript_mtime(entry.transcript_path),
+            activity_tail=_session_activity_tail(entry.transcript_path),
         )
     return SnapshotSession(
         session_id=manifest.base_session_id,
@@ -654,6 +686,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                             started_at=session.started_at,
                             ended_at=session.ended_at,
                             transcript_mtime=_transcript_mtime(session.transcript_path),
+                            activity_tail=_session_activity_tail(session.transcript_path),
                         )
                         for session in (entry.sessions if entry else [])
                     ],

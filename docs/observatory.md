@@ -199,8 +199,10 @@ disk in a single request:
       "depends_on": ["g0"],
       "sessions": [
         {"session_id": "...", "role": "coder", "generation": 1,
-         "name": "...", "retirement_reason": null, "transcript_path": "/abs/path.jsonl"}
-      ]
+         "name": "...", "retirement_reason": null, "transcript_path": "/abs/path.jsonl",
+         "activity_tail": []}                // the session's last five tool calls; see below
+      ],
+      "heartbeat": null                      // liveness facts, when a LivenessProbe has ticked; see below
     }
   ],
   "edges": [{"from": "g0", "to": "g1"}],  // DAG dependency edges
@@ -213,11 +215,13 @@ disk in a single request:
 - **State + generation + failure** come from `state.json`; the
   **groups → sessions join** comes from `manifest.json`; the **DAG edges** come
   from the run's own `runs/<id>/groups.json` snapshot.
+
 - **`stale_dag`** — the per-run `groups.json` is preferred. `.orchestrator/groups.json`
   is shared across runs and rewritten by every planning cycle, so when only that
   shared file is available the snapshot falls back to it and sets `stale_dag: true`.
   When neither exists the snapshot still returns `200` with `edges: []` and
   `stale_dag: true` rather than erroring.
+
 - **`usage_limit`** — the rate-limit gate's `runs/<id>/usage-limit.json`, passed
   through: `{armed_at, detail, attempt, reset_at, wake_at, released_at}`. `null`
   until the run has ever hit an account limit; a record with `released_at` set is
@@ -225,6 +229,27 @@ disk in a single request:
   there is no "is it paused" boolean, because a persisted verdict becomes a state
   something later branches on. See "Auto-resume after a usage limit" in
   `orchestrator/README.md` for the mechanism behind it.
+
+- **`heartbeat` liveness facts** (plan U2/U7) — once a group's `LivenessProbe`
+  has ticked at least once, `heartbeat.json` (and therefore this field) carries
+  `last_event_at`, `last_event_type`, `child_pid`, `child_spawned_at`,
+  `last_sign_of_life_at`, `sign_of_life_signal`, `sign_of_life_evidence`,
+  `liveness_window_s`, `cures`, `max_cures_per_generation` — passed through
+  unchanged, exactly like the rest of the heartbeat. **Facts only**: there is
+  no `not_live` / `stalled` field on the wire and there must never be one. The
+  board derives "NOT LIVE for …" or "live: …" client-side (`livenessLine` in
+  `GroupBoard.tsx`) by the same rule `orchestrator/execution/liveness.py`'s
+  `liveness_line` applies for `status`, so the two surfaces can never disagree.
+  A run predating these fields (or a group whose probe has never ticked) serves
+  every one of them as `null`, the same degrade path the phase fields already
+  use.
+
+- **`sessions[].activity_tail`** (plan U6/U7) — the last five tool calls that
+  session's transcript recorded, `{at, tool, input_head, returned}`, read fresh
+  from the transcript on every snapshot via `transcript_events.activity_tail` —
+  nothing here is persisted. `[]` when the session has no transcript yet, or the
+  transcript file is missing. The board shows the tail of the group's *newest*
+  session (highest generation, then most recently written within it).
 
 ### Launching work
 
