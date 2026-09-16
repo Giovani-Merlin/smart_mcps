@@ -146,3 +146,61 @@ def test_git_rejects_a_missing_working_directory_with_context(tmp_path):
 
     with pytest.raises(WorktreeError, match="working directory does not exist"):
         _git(tmp_path / "absent", "status")
+
+
+# ------------------------------------------------ ignored outputs survive removal
+
+
+def test_rescue_copies_ignored_deliverables_and_skips_envs_caches_and_symlinks(repo, tmp_path):
+    # r20260905 g2: the plan's four EPUBs were built into an ignored output/
+    # and `git worktree remove` deleted them with the worktree.
+    from orchestrator.execution.worktrees import rescue_ignored_outputs
+
+    (repo / ".gitignore").write_text("output/\n.venv/\n__pycache__/\ndata\n*.log\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-m", "ignore")
+    (repo / "output" / "epub").mkdir(parents=True)
+    (repo / "output" / "epub" / "book.epub").write_bytes(b"PK\x03\x04epub")
+    (repo / "render.log").write_text("rendered\n")
+    (repo / ".venv" / "lib").mkdir(parents=True)
+    (repo / ".venv" / "lib" / "site.py").write_text("x\n")
+    (repo / "pkg" / "__pycache__").mkdir(parents=True)
+    (repo / "pkg" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\0")
+    shared = tmp_path / "shared-data"
+    shared.mkdir()
+    (shared / "corpus.txt").write_text("big\n")
+    (repo / "data").symlink_to(shared)
+
+    dest = tmp_path / "rescued"
+    logged: list[str] = []
+    rescued = rescue_ignored_outputs(repo, dest, cap_bytes=10_000, log=logged.append)
+
+    assert sorted(rescued) == ["output/epub/book.epub", "render.log"]
+    assert (dest / "output" / "epub" / "book.epub").read_bytes() == b"PK\x03\x04epub"
+    assert not (dest / ".venv").exists() and not (dest / "data").exists()
+    assert len(logged) == 1 and "rescued 2 git-ignored file(s)" in logged[0]
+
+
+def test_rescue_names_files_past_the_cap_instead_of_copying_them(repo, tmp_path):
+    from orchestrator.execution.worktrees import rescue_ignored_outputs
+
+    (repo / ".gitignore").write_text("output/\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-m", "ignore")
+    (repo / "output").mkdir()
+    (repo / "output" / "a.bin").write_bytes(b"a" * 60)
+    (repo / "output" / "b.bin").write_bytes(b"b" * 60)
+
+    dest = tmp_path / "rescued"
+    rescued = rescue_ignored_outputs(repo, dest, cap_bytes=100)
+
+    assert rescued == ["output/a.bin"]
+    assert "output/b.bin (60 bytes)" in (dest / "skipped.txt").read_text()
+
+
+def test_rescue_on_a_clean_worktree_writes_nothing(repo, tmp_path):
+    from orchestrator.execution.worktrees import rescue_ignored_outputs
+
+    dest = tmp_path / "rescued"
+    assert rescue_ignored_outputs(repo, dest, cap_bytes=100) == []
+    assert not dest.exists()

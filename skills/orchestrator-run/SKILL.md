@@ -54,6 +54,12 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    directory must exist and be non-empty (`find <dir> -type f | head -1`).
    `[session] provision_on_failure = "warn"` is only acceptable with a stated
    reason — the default `fail` is what stops a run whose venv never built.
+   `[docs] formats` must be non-empty unless the human declines a report: with
+   no formats `finish` writes no report and the one-pager has nowhere to land
+   (`run` also warns at launch). Every deliverable the plan leaves on disk
+   (EPUBs, renders, media) must land under a `data_dirs` path — anything
+   git-ignored elsewhere is only rescued as a capped copy into
+   `.orchestrator/runs/$RUN/groups/<gid>/ignored-outputs/`.
 3. **Grouping exists and is current.** `smart-mcps-orchestrate groupings`.
    If the plan file is newer than the grouping's `groups.json`, or the plan
    was deepened since, regenerate: `smart-mcps-orchestrate plan-check <plan>`
@@ -135,7 +141,14 @@ that fires on any of:
   `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`.
 
 Plus a slow heartbeat (20–30 min) that runs `smart-mcps-orchestrate status $RUN` and checks the driver line: `progressing (Ns since last heartbeat)` is
-healthy; `heartbeat is stale` for more than one round length is a wedge;
+healthy — but only for the driver, not the work: after a machine suspend
+the driver can keep heartbeating while the coder child is dead and the phase
+never moves (r20260908: 18 min in `starting the coder`). If a phase has not
+changed across two heartbeats **and** the group's worktree and transcript
+have no new writes, it is a wedge: `kill -INT -<pgid>`, then `resume`. The
+inverse also happens (r20260913 g16 showed `starting the coder` for 14 min
+while editing files), so check the worktree before killing anything.
+`heartbeat is stale` for more than one round length is a wedge;
 `no process is driving this run` with unfinished groups means the process
 died — inspect `driver.log`, then `resume`. A run paused on a usage limit
 announces itself on the group heartbeats and reads as *paused*, not wedged —
@@ -282,11 +295,15 @@ When the process exits (signal **(b)**):
         not skip the loop. Leaving `one-pager.md` absent is fine — `finish`
         generates the other formats without it and the PR body falls back
         to the run-record lines and the report link.
-   4. Before the integration worktree is removed, list what the run produced
-      **outside git** there — `git -C .worktrees/$RUN/integration status
-      --ignored --porcelain` — and move anything worth keeping (rendered
-      chapters, exported media, generated reports) somewhere durable. `finish`
-      removes the worktree and everything ignored or untracked goes with it.
+   4. Check what the run produced **outside git**. A group worktree's
+      git-ignored files are copied into
+      `.orchestrator/runs/$RUN/groups/<gid>/ignored-outputs/` before merge or
+      `finish` removes it (environments and caches skipped; past the cap they
+      are only named in `skipped.txt`; the `rescued N git-ignored file(s)`
+      line is in `logs/run.log`), and untracked changes go into
+      `leftover.patch`. Move anything the human needs from there, or from
+      `git -C .worktrees/$RUN/integration status --ignored --porcelain`,
+      somewhere durable.
    5. Run `smart-mcps-orchestrate finish $RUN` (again, to refresh the PR body)
       only after the human has seen the one-pager — it copies
       `.orchestrator/notes-$RUN.md` into the run dir as `driver-notes.md`,
@@ -324,4 +341,14 @@ When the process exits (signal **(b)**):
   groups fork clean).
 - **Never clean a worktree.** Inspect, commit, cherry-pick — never `git clean`,
   never `reset --hard` on a group's branch.
+- **Look at what changed before stopping work.** A running render or LLM call
+  is not evidence of threshold-chasing; diff the artifacts it is producing
+  first (r20260908: a render the driver interrupted was repairing a real
+  defect).
+- **Changes to how the output reads go to the human.** A worker commit that
+  retunes a band, threshold or prompt shaping the product's texture is a
+  decision to put to the human, even when it is inside the spec's letter.
+- **Match processes by script path, never `pkill -f`/`pgrep -f` on a word.**
+  The pattern matches this session's own shell (r20260913: exit 144 and a
+  waiter that never returned); use `ps -eo pid,cmd | awk` on the full path.
 - **Notes are written as you go**, to `.orchestrator/notes-<run_id>.md`.

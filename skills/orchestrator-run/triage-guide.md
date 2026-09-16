@@ -16,12 +16,22 @@ read, what "good" looks like, and the exact command. Paths below assume
 The answer command, in every case:
 
 ```sh
-smart-mcps-orchestrate answer $RUN $ESC --action <answer|retry|skip|abort> --text "<why>"
+smart-mcps-orchestrate answer $RUN $ESC --action <answer|retry|skip|abort> --text-file - <<'NOTE'
+<why — backticks, quotes and $ survive verbatim>
+NOTE
 ```
 
-`--text` is required in spirit for `answer` and `retry` — it is what the next
+The text is required in spirit for `answer` and `retry` — it is what the next
 coder reads. It is write-once: a second `answer` for the same id fails with
-"already answered" and must not be retried.
+"already answered" and must not be retried. So:
+
+- **Any note with a backtick, `$` or quote goes through `--text-file`** (a
+  quoted heredoc as above, or a file). A double-quoted `--text` is
+  command-substituted by the shell before the CLI sees it — r20260907 lost
+  six backticked terms from a note that way. Short plain text may use `--text`.
+- **Check the echo**: `answered <id>: <action> (N chars recorded)`. If N is
+  far below what you wrote, `cat escalations/response-$ESC.json` and tell the
+  human; the answer cannot be corrected.
 
 ## The two resolutions that cost nothing vs the one that costs a rewrite
 
@@ -125,6 +135,15 @@ smart-mcps-orchestrate answer $RUN $ESC --action answer --text "Use the LRU cach
 Ask the human only when the question is a product choice, and hand them 2–3
 concrete candidates.
 
+**A `coder_question` answer lives only in that coder's session.** If the
+answer changes scope or acceptance (fewer chapters, a threshold reported
+instead of cleared), a later generation's coder and reviewer never see it —
+r20260913 g5's gen2 reviewer called the human's four-chapter decision
+"self-invented" and forced a revert. Until the orchestrator carries it: when
+the coder retires or the group reaches a new generation, expect the conflict,
+and settle it with a spec-rewrite `answer` that quotes the human verbatim.
+Write every such decision in the notes file the moment it is made.
+
 ### `merge_conflict`
 
 Read: the `surprises` on the request (which groups collide on which files),
@@ -188,6 +207,9 @@ branch or the plan is wrong. Do not answer group by group:
 ## When a terminal `failed` line appears without an escalation
 
 `group $GID: terminal failed — branch …, worktree …, retry with: smart-mcps-orchestrate retry $RUN $GID` means the group hit its re-entry
-cap or `on_group_failure=halt` classed it terminal. That `retry` is the
+cap or `on_group_failure=halt` classed it terminal. Resumes after you stopped
+the driver with `kill -INT`/`-TERM` do not count toward that cap — only
+resumes after a crash or reboot do. `status` keeps showing the old failure
+line after `retry` until the next `resume` picks the group up. That `retry` is the
 **subcommand** (release the group), not the escalation action. Run it only
 after the cause is fixed on the integration branch, then `resume`.

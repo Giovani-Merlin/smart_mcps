@@ -718,6 +718,31 @@ class TestAnswerCommand:
         assert response.action == HumanAction.ANSWER and response.answer == "use JWT"
         assert "answered e1" in capsys.readouterr().out
 
+    def test_answer_text_file_keeps_backticks_and_dollars_verbatim(self, tmp_path, capsys):
+        # r20260907: backticked terms in a double-quoted --text were command-
+        # substituted away before the coder ever saw the note.
+        paths = self._write_request(tmp_path, esc_id="e5")
+        note = tmp_path / "note.md"
+        note.write_text("run `gab judge` on $CHAPTER, not `scheinen`\n")
+        argv = ["answer", "r1", "e5", "--text-file", str(note), "--repo", str(tmp_path)]
+        assert main(argv) == 0
+        response = EscalationResponse.model_validate_json(
+            (paths.escalations_dir / "response-e5.json").read_text()
+        )
+        assert response.answer == note.read_text()
+        assert f"({len(note.read_text())} chars recorded)" in capsys.readouterr().out
+
+    def test_answer_text_file_dash_reads_stdin(self, tmp_path, monkeypatch):
+        import io
+
+        paths = self._write_request(tmp_path, esc_id="e6")
+        monkeypatch.setattr("sys.stdin", io.StringIO("from `stdin`"))
+        assert main(["answer", "r1", "e6", "--text-file", "-", "--repo", str(tmp_path)]) == 0
+        response = EscalationResponse.model_validate_json(
+            (paths.escalations_dir / "response-e6.json").read_text()
+        )
+        assert response.answer == "from `stdin`"
+
     def test_answer_unknown_escalation_is_actionable(self, tmp_path, capsys):
         exit_code = main(["answer", "r1", "nope", "--repo", str(tmp_path)])
         assert exit_code == 1

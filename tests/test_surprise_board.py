@@ -198,3 +198,43 @@ def test_residue_report_lists_every_bucket_with_its_own_reason(tmp_path):
     report = format_residue_report(entries)
     for bucket in reasons:
         assert bucket in report
+
+
+# ------------------------------------------- decorated ids and future-work findings
+
+
+def test_decorated_id_resolves_through_the_plan_task_token():
+    # r20260908 g8 wrote "g3 (structure-fix-budget/U8)": the group id was a
+    # wrong guess, the plan's task id was right, and the finding went nowhere.
+    groups = [make_group("g3", tasks=["u11-lexicon-build"])]
+    groups.append(make_group("g14", tasks=["u8-structure-fix-budget"]))
+    board = SurpriseBoard(groups=groups)
+    s = surprise("false start ships as chapter text", ["g3 (structure-fix-budget/U8)"])
+    board.mark(s, source_group="g8")
+    assert board.pending_for("g14") == [s]
+    assert board.pending_for("g3") == []
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == []
+
+
+def test_decorated_id_with_only_a_group_token_resolves_to_that_group():
+    board = SurpriseBoard(groups=thirteen_groups())
+    s = surprise("x", ["g7 (the docs group)"])
+    board.mark(s, source_group="g1")
+    assert board.pending_for("g7") == [s]
+
+
+def test_prose_target_and_empty_target_both_land_in_the_run_level_list():
+    board = SurpriseBoard(groups=thirteen_groups())
+    prose = surprise("affects later rounds", ["future rounds using this pipeline"])
+    empty = surprise("affects later rounds too", [])
+    board.mark(prose, source_group="g1")
+    board.mark(empty, source_group="g1")
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [prose, empty]
+
+
+def test_slug_word_is_not_mistaken_for_a_task_id():
+    board = SurpriseBoard(groups=[make_group("g1", tasks=["lexicon-build"])])
+    s = surprise("x", ["the lexicon work"])
+    board.mark(s, source_group="g2")
+    assert board.pending_for("g1") == []
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [s]

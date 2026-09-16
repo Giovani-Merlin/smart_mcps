@@ -675,6 +675,53 @@ async def test_group_quarantined_after_max_reentries_is_not_readmitted(tmp_path)
     }
 
 
+@pytest.mark.asyncio
+async def test_resume_after_a_signal_stop_does_not_count_toward_quarantine(tmp_path):
+    # r20260908 g8: four operator Ctrl-C + resume cycles on a wedged driver
+    # quarantined a group that had done nothing wrong.
+    from orchestrator.config import BreakerConfig
+
+    paths = RunPaths(tmp_path, "r1")
+
+    async def always_interrupts(ctx):
+        raise RuntimeError("driver wedged")
+
+    scheduler = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=always_interrupts,
+        breaker=BreakerConfig(max_reentries=1),
+    )
+    await scheduler.run()
+
+    for _ in range(3):
+        stopper = Scheduler(
+            groups=[make_group("g1")], paths=paths, executor=always_interrupts, resume=True
+        )
+        stopper.mark_interrupted()  # the SIGINT path stamps state.json on the way out
+        resumed = Scheduler(
+            groups=[make_group("g1")],
+            paths=paths,
+            executor=always_interrupts,
+            breaker=BreakerConfig(max_reentries=1),
+            resume=True,
+        )
+        await resumed.run()
+        assert resumed.state.groups["g1"].quarantined is False
+        assert resumed.state.groups["g1"].reentry_count == 0
+
+    # A resume after a crash (no interrupted_at stamp) still counts.
+    crashed = Scheduler(
+        groups=[make_group("g1")],
+        paths=paths,
+        executor=always_interrupts,
+        breaker=BreakerConfig(max_reentries=1),
+        resume=True,
+    )
+    await crashed.run()
+    assert crashed.state.groups["g1"].reentry_count == 1
+
+
 def test_max_reentries_defaults_to_three():
     from orchestrator.config import BreakerConfig
 

@@ -24,14 +24,23 @@ follows it.
 - Run long or real verification (a full suite, a pipeline over real data, a
   render) in the **foreground** and wait for it. A background task is killed
   when your session ends its turn, so a verification you backgrounded never
-  finishes and its `pass` is a guess.
+  finishes and its `pass` is a guess. One tool call is capped at 10 minutes:
+  a single command that needs longer (a long render, a slow pipeline) cannot
+  finish inside a call and cannot be backgrounded across your turn. Run what
+  fits in parts (one chapter, one input, resuming from what is already on
+  disk); if the step cannot be split, report it `skipped` with the exact
+  command and its expected duration instead of relaunching it again.
 - Data and large binaries never go through git. Directories that appear in
   your worktree as symlinks (the run's shared data directories) are shared
   live with every other group and the integration tree: put downloads,
   models, corpora and generated media there and read inputs from there. Do
   not commit any file above ~50 MB; the orchestrator relocates such files out
   of git for you, but a symlink where you expected a file means exactly that
-  happened.
+  happened. Those symlinks resolve outside your worktree, so `ls`/`find` on
+  them is refused ("may only list files in the allowed working directories")
+  — that refusal is not evidence the data is missing. List them with the
+  Glob tool, read them with Read, and let the project's own commands open
+  them; never report shared data absent on the strength of a refused `ls`.
 - Implement the spec you are given fully — code and tests — following the
   conventions established above.
 - Commit early and often: after each self-contained step that leaves the
@@ -127,3 +136,8 @@ closing tag.
   group's assignment — an interface mismatch, a missing dependency, work that
   belongs elsewhere. Record it instead of fixing it yourself:
   `{"kind": "interface_mismatch" | "missing_dependency" | "merge_conflict" | "other", "description": "...", "affected_groups": ["g2"]}`
+  Each `affected_groups` entry is one bare id — a plan task id (`u8`) or a
+  group id (`g2`), nothing around it. Prefer the plan's task id when you are
+  not sure which group owns the work. A finding that matters for later work
+  but no group in this run (a defect worth a future round) takes
+  `"affected_groups": []`; it is carried into the run's end-of-run report.

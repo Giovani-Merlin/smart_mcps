@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 import threading
 import uuid
@@ -124,6 +125,9 @@ _logger = logging.getLogger(__name__)
 #: rewrite-worthy broadcast.
 WIDE_FANOUT_THRESHOLD = 5
 
+#: One id-like token inside a decorated ``affected_groups`` entry.
+_ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
 
 class SurpriseBoard:
     """Cross-group surprise registry. A mark is consumed by the named group's
@@ -156,10 +160,18 @@ class SurpriseBoard:
             frozenset(g.id for g in groups) if groups is not None else None
         )
         self._task_owner: dict[str, str] = {}
+        # Case-folded full task ids and their leading token ("u8" for
+        # "u8-structure-fix-budget"): workers name tasks the way the plan does
+        # ("U8"), not by the slugged id the grouper assigned.
+        self._task_alias_owner: dict[str, str] = {}
         if groups is not None:
             for group in groups:
                 for task in group.tasks:
                     self._task_owner.setdefault(task, group.id)
+                    self._task_alias_owner.setdefault(task.lower(), group.id)
+                    head = task.split("-", 1)[0].lower()
+                    if any(ch.isdigit() for ch in head):
+                        self._task_alias_owner.setdefault(head, group.id)
         if paths is not None and paths.surprises_path.is_file():
             raw = json.loads(paths.surprises_path.read_text())
             self._pending = {
@@ -176,27 +188,48 @@ class SurpriseBoard:
                     len(targets),
                     surprise.description,
                 )
+            keys: list[str] = []
             for gid in targets:
-                key = self._resolve(gid, surprise, source_group)
+                for key in self._resolve(gid, surprise, source_group):
+                    if key not in keys:
+                        keys.append(key)
+            if not keys and self._group_ids is not None:
+                # No other group named (an empty list, or only the source
+                # itself): a finding about future work, which must reach the
+                # run's residue report rather than vanish.
+                keys.append(self.RUN_LEVEL)
+            for key in keys:
                 self._append(key, surprise)
             self._persist()
 
-    def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> str:
-        """Map a raw ``affected_groups`` id to the bucket it should land in."""
+    def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> list[str]:
+        """Map a raw ``affected_groups`` id to the buckets it should land in."""
         if self._group_ids is None:
-            return gid  # no group list configured — legacy, unvalidated behavior
+            return [gid]  # no group list configured — legacy, unvalidated behavior
         if gid in self._group_ids:
-            return gid
+            return [gid]
         owner = self._task_owner.get(gid)
         if owner is not None:
-            return owner
+            return [owner]
+        # A decorated id — "g3 (structure-fix-budget/U8)" in r20260908. Plan
+        # task ids are what a worker actually knows, so a task token wins over
+        # a group token that may be a guess.
+        tokens = [t.lower() for t in _ID_TOKEN.findall(gid)]
+        task_owners = [self._task_alias_owner[t] for t in tokens if t in self._task_alias_owner]
+        group_hits = [t for t in tokens if t in self._group_ids]
+        resolved = list(dict.fromkeys(task_owners or group_hits))
+        if resolved:
+            _logger.info(
+                "surprise from %s names %r — resolved to %s", source_group, gid, ", ".join(resolved)
+            )
+            return resolved
         _logger.warning(
             "surprise from %s names unknown id %s (no matching group or task): %s",
             source_group,
             gid,
             surprise.description,
         )
-        return self.RUN_LEVEL
+        return [self.RUN_LEVEL]
 
     def _append(self, key: str, surprise: Surprise) -> None:
         """Append, deduplicating an identical surprise already pending in this

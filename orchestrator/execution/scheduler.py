@@ -284,6 +284,7 @@ class Scheduler:
         self.config = config or ExecutionConfig()
         self.breaker = breaker or BreakerConfig()
         self._resume = resume
+        self._previous_exit_was_signal = False
         # HITL seam (plan U2), mirroring ReviewDeps: both None ⇒ a FAILED group's
         # resolve runs autonomously with no escalation, byte-identical to a run
         # with escalation disabled.
@@ -301,6 +302,9 @@ class Scheduler:
             if found_version != RUN_STATE_SCHEMA_VERSION:
                 raise RunStateVersionError(found_version, RUN_STATE_SCHEMA_VERSION)
             self.state = RunState.model_validate(raw)
+            # Read before it is cleared: a previous process that left through
+            # the SIGINT/SIGTERM path stamped it, a crash or reboot did not.
+            self._previous_exit_was_signal = self.state.interrupted_at is not None
             # A driver is attached again, so the run is no longer interrupted —
             # whatever happens next writes its own marker.
             self.state.interrupted_at = None
@@ -395,12 +399,21 @@ class Scheduler:
         `resume` stops picking it up automatically and `retry` is what releases
         it. Already-quarantined groups are left untouched — the count does not
         keep climbing every idle `resume`.
+
+        A resume after the previous driver was stopped by a signal does not
+        count: the budget bounds groups that keep taking the driver down, and an
+        operator's Ctrl-C (or Observatory Stop) on a wedged driver is not that.
+        r20260908 g8 was quarantined by four operator restarts after laptop
+        suspends, none of them the group's fault.
         """
         with self._lock:
             for gid, entry in self.state.groups.items():
                 if entry.state in TERMINAL_STATES or entry.state == GroupState.PENDING:
                     continue
                 if entry.quarantined:
+                    continue
+                if self._previous_exit_was_signal:
+                    entry.state = GroupState.READY
                     continue
                 entry.reentry_count += 1
                 if entry.reentry_count > self.breaker.max_reentries:

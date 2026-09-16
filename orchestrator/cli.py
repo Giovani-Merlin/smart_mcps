@@ -408,10 +408,20 @@ def main(
             "skip (fail the group) | abort (stop the run)"
         ),
     )
-    answer_cmd.add_argument(
+    answer_text = answer_cmd.add_mutually_exclusive_group()
+    answer_text.add_argument(
         "--text",
         default="",
         help="free-text guidance for --action answer / what you fixed for retry",
+    )
+    answer_text.add_argument(
+        "--text-file",
+        type=Path,
+        default=None,
+        help=(
+            "read the guidance from a file, or `-` for stdin — use it for any text "
+            "with backticks, quotes or `$`, which a double-quoted --text loses to the shell"
+        ),
     )
     answer_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
@@ -1998,6 +2008,17 @@ def _cmd_run(
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.
         log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
+        if not config.docs.formats:
+            # Opt-in by design, but an empty list looks exactly like a run with
+            # nothing to report: every learning_podcast run through r20260908
+            # pushed a PR with no report and nobody noticed.
+            message = (
+                "[docs] formats is empty — `finish` will write no facts.json, report.html "
+                "or changelog entry, and a one-pager has nowhere to land "
+                '(set `[docs] formats = ["facts", "html", "changelog"]` in .orchestrator/config.toml)'
+            )
+            print(f"warning: {message}", file=sys.stderr)
+            log_event(paths, f"run {run_id}: {message}")
 
         merger = IntegrationMerger(
             repo_root,
@@ -2913,12 +2934,21 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     lives in ``escalation.answer_escalation`` so the CLI and the Observatory's
     HTTP endpoint share one implementation of the contract."""
     paths = RunPaths(args.repo.resolve(), args.run_id)
+    text = args.text
+    if args.text_file is not None:
+        try:
+            text = sys.stdin.read() if str(args.text_file) == "-" else args.text_file.read_text()
+        except OSError as exc:
+            print(f"error: cannot read --text-file: {exc}", file=sys.stderr)
+            return 1
     try:
-        answer_escalation(paths, args.esc_id, args.action, args.text)
+        answer_escalation(paths, args.esc_id, args.action, text)
     except EscalationError as exc:
         print(f"error: {exc} (check `status {args.run_id}`)", file=sys.stderr)
         return 1
-    print(f"answered {args.esc_id}: {args.action}")
+    # An answer is write-once: echo what was recorded so a mangled note is
+    # caught now, not by the coder that receives it.
+    print(f"answered {args.esc_id}: {args.action} ({len(text)} chars recorded)")
     return 0
 
 

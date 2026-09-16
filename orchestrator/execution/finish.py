@@ -26,9 +26,10 @@ from orchestrator.execution.manifest import (
     effective_group,
 )
 from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, REVIEW_SCRATCH_DIRNAME
-from orchestrator.execution.review import format_residue_report, surprise_residue
+from orchestrator.execution.review import SurpriseBoard, format_residue_report, surprise_residue
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.execution.worktrees import (
+    IGNORED_OUTPUTS_DIRNAME,
     _branch_exists,
     _git,
     _git_ok,
@@ -38,6 +39,7 @@ from orchestrator.execution.worktrees import (
     integration_branch,
     is_dirty,
     remove_worktree,
+    rescue_ignored_outputs,
     worktree_path,
 )
 from orchestrator.model import GroupingResult, RunManifest
@@ -160,7 +162,7 @@ def finish_run(
         if not _group_is_merged(repo_root, run_id, tip, gid, entry):
             unmerged.append(gid)
             continue
-        _teardown_group(repo_root, run_id, gid, paths)
+        _teardown_group(repo_root, run_id, gid, paths, log=log)
         gbranch = group_branch(run_id, gid)
         if not _delete_branch_if_merged(integration_wt, gbranch):
             kept_branches.append(gid)
@@ -387,14 +389,26 @@ def _render_pr_body(
     lines.append("## Run record")
     lines.append("")
     lines.extend(changelog_header_lines(facts))
-    report_rel = f"{config.docs.out_dir}/{facts.run_id}/report.html"
-    lines.append(
-        f"- **Report**: the complete record is [`{report_rel}`]({report_rel}) on this branch "
-        f"(`{report_rel}`)"
-    )
+    if "html" in config.docs.formats:
+        report_rel = f"{config.docs.out_dir}/{facts.run_id}/report.html"
+        lines.append(
+            f"- **Report**: the complete record is [`{report_rel}`]({report_rel}) on this branch "
+            f"(`{report_rel}`)"
+        )
     lines.append("")
     if facts.trouble:
         lines.append(render_postmortem(facts))
+        lines.append("")
+    residue = surprise_residue(paths, state)
+    if residue:
+        # A finding no group could take (a future-work surprise, or one whose
+        # target had already merged) otherwise lives only in driver.log.
+        lines.append("## Findings no group picked up")
+        lines.append("")
+        for entry in residue:
+            label = "future work" if entry.bucket == SurpriseBoard.RUN_LEVEL else entry.bucket
+            for surprise in entry.surprises:
+                lines.append(f"- **{label}** ({surprise.kind}): {surprise.description}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -469,7 +483,14 @@ def _group_name(paths: RunPaths, group_id: str) -> str:
     raise FinishError(f"group {group_id} not found in {paths.groups_path}")
 
 
-def _teardown_group(repo_root: Path, run_id: str, gid: str, paths: RunPaths) -> None:
+def _teardown_group(
+    repo_root: Path,
+    run_id: str,
+    gid: str,
+    paths: RunPaths,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
     """Archive remaining scratch, write a leftover patch for any uncommitted
     change, then force-remove the worktree (plan U9). A no-op when the
     worktree is already gone."""
@@ -492,6 +513,12 @@ def _teardown_group(repo_root: Path, run_id: str, gid: str, paths: RunPaths) -> 
                 cap_bytes=ExecutionConfig().review_scratch_cap_bytes,
                 log=None,
             )
+    rescue_ignored_outputs(
+        worktree,
+        paths.group_dir(gid) / IGNORED_OUTPUTS_DIRNAME,
+        cap_bytes=ExecutionConfig().review_scratch_cap_bytes,
+        log=log,
+    )
     if is_dirty(worktree):
         _write_leftover_patch(worktree, paths.group_dir(gid) / "leftover.patch")
     remove_worktree(repo_root, worktree, force=True)
@@ -504,7 +531,7 @@ def _write_leftover_patch(worktree: Path, dest: Path) -> None:
     and it is what makes untracked files show up in the diff at all."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     _git(worktree, "add", "-A")
-    diff = _git(worktree, "diff", "--cached").stdout
+    diff = _git(worktree, "diff", "--cached", "--binary").stdout
     dest.write_text(diff)
 
 

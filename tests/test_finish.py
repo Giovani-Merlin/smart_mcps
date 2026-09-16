@@ -257,7 +257,7 @@ def _one_pager(run_id: str) -> str:
     )
 
 
-def test_pr_body_without_one_pager_is_header_lines_link_and_postmortem(repo, tmp_path, monkeypatch):
+def test_pr_body_without_one_pager_is_header_lines_and_postmortem(repo, tmp_path, monkeypatch):
     run_id = "r3"
     merged = make_group("g1")
     unmerged = make_group("g2")
@@ -292,7 +292,8 @@ def test_pr_body_without_one_pager_is_header_lines_link_and_postmortem(repo, tmp
     assert "## Run record" in body
     assert "**Outcome**: 1/2 groups completed" in body
     assert "**Scope**" in body and "**Cost**" in body
-    assert f"docs/runs/{run_id}/report.html" in body
+    # No `[docs] formats` configured: no report.html exists, so none is linked.
+    assert "report.html" not in body
     # No one-pager: no TL;DR section, and none of the old fixed headings.
     assert "## TL;DR" not in body
     for heading in ("## Motivation", "## Changes", "## Risks", "## Testing", "## Handoff"):
@@ -301,6 +302,33 @@ def test_pr_body_without_one_pager_is_header_lines_link_and_postmortem(repo, tmp
     # carries a postmortem naming the failure verbatim.
     assert "## Postmortem" in body
     assert "boom" in body
+
+
+def test_pr_body_lists_findings_no_group_picked_up(repo, tmp_path, monkeypatch):
+    from orchestrator.execution.review import SurpriseBoard
+    from orchestrator.model import Surprise
+
+    run_id = "r3r"
+    group = make_group("g1")
+    paths, merger = setup_run(repo, run_id, [group], launch_branch="main")
+    merge_group_cleanly(repo, run_id, merger, group)
+    write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
+    board = SurpriseBoard(paths, groups=[group])
+    board.mark(
+        Surprise(kind="other", description="failed parse ships as text", affected_groups=[]),
+        source_group="g1",
+    )
+    add_origin(repo, github_url=True)
+    bin_dir = tmp_path / "fakebin"
+    body_capture = tmp_path / "pr-body.txt"
+    write_fake_gh(bin_dir, body_capture=body_capture)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    finish_run(repo, run_id, announce=lambda _m: None)
+
+    body = body_capture.read_text()
+    assert "## Findings no group picked up" in body
+    assert "- **future work** (other): failed parse ships as text" in body
 
 
 def test_pr_body_with_one_pager_starts_with_its_tldr_and_ends_with_the_report_link(
@@ -507,11 +535,19 @@ def test_leftover_patch_written_before_force_removal(repo, tmp_path):
     integration_wt = merger.ensure()
     git(integration_wt, "merge", "--no-ff", "-m", "manual merge", group_branch(run_id, group.id))
     (wt / "leftover.txt").write_text("uncommitted\n")
+    (wt / ".git-ignored-output").mkdir()
+    git(wt, "config", "core.excludesFile", str(tmp_path / "global-ignore"))
+    (tmp_path / "global-ignore").write_text(".git-ignored-output/\n")
+    (wt / ".git-ignored-output" / "book.epub").write_bytes(b"PK")
 
     write_state(paths, {group.id: GroupRunState(state=GroupState.COMPLETED)})
     add_origin(repo, github_url=False)
 
     finish_run(repo, run_id, announce=lambda _m: None)
+
+    # An ignored file is in neither the merge nor the patch — it is rescued.
+    rescued = paths.group_dir(group.id) / "ignored-outputs" / ".git-ignored-output" / "book.epub"
+    assert rescued.read_bytes() == b"PK"
 
     patch_path = paths.group_dir(group.id) / "leftover.patch"
     assert patch_path.is_file()
