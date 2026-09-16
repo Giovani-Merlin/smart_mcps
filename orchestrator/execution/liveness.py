@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import signal
 import threading
 import time
 from collections.abc import Callable
@@ -262,6 +263,60 @@ def descendants(pid: int, *, proc_root: Path = Path("/proc")) -> list[ProcChild]
     return result
 
 
+def _proc_alive(pid: int, proc_root: Path) -> bool:
+    """Whether *pid* still has a readable ``/proc/<pid>/stat`` — the same
+    liveness test the rest of this module already uses, so a pid this
+    function calls dead is dead by the identical definition every other
+    reader here applies."""
+    return _read_stat_fields(pid, proc_root) is not None
+
+
+def kill_tree(
+    pid: int,
+    *,
+    grace_s: float,
+    proc_root: Path = Path("/proc"),
+    kill: Callable[[int, int], None] = os.kill,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.time,
+) -> list[int]:
+    """The Suspend Cure's kill (plan U5): SIGTERM *pid* and every live
+    descendant found under *proc_root*, wait up to *grace_s* for each to
+    disappear, then SIGKILL whatever is left. Returns every pid the SIGTERM
+    reached (not just the ones that needed the SIGKILL follow-up) — the
+    caller's evidence of what it actually signalled.
+
+    A pid that has already exited before its SIGTERM — the child died on its
+    own between the probe's read and this call, or a descendant snapshot that
+    raced an exit — is skipped without raising, same contract every ``/proc``
+    reader in this module holds. Descendants are read once, up front: a
+    process tree that changes shape mid-kill is not re-walked, since the goal
+    is "the tree this probe observed," not a moving target.
+    """
+    targets = [pid, *(child.pid for child in descendants(pid, proc_root=proc_root))]
+    signalled: list[int] = []
+    for target in targets:
+        try:
+            kill(target, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        signalled.append(target)
+
+    deadline = clock() + grace_s
+    remaining = set(signalled)
+    while remaining and clock() < deadline:
+        remaining = {t for t in remaining if _proc_alive(t, proc_root)}
+        if remaining:
+            sleep(0.05)
+    for target in remaining:
+        if _proc_alive(target, proc_root):
+            try:
+                kill(target, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    return signalled
+
+
 # ------------------------------------------------------------ sign of life
 
 
@@ -335,9 +390,42 @@ LAUNCH_PHASES: dict[str, str] = {
 }
 
 
+def should_cure(
+    *,
+    last_wake_at: str | None,
+    last_sign_of_life_at: str | None,
+    child_spawned_at: str,
+    now: float,
+    window_s: float,
+) -> bool:
+    """The Suspend Cure eligibility predicate (plan U5) — everything except
+    the per-generation cap, which the caller checks separately so it can
+    still log "cures exhausted" for a child that is otherwise eligible.
+
+    Pure and side-effect-free so the table of cases tests directly: no cure
+    without a recorded machine wake (R7's last sentence — Not Live alone is
+    never enough, no matter how long); no cure when a Sign of Life has been
+    seen since that wake; no cure until a whole Liveness Window has passed
+    since the wake.
+    """
+    if last_wake_at is None:
+        return False
+    wake = _parse_ts(last_wake_at)
+    if wake is None:
+        return False
+    candidates = [_parse_ts(last_sign_of_life_at), _parse_ts(child_spawned_at)]
+    baselines = [b for b in candidates if b is not None]
+    baseline = max(baselines) if baselines else None
+    if baseline is not None and baseline >= wake:
+        return False
+    return now - wake > window_s
+
+
 class LivenessProbe:
     """Evaluates Sign of Life once per heartbeat tick and writes the facts
-    into that heartbeat (plan U2/U3).
+    into that heartbeat (plan U2/U3), and — when wired with the Suspend Cure
+    seams — cures a child that has shown no Sign of Life since the machine's
+    last recorded wake (plan U5).
 
     Install with ``heartbeat.add_tick_hook(probe.tick)`` — never assign to
     ``heartbeat.on_tick``: that slot belongs to the review loop's transcript
@@ -354,6 +442,11 @@ class LivenessProbe:
         *,
         proc_root: Path = Path("/proc"),
         clock: Callable[[], float] = time.time,
+        suspend_facts_provider: Callable[[], SuspendFacts | None] | None = None,
+        cures_provider: Callable[[], int] | None = None,
+        on_cure: Callable[[int, int, str], None] | None = None,
+        activity: ActivityRegistry | None = None,
+        kill: Callable[[int, int], None] = os.kill,
     ) -> None:
         self.heartbeat = heartbeat
         self.config = config
@@ -363,6 +456,15 @@ class LivenessProbe:
         self._clock = clock
         self._prev_cpu: dict[int, int] = {}
         self._not_live_since: float | None = None
+        # plan U5: all four are optional and default to "cures never happen" —
+        # a probe built without them (every U2/U3 test, and any caller that
+        # predates this unit) behaves exactly as before.
+        self.suspend_facts_provider = suspend_facts_provider
+        self.cures_provider = cures_provider
+        self.on_cure = on_cure
+        self.activity = activity
+        self._kill = kill
+        self._cures_exhausted_logged = False
 
     def tick(self) -> None:
         now = self._clock()
@@ -392,18 +494,20 @@ class LivenessProbe:
         else:
             last_sign_of_life_at = result.at
 
+        cures = self.cures_provider() if self.cures_provider is not None else 0
         facts = {
             "last_sign_of_life_at": last_sign_of_life_at,
             "sign_of_life_signal": result.signal,
             "sign_of_life_evidence": result.evidence,
             "liveness_window_s": self.config.window_seconds,
-            "cures": 0,
+            "cures": cures,
             "max_cures_per_generation": self.config.max_cures_per_generation,
         }
         self.heartbeat.set_liveness_facts(facts)
 
         self._check_phase_flip(child)
         self._check_transition(facts, now, child)
+        self._check_cure(facts, now, child, cures)
 
     def _current_activity(self) -> ChildActivity | None:
         try:
@@ -451,6 +555,52 @@ class LivenessProbe:
         gid = self.heartbeat.group_id
         generation = self.heartbeat.generation_no
         self._log_line(f"group {gid} generation {generation}: live again: child exited")
+
+    def _check_cure(self, facts: dict, now: float, child: ChildActivity, cures: int) -> None:
+        """Plan U5: kill and warm-resume-flag a child with no Sign of Life
+        since the machine's last recorded wake. A no-op when the seams were
+        never wired (``suspend_facts_provider``/``cures_provider`` unset) —
+        the U2/U3 launch phases and Not Live reporting run identically either
+        way."""
+        if self.suspend_facts_provider is None or self.cures_provider is None:
+            return
+        wake_facts = self.suspend_facts_provider()
+        if wake_facts is None or wake_facts.last_wake_at is None:
+            return
+        if not should_cure(
+            last_wake_at=wake_facts.last_wake_at,
+            last_sign_of_life_at=facts["last_sign_of_life_at"],
+            child_spawned_at=child.spawned_at,
+            now=now,
+            window_s=facts["liveness_window_s"],
+        ):
+            return
+        gid = self.heartbeat.group_id
+        generation = self.heartbeat.generation_no
+        max_cures = self.config.max_cures_per_generation
+        if cures >= max_cures:
+            if not self._cures_exhausted_logged:
+                self._cures_exhausted_logged = True
+                self._log_line(
+                    f"group {gid} generation {generation}: cures exhausted "
+                    f"({cures}/{max_cures}); reporting only"
+                )
+            return
+        self._log_line(
+            f"group {gid} generation {generation}: suspend cure {cures + 1}/{max_cures} — "
+            f"no sign of life since wake at {wake_facts.last_wake_at}; "
+            f"killing session {child.session_id} pid {child.pid}"
+        )
+        if self.activity is not None:
+            self.activity.mark_cured(child.pid)
+        kill_tree(
+            child.pid,
+            grace_s=self.config.kill_grace_seconds,
+            proc_root=self.proc_root,
+            kill=self._kill,
+        )
+        if self.on_cure is not None:
+            self.on_cure(child.pid, generation, child.session_id)
 
     def _log_line(self, line: str) -> None:
         if self._log is None:

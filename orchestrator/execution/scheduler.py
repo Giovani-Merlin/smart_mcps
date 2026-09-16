@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -192,6 +192,11 @@ class GroupRunState(BaseModel):
     # stays INTERRUPTED) and every new GroupState has to be mirrored in the
     # Observatory's own enums, which has drifted before.
     quarantined: bool = False
+    # plan U5: Suspend Cures applied this run, keyed by generation as a string
+    # (JSON-safe under pydantic's dict serialization). A cure warm-resumes the
+    # same session, so it never touches `reentry_count` — that counter bounds
+    # a session becoming unreachable, not a machine going to sleep under it.
+    cures: dict[str, int] = Field(default_factory=dict)
 
 
 class LivePid(BaseModel):
@@ -244,6 +249,19 @@ class RunState(BaseModel):
         }
 
 
+class _NoopCureCounter:
+    """The default `GroupContext.record_cure`: counts in memory only, for
+    callers that never wire a real scheduler (tests, pre-U5 construction
+    sites). Not persisted — only `Scheduler.record_cure` writes `state.json`."""
+
+    def __init__(self) -> None:
+        self._count = 0
+
+    def __call__(self) -> int:
+        self._count += 1
+        return self._count
+
+
 @dataclass
 class GroupContext:
     """What a group executor gets: its group plus persisted state hooks."""
@@ -252,6 +270,11 @@ class GroupContext:
     generation: int
     set_state: Callable[[GroupState], None]
     set_generation: Callable[[int], None]
+    # plan U5: increments and persists this generation's Suspend Cure count,
+    # returning the new total. Defaults to an in-memory no-op counter so every
+    # other constructor (production included, pre-U5) keeps working unchanged
+    # — only the review loop's own cure-recovery path needs the persisted one.
+    record_cure: Callable[[], int] = field(default_factory=lambda: _NoopCureCounter())
 
 
 # Runs one group to a terminal state (U7 wires the review loop in here).
@@ -353,6 +376,19 @@ class Scheduler:
         with self._lock:
             self.state.groups[group_id].generation = generation
             self._persist()
+
+    def record_cure(self, group_id: str) -> int:
+        """Increment and persist this group's Suspend Cure count for its
+        *current* generation (plan U5), returning the new total. Keyed on the
+        live generation at call time, not a captured one — a cure always
+        happens against the generation the group is presently running."""
+        with self._lock:
+            entry = self.state.groups[group_id]
+            key = str(entry.generation)
+            entry.cures[key] = entry.cures.get(key, 0) + 1
+            count = entry.cures[key]
+            self._persist()
+            return count
 
     def pending_group_ids(self) -> list[str]:
         """Groups not yet started or finished (plan U7): what a blocking
@@ -619,6 +655,7 @@ class Scheduler:
             generation=entry.generation,
             set_state=lambda state: self.set_state(gid, state),
             set_generation=lambda generation: self.set_generation(gid, generation),
+            record_cure=lambda: self.record_cure(gid),
         )
         try:
             final = await self.executor(context)
