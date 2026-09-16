@@ -122,7 +122,7 @@ content is already carried by `rewrites`.
 | `retirement_reason`       | string \| null            | null if the session never retired                                                                                                                                                    |
 | `model`                   | string \| null            | null if not recorded                                                                                                                                                                 |
 | `tokens`                  | `ExportTokens`            | all-zero means "not recorded", not "zero spent" — see below                                                                                                                          |
-| `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it       |
+| `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it      |
 
 `ExportTokens` (`input`, `output`, `cache_read`, `cache_creation`, all int):
 this is the one place the contract deliberately uses `0` instead of `null`
@@ -167,16 +167,17 @@ the former is per-group bookkeeping, the latter is exposed instead as
 
 ### `ExportEscalation`
 
-| field               | type                                  | null-tolerance                           |
-| ------------------- | ------------------------------------- | ---------------------------------------- |
-| `id`                | string                                | always present                           |
-| `kind`              | string                                | `""` if none                             |
-| `generation`        | int \| null                           | null if the request didn't record one    |
-| `prompt`            | string                                | `""` if none                             |
-| `created_at`        | string \| null                        | null if not recorded                     |
-| `request_path`      | string, relative to `run_dir`         | always present                           |
-| `response_path`     | string \| null, relative to `run_dir` | null if no response has been written yet |
-| `action` / `answer` | string \| null / string               | null / `""` when there is no response    |
+| field               | type                                  | null-tolerance                                                                          |
+| ------------------- | ------------------------------------- | --------------------------------------------------------------------------------------- |
+| `id`                | string                                | always present                                                                          |
+| `kind`              | string                                | `""` if none                                                                            |
+| `generation`        | int \| null                           | null if the request didn't record one                                                   |
+| `prompt`            | string                                | `""` if none                                                                            |
+| `created_at`        | string \| null                        | null if not recorded                                                                    |
+| `request_path`      | string, relative to `run_dir`         | always present                                                                          |
+| `response_path`     | string \| null, relative to `run_dir` | null if no response has been written yet                                                |
+| `action` / `answer` | string \| null / string               | null / `""` when there is no response                                                   |
+| `binding`           | bool \| null                          | null when there is no response; `True` for a response written before this field existed |
 
 Escalations are collected from **both** `<run_dir>/escalations/` and every
 `<run_dir>/groups/<gid>/` directory (newer runs write pairs in the group
@@ -207,25 +208,25 @@ recorded (`seq`) order. Every worker session in the bundle is the *result* of
 these calls; without them the reasoning behind a partition or a spec rewrite
 has no representation in the bundle at all.
 
-| field                | type                      | null-tolerance                                                                                       |
-| -------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `seq`                | int                       | always present; 1-based, the recorder's own ordering key                                             |
-| `recorded_at`        | string (ISO 8601) \| null | null on a record that predates the field                                                              |
-| `operation`          | string                    | the recorder's stage — `"speccer_output"`, `"mapper_output"`, …; `""` if absent                     |
-| `model`              | string \| null            | null when the call failed before a response named a model                                             |
-| `attempt`            | int                       | 0-based retry index; a repaired call records every attempt as its own entry                          |
-| `status`             | string                    | `"ok"` \| `"error"`; `""` when the record has no status object                                       |
-| `error`              | string \| null            | null on success                                                                                       |
-| `duration_ms`        | int \| null               | null when not recorded                                                                                |
-| `session_id`         | string \| null            | null when the call left no Claude session (a local/failed call)                                       |
-| `group_ids`          | string[]                  | which groups the call was about; `[]` when neither the record nor its prompt says (see below)         |
-| `rewrite_context`    | string[]                  | WHY the call happened — the surprises/operator verdicts, verbatim; `[]` for a call with no cause      |
-| `request_path`       | string \| null            | the recorded prompt, relative to the run directory; null when the record names no file                |
-| `raw_path`           | string \| null            | the recorded raw response, same convention                                                            |
-| `transcript_missing` | bool                      | true when no transcript resolves for `session_id` — or when `session_id` itself is null              |
-| `events_path`        | string \| null            | `events/<session_id>.jsonl.gz`; null whenever `transcript_missing` is true, so no file was written    |
-| `events_count`       | int                       | 0 when no events file was written                                                                    |
-| `tokens`             | `ExportTokens`            | always present; all-zero means "not recorded" (same convention as a session's)                       |
+| field                | type                      | null-tolerance                                                                                     |
+| -------------------- | ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `seq`                | int                       | always present; 1-based, the recorder's own ordering key                                           |
+| `recorded_at`        | string (ISO 8601) \| null | null on a record that predates the field                                                           |
+| `operation`          | string                    | the recorder's stage — `"speccer_output"`, `"mapper_output"`, …; `""` if absent                    |
+| `model`              | string \| null            | null when the call failed before a response named a model                                          |
+| `attempt`            | int                       | 0-based retry index; a repaired call records every attempt as its own entry                        |
+| `status`             | string                    | `"ok"` \| `"error"`; `""` when the record has no status object                                     |
+| `error`              | string \| null            | null on success                                                                                    |
+| `duration_ms`        | int \| null               | null when not recorded                                                                             |
+| `session_id`         | string \| null            | null when the call left no Claude session (a local/failed call)                                    |
+| `group_ids`          | string[]                  | which groups the call was about; `[]` when neither the record nor its prompt says (see below)      |
+| `rewrite_context`    | string[]                  | WHY the call happened — the surprises/operator verdicts, verbatim; `[]` for a call with no cause   |
+| `request_path`       | string \| null            | the recorded prompt, relative to the run directory; null when the record names no file             |
+| `raw_path`           | string \| null            | the recorded raw response, same convention                                                         |
+| `transcript_missing` | bool                      | true when no transcript resolves for `session_id` — or when `session_id` itself is null            |
+| `events_path`        | string \| null            | `events/<session_id>.jsonl.gz`; null whenever `transcript_missing` is true, so no file was written |
+| `events_count`       | int                       | 0 when no events file was written                                                                  |
+| `tokens`             | `ExportTokens`            | always present; all-zero means "not recorded" (same convention as a session's)                     |
 
 Two properties differ from `ExportSession` and are deliberate:
 

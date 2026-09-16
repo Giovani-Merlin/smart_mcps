@@ -386,6 +386,12 @@ class EscalationResponse(BaseModel):
     id: str
     action: HumanAction
     answer: str = ""
+    # Plan U8: whether this answer carries forward as an Operator Decision into
+    # every later prompt of the group, not just the one it unblocked. Defaults
+    # True — an operator answering an escalation is guidance for the group, not
+    # a one-off aside — so every response file written before this field
+    # existed loads as binding without a migration.
+    binding: bool = True
     answered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
