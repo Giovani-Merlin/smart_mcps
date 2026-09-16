@@ -29,9 +29,15 @@ from functools import partial
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import BreakerConfig, ExecutionConfig
+from orchestrator.config import BreakerConfig, ExecutionConfig, LivenessConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.heartbeat import RoundHeartbeat
+from orchestrator.execution.liveness import (
+    ActivityRegistry,
+    ChildActivity,
+    LivenessProbe,
+    read_suspend_facts,
+)
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
@@ -381,6 +387,11 @@ class ReviewDeps:
     # worktree launched without a working environment, folded into its first
     # coder prompt. None (or a None result) means the environment is fine.
     provisioning_failure_for: Callable[[Group], str | None] | None = None
+    # Liveness (plan U1/U2/U5): the run's shared activity registry — the same
+    # instance the runner stamps — and the `[liveness]` config. Both None ⇒ no
+    # probe is installed and heartbeats carry no Sign of Life facts.
+    activity: ActivityRegistry | None = None
+    liveness: LivenessConfig | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -435,7 +446,28 @@ class _GroupExecution:
         # Evidence, not a state (plan P3): the loop only ever tells it when a
         # round started; the writing happens on its own daemon thread and nothing
         # here reads it back.
-        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
+        self._heartbeat = RoundHeartbeat(
+            deps.store.paths,
+            self.gid,
+            log=self._log,
+            activity_provider=self._current_child if deps.activity is not None else None,
+        )
+        # Suspend Cure counts for this group, per generation (plan U5). Seeded
+        # from nothing: `Scheduler.record_cure` persists the real count, and
+        # `on_cure` mirrors the value it returns.
+        self._cures: dict[int, int] = {}
+        if deps.activity is not None and deps.liveness is not None:
+            probe = LivenessProbe(
+                self._heartbeat,
+                deps.liveness,
+                self._current_child,
+                log=self._log,
+                suspend_facts_provider=partial(read_suspend_facts, deps.store.paths),
+                cures_provider=lambda: self._cures.get(self._heartbeat.generation_no, 0),
+                on_cure=self._on_cure,
+                activity=deps.activity,
+            )
+            self._heartbeat.add_tick_hook(probe.tick)
         # The round number `_round_tag` most recently rendered (plan U10):
         # `_on_content_filtered` needs the number of the round that was in
         # flight when `ContentFiltered` hit, and every site that starts or
@@ -443,6 +475,16 @@ class _GroupExecution:
         # recording it there, as a side effect, is the one place that number
         # is always current with no separate bookkeeping to keep in sync.
         self._current_round_no = 0
+
+    def _current_child(self) -> ChildActivity | None:
+        """This group's live worker child, matched on its worktree — the cwd
+        every worker call of the group is spawned in."""
+        if self.deps.activity is None or self.workspace is None:
+            return None
+        return self.deps.activity.current(str(self.workspace))
+
+    def _on_cure(self, pid: int, generation: int, session_id: str) -> None:
+        self._cures[generation] = self.ctx.record_cure()
 
     def _decisions_text(self) -> str:
         """Binding operator decisions for this group, rendered fresh from disk

@@ -481,6 +481,7 @@ def test_sign_of_life_event_then_tool_child_then_null_preserves_the_previous_tim
         spawned_at=spawned,
         last_event_at=_iso(now - 3600),
         last_event_type="assistant",
+        first_assistant_at=_iso(now - 3600),
     )
     probe.tick()
     payload = hb.snapshot()
