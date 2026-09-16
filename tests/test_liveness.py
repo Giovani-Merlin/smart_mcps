@@ -1,19 +1,39 @@
 """U1 tests: the in-process ``ActivityRegistry`` and its wiring into
-``SessionRunner`` (plan U1).
+``SessionRunner`` (plan U1). U2/U3 tests: the three Sign of Life signals, the
+``[liveness]`` config section, the ``LivenessProbe``, and the reader-side
+``liveness_line``/``cures_exhausted_line`` helpers (plan U2/U3).
 
 Every test runs against ``tests/fake_claude.py`` — zero live CLI calls, zero
 tokens (plan R24), matching the convention ``tests/test_streaming.py`` uses.
+The real-`/proc` oracle tests are Linux-only, same as the platform this
+orchestrator runs on.
 """
 
 from __future__ import annotations
 
+import datetime
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from orchestrator.execution.liveness import ActivityRegistry
+from orchestrator.config import LivenessConfig, load_config
+from orchestrator.execution.heartbeat import RoundHeartbeat
+from orchestrator.execution.liveness import (
+    ActivityRegistry,
+    ChildActivity,
+    LivenessProbe,
+    cpu_ticks,
+    cures_exhausted_line,
+    liveness_line,
+    sign_of_life,
+)
+from orchestrator.execution.manifest import RunPaths
 from orchestrator.execution.sessions import SessionError, SessionRunner, SuspendCured
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
@@ -206,3 +226,304 @@ def test_runner_with_no_registry_wired_behaves_exactly_as_before(fake_home, tmp_
     with pytest.raises(SessionError) as excinfo:
         runner.start_fork(base_id=base.session_id, prompt="go", name="worker-1", cwd=tmp_path)
     assert not isinstance(excinfo.value, SuspendCured)
+
+
+# =========================================================== plan U2 / U3
+
+
+# ------------------------------------------------------------ /proc fixtures
+
+
+def _write_proc_stat(
+    proc_root: Path,
+    pid: int,
+    *,
+    ppid: int,
+    state: str = "R",
+    comm: str = "proc",
+    utime: int = 0,
+    stime: int = 0,
+) -> None:
+    """A fake ``/proc/<pid>/stat`` line, with a parenthesised ``comm`` that may
+    itself contain a space — the case that makes naive whitespace-splitting of
+    the whole line wrong and forces splitting after the last ``)`` instead."""
+    d = proc_root / str(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    rest = [
+        state,
+        str(ppid),
+        "1",
+        "1",
+        "0",
+        "-1",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        str(utime),
+        str(stime),
+        "0",
+        "0",
+        "20",
+        "0",
+        "1",
+        "0",
+        "1000",
+    ]
+    (d / "stat").write_text(f"{pid} ({comm}) " + " ".join(rest) + "\n")
+
+
+def _write_proc_cmdline(proc_root: Path, pid: int, parts: list[str]) -> None:
+    d = proc_root / str(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cmdline").write_bytes(b"\x00".join(part.encode() for part in parts) + b"\x00")
+
+
+def _child(pid: int = 999, **overrides) -> ChildActivity:
+    defaults = dict(
+        pid=pid,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at="2020-01-01T00:00:00.000+00:00",
+    )
+    defaults.update(overrides)
+    return ChildActivity(**defaults)
+
+
+# ------------------------------------------------------------- sign_of_life
+
+
+def test_sign_of_life_b_fires_only_for_the_live_nonzombie_child_with_matching_ppid(tmp_path):
+    proc_root = tmp_path / "proc"
+    parent_pid = 100
+    _write_proc_stat(proc_root, parent_pid, ppid=1, comm="parent proc")
+    _write_proc_stat(proc_root, 101, ppid=parent_pid, state="Z", comm="dead child")
+    _write_proc_stat(proc_root, 102, ppid=parent_pid, state="R", comm="sleep")
+    _write_proc_cmdline(proc_root, 102, ["sleep", "30"])
+    # A pid with a different ppid must never be picked up.
+    _write_proc_stat(proc_root, 103, ppid=999, state="R", comm="unrelated")
+
+    child = _child(pid=parent_pid)
+    result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root)
+
+    assert result.signal == "tool_child"
+    assert "sleep 30" in result.evidence
+
+
+def test_sign_of_life_b_finds_nothing_when_only_a_zombie_child_exists(tmp_path):
+    proc_root = tmp_path / "proc"
+    parent_pid = 200
+    _write_proc_stat(proc_root, parent_pid, ppid=1)
+    _write_proc_stat(proc_root, 201, ppid=parent_pid, state="Z", comm="dead")
+
+    child = _child(pid=parent_pid)
+    result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600, proc_root=proc_root)
+
+    assert result.signal is None
+
+
+def test_sign_of_life_c_fires_when_cpu_ticks_advance_and_not_when_flat(tmp_path):
+    proc_root = tmp_path / "proc"
+    pid = 300
+    _write_proc_stat(proc_root, pid, ppid=1, utime=10, stime=10)  # total 20
+
+    child = _child(pid=pid)
+    advancing = sign_of_life(child, prev_cpu=15, now=time.time(), window_s=600, proc_root=proc_root)
+    assert advancing.signal == "cpu"
+    assert advancing.cpu_ticks == 20
+
+    flat = sign_of_life(child, prev_cpu=20, now=time.time(), window_s=600, proc_root=proc_root)
+    assert flat.signal is None
+
+
+def test_sign_of_life_a_fires_for_a_fresh_event_ahead_of_the_other_two_signals(tmp_path):
+    proc_root = tmp_path / "proc"
+    now = time.time()
+    fresh = datetime.datetime.fromtimestamp(now - 5, tz=datetime.UTC).isoformat(
+        timespec="milliseconds"
+    )
+    child = _child(last_event_at=fresh, last_event_type="assistant")
+
+    result = sign_of_life(child, prev_cpu=None, now=now, window_s=600, proc_root=proc_root)
+    assert result.signal == "event"
+    assert "assistant" in result.evidence
+
+
+def test_sign_of_life_a_pid_that_vanishes_between_listing_and_reading_yields_no_signal(tmp_path):
+    """A directory that disappears mid-probe must read as absent evidence,
+    never raise — races between listing `/proc` and opening a file inside it
+    are exactly as real on the kernel as they are contrived here."""
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    child = _child(pid=404)
+
+    result = sign_of_life(child, prev_cpu=50, now=time.time(), window_s=600, proc_root=proc_root)
+
+    assert result.signal is None
+    assert result.cpu_ticks is None
+
+
+# ----------------------------------------------------------------- config
+
+
+def test_config_liveness_defaults_with_no_file():
+    config = load_config(None)
+    assert config.liveness.window_seconds == 600
+    assert config.liveness.suspend_gap_seconds == 60
+    assert config.liveness.kill_grace_seconds == 10
+    assert config.liveness.max_cures_per_generation == 2
+
+
+def test_config_liveness_window_seconds_overridden_from_toml(tmp_path):
+    toml_path = tmp_path / "config.toml"
+    toml_path.write_text("[liveness]\nwindow_seconds = 20\n")
+
+    config = load_config(toml_path)
+
+    assert config.liveness.window_seconds == 20
+    # Everything not overridden keeps its default.
+    assert config.liveness.suspend_gap_seconds == 60
+
+
+# -------------------------------------------------------------- real /proc
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the real /proc oracle is Linux-only")
+def test_sign_of_life_real_proc_reports_tool_child_naming_sleep():
+    # `& wait` keeps `sh` alive as the parent instead of exec-optimizing
+    # straight into `sleep`, so there is a real parent/child pair to probe.
+    proc = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
+    try:
+        time.sleep(0.3)
+        child = _child(pid=proc.pid)
+        result = sign_of_life(child, prev_cpu=None, now=time.time(), window_s=600)
+        assert result.signal == "tool_child"
+        assert "sleep" in result.evidence
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the real /proc oracle is Linux-only")
+def test_sign_of_life_real_proc_reports_flat_cpu_when_stopped_and_advancing_once_continued():
+    proc = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+    try:
+        pid = proc.pid
+        time.sleep(0.2)
+        os.kill(pid, signal.SIGSTOP)
+        time.sleep(0.2)
+        first_cpu = cpu_ticks(pid)
+        time.sleep(0.2)
+        second_cpu = cpu_ticks(pid)
+
+        child = _child(pid=pid)
+        flat = sign_of_life(child, prev_cpu=first_cpu, now=time.time(), window_s=600)
+        assert flat.signal is None
+
+        os.kill(pid, signal.SIGCONT)
+        time.sleep(0.3)
+        advancing = sign_of_life(child, prev_cpu=second_cpu, now=time.time(), window_s=600)
+        assert advancing.signal == "cpu"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+# --------------------------------------------------------------- transitions
+
+
+def test_transitions_log_exactly_once_entering_and_exactly_once_leaving_not_live(tmp_path):
+    """40 ticks, 15s apart, window 60s: the child goes silent at tick 5 and an
+    event returns at tick 30. Exactly one `not live for` line and exactly one
+    `live again` line, nothing in between."""
+    paths = RunPaths(tmp_path, "r1")
+    hb = RoundHeartbeat(paths, "g1")
+    config = LivenessConfig(window_seconds=60)
+    logs: list[str] = []
+    state = {"i": 0}
+
+    def clock() -> float:
+        return state["i"] * 15.0
+
+    def activity_provider() -> ChildActivity:
+        i = state["i"]
+        # Silent from tick 5 onward (frozen at tick 4's timestamp) until an
+        # event returns at tick 30.
+        event_tick = i if (i < 5 or i >= 30) else 4
+        at = datetime.datetime.fromtimestamp(event_tick * 15.0, tz=datetime.UTC).isoformat(
+            timespec="milliseconds"
+        )
+        return _child(pid=1, spawned_at=at, last_event_at=at, last_event_type="assistant")
+
+    probe = LivenessProbe(
+        hb, config, activity_provider, log=logs.append, proc_root=tmp_path / "proc", clock=clock
+    )
+
+    for i in range(40):
+        state["i"] = i
+        probe.tick()
+
+    not_live_lines = [line for line in logs if "not live for" in line]
+    live_again_lines = [line for line in logs if "live again" in line]
+    assert len(not_live_lines) == 1
+    assert len(live_again_lines) == 1
+    assert not_live_lines[0] == (
+        "group g1 generation 0: not live for 1m15s in unknown phase — no signal"
+    )
+    assert live_again_lines[0].startswith("group g1 generation 0: live again: event ")
+
+
+# ------------------------------------------------------------ liveness_line
+
+
+def test_liveness_line_four_shapes():
+    now = 1_700_000_000.0
+
+    def iso(epoch: float) -> str:
+        return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).isoformat(
+            timespec="milliseconds"
+        )
+
+    live_hb = {
+        "phase": "round 1 running",
+        "child_pid": 123,
+        "liveness_window_s": 600,
+        "last_sign_of_life_at": iso(now - 5),
+        "sign_of_life_signal": "event",
+    }
+    assert liveness_line(live_hb, now=now) == "live: event 5s ago"
+
+    not_live_hb = {
+        "phase": "round 1 running",
+        "child_pid": 456,
+        "liveness_window_s": 600,
+        "last_sign_of_life_at": iso(now - 1200),
+        "sign_of_life_signal": "event",
+        "sign_of_life_evidence": "event assistant 20m ago",
+    }
+    line = liveness_line(not_live_hb, now=now)
+    assert line.startswith("NOT LIVE for")
+    assert "round 1 running" in line
+    assert "event assistant 20m ago" in line
+
+    no_child_hb = {"phase": "merging into integration", "liveness_window_s": 600}
+    assert liveness_line(no_child_hb, now=now) == "no worker child (merging into integration)"
+
+    pre_liveness_hb = {"phase": "round 1 running", "child_pid": 789}
+    assert liveness_line(pre_liveness_hb, now=now) == "(no liveness facts)"
+
+
+def test_liveness_line_cures_exhausted_line():
+    driver_pid = os.getpid()
+    pgid = os.getpgid(driver_pid)
+
+    below_cap = {"cures": 1, "max_cures_per_generation": 2}
+    assert cures_exhausted_line(below_cap, "r1", driver_pid) is None
+
+    at_cap = {"cures": 2, "max_cures_per_generation": 2}
+    line = cures_exhausted_line(at_cap, "r1", driver_pid)
+    assert line == (
+        f"cures exhausted (2/2 this generation) — "
+        f"kill -INT -{pgid} then smart-mcps-orchestrate resume r1"
+    )

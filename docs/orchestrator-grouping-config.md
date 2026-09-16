@@ -325,13 +325,13 @@ markers. In a repo carrying both — this one — every merge was gated on
 `detect_check_steps` now resolves all of them, run in order, first failure
 stopping the run:
 
-| Step         | When it is detected                                              | Command                                                        | JUnit |
-| ------------ | ---------------------------------------------------------------- | -------------------------------------------------------------- | ----- |
-| `pytest`     | `pyproject.toml` or `uv.lock` at the root                        | `uv run pytest -p no:cacheprovider --junitxml=<out>`            | yes   |
-| `npm-test`   | root `package.json`, **no** uv markers                           | `npm test`                                                      | no    |
-| `vitest`     | `ui/package.json` + `ui/node_modules` + `vitest` in devDeps      | `npx vitest run --reporter=junit --outputFile=<out>` in `ui/`   | yes   |
-| `npm-test-ui`| as above but no `vitest` devDep                                  | `npm test` in `ui/`                                             | no    |
-| `tsc`        | `typescript` in `ui/` devDeps + `ui/tsconfig.json`               | `npx tsc --noEmit` in `ui/`                                     | no    |
+| Step          | When it is detected                                         | Command                                                       | JUnit |
+| ------------- | ----------------------------------------------------------- | ------------------------------------------------------------- | ----- |
+| `pytest`      | `pyproject.toml` or `uv.lock` at the root                   | `uv run pytest -p no:cacheprovider --junitxml=<out>`          | yes   |
+| `npm-test`    | root `package.json`, **no** uv markers                      | `npm test`                                                    | no    |
+| `vitest`      | `ui/package.json` + `ui/node_modules` + `vitest` in devDeps | `npx vitest run --reporter=junit --outputFile=<out>` in `ui/` | yes   |
+| `npm-test-ui` | as above but no `vitest` devDep                             | `npm test` in `ui/`                                           | no    |
+| `tsc`         | `typescript` in `ui/` devDeps + `ui/tsconfig.json`          | `npx tsc --noEmit` in `ui/`                                   | no    |
 
 vitest's JUnit reporter emits the same `<testcase classname=… name=…>` shape
 pytest's does, so one parser serves both; vitest ids are namespaced `ui::` so
@@ -370,10 +370,10 @@ happened) is applied only to the `pytest` step and to an explicitly configured
 **2** on an ordinary type error, and reading that through pytest's table would
 call it `env` — unattributable, so no rewrite for the coder, and a halted run.
 
-| Field             | Default | Effect                                                                                                                        | CLI |
-| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- | --- |
+| Field             | Default | Effect                                                                                                                                        | CLI |
+| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --- |
 | `check_command`   | `null`  | overrides detection with a single step; gets `--junitxml` appended when it ends in `pytest`. `null` and no markers means no check runs at all | —   |
-| `check_timeout_s` | `900.0` | applied per step; a hung one holds the merge lock for every other group — always a `timeout`-kind failure, never a silent pass | —   |
+| `check_timeout_s` | `900.0` | applied per step; a hung one holds the merge lock for every other group — always a `timeout`-kind failure, never a silent pass                | —   |
 
 ## `[auth]` — the auth-refresh ladder's pause rung
 
@@ -400,17 +400,17 @@ ______________________________________________________________________
 
 [`SessionConfig`](../orchestrator/config.py), `config.py:137`.
 
-| Field                 | Default             | CLI               | Effect                                                                                                                                                             |
-| --------------------- | ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `claude_bin`          | `"claude"`          | —                 | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                            |
-| `model`               | `"claude-sonnet-5"` | `--model-worker`  | model for coder/reviewer worker forks — the bulk of a run's spend, and mostly mechanical work                                                                      |
-| `base_model`          | `"claude-opus-5"`   | `--model-base`    | model for the run's own base session — only reached under `fork_base_session`; with the default off, no base session is ever created                               |
+| Field                 | Default             | CLI                              | Effect                                                                                                                                                                                                                                                                                                           |
+| --------------------- | ------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude_bin`          | `"claude"`          | —                                | binary to shell; accepts a list so tests point it at a stub interpreter                                                                                                                                                                                                                                          |
+| `model`               | `"claude-sonnet-5"` | `--model-worker`                 | model for coder/reviewer worker forks — the bulk of a run's spend, and mostly mechanical work                                                                                                                                                                                                                    |
+| `base_model`          | `"claude-opus-5"`   | `--model-base`                   | model for the run's own base session — only reached under `fork_base_session`; with the default off, no base session is ever created                                                                                                                                                                             |
 | `fork_base_session`   | `false`             | `--fork-base` / `--no-fork-base` | legacy: launch workers by forking the run's base session. The fork misses that session's prompt cache (19,968 tokens hit, ~41.5k re-created) because the cache key embeds the cwd and each group's cwd is its own worktree — see [ADR 0007](adr/0007-workers-start-fresh-instead-of-forking-the-base-session.md) |
-| `speccer_model`       | `"claude-opus-5"`   | `--model-speccer` | model for the mapper/speccer's `claude -p` calls — one call per grouping (or per spec rewrite), where the strongest model earns its cost                           |
-| `allowed_tools`       | `[]`                | —                 | extra `--allowedTools` entries                                                                                                                                     |
-| `transcript_root`     | `null`              | —                 | override `~/.claude/projects` (tests)                                                                                                                              |
-| `max_thinking_tokens` | `4000`              | —                 | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning |
-| `thinking`            | `"adaptive"`        | —                 | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                      |
+| `speccer_model`       | `"claude-opus-5"`   | `--model-speccer`                | model for the mapper/speccer's `claude -p` calls — one call per grouping (or per spec rewrite), where the strongest model earns its cost                                                                                                                                                                         |
+| `allowed_tools`       | `[]`                | —                                | extra `--allowedTools` entries                                                                                                                                                                                                                                                                                   |
+| `transcript_root`     | `null`              | —                                | override `~/.claude/projects` (tests)                                                                                                                                                                                                                                                                            |
+| `max_thinking_tokens` | `4000`              | —                                | `--max-thinking-tokens` per worker turn; thinking counts as *output* tokens, a real cost driver — raise per-run in config.toml when a group needs deeper reasoning                                                                                                                                               |
+| `thinking`            | `"adaptive"`        | —                                | `--thinking` mode: `enabled` (always) / `adaptive` (model decides) / `disabled` (never); orthogonal to the token budget above                                                                                                                                                                                    |
 
 By default every worker is a fresh session whose first prompt carries the
 compiled base context, and the run spawns no base session at all — so
@@ -447,6 +447,27 @@ Tiers, increasing: `autonomous` < `on_failure` < `on_stuck` < `interactive`.
 Flag interactions in [`apply_overrides`](../orchestrator/cli.py) (`cli.py:233`):
 `--hitl` enables; any non-`autonomous` `--intensity` **implies** `--hitl`;
 `--intensity autonomous` **forces it off**, even over a config file that enabled it.
+
+______________________________________________________________________
+
+## `[liveness]` — Sign of Life thresholds
+
+[`LivenessConfig`](../orchestrator/config.py). Read every heartbeat tick by the
+`LivenessProbe` to decide, from facts alone, whether a group's worker child
+still looks alive.
+
+| Field                      | Default | Effect                                                                                       |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------- |
+| `window_seconds`           | 600.0   | how long a child may show no Sign of Life before a reader calls it Not Live                  |
+| `suspend_gap_seconds`      | 60.0    | wall-clock gap that counts as a detected machine suspend                                     |
+| `kill_grace_seconds`       | 10.0    | pause between SIGTERM and SIGKILL when a Suspend Cure kills a child's pid tree               |
+| `max_cures_per_generation` | 2       | Suspend Cures one coder/reviewer generation may spend before `status` reports them exhausted |
+
+None of these fields bound how long a round or a group may run — a chatty child
+that keeps producing events, tool children, or advancing CPU runs indefinitely,
+per R7's no-timeout decision. They bound only *silence*: how long a child may
+show no evidence of life at all before it is reported Not Live, which is a
+report, not an enforcement — nothing here ever kills a healthy round.
 
 ______________________________________________________________________
 
@@ -513,3 +534,4 @@ section above; listed here so the inventory stays complete regardless.
 | `auth`         | `enabled`, `credentials_path`, `poll_s`, `max_wait_s`, `max_attempts`                                                                                                                                                                                             |
 | `session`      | `claude_bin`, `model`, `base_model`, `speccer_model`, `allowed_tools`, `transcript_root`, `max_thinking_tokens`, `thinking`                                                                                                                                       |
 | `escalation`   | `enabled`, `intensity`, `source`, `timeout_s`, `on_timeout`, `poll_interval_s`                                                                                                                                                                                    |
+| `liveness`     | `window_seconds`, `suspend_gap_seconds`, `kill_grace_seconds`, `max_cures_per_generation`                                                                                                                                                                         |

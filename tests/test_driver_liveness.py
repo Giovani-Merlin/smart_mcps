@@ -10,6 +10,8 @@ process's own cooperative cleanup.
 
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import signal
 import subprocess
@@ -25,6 +27,7 @@ from orchestrator.execution.driver import (
     DriverLock,
     _lock_fd_is_cloexec,
     driver_status_line,
+    group_liveness,
     is_driving,
     read_driver_record,
 )
@@ -189,7 +192,7 @@ class TestStatusLine:
         lock.release()
         assert driver_status_line(paths, active_group_ids=[]) == "no process is driving this run"
 
-    def test_fresh_heartbeat_reads_as_progressing(self, paths):
+    def test_fresh_heartbeat_with_no_child_pid_reads_as_no_worker_child(self, paths):
         gid = "g1"
         hb_path = paths.group_dir(gid) / "heartbeat.json"
         hb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +202,7 @@ class TestStatusLine:
         lock.acquire()
         try:
             line = driver_status_line(paths, active_group_ids=[gid])
-            assert "progressing" in line
+            assert "no worker child" in line
             assert "stale" not in line
         finally:
             lock.release()
@@ -220,5 +223,93 @@ class TestStatusLine:
         try:
             line = driver_status_line(paths, active_group_ids=[gid])
             assert "stale" in line
+        finally:
+            lock.release()
+
+
+def _write_group_heartbeat(paths: RunPaths, gid: str, payload: dict) -> None:
+    hb_path = paths.group_dir(gid) / "heartbeat.json"
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(hb_path, json.dumps(payload))
+
+
+class TestLivenessCounts:
+    """Plan U3: `driver_status_line` reports how many active groups are live,
+    derived from each group's own liveness facts rather than the file mtime
+    alone — the property that lets the word "progressing" retire."""
+
+    def test_a_mix_of_live_and_not_live_groups_is_reported(self, paths):
+        now = time.time()
+        _write_group_heartbeat(
+            paths,
+            "g1",
+            {
+                "child_pid": 111,
+                "liveness_window_s": 600,
+                "last_sign_of_life_at": datetime.datetime.fromtimestamp(
+                    now, tz=datetime.UTC
+                ).isoformat(),
+                "sign_of_life_signal": "event",
+            },
+        )
+        stale_at = now - (20 * 60)
+        _write_group_heartbeat(
+            paths,
+            "g2",
+            {
+                "child_pid": 222,
+                "liveness_window_s": 600,
+                "last_sign_of_life_at": datetime.datetime.fromtimestamp(
+                    stale_at, tz=datetime.UTC
+                ).isoformat(),
+                "sign_of_life_signal": "event",
+                "sign_of_life_evidence": "event assistant 20m ago",
+            },
+        )
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            live, not_live = group_liveness(paths, ["g1", "g2"], now=now)
+            assert (live, not_live) == (1, 1)
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "1 live, 1 NOT LIVE" in line
+        finally:
+            lock.release()
+
+    def test_no_worker_child_in_either_group_is_reported_by_count(self, paths):
+        _write_group_heartbeat(paths, "g1", {"phase": "merging into integration"})
+        _write_group_heartbeat(paths, "g2", {"phase": "merging into integration"})
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            live, not_live = group_liveness(paths, ["g1", "g2"], now=time.time())
+            assert (live, not_live) == (0, 0)
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "2 active groups, no worker child" in line
+        finally:
+            lock.release()
+
+    def test_all_live_groups_reads_as_active_groups_live(self, paths):
+        now = time.time()
+        fresh = datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat()
+        for gid, pid in (("g1", 111), ("g2", 222)):
+            _write_group_heartbeat(
+                paths,
+                gid,
+                {
+                    "child_pid": pid,
+                    "liveness_window_s": 600,
+                    "last_sign_of_life_at": fresh,
+                    "sign_of_life_signal": "event",
+                },
+            )
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "2 active groups live" in line
         finally:
             lock.release()
