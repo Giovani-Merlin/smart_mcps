@@ -7,6 +7,8 @@ from pathlib import Path
 
 from orchestrator.execution.transcript_events import (
     NeutralEvent,
+    activity_tail,
+    format_activity_tail,
     parse_transcript,
     read_events_gz,
     write_events_gz,
@@ -241,6 +243,119 @@ def test_non_dict_json_line_skipped(tmp_path: Path) -> None:
     path.write_text("[1, 2, 3]\n" + json.dumps(_user("u1", "hi")) + "\n")
     parsed = parse_transcript(path)
     assert [e.event_id for e in parsed.events] == ["u1"]
+
+
+# ------------------------------------------------------------------ activity
+
+
+def _tool_call(uuid: str, tool_id: str, name: str, input_: dict, timestamp: str) -> dict:
+    return _assistant(
+        uuid,
+        [{"type": "tool_use", "id": tool_id, "name": name, "input": input_}],
+        timestamp=timestamp,
+    )
+
+
+def _tool_result(uuid: str, tool_id: str, content: str, timestamp: str) -> dict:
+    return _user(
+        uuid,
+        [{"type": "tool_result", "tool_use_id": tool_id, "content": content}],
+        timestamp=timestamp,
+    )
+
+
+def test_activity_tail(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    records: list[dict] = []
+    for i in range(1, 8):
+        ts = f"2026-01-01T00:{i:02d}:00Z"
+        tool_id = f"toolu_{i}"
+        if i == 3:
+            records.append(
+                _tool_call(f"a{i}", tool_id, "Bash", {"command": "ls -la\necho done"}, ts)
+            )
+        else:
+            records.append(_tool_call(f"a{i}", tool_id, "Read", {"file_path": f"/file{i}"}, ts))
+        if i != 7:  # the last tool call has no result
+            records.append(_tool_result(f"u{i}", tool_id, f"result {i}", ts))
+    _write_jsonl(path, records)
+
+    entries = activity_tail(path, n=5)
+    assert len(entries) == 5
+    assert [e.tool for e in entries] == ["Bash", "Read", "Read", "Read", "Read"]
+    assert entries[-1].returned is False
+    assert all(e.returned for e in entries[:-1])
+    # ordered oldest -> newest
+    assert [e.at for e in entries] == [
+        "2026-01-01T00:03:00Z",
+        "2026-01-01T00:04:00Z",
+        "2026-01-01T00:05:00Z",
+        "2026-01-01T00:06:00Z",
+        "2026-01-01T00:07:00Z",
+    ]
+    assert entries[0].input_head == "ls -la"
+
+
+def test_activity_tail_input_head_truncated(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    long_value = "x" * 200
+    _write_jsonl(
+        path,
+        [_tool_call("a1", "toolu_1", "Read", {"file_path": long_value}, "2026-01-01T00:00:00Z")],
+    )
+    [entry] = activity_tail(path)
+    assert len(entry.input_head) == 120
+    assert entry.input_head.endswith("…")
+
+
+def test_activity_tail_missing_file(tmp_path: Path) -> None:
+    assert activity_tail(tmp_path / "nope.jsonl") == []
+
+
+def test_format_activity_tail_empty() -> None:
+    assert format_activity_tail([]) == "  (no tool calls yet)"
+
+
+def test_format_activity_tail_renders_lines(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(
+        path,
+        [_tool_call("a1", "toolu_1", "Read", {"file_path": "/a"}, "2026-01-01T12:34:56Z")],
+    )
+    entries = activity_tail(path)
+    rendered = format_activity_tail(entries)
+    assert rendered == '  12:34:56 Read {"file_path": "/a"} [running]'
+
+
+def test_real_transcript_tail() -> None:
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.is_dir():
+        import pytest
+
+        pytest.skip("no ~/.claude/projects directory")
+
+    candidates: list[Path] = []
+    for transcript_path in projects_dir.glob("**/*.jsonl"):
+        try:
+            parsed = parse_transcript(transcript_path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        tool_use_count = sum(
+            1 for e in parsed.events if e.role == "assistant" and e.tool_name is not None
+        )
+        if tool_use_count >= 20:
+            candidates.append(transcript_path)
+
+    if not candidates:
+        import pytest
+
+        pytest.skip("no real transcript with >= 20 tool_use blocks found")
+
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    entries = activity_tail(newest, n=5)
+    assert len(entries) == 5
+    assert all(isinstance(e.tool, str) and e.tool for e in entries)
+    assert sum(1 for e in entries if e.returned is False) <= 1
 
 
 # --------------------------------------------------------------------- gzip
