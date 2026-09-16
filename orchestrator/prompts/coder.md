@@ -14,8 +14,11 @@ root of your worktree (it is git-ignored for you and archived with the group's
 artifacts). Anything else left untracked in the worktree fails the merge gate:
 commit it, move it into `.coder-scratch/`, or delete it before you report.
 
+If an `## Operator decisions (binding)` section appears below, it is binding: it
+overrides the spec above wherever they differ.
+
 These are your verification items:
 
 $verification
 
-$report_contract
+$report_contract$decisions

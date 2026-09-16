@@ -64,6 +64,7 @@ from orchestrator.execution.prompting import (
     render_reviewer_prompt,
     render_revision_prompt,
 )
+from orchestrator.execution.decisions import decision_ledger, render_decisions_section
 from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.scheduler import (
     Executor,
@@ -421,6 +422,12 @@ class _GroupExecution:
         # here reads it back.
         self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
 
+    def _decisions_text(self) -> str:
+        """Binding operator decisions for this group, rendered fresh from disk
+        at every prompt build (plan U9) so a later answer reaches every
+        subsequent coder, handoff, reviewer and re-review prompt."""
+        return render_decisions_section(decision_ledger(self.deps.store.paths, self.gid))
+
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
         await self._approve_gate(
@@ -480,7 +487,9 @@ class _GroupExecution:
         if reentry is not None:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
-            prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
+            prompt = self.handoff_prompt or render_coder_prompt(
+                self.deps.run_id, self.group, decisions=self._decisions_text()
+            )
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
             prompt = self._apply_operator_note(prompt)
@@ -943,6 +952,7 @@ class _GroupExecution:
                     report_path=str(report_path),
                     base_ref=self.deps.base_ref_for(self.group),
                     scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
+                    decisions=self._decisions_text(),
                 ),
                 name=session_display_name(self.deps.run_id, self.gid, "reviewer", self.generation),
                 cwd=self.workspace,
@@ -954,7 +964,7 @@ class _GroupExecution:
             result = await asyncio.to_thread(
                 self.deps.runner.resume,
                 session_id=self.reviewer_sid,
-                prompt=render_re_review_prompt(str(report_path)),
+                prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
             )
         verdict, result = await asyncio.to_thread(
@@ -1411,6 +1421,7 @@ class _GroupExecution:
             last_report=report.model_dump_json(indent=2),
             outstanding=outstanding,
             diff_summary=diff_stat(self.workspace, self.deps.base_ref_for(self.group)),
+            decisions=self._decisions_text(),
         )
 
     # ------------------------------------------------------------ escalation

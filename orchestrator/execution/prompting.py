@@ -119,17 +119,24 @@ def render_reviewer_nudge_skeleton() -> str:
     )
 
 
-def render_coder_prompt(run_id: str, group: Group) -> str:
+def render_coder_prompt(run_id: str, group: Group, *, decisions: str = "") -> str:
     return Template(load_template("coder")).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
         report_contract=load_template("report_contract"),
+        decisions=decisions,
     )
 
 
 def render_reviewer_prompt(
-    run_id: str, group: Group, *, report_path: str, base_ref: str, scratch_dir: str
+    run_id: str,
+    group: Group,
+    *,
+    report_path: str,
+    base_ref: str,
+    scratch_dir: str,
+    decisions: str = "",
 ) -> str:
     return Template(load_template("reviewer")).substitute(
         identity_block=render_identity(run_id, group),
@@ -138,6 +145,7 @@ def render_reviewer_prompt(
         report_path=report_path,
         base_ref=base_ref,
         scratch_dir=scratch_dir,
+        decisions=decisions,
     )
 
 
@@ -175,8 +183,10 @@ def render_coder_answer_prompt(answer: str) -> str:
     return Template(load_template("answer")).substitute(answer=answer)
 
 
-def render_re_review_prompt(report_path: str) -> str:
-    return Template(load_template("re_review")).substitute(report_path=report_path)
+def render_re_review_prompt(report_path: str, *, decisions: str = "") -> str:
+    return Template(load_template("re_review")).substitute(
+        report_path=report_path, decisions=decisions
+    )
 
 
 def render_extra_pass_prompt() -> str:
@@ -208,6 +218,7 @@ def render_handoff_prompt(
     last_report: str,
     outstanding: str,
     diff_summary: str,
+    decisions: str = "",
 ) -> str:
     """First prompt of a generation-respawn coder session (plan U7 breaker path)."""
     return Template(load_template("handoff")).substitute(
@@ -220,4 +231,5 @@ def render_handoff_prompt(
         diff_summary=diff_summary or "(not summarized; inspect the worktree with git)",
         verification=_verification_lines(group.verification),
         report_contract=load_template("report_contract"),
+        decisions=decisions,
     )
