@@ -8,6 +8,8 @@ messages coder and reviewer sessions must emit.
 
 from __future__ import annotations
 
+import re
+
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -29,10 +31,26 @@ class ReviewIntensity(StrEnum):
     PAIRED_PLUS = "paired_plus"
 
 
+#: A plan marks an item the *driver* must run — not the coder — by writing its
+#: command as ``Run (driver): …``. The live tier (`-m llm`) is the standing
+#: case: a worker is confined by Landlock to its own worktree and its own
+#: `~/.claude/projects/<slug>` directory, so a nested `claude` cannot write the
+#: transcript it needs, and that confinement is exactly what keeps a worker out
+#: of every other session's `memory/` — it is not going to be loosened.
+DRIVER_RUN_RE = re.compile(r"\bRun\s*\(driver\)\s*:", re.IGNORECASE)
+
+
+def is_driver_run(description: str) -> bool:
+    return DRIVER_RUN_RE.search(description) is not None
+
+
 class VerificationItem(BaseModel):
     id: str
     description: str
     required: bool = True
+    # Set from the description's ``Run (driver):`` marker at assembly time, so
+    # a spec carries the fact rather than every reader re-deriving it.
+    driver_run: bool = False
 
 
 class GroupSpec(BaseModel):
@@ -218,12 +236,15 @@ def unmet_required_verification(
 
     Pure data — no LLM call, no I/O. Optional items are ignored; a result for
     an item the group never declared is ignored too, since only the declared
-    contract is being gated.
+    contract is being gated. ``driver_run`` items are ignored as well — the
+    coder is told not to run them and cannot (see ``DRIVER_RUN_RE``), so
+    gating them would hold every such group at the gate until it retired,
+    which is exactly what r20260916-113121's g4 did.
     """
     reported = {result.item_id: result for result in results}
     gaps: list[str] = []
     for item in items:
-        if not item.required:
+        if not item.required or item.driver_run:
             continue
         result = reported.get(item.id)
         if result is None:
@@ -386,6 +407,12 @@ class EscalationResponse(BaseModel):
     id: str
     action: HumanAction
     answer: str = ""
+    # Plan U8: whether this answer carries forward as an Operator Decision into
+    # every later prompt of the group, not just the one it unblocked. Defaults
+    # True — an operator answering an escalation is guidance for the group, not
+    # a one-off aside — so every response file written before this field
+    # existed loads as binding without a migration.
+    binding: bool = True
     answered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

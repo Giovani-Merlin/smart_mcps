@@ -48,6 +48,10 @@ class AnswerBody(BaseModel):
 
     action: HumanAction
     text: str = ""
+    # Plan U8: every Observatory answer binds by default — the panel carries no
+    # checkbox — but a body that opts out (mirroring the CLI's `--guidance`)
+    # writes a non-binding response.
+    binding: bool = True
 
 
 class AnswerResult(BaseModel):
@@ -75,7 +79,9 @@ def post_answer(
     """
     paths = resolve_run(request, project, run_id)
     try:
-        response_path = answer_escalation(paths, esc_id, body.action, body.text)
+        response_path = answer_escalation(
+            paths, esc_id, body.action, body.text, binding=body.binding
+        )
     except EscalationError as exc:
         # Classify rather than re-check the contract: if the request exists the
         # only way to fail is that it was already answered.

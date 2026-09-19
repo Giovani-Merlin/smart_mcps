@@ -121,3 +121,108 @@ describe("the board does not call a stale failure a failure", () => {
     expect(card.textContent).toContain(statusOf("completed").label);
   });
 });
+
+describe("the board shows the liveness line and activity tail (plan U7)", () => {
+  function snapshotWith(
+    heartbeat: RunSnapshot["groups"][number]["heartbeat"],
+    activityTail?: RunSnapshot["groups"][number]["sessions"][number]["activity_tail"],
+  ): RunSnapshot {
+    return {
+      ...R20260726_GROUPING,
+      groups: R20260726_GROUPING.groups.map((group) =>
+        group.group_id === "g1"
+          ? {
+              ...group,
+              heartbeat,
+              sessions:
+                activityTail === undefined
+                  ? group.sessions
+                  : group.sessions.map((session, index) =>
+                      index === group.sessions.length - 1
+                        ? { ...session, activity_tail: activityTail }
+                        : session,
+                    ),
+            }
+          : group,
+      ),
+    };
+  }
+
+  function boardWith(
+    heartbeat: RunSnapshot["groups"][number]["heartbeat"],
+    activityTail?: RunSnapshot["groups"][number]["sessions"][number]["activity_tail"],
+  ) {
+    const snapshot = snapshotWith(heartbeat, activityTail);
+    return render(
+      <GroupBoard
+        project="smart-mcps"
+        runId={snapshot.run_id}
+        snapshot={snapshot}
+        revision={1}
+        loading={false}
+      />,
+    );
+  }
+
+  it("renders NOT LIVE with the evidence text and the not-live class when 20 minutes past the window", () => {
+    const nowS = Date.now() / 1000;
+    boardWith({
+      generation: 1,
+      round: 1,
+      phase: "round 1 running",
+      child_pid: 4242,
+      child_spawned_at: new Date((nowS - 30 * 60) * 1000).toISOString(),
+      last_sign_of_life_at: new Date((nowS - 20 * 60) * 1000).toISOString(),
+      sign_of_life_signal: "cpu",
+      sign_of_life_evidence: "cpu flat for 20m",
+      liveness_window_s: 600,
+    });
+    const card = cardOf("g1");
+    const liveness = card.querySelector(".group-card__liveness")!;
+    expect(liveness.textContent).toContain("NOT LIVE for");
+    expect(liveness.textContent).toContain("cpu flat for 20m");
+    expect(liveness.classList.contains("group-card__liveness--not-live")).toBe(true);
+  });
+
+  it("renders a fresh child as live:, not not-live", () => {
+    const nowS = Date.now() / 1000;
+    boardWith({
+      generation: 1,
+      round: 1,
+      phase: "round 1 running",
+      child_pid: 4242,
+      child_spawned_at: new Date((nowS - 30) * 1000).toISOString(),
+      last_sign_of_life_at: new Date((nowS - 5) * 1000).toISOString(),
+      sign_of_life_signal: "event tool_use",
+      sign_of_life_evidence: "event tool_use 5s ago",
+      liveness_window_s: 600,
+    });
+    const card = cardOf("g1");
+    const liveness = card.querySelector(".group-card__liveness")!;
+    expect(liveness.textContent).toContain("live:");
+    expect(liveness.classList.contains("group-card__liveness--not-live")).toBe(false);
+  });
+
+  it("renders no liveness line at all for a pre-liveness fixture group, and no error", () => {
+    board();
+    expect(cardOf("g1").querySelector(".group-card__liveness")).toBeNull();
+  });
+
+  it("renders the newest session's activity tail", () => {
+    boardWith(null, [
+      { at: "2026-08-09T10:00:00Z", tool: "Bash", input_head: "uv run pytest", returned: true },
+      { at: "2026-08-09T10:01:00Z", tool: "Edit", input_head: "runs.py", returned: false },
+    ]);
+    const card = cardOf("g1");
+    const tail = card.querySelector(".group-card__activity")!;
+    expect(tail.textContent).toContain("uv run pytest");
+    expect(tail.textContent).toContain("returned");
+    expect(tail.textContent).toContain("Edit");
+    expect(tail.textContent).toContain("running");
+  });
+
+  it("renders no activity block for a pre-liveness fixture group, and no error", () => {
+    board();
+    expect(cardOf("g1").querySelector(".group-card__activity")).toBeNull();
+  });
+});

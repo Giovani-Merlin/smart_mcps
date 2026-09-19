@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -192,6 +192,11 @@ class GroupRunState(BaseModel):
     # stays INTERRUPTED) and every new GroupState has to be mirrored in the
     # Observatory's own enums, which has drifted before.
     quarantined: bool = False
+    # plan U5: Suspend Cures applied this run, keyed by generation as a string
+    # (JSON-safe under pydantic's dict serialization). A cure warm-resumes the
+    # same session, so it never touches `reentry_count` — that counter bounds
+    # a session becoming unreachable, not a machine going to sleep under it.
+    cures: dict[str, int] = Field(default_factory=dict)
 
 
 class LivePid(BaseModel):
@@ -244,6 +249,19 @@ class RunState(BaseModel):
         }
 
 
+class _NoopCureCounter:
+    """The default `GroupContext.record_cure`: counts in memory only, for
+    callers that never wire a real scheduler (tests, pre-U5 construction
+    sites). Not persisted — only `Scheduler.record_cure` writes `state.json`."""
+
+    def __init__(self) -> None:
+        self._count = 0
+
+    def __call__(self) -> int:
+        self._count += 1
+        return self._count
+
+
 @dataclass
 class GroupContext:
     """What a group executor gets: its group plus persisted state hooks."""
@@ -252,6 +270,11 @@ class GroupContext:
     generation: int
     set_state: Callable[[GroupState], None]
     set_generation: Callable[[int], None]
+    # plan U5: increments and persists this generation's Suspend Cure count,
+    # returning the new total. Defaults to an in-memory no-op counter so every
+    # other constructor (production included, pre-U5) keeps working unchanged
+    # — only the review loop's own cure-recovery path needs the persisted one.
+    record_cure: Callable[[], int] = field(default_factory=lambda: _NoopCureCounter())
 
 
 # Runs one group to a terminal state (U7 wires the review loop in here).
@@ -284,6 +307,7 @@ class Scheduler:
         self.config = config or ExecutionConfig()
         self.breaker = breaker or BreakerConfig()
         self._resume = resume
+        self._previous_exit_was_signal = False
         # HITL seam (plan U2), mirroring ReviewDeps: both None ⇒ a FAILED group's
         # resolve runs autonomously with no escalation, byte-identical to a run
         # with escalation disabled.
@@ -301,6 +325,9 @@ class Scheduler:
             if found_version != RUN_STATE_SCHEMA_VERSION:
                 raise RunStateVersionError(found_version, RUN_STATE_SCHEMA_VERSION)
             self.state = RunState.model_validate(raw)
+            # Read before it is cleared: a previous process that left through
+            # the SIGINT/SIGTERM path stamped it, a crash or reboot did not.
+            self._previous_exit_was_signal = self.state.interrupted_at is not None
             # A driver is attached again, so the run is no longer interrupted —
             # whatever happens next writes its own marker.
             self.state.interrupted_at = None
@@ -350,6 +377,19 @@ class Scheduler:
             self.state.groups[group_id].generation = generation
             self._persist()
 
+    def record_cure(self, group_id: str) -> int:
+        """Increment and persist this group's Suspend Cure count for its
+        *current* generation (plan U5), returning the new total. Keyed on the
+        live generation at call time, not a captured one — a cure always
+        happens against the generation the group is presently running."""
+        with self._lock:
+            entry = self.state.groups[group_id]
+            key = str(entry.generation)
+            entry.cures[key] = entry.cures.get(key, 0) + 1
+            count = entry.cures[key]
+            self._persist()
+            return count
+
     def pending_group_ids(self) -> list[str]:
         """Groups not yet started or finished (plan U7): what a blocking
         escalation is holding up, named on the stdout line so an operator
@@ -395,12 +435,21 @@ class Scheduler:
         `resume` stops picking it up automatically and `retry` is what releases
         it. Already-quarantined groups are left untouched — the count does not
         keep climbing every idle `resume`.
+
+        A resume after the previous driver was stopped by a signal does not
+        count: the budget bounds groups that keep taking the driver down, and an
+        operator's Ctrl-C (or Observatory Stop) on a wedged driver is not that.
+        r20260908 g8 was quarantined by four operator restarts after laptop
+        suspends, none of them the group's fault.
         """
         with self._lock:
             for gid, entry in self.state.groups.items():
                 if entry.state in TERMINAL_STATES or entry.state == GroupState.PENDING:
                     continue
                 if entry.quarantined:
+                    continue
+                if self._previous_exit_was_signal:
+                    entry.state = GroupState.READY
                     continue
                 entry.reentry_count += 1
                 if entry.reentry_count > self.breaker.max_reentries:
@@ -606,6 +655,7 @@ class Scheduler:
             generation=entry.generation,
             set_state=lambda state: self.set_state(gid, state),
             set_generation=lambda generation: self.set_generation(gid, generation),
+            record_cure=lambda: self.record_cure(gid),
         )
         try:
             final = await self.executor(context)

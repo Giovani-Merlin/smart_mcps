@@ -10,6 +10,8 @@ process's own cooperative cleanup.
 
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import signal
 import subprocess
@@ -25,9 +27,11 @@ from orchestrator.execution.driver import (
     DriverLock,
     _lock_fd_is_cloexec,
     driver_status_line,
+    group_liveness,
     is_driving,
     read_driver_record,
 )
+from orchestrator.execution.liveness import read_suspend_facts
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
 
@@ -189,7 +193,7 @@ class TestStatusLine:
         lock.release()
         assert driver_status_line(paths, active_group_ids=[]) == "no process is driving this run"
 
-    def test_fresh_heartbeat_reads_as_progressing(self, paths):
+    def test_fresh_heartbeat_with_no_child_pid_reads_as_no_worker_child(self, paths):
         gid = "g1"
         hb_path = paths.group_dir(gid) / "heartbeat.json"
         hb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +203,7 @@ class TestStatusLine:
         lock.acquire()
         try:
             line = driver_status_line(paths, active_group_ids=[gid])
-            assert "progressing" in line
+            assert "no worker child" in line
             assert "stale" not in line
         finally:
             lock.release()
@@ -222,3 +226,141 @@ class TestStatusLine:
             assert "stale" in line
         finally:
             lock.release()
+
+
+def _write_group_heartbeat(paths: RunPaths, gid: str, payload: dict) -> None:
+    hb_path = paths.group_dir(gid) / "heartbeat.json"
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(hb_path, json.dumps(payload))
+
+
+class TestLivenessCounts:
+    """Plan U3: `driver_status_line` reports how many active groups are live,
+    derived from each group's own liveness facts rather than the file mtime
+    alone — the property that lets the word "progressing" retire."""
+
+    def test_a_mix_of_live_and_not_live_groups_is_reported(self, paths):
+        now = time.time()
+        _write_group_heartbeat(
+            paths,
+            "g1",
+            {
+                "child_pid": 111,
+                "liveness_window_s": 600,
+                "last_sign_of_life_at": datetime.datetime.fromtimestamp(
+                    now, tz=datetime.UTC
+                ).isoformat(),
+                "sign_of_life_signal": "event",
+            },
+        )
+        stale_at = now - (20 * 60)
+        _write_group_heartbeat(
+            paths,
+            "g2",
+            {
+                "child_pid": 222,
+                "liveness_window_s": 600,
+                "last_sign_of_life_at": datetime.datetime.fromtimestamp(
+                    stale_at, tz=datetime.UTC
+                ).isoformat(),
+                "sign_of_life_signal": "event",
+                "sign_of_life_evidence": "event assistant 20m ago",
+            },
+        )
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            live, not_live = group_liveness(paths, ["g1", "g2"], now=now)
+            assert (live, not_live) == (1, 1)
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "1 live, 1 NOT LIVE" in line
+        finally:
+            lock.release()
+
+    def test_no_worker_child_in_either_group_is_reported_by_count(self, paths):
+        _write_group_heartbeat(paths, "g1", {"phase": "merging into integration"})
+        _write_group_heartbeat(paths, "g2", {"phase": "merging into integration"})
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            live, not_live = group_liveness(paths, ["g1", "g2"], now=time.time())
+            assert (live, not_live) == (0, 0)
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "2 active groups, no worker child" in line
+        finally:
+            lock.release()
+
+    def test_all_live_groups_reads_as_active_groups_live(self, paths):
+        now = time.time()
+        fresh = datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat()
+        for gid, pid in (("g1", 111), ("g2", 222)):
+            _write_group_heartbeat(
+                paths,
+                gid,
+                {
+                    "child_pid": pid,
+                    "liveness_window_s": 600,
+                    "last_sign_of_life_at": fresh,
+                    "sign_of_life_signal": "event",
+                },
+            )
+
+        lock = DriverLock(paths)
+        lock.acquire()
+        try:
+            line = driver_status_line(paths, active_group_ids=["g1", "g2"])
+            assert "2 active groups live" in line
+        finally:
+            lock.release()
+
+
+class TestSuspendDetection:
+    """Plan U4: `DriverLock`'s record thread also samples for a machine
+    suspend, and `read_suspend_facts` exposes what it finds."""
+
+    def test_driver_record_still_written_and_no_suspend_facts_until_a_sample_fires(self, paths):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        try:
+            _wait_for(lambda: read_driver_record(paths) is not None)
+            assert read_suspend_facts(paths) is None
+        finally:
+            lock.release()
+
+    def test_forcing_the_clocks_to_diverge_makes_suspend_facts_appear_within_one_interval(
+        self, paths
+    ):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        try:
+            _wait_for(
+                lambda: (
+                    lock._suspend_monitor is not None
+                    and lock._suspend_monitor._prev_mono is not None
+                )
+            )
+            monitor = lock._suspend_monitor
+            # Fixed target values, not a formula re-evaluated from the moving
+            # `_prev_*` baseline: once sampled once, the deltas collapse back
+            # to zero, so this fires exactly one suspend, not one per tick.
+            target_mono = monitor._prev_mono + 10.0
+            target_boot = monitor._prev_boot + 400.0
+            target_wall = monitor._prev_wall + 10.0
+            monitor._clock = lambda: target_mono
+            monitor._boottime = lambda: target_boot
+            monitor._wall = lambda: target_wall
+
+            _wait_for(lambda: read_suspend_facts(paths) is not None, timeout=2.0)
+            facts = read_suspend_facts(paths)
+            assert facts.suspends == 1
+            assert facts.last_wake_at is not None
+        finally:
+            lock.release()
+
+    def test_release_joins_the_thread(self, paths):
+        lock = DriverLock(paths, record_interval=0.05)
+        lock.acquire()
+        lock.release()
+        assert lock._thread is None

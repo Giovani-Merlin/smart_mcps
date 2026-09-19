@@ -136,6 +136,11 @@ class ExportEscalation(BaseModel):
     response_path: str | None = None
     action: str | None = None
     answer: str = ""
+    #: Plan U8: whether this answer is an Operator Decision. Null when there is
+    #: no response yet; ``True``/``False`` from the response once one exists —
+    #: including a response written before the field existed, which reads as
+    #: ``True`` (`EscalationResponse`'s own default).
+    binding: bool | None = None
 
 
 class ExportRewrite(BaseModel):
@@ -394,6 +399,7 @@ def _escalations_by_group(paths: RunPaths) -> dict[str, list[ExportEscalation]]:
             response_path = directory / f"response-{esc_id}.json"
             action: str | None = None
             answer = ""
+            binding: bool | None = None
             rel_response: str | None = None
             if response_path.is_file():
                 rel_response = str(response_path.relative_to(paths.run_dir))
@@ -401,6 +407,7 @@ def _escalations_by_group(paths: RunPaths) -> dict[str, list[ExportEscalation]]:
                 if isinstance(response, dict):
                     action = str(response.get("action")) if response.get("action") else None
                     answer = str(response.get("answer") or "")
+                    binding = bool(response.get("binding", True))
             generation = request.get("generation")
             entry = ExportEscalation(
                 id=str(request.get("id") or esc_id),
@@ -412,6 +419,7 @@ def _escalations_by_group(paths: RunPaths) -> dict[str, list[ExportEscalation]]:
                 response_path=rel_response,
                 action=action,
                 answer=answer,
+                binding=binding,
             )
             by_group.setdefault(str(request.get("group_id") or ""), []).append(entry)
     return by_group

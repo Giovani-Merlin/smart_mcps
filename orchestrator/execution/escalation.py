@@ -168,6 +168,8 @@ def answer_escalation(
     esc_id: str,
     action: HumanAction | str,
     text: str = "",
+    *,
+    binding: bool = True,
 ) -> Path:
     """Write ``response-<esc_id>.json``; the blocked coroutine picks it up by id.
 
@@ -175,6 +177,10 @@ def answer_escalation(
     request is open exactly until its response file exists — and both the CLI's
     ``answer`` subcommand and the Observatory's write endpoint call it, so that
     rule has a single implementation.
+
+    ``binding`` (plan U8) is whether this answer becomes an Operator Decision
+    carried into every later prompt of the group. Defaults True; the CLI's
+    ``--guidance`` flag and the Observatory's opt-out both pass ``False``.
     """
     directory = paths.escalations_dir
     request_path = directory / f"request-{esc_id}.json"
@@ -185,7 +191,9 @@ def answer_escalation(
         # Answering twice would race the waiting group against two different
         # decisions; the first answer stands.
         raise EscalationError(f"escalation {esc_id} was already answered")
-    response = EscalationResponse(id=esc_id, action=HumanAction(action), answer=text)
+    response = EscalationResponse(
+        id=esc_id, action=HumanAction(action), answer=text, binding=binding
+    )
     atomic_write_text(response_path, response.model_dump_json(indent=2) + "\n")
     # Plan U7: the mirror image of raise_escalation's stdout line — both the
     # CLI's `answer` subcommand and the Observatory's write endpoint route

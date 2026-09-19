@@ -220,3 +220,33 @@
   font-size: 0.72rem;
   white-space: nowrap;
 }
+
+/* Sign-of-life, derived client-side from `heartbeat.json`'s facts by the same
+ * rule `status` and `liveness.py`'s `liveness_line` apply — never a state the
+ * backend sent, so it can never disagree with `status`. */
+.group-card__liveness {
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  margin-top: 0.25rem;
+}
+
+.group-card__liveness--not-live {
+  color: var(--danger-fg);
+  font-weight: 600;
+}
+
+/* The last few tool calls the group's newest session made — the same tail
+ * `format_activity_tail` renders for `status`, so an operator staring at a
+ * quiet card can see what it was actually doing. */
+.group-card__activity {
+  margin-top: 0.35rem;
+  font-size: 0.68rem;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+}
+
+.group-card__activity-entry {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

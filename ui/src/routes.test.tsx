@@ -209,11 +209,17 @@ describe("job routes (U23)", () => {
     mount("/p/proj/jobs/j1");
     expect(await screen.findByRole("region", { name: "Job log" })).toBeTruthy();
     expect(screen.getByText("running")).toBeTruthy();
-    expect(openJobStream).toHaveBeenCalledWith(
-      "proj",
-      "j1",
-      expect.any(Function),
-      expect.anything(),
+    // The region renders as soon as the job resolves; the stream is opened by
+    // an effect a tick later. Asserting the call synchronously off the region
+    // is a race that fails under load (r20260916-113121 held g3's merge gate
+    // on exactly this line, then passed 5/5 on rerun).
+    await waitFor(() =>
+      expect(openJobStream).toHaveBeenCalledWith(
+        "proj",
+        "j1",
+        expect.any(Function),
+        expect.anything(),
+      ),
     );
   });
 
@@ -225,7 +231,7 @@ describe("job routes (U23)", () => {
     getJob.mockResolvedValue(RUNNING_JOB);
     mount("/p/proj/jobs/j1");
     await screen.findByRole("region", { name: "Job log" });
-    expect(openJobStream).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(openJobStream).toHaveBeenCalledTimes(1));
   });
 
   it("renders a not-found state for a job id that does not exist", async () => {

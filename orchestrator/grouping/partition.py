@@ -47,6 +47,10 @@ LOUVAIN_SEED = 42
 # module must not import config.py (kept pure, see module docstring) and tests
 # call merge_small_groups/DefaultPartitionStrategy directly without a config object.
 DEFAULT_TARGET_FILL_RATIO = 0.75
+# Mirrors PartitionConfig.merge_ceiling_ratio (kept in sync deliberately, same
+# reason as the line above): the hard ceiling a *merge* may not cross, as a
+# fraction of budget_cap. 1.0 reproduces the pre-ceiling behaviour.
+DEFAULT_MERGE_CEILING_RATIO = 0.9
 
 _Node = TypeVar("_Node")
 
@@ -348,6 +352,7 @@ class DefaultPartitionStrategy:
     louvain_resolution: float = 1.0
     granularity: Granularity = "independent"
     target_fill_ratio: float = DEFAULT_TARGET_FILL_RATIO
+    merge_ceiling_ratio: float = DEFAULT_MERGE_CEILING_RATIO
     recorder: PartitionRecorder | None = None
     # Declared (mapper depends_on) task-level pairs (plan U10): repair_cycles never
     # withdraws these. `None` means "no declared-edge information available" — the
@@ -410,6 +415,7 @@ class DefaultPartitionStrategy:
             recorder=self.recorder,
             granularity=self.granularity,
             target_fill_ratio=self.target_fill_ratio,
+            merge_ceiling_ratio=self.merge_ceiling_ratio,
         )
         stages.append(("merge", dict(partition)))
         self._record_stage("merge", partition)
@@ -948,6 +954,7 @@ def merge_small_groups(
     recorder: PartitionRecorder | None = None,
     granularity: Granularity = "independent",
     target_fill_ratio: float = DEFAULT_TARGET_FILL_RATIO,
+    merge_ceiling_ratio: float = DEFAULT_MERGE_CEILING_RATIO,
 ) -> Partition:
     """CoCoder ``merge_small_groups`` (post_processing.py:295-401), always on.
 
@@ -973,6 +980,11 @@ def merge_small_groups(
     unbounded clustering output is exactly the over-fragmentation this system
     exists to prevent, so here it always runs.
     """
+    # The hard ceiling (plan follow-up to r20260916-113121 g4): `budget_cap` is
+    # what a group may *be*; this is what a *merge* may make it. Never relaxed
+    # by granularity — `monolithic` drops the parallelism guards, not the
+    # arithmetic that keeps a coder inside its breaker.
+    merge_cap = budget_cap * merge_ceiling_ratio if budget_cap is not None else None
     relax_chain = granularity in ("balanced", "monolithic")
     relax_makespan = granularity == "monolithic"
     work = {node: work_fn(node) for node in graph.nodes}
@@ -1017,10 +1029,11 @@ def merge_small_groups(
         best_key: tuple | None = None
         for (source, target), edge_weight in sorted(pair_edges.items()):
             merged_work = group_work(groups[source]) + group_work(groups[target])
-            if budget_cap is not None and merged_work > budget_cap:
+            if merge_cap is not None and merged_work > merge_cap:
+                reason = "over_budget" if merged_work > budget_cap else "over_merge_ceiling"
                 if recorder is not None:
                     recorder.record_merge_candidate(
-                        merge_round, source, target, False, "over_budget", merged_work, edge_weight
+                        merge_round, source, target, False, reason, merged_work, edge_weight
                     )
                 continue
             if not relax_chain and not chain_compatible(groups[source], groups[target]):

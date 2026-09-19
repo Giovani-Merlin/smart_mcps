@@ -17,6 +17,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,93 @@ def parse_transcript(path: Path, *, strip_prefix: str | None = None) -> ParsedTr
         events.extend(line_events)
 
     return ParsedTranscript(events=events, strip=strip)
+
+
+class ActivityEntry(BaseModel):
+    """One worker tool call, for a short human-readable activity tail."""
+
+    at: str | None = None
+    tool: str
+    input_head: str
+    returned: bool
+
+
+_INPUT_HEAD_MAX = 120
+
+
+def _truncate(text: str, max_len: int = _INPUT_HEAD_MAX) -> str:
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _input_head(tool_name: str | None, tool_input: Any) -> str:
+    if tool_name == "Bash" and isinstance(tool_input, dict):
+        command = tool_input.get("command")
+        if isinstance(command, str):
+            first_line = command.splitlines()[0] if command.splitlines() else command
+            return _truncate(first_line)
+    try:
+        rendered = json.dumps(tool_input, sort_keys=True)
+    except (TypeError, ValueError):
+        rendered = str(tool_input)
+    first_line = rendered.splitlines()[0] if rendered.splitlines() else rendered
+    return _truncate(first_line)
+
+
+def activity_tail(path: Path, *, n: int = 5) -> list[ActivityEntry]:
+    """The last ``n`` tool calls of a Claude Code transcript, oldest first.
+
+    Read-only and stateless: nothing is persisted. Missing files and torn
+    tail lines are tolerated by ``parse_transcript``.
+    """
+    if not path.is_file():
+        return []
+
+    parsed = parse_transcript(path)
+    returned_ids: set[str] = {
+        event.tool_use_id for event in parsed.events if event.role == "tool" and event.tool_use_id
+    }
+
+    tool_use_events = [
+        event
+        for event in parsed.events
+        if event.role == "assistant" and event.tool_name is not None
+    ]
+
+    tail = tool_use_events[-n:] if n > 0 else []
+    entries: list[ActivityEntry] = []
+    for event in tail:
+        entries.append(
+            ActivityEntry(
+                at=event.timestamp,
+                tool=event.tool_name or "",
+                input_head=_input_head(event.tool_name, event.tool_input),
+                returned=bool(event.tool_use_id and event.tool_use_id in returned_ids),
+            )
+        )
+    return entries
+
+
+def format_activity_tail(entries: list[ActivityEntry]) -> str:
+    """Render ``activity_tail`` entries as ``status`` lines."""
+    if not entries:
+        return "  (no tool calls yet)"
+
+    lines: list[str] = []
+    for entry in entries:
+        time_str = "--:--:--"
+        if entry.at:
+            try:
+                time_str = datetime.fromisoformat(entry.at.replace("Z", "+00:00")).strftime(
+                    "%H:%M:%S"
+                )
+            except ValueError:
+                time_str = entry.at
+        state = "returned" if entry.returned else "running"
+        lines.append(f"  {time_str} {entry.tool} {entry.input_head} [{state}]")
+    return "\n".join(lines)
 
 
 def write_events_gz(path: Path, events: list[NeutralEvent]) -> None:

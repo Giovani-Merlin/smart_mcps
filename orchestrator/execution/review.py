@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 import threading
 import uuid
@@ -28,9 +29,15 @@ from functools import partial
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import BreakerConfig, ExecutionConfig
+from orchestrator.config import BreakerConfig, ExecutionConfig, LivenessConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.heartbeat import RoundHeartbeat
+from orchestrator.execution.liveness import (
+    ActivityRegistry,
+    ChildActivity,
+    LivenessProbe,
+    read_suspend_facts,
+)
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
@@ -63,6 +70,7 @@ from orchestrator.execution.prompting import (
     render_reviewer_prompt,
     render_revision_prompt,
 )
+from orchestrator.execution.decisions import decision_ledger, render_decisions_section
 from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.scheduler import (
     Executor,
@@ -73,9 +81,11 @@ from orchestrator.execution.scheduler import (
     RunState,
 )
 from orchestrator.execution.sessions import (
+    ContentFiltered,
     RoundResult,
     SessionError,
     SessionRunner,
+    SuspendCured,
     UsageLimit,
     nudge_until_report,
     session_display_name,
@@ -115,6 +125,19 @@ class MergeConflict(Exception):
         self.affected_groups = affected_groups or []
 
 
+class _ContentFilterStop(Exception):
+    """Loop-internal signal (plan U10): `_worker_call` converts a
+    `ContentFiltered` into this before it can reach a caller's own
+    `except SessionError` — deliberately *not* a `SessionError` subclass, so
+    `_reenter`'s fallback (which catches `SessionError`) never mistakes a
+    content-filtered session for merely unreachable. `_run_generation`
+    catches it once, at the top of every generation."""
+
+    def __init__(self, exc: ContentFiltered):
+        super().__init__(str(exc))
+        self.exc = exc
+
+
 _logger = logging.getLogger(__name__)
 
 #: Above this many named groups a mark is logged as a wide fan-out warning
@@ -123,6 +146,9 @@ _logger = logging.getLogger(__name__)
 #: rewrite budgets, so capping fan-out here would only bite a genuinely
 #: rewrite-worthy broadcast.
 WIDE_FANOUT_THRESHOLD = 5
+
+#: One id-like token inside a decorated ``affected_groups`` entry.
+_ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 class SurpriseBoard:
@@ -156,10 +182,18 @@ class SurpriseBoard:
             frozenset(g.id for g in groups) if groups is not None else None
         )
         self._task_owner: dict[str, str] = {}
+        # Case-folded full task ids and their leading token ("u8" for
+        # "u8-structure-fix-budget"): workers name tasks the way the plan does
+        # ("U8"), not by the slugged id the grouper assigned.
+        self._task_alias_owner: dict[str, str] = {}
         if groups is not None:
             for group in groups:
                 for task in group.tasks:
                     self._task_owner.setdefault(task, group.id)
+                    self._task_alias_owner.setdefault(task.lower(), group.id)
+                    head = task.split("-", 1)[0].lower()
+                    if any(ch.isdigit() for ch in head):
+                        self._task_alias_owner.setdefault(head, group.id)
         if paths is not None and paths.surprises_path.is_file():
             raw = json.loads(paths.surprises_path.read_text())
             self._pending = {
@@ -176,27 +210,48 @@ class SurpriseBoard:
                     len(targets),
                     surprise.description,
                 )
+            keys: list[str] = []
             for gid in targets:
-                key = self._resolve(gid, surprise, source_group)
+                for key in self._resolve(gid, surprise, source_group):
+                    if key not in keys:
+                        keys.append(key)
+            if not keys and self._group_ids is not None:
+                # No other group named (an empty list, or only the source
+                # itself): a finding about future work, which must reach the
+                # run's residue report rather than vanish.
+                keys.append(self.RUN_LEVEL)
+            for key in keys:
                 self._append(key, surprise)
             self._persist()
 
-    def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> str:
-        """Map a raw ``affected_groups`` id to the bucket it should land in."""
+    def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> list[str]:
+        """Map a raw ``affected_groups`` id to the buckets it should land in."""
         if self._group_ids is None:
-            return gid  # no group list configured — legacy, unvalidated behavior
+            return [gid]  # no group list configured — legacy, unvalidated behavior
         if gid in self._group_ids:
-            return gid
+            return [gid]
         owner = self._task_owner.get(gid)
         if owner is not None:
-            return owner
+            return [owner]
+        # A decorated id — "g3 (structure-fix-budget/U8)" in r20260908. Plan
+        # task ids are what a worker actually knows, so a task token wins over
+        # a group token that may be a guess.
+        tokens = [t.lower() for t in _ID_TOKEN.findall(gid)]
+        task_owners = [self._task_alias_owner[t] for t in tokens if t in self._task_alias_owner]
+        group_hits = [t for t in tokens if t in self._group_ids]
+        resolved = list(dict.fromkeys(task_owners or group_hits))
+        if resolved:
+            _logger.info(
+                "surprise from %s names %r — resolved to %s", source_group, gid, ", ".join(resolved)
+            )
+            return resolved
         _logger.warning(
             "surprise from %s names unknown id %s (no matching group or task): %s",
             source_group,
             gid,
             surprise.description,
         )
-        return self.RUN_LEVEL
+        return [self.RUN_LEVEL]
 
     def _append(self, key: str, surprise: Surprise) -> None:
         """Append, deduplicating an identical surprise already pending in this
@@ -332,6 +387,11 @@ class ReviewDeps:
     # worktree launched without a working environment, folded into its first
     # coder prompt. None (or a None result) means the environment is fine.
     provisioning_failure_for: Callable[[Group], str | None] | None = None
+    # Liveness (plan U1/U2/U5): the run's shared activity registry — the same
+    # instance the runner stamps — and the `[liveness]` config. Both None ⇒ no
+    # probe is installed and heartbeats carry no Sign of Life facts.
+    activity: ActivityRegistry | None = None
+    liveness: LivenessConfig | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -386,7 +446,103 @@ class _GroupExecution:
         # Evidence, not a state (plan P3): the loop only ever tells it when a
         # round started; the writing happens on its own daemon thread and nothing
         # here reads it back.
-        self._heartbeat = RoundHeartbeat(deps.store.paths, self.gid, log=self._log)
+        self._heartbeat = RoundHeartbeat(
+            deps.store.paths,
+            self.gid,
+            log=self._log,
+            activity_provider=self._current_child if deps.activity is not None else None,
+        )
+        # Suspend Cure counts for this group, per generation (plan U5). Seeded
+        # from nothing: `Scheduler.record_cure` persists the real count, and
+        # `on_cure` mirrors the value it returns.
+        self._cures: dict[int, int] = {}
+        if deps.activity is not None and deps.liveness is not None:
+            probe = LivenessProbe(
+                self._heartbeat,
+                deps.liveness,
+                self._current_child,
+                log=self._log,
+                suspend_facts_provider=partial(read_suspend_facts, deps.store.paths),
+                cures_provider=lambda: self._cures.get(self._heartbeat.generation_no, 0),
+                on_cure=self._on_cure,
+                activity=deps.activity,
+            )
+            self._heartbeat.add_tick_hook(probe.tick)
+        # The round number `_round_tag` most recently rendered (plan U10):
+        # `_on_content_filtered` needs the number of the round that was in
+        # flight when `ContentFiltered` hit, and every site that starts or
+        # ends a round already renders its tag through `_round_tag` — so
+        # recording it there, as a side effect, is the one place that number
+        # is always current with no separate bookkeeping to keep in sync.
+        self._current_round_no = 0
+
+    def _current_child(self) -> ChildActivity | None:
+        """This group's live worker child, matched on its worktree — the cwd
+        every worker call of the group is spawned in."""
+        if self.deps.activity is None or self.workspace is None:
+            return None
+        return self.deps.activity.current(str(self.workspace))
+
+    def _on_cure(self, pid: int, generation: int, session_id: str) -> None:
+        self._cures[generation] = self.ctx.record_cure()
+
+    def _log_driver_run_items(self) -> None:
+        """Name the items the coder was told not to run, once, at merge.
+
+        A `driver_run` item passes the verification gate untouched (see
+        `unmet_required_verification`), so without this line the only trace
+        of an unrun check would be a `skipped` result buried in the report.
+        The driver reads this line and runs them before `finish`.
+        """
+        pending = [item.id for item in self.group.verification if item.driver_run]
+        if pending:
+            self._log(
+                f"group {self.gid}: {len(pending)} driver-run verification item(s) "
+                f"not run by the coder — {', '.join(pending)}"
+            )
+
+    def _decisions_text(self) -> str:
+        """Binding operator decisions for this group, rendered fresh from disk
+        at every prompt build (plan U9) so a later answer reaches every
+        subsequent coder, handoff, reviewer and re-review prompt."""
+        return render_decisions_section(decision_ledger(self.deps.store.paths, self.gid))
+
+    async def _worker_call(self, thunk: Callable[[], object], *, recover: Callable[[str], object]):
+        """Runs one worker call in a thread; on a Suspend Cure (plan U5) — the
+        liveness probe having killed this child because it showed no Sign of
+        Life since a detected machine wake — logs the recovery and re-issues
+        ``recover(cured_session_id)`` in *this call's* place, itself routed
+        back through ``_worker_call`` so a second cure re-issues again until
+        the probe's own per-generation cap stops curing. Coder call sites pass
+        a ``recover`` that warm-resumes with the re-entry prompt; reviewer
+        sites pass one that resumes with the re-review prompt (per the U5
+        decision) — the wrapper itself is role-agnostic.
+
+        A ``ContentFiltered`` (plan U10) is converted here to a loop-internal
+        ``_ContentFilterStop`` before it can reach a caller's own
+        ``except SessionError`` — most importantly ``_reenter``'s fallback,
+        which must never treat a content-filtered session as merely
+        unreachable and fork a fresh one from it. Any other exception — a
+        plain ``SessionError``, ``UsageLimit`` — propagates unchanged; this
+        wrapper is transparent to everything but ``SuspendCured`` and
+        ``ContentFiltered``. A ``SuspendCured`` from a first launch whose
+        session never registered on disk still carries a real ``session_id``
+        (read off the argv the failed call actually used, not off the
+        transcript), so ``recover`` resumes it the same as any other cure;
+        being a ``SessionError`` subclass, it would fall through to the
+        ordinary failure handling regardless if it ever turned up somewhere
+        this wrapper does not reach.
+        """
+        try:
+            return await asyncio.to_thread(thunk)
+        except ContentFiltered as exc:
+            raise _ContentFilterStop(exc) from exc
+        except SuspendCured as exc:
+            self._log(
+                f"group {self.gid} generation {self.generation}: "
+                f"warm-resuming session {exc.session_id} after suspend cure"
+            )
+            return await self._worker_call(partial(recover, exc.session_id), recover=recover)
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -422,7 +578,21 @@ class _GroupExecution:
     # ------------------------------------------------------------ generation
 
     async def _run_generation(self) -> bool:
-        """One coder session's lifetime. True → merged; False → respawn/rewritten."""
+        """One coder session's lifetime. True → merged; False → respawn/rewritten.
+
+        A ``_ContentFilterStop`` (plan U10) can surface from any worker call
+        this generation makes — first launch, coder nudge, needs_input
+        resume, revision resume, or a reviewer call inside ``_review_round``
+        — so it is caught here, at the one place that wraps every one of
+        them, rather than at each call site individually.
+        """
+        try:
+            return await self._run_generation_body()
+        except _ContentFilterStop as exc:
+            await self._on_content_filtered(exc.exc)
+            return False
+
+    async def _run_generation_body(self) -> bool:
         assert self.workspace is not None
         self.ctx.set_state(GroupState.RUNNING)
         first: RoundResult | None = None
@@ -447,7 +617,9 @@ class _GroupExecution:
         if reentry is not None:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
-            prompt = self.handoff_prompt or render_coder_prompt(self.deps.run_id, self.group)
+            prompt = self.handoff_prompt or render_coder_prompt(
+                self.deps.run_id, self.group, decisions=self._decisions_text()
+            )
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
             prompt = self._apply_operator_note(prompt)
@@ -485,13 +657,22 @@ class _GroupExecution:
                 "forking the base session" if self.deps.fork_base_session else "starting the coder"
             )
             self._watch_transcript(self.coder_entry)
-            first = await asyncio.to_thread(
-                self._launch_call(),
-                prompt=prompt,
-                name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
-                cwd=self.workspace,
-                session_id=self.coder_sid,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            coder_on_turn = self._make_coder_on_turn(self.coder_entry)
+            first = await self._worker_call(
+                partial(
+                    self._launch_call(),
+                    prompt=prompt,
+                    name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
+                    cwd=self.workspace,
+                    session_id=self.coder_sid,
+                    on_turn=coder_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=coder_on_turn,
+                ),
             )
             self._adopt_actual_session_id(first)
             self._refresh_transcript(self.coder_entry)
@@ -510,13 +691,27 @@ class _GroupExecution:
             # later. Each pass through this loop is the coder producing (or
             # being nudged toward) its report.
             self._heartbeat.mark_phase("coder working toward a report")
-            report, result = await asyncio.to_thread(
-                nudge_until_report,
-                self.deps.runner,
-                result,
-                CoderReport,
-                cwd=self.workspace,
-                verification_ids=verification_ids,
+
+            def _coder_nudge(round_result: RoundResult) -> tuple[CoderReport, RoundResult]:
+                return nudge_until_report(
+                    self.deps.runner,
+                    round_result,
+                    CoderReport,
+                    cwd=self.workspace,
+                    verification_ids=verification_ids,
+                )
+
+            def _coder_nudge_recover(sid: str) -> tuple[CoderReport, RoundResult]:
+                resumed = self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=self._make_coder_on_turn(self.coder_entry),
+                )
+                return _coder_nudge(resumed)
+
+            report, result = await self._worker_call(
+                partial(_coder_nudge, result), recover=_coder_nudge_recover
             )
             self._persist_coder_usage()
 
@@ -623,12 +818,21 @@ class _GroupExecution:
             self.ctx.set_state(GroupState.RUNNING)
             self._log(f"{self._round_tag(rounds + 1)}: started")
             self._heartbeat.mark_round(self.generation, rounds + 1)
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.coder_sid,
-                prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            revision_on_turn = self._make_coder_on_turn(self.coder_entry)
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.coder_sid,
+                    prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
+                    cwd=self.workspace,
+                    on_turn=revision_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=revision_on_turn,
+                ),
             )
 
     # ------------------------------------------------------------ re-entry (R4–R6)
@@ -694,13 +898,22 @@ class _GroupExecution:
         self._log(f"{self._round_tag(round_no)}: started")
         self._heartbeat.mark_round(self.generation, round_no)
         self._heartbeat.mark_phase("resuming the interrupted coder")
+        reentry_on_turn = self._make_coder_on_turn(entry)
         try:
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=entry.session_id,
-                prompt=render_reentry_prompt(self.group),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(entry),
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=entry.session_id,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=reentry_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=reentry_on_turn,
+                ),
             )
         except UsageLimit:
             # Not a fallback case. The fallback exists for a session that has
@@ -901,31 +1114,59 @@ class _GroupExecution:
         assert self.workspace is not None
         self.ctx.set_state(GroupState.REVIEWING)
         self._heartbeat.mark_phase("reviewer verifying the report")  # F4
-        if self.reviewer_sid is None:
-            first = await asyncio.to_thread(
-                self._launch_call(),
-                prompt=render_reviewer_prompt(
-                    self.deps.run_id,
-                    self.group,
-                    report_path=str(report_path),
-                    base_ref=self.deps.base_ref_for(self.group),
-                    scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
-                ),
-                name=session_display_name(self.deps.run_id, self.gid, "reviewer", self.generation),
+
+        def _reviewer_recover(sid: str) -> RoundResult:
+            return self.deps.runner.resume(
+                session_id=sid,
+                prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
+            )
+
+        if self.reviewer_sid is None:
+            first = await self._worker_call(
+                partial(
+                    self._launch_call(),
+                    prompt=render_reviewer_prompt(
+                        self.deps.run_id,
+                        self.group,
+                        report_path=str(report_path),
+                        base_ref=self.deps.base_ref_for(self.group),
+                        scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
+                        decisions=self._decisions_text(),
+                    ),
+                    name=session_display_name(
+                        self.deps.run_id, self.gid, "reviewer", self.generation
+                    ),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
             self.reviewer_sid = first.session_id
             self._record(SessionRole.REVIEWER, first.session_id)
             result = first
         else:
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.reviewer_sid,
-                prompt=render_re_review_prompt(str(report_path)),
-                cwd=self.workspace,
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.reviewer_sid,
+                    prompt=render_re_review_prompt(
+                        str(report_path), decisions=self._decisions_text()
+                    ),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
-        verdict, result = await asyncio.to_thread(
-            nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
+
+        def _reviewer_nudge(round_result: RoundResult) -> tuple[ReviewerVerdict, RoundResult]:
+            return nudge_until_report(
+                self.deps.runner, round_result, ReviewerVerdict, cwd=self.workspace
+            )
+
+        def _reviewer_nudge_recover(sid: str) -> tuple[ReviewerVerdict, RoundResult]:
+            return _reviewer_nudge(_reviewer_recover(sid))
+
+        verdict, result = await self._worker_call(
+            partial(_reviewer_nudge, result), recover=_reviewer_nudge_recover
         )
         self._persist_reviewer_usage(self.reviewer_sid)
         verdict_path = self.deps.store.save_group_artifact(
@@ -941,14 +1182,17 @@ class _GroupExecution:
         ):
             # Above d_hard: one mandatory extra verification round (origin R15).
             self.extra_pass_done = True
-            result = await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.reviewer_sid,
-                prompt=render_extra_pass_prompt(),
-                cwd=self.workspace,
+            result = await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.reviewer_sid,
+                    prompt=render_extra_pass_prompt(),
+                    cwd=self.workspace,
+                ),
+                recover=_reviewer_recover,
             )
-            verdict, result = await asyncio.to_thread(
-                nudge_until_report, self.deps.runner, result, ReviewerVerdict, cwd=self.workspace
+            verdict, result = await self._worker_call(
+                partial(_reviewer_nudge, result), recover=_reviewer_nudge_recover
             )
             self._persist_reviewer_usage(self.reviewer_sid)
             verdict_path = self.deps.store.save_group_artifact(
@@ -1074,6 +1318,7 @@ class _GroupExecution:
                     diagnosis += f"\n[operator] {response.answer}"
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
+            self._log_driver_run_items()
             return True
 
     def _log_remerge(self, reason: str) -> None:
@@ -1378,6 +1623,7 @@ class _GroupExecution:
             last_report=report.model_dump_json(indent=2),
             outstanding=outstanding,
             diff_summary=diff_stat(self.workspace, self.deps.base_ref_for(self.group)),
+            decisions=self._decisions_text(),
         )
 
     # ------------------------------------------------------------ escalation
@@ -1405,12 +1651,21 @@ class _GroupExecution:
         )
         if response is not None and not downgraded:
             self.ctx.set_state(GroupState.RUNNING)
-            return await asyncio.to_thread(
-                self.deps.runner.resume,
-                session_id=self.coder_sid,
-                prompt=render_coder_answer_prompt(response.answer),
-                cwd=self.workspace,
-                on_turn=self._make_coder_on_turn(self.coder_entry),
+            answer_on_turn = self._make_coder_on_turn(self.coder_entry)
+            return await self._worker_call(
+                partial(
+                    self.deps.runner.resume,
+                    session_id=self.coder_sid,
+                    prompt=render_coder_answer_prompt(response.answer),
+                    cwd=self.workspace,
+                    on_turn=answer_on_turn,
+                ),
+                recover=lambda sid: self.deps.runner.resume(
+                    session_id=sid,
+                    prompt=render_reentry_prompt(self.group),
+                    cwd=self.workspace,
+                    on_turn=answer_on_turn,
+                ),
             )
         if _is_retry(response):
             await self._relaunch(response.answer, f"coder needs input: {question}")
@@ -1420,6 +1675,31 @@ class _GroupExecution:
             extra.append(_operator_surprise(self.gid, response.answer))
         await self._rewrite(f"coder needs input: {question}", extra=extra)
         return None
+
+    async def _on_content_filtered(self, exc: ContentFiltered) -> None:
+        """The API's content filter blocked a coder or reviewer round (plan
+        U10) — routed like a blocked coder, quoting the last thing the model
+        actually said, and never warm-resumed: the session that produced the
+        blocked output is not one to retry as-is."""
+        self._log(f"{self._round_tag(self._current_round_no)}: ended (content filter)")
+        text = exc.last_assistant_text[:1000]
+        response = await self._escalate(
+            EscalationKind.CODER_BLOCKED,
+            prompt=f'coder for {self.gid} hit the API content filter — last assistant message: "{text}"',
+            want_diff=True,
+        )
+        if _is_retry(response):
+            await self._relaunch(response.answer, "API content filter")
+            return
+        extra = [
+            _context_surprise(
+                self.gid,
+                f"API content filter blocked the coder's output; last message: {text}",
+            )
+        ]
+        if response is not None:
+            extra.append(_operator_surprise(self.gid, response.answer))
+        await self._rewrite("content filter", extra=extra)
 
     async def _on_coder_stuck(self, report: CoderReport, report_path: Path) -> None:
         """A blocked/failed coder report: escalate, then rewrite (guided if answered)
@@ -1537,6 +1817,10 @@ class _GroupExecution:
         atomic_write_text(path, self.group.model_dump_json(indent=2) + "\n")
 
     def _round_tag(self, round_no: int) -> str:
+        # Side effect: records the round currently in flight (plan U10), so
+        # `_on_content_filtered` can log the round a `ContentFiltered` ended
+        # without a second, separate tracker to keep in sync with this one.
+        self._current_round_no = round_no
         return f"group {self.gid} generation {self.generation} round {round_no}"
 
     # ------------------------------------------------------------ bookkeeping

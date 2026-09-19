@@ -16,10 +16,11 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from orchestrator.config import PreflightConfig, WorkspaceConfig
+from orchestrator.config import ExecutionConfig, PreflightConfig, WorkspaceConfig
 from orchestrator.execution.preflight import PreflightBaseline, run_preflight
 from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
+    IGNORED_OUTPUTS_DIRNAME,
     WorktreeError,
     WorktreeRefreshConflict,
     _git,
@@ -31,6 +32,7 @@ from orchestrator.execution.worktrees import (
     provision_env,
     provision_node_env,
     remove_worktree,
+    rescue_ignored_outputs,
     write_provisioning_record,
 )
 from orchestrator.model import Group
@@ -258,6 +260,12 @@ class IntegrationMerger:
             # integration tree gets its link now rather than at the next ensure().
             materialize_data_layer(integration_wt, self.repo_root, self._workspace, log=self._log)
             self._reprovision_if_manifests_changed(integration_wt, group.id, since=tip_before)
+            rescue_ignored_outputs(
+                worktree,
+                self._preflight_output_dir(group.id) / IGNORED_OUTPUTS_DIRNAME,
+                cap_bytes=ExecutionConfig().review_scratch_cap_bytes,
+                log=self._log,
+            )
             try:
                 # Cleanup only after a clean merge; a dirty worktree (uncommitted
                 # leftovers) is left in place for inspection rather than forced.

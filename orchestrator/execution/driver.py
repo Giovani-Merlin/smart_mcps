@@ -36,15 +36,26 @@ import threading
 import time
 from pathlib import Path
 
-from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.heartbeat import read_heartbeat
+from orchestrator.execution.liveness import SuspendMonitor, not_live_age
+from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
+
+#: Default gap, in seconds, above which a boot-time-vs-monotonic divergence
+#: between two record ticks is read as a machine suspend rather than clock
+#: jitter (plan U4). Mirrors ``LivenessConfig.suspend_gap_seconds`` — kept as
+#: its own default here (not imported from ``config.py``) so every existing
+#: ``DriverLock(paths)`` caller and test keeps working unchanged.
+DEFAULT_SUSPEND_GAP_SECONDS = 60.0
 
 #: How often the driver record's `updated_at` is refreshed. Independent of the
 #: heartbeat's tick rate — this is evidence a *driver* is alive, checked at a
 #: much coarser grain than "is this group's round still moving".
 RECORD_INTERVAL_SECONDS = 10.0
 
-#: Past this many seconds since a heartbeat file's mtime, the driver is read as
-#: alive-but-stalled rather than alive-and-progressing (Decisions, U11).
+#: Past this many seconds since a heartbeat file's mtime, the heartbeat itself
+#: is read as stale — the file stopped being written at all, as distinct from
+#: a liveness verdict about the child it describes (that is `not_live_age`'s
+#: job, plan U3).
 STALE_HEARTBEAT_SECONDS = 120.0
 
 
@@ -122,13 +133,21 @@ class DriverLock:
     not a queue to wait in.
     """
 
-    def __init__(self, paths: RunPaths, *, record_interval: float = RECORD_INTERVAL_SECONDS):
+    def __init__(
+        self,
+        paths: RunPaths,
+        *,
+        record_interval: float = RECORD_INTERVAL_SECONDS,
+        suspend_gap_s: float = DEFAULT_SUSPEND_GAP_SECONDS,
+    ):
         self.paths = paths
         self.record_interval = record_interval
+        self.suspend_gap_s = suspend_gap_s
         self._fd: int | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._started_at: str | None = None
+        self._suspend_monitor: SuspendMonitor | None = None
 
     def acquire(self) -> None:
         fd = _open_lock_fd(self.paths)
@@ -141,6 +160,12 @@ class DriverLock:
             ) from exc
         self._fd = fd
         self._started_at = _now()
+        self._suspend_monitor = SuspendMonitor(
+            self.paths,
+            gap_s=self.suspend_gap_s,
+            interval_s=self.record_interval,
+            log=lambda message: log_event(self.paths, message),
+        )
         self._write_record()
         self._thread = threading.Thread(target=self._loop, name="driver-lock", daemon=True)
         self._thread.start()
@@ -150,6 +175,7 @@ class DriverLock:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=1.0)
+        self._suspend_monitor = None
         if self._fd is not None:
             fd, self._fd = self._fd, None
             with contextlib.suppress(OSError):
@@ -166,6 +192,8 @@ class DriverLock:
     def _loop(self) -> None:
         while not self._stop.wait(self.record_interval):
             self._write_record()
+            if self._suspend_monitor is not None:
+                self._suspend_monitor.sample()
 
     def _write_record(self) -> None:
         """Best-effort, like the heartbeat: an unwritable run directory loses
@@ -181,27 +209,62 @@ class DriverLock:
             pass
 
 
-def driver_status_line(paths: RunPaths, *, active_group_ids: list[str]) -> str:
-    """One human-readable line for `status`: whether a process is driving, and
-    separately whether it looks like it is making progress.
+def group_liveness(paths: RunPaths, group_ids: list[str], *, now: float) -> tuple[int, int]:
+    """(live, not_live) among *group_ids*, derived from each group's own
+    ``heartbeat.json`` facts by the same rule ``liveness_line`` and the
+    Observatory apply (``not_live_age``). A group with no worker child right
+    now — between rounds, merging, or no heartbeat written yet — counts as
+    neither; see the caller for how it renders that case."""
+    live = 0
+    not_live = 0
+    for gid in group_ids:
+        heartbeat = read_heartbeat(paths, gid)
+        if heartbeat is None or heartbeat.get("child_pid") is None:
+            continue
+        if not_live_age(heartbeat, now=now) is not None:
+            not_live += 1
+        else:
+            live += 1
+    return live, not_live
 
-    Progress is read from the freshest heartbeat mtime among the run's
-    currently-active groups, not from the driver record's own `updated_at` —
-    the record advances every tick just because the process is alive, which is
-    exactly the "wedged but alive" case this is meant to catch instead of hide.
+
+def driver_status_line(paths: RunPaths, *, active_group_ids: list[str]) -> str:
+    """One human-readable line for `status`: whether a process is driving,
+    and how many of the run's currently-active groups look live.
+
+    Two different kinds of staleness are deliberately kept apart. A stale
+    heartbeat *file* (this function's own ``STALE_HEARTBEAT_SECONDS`` check)
+    means the writer itself stopped — the driver thread, or the group's
+    process, is gone. A Not Live *group* (``group_liveness``, plan U3) means
+    the file is still being written on schedule but the child it describes
+    has shown no Sign of Life inside the Liveness Window. The first is
+    checked before the second: a heartbeat that stopped updating minutes ago
+    cannot tell you anything trustworthy about its child's liveness facts
+    either.
     """
     if not is_driving(paths):
         return "no process is driving this run"
     record = read_driver_record(paths)
     pid = record.get("pid") if record else None
     who = f"pid {pid}" if pid is not None else "unknown pid"
-    mtime = newest_heartbeat_mtime(paths, active_group_ids)
-    if mtime is None:
+    if not active_group_ids:
         return f"a process is driving this run ({who})"
-    age = time.time() - mtime
-    if age > STALE_HEARTBEAT_SECONDS:
-        return f"a process is driving this run ({who}), but its heartbeat is stale ({age:.0f}s old)"
-    return f"a process is driving this run ({who}), progressing ({age:.0f}s since last heartbeat)"
+
+    mtime = newest_heartbeat_mtime(paths, active_group_ids)
+    if mtime is not None:
+        age = time.time() - mtime
+        if age > STALE_HEARTBEAT_SECONDS:
+            return f"a process is driving this run ({who}), but its heartbeat is stale ({age:.0f}s old)"
+
+    live, not_live = group_liveness(paths, active_group_ids, now=time.time())
+    if live == 0 and not_live == 0:
+        n = len(active_group_ids)
+        noun = "active group" if n == 1 else "active groups"
+        return f"a process is driving this run ({who}): {n} {noun}, no worker child"
+    if not_live == 0:
+        noun = "active group" if live == 1 else "active groups"
+        return f"a process is driving this run ({who}): {live} {noun} live"
+    return f"a process is driving this run ({who}): {live} live, {not_live} NOT LIVE (see the group lines)"
 
 
 def _lock_fd_is_cloexec(fd: int) -> bool:

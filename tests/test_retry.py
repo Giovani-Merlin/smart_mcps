@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.cli import main
 from orchestrator.execution.driver import DriverLock
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
@@ -125,7 +126,9 @@ def test_retry_resets_failed_group_to_pending(repo):
     persisted = RunState.model_validate_json(paths.state_path.read_text())
     entry = persisted.groups[group.id]
     assert entry.state == GroupState.PENDING
-    assert entry.failure is None
+    assert entry.failure is not None
+    assert entry.failure.startswith("released by operator at ")
+    assert entry.failure.endswith("; resume to continue")
 
     # branch and worktree survive — the whole point is to build on the work
     assert wt.is_dir()
@@ -345,3 +348,85 @@ def test_retry_refuses_while_a_driver_holds_the_lock(repo):
         lock.release()
 
     assert paths.state_path.read_bytes() == before
+
+
+# --------------------------------------------------------------- release note
+
+
+def test_retry_failed_group_leaves_release_note_cleared_by_running_state(repo):
+    run_id = "r9"
+    group = make_group("g1")
+    paths = RunPaths(repo, run_id)
+    write_grouping(paths, group)
+    integration = make_integration_branch(repo, run_id)
+    make_group_worktree(repo, run_id, group, integration)
+    write_state(paths, run_id, group.id, GroupRunState(state=GroupState.FAILED, failure="boom"))
+
+    retry_group(repo, run_id, group.id)
+
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    entry = persisted.groups[group.id]
+    assert entry.failure is not None
+    assert entry.failure.startswith("released by operator at ")
+    assert entry.failure.endswith("; resume to continue")
+
+    async def completing(ctx):
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(groups=[group], paths=paths, executor=completing, resume=True)
+    scheduler.set_state(group.id, GroupState.RUNNING)
+    cleared = RunState.model_validate_json(paths.state_path.read_text())
+    assert cleared.groups[group.id].failure is None
+
+
+def test_retry_quarantined_group_leaves_release_note_cleared_by_running_state(repo):
+    run_id = "r10"
+    group = make_group("g1")
+    paths = RunPaths(repo, run_id)
+    write_grouping(paths, group)
+    integration = make_integration_branch(repo, run_id)
+    make_group_worktree(repo, run_id, group, integration)
+    write_state(
+        paths,
+        run_id,
+        group.id,
+        GroupRunState(
+            state=GroupState.INTERRUPTED, quarantined=True, reentry_count=3, failure="quarantined"
+        ),
+    )
+
+    retry_group(repo, run_id, group.id)
+
+    persisted = RunState.model_validate_json(paths.state_path.read_text())
+    entry = persisted.groups[group.id]
+    assert entry.failure is not None
+    assert entry.failure.startswith("released by operator at ")
+    assert entry.failure.endswith("; resume to continue")
+
+    async def completing(ctx):
+        return GroupState.COMPLETED
+
+    scheduler = Scheduler(groups=[group], paths=paths, executor=completing, resume=True)
+    scheduler.set_state(group.id, GroupState.RUNNING)
+    cleared = RunState.model_validate_json(paths.state_path.read_text())
+    assert cleared.groups[group.id].failure is None
+
+
+def test_retry_cli_then_status_shows_release(repo, capsys):
+    """[g3-2] Real-CLI oracle: `retry` then `status` through orchestrator.cli.main."""
+    run_id = "r11"
+    group = make_group("g1")
+    paths = RunPaths(repo, run_id)
+    write_grouping(paths, group)
+    integration = make_integration_branch(repo, run_id)
+    make_group_worktree(repo, run_id, group, integration)
+    write_state(paths, run_id, group.id, GroupRunState(state=GroupState.FAILED, failure="boom"))
+
+    exit_code = main(["retry", run_id, group.id, "--repo", str(repo)])
+    assert exit_code == 0
+    capsys.readouterr()
+
+    exit_code = main(["status", run_id, "--repo", str(repo)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "failure: released by operator at" in out

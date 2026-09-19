@@ -203,6 +203,20 @@ class PartitionConfig(BaseModel):
     # merges outright and start fragmenting groups that would otherwise merge
     # cleanly. Overridable via ``[partition] target_fill_ratio``.
     target_fill_ratio: float = 0.75
+    # The *hard* ceiling on a merge, as a fraction of ``budget_cap`` — distinct
+    # from ``target_fill_ratio``, which only ranks candidates and therefore
+    # loses to any higher-priority key. r20260916-113121's g4 merged the
+    # trailing `evidence` unit into `cli-surfaces` at 196,217 of a 200,000 cap
+    # (98%), then retired at 253,891 real context against the 250,000 breaker:
+    # the band preferred a smaller merge, but nothing *stopped* this one.
+    #
+    # A merge is an estimate compounded twice (read-cost model, then
+    # ``coder_slack_multiplier``), so the last tenth of the cap is exactly
+    # where the estimate is least trustworthy. Splitting a group costs one
+    # extra worker session; overshooting the breaker costs the whole
+    # generation. `split_over_budget` still uses the full cap — a single
+    # indivisible unit above the ceiling must remain legal.
+    merge_ceiling_ratio: float = 0.9
 
 
 class EstimatorConfig(BaseModel):
@@ -628,6 +642,25 @@ class DocsConfig(BaseModel):
     out_dir: str = "docs/runs"
 
 
+class LivenessConfig(BaseModel):
+    """Sign of Life thresholds (plan U2/U3): how long a group's child may go
+    silent before it is read as Not Live, how large a wall-clock gap counts
+    as a machine suspend, how long a Suspend Cure waits between SIGTERM and
+    SIGKILL, and how many cures one generation may spend.
+
+    None of these fields bound how long a round or a group may run — a
+    chatty round that keeps producing events, tool children, or advancing CPU
+    runs indefinitely, exactly as R7 already decided. They bound only
+    *silence*: how long the child may show no evidence of life at all before
+    a reader calls it Not Live, which is a report, not an enforcement.
+    """
+
+    window_seconds: float = 600.0
+    suspend_gap_seconds: float = 60.0
+    kill_grace_seconds: float = 10.0
+    max_cures_per_generation: int = 2
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -640,6 +673,7 @@ class OrchestratorConfig(BaseModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     docs: DocsConfig = Field(default_factory=DocsConfig)
+    liveness: LivenessConfig = Field(default_factory=LivenessConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:

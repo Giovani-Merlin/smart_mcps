@@ -16,12 +16,22 @@ read, what "good" looks like, and the exact command. Paths below assume
 The answer command, in every case:
 
 ```sh
-smart-mcps-orchestrate answer $RUN $ESC --action <answer|retry|skip|abort> --text "<why>"
+smart-mcps-orchestrate answer $RUN $ESC --action <answer|retry|skip|abort> --text-file - <<'NOTE'
+<why — backticks, quotes and $ survive verbatim>
+NOTE
 ```
 
-`--text` is required in spirit for `answer` and `retry` — it is what the next
+The text is required in spirit for `answer` and `retry` — it is what the next
 coder reads. It is write-once: a second `answer` for the same id fails with
-"already answered" and must not be retried.
+"already answered" and must not be retried. So:
+
+- **Any note with a backtick, `$` or quote goes through `--text-file`** (a
+  quoted heredoc as above, or a file). A double-quoted `--text` is
+  command-substituted by the shell before the CLI sees it — r20260907 lost
+  six backticked terms from a note that way. Short plain text may use `--text`.
+- **Check the echo**: `answered <id>: <action> (N chars recorded)`. If N is
+  far below what you wrote, `cat escalations/response-$ESC.json` and tell the
+  human; the answer cannot be corrected.
 
 ## The two resolutions that cost nothing vs the one that costs a rewrite
 
@@ -125,6 +135,16 @@ smart-mcps-orchestrate answer $RUN $ESC --action answer --text "Use the LRU cach
 Ask the human only when the question is a product choice, and hand them 2–3
 concrete candidates.
 
+**`answer` binds by default.** Every `coder_question` answer becomes an
+Operator Decision, carried verbatim into every later coder, handoff,
+reviewer, re-review and rewrite-speccer prompt of the group — a later
+generation's reviewer treats it as a spec amendment, not something to second-
+guess as "self-invented". Use `--guidance` only when the text is advice that
+changes no scope, acceptance, or deliverable (a style nudge, a pointer to a
+file) — a `--guidance` answer is not carried forward the same way, so never
+use it for anything you would mind a later generation forgetting. Write
+every binding decision in the notes file the moment it is made.
+
 ### `merge_conflict`
 
 Read: the `surprises` on the request (which groups collide on which files),
@@ -185,9 +205,30 @@ branch or the plan is wrong. Do not answer group by group:
    later groups from the integration tip, not from the launch commit).
 4. `smart-mcps-orchestrate resume $RUN …` with the same HITL flags, detached.
 
+## When status reports Not Live
+
+`status` derives its liveness line from the same facts as the `not live for`
+and `live again` lines in `logs/run.log` (plan U2/U3). Three cases:
+
+- **Live again on its own.** A `not live for …` line followed later by
+  `live again: …` with no action from you — the child was slow, not dead.
+  Nothing to do.
+- **Not live after a machine suspend, with Suspend Cures left.** A
+  `machine suspend detected: …` line precedes it and `status` (or
+  `cures exhausted`, see below) shows cures remaining this generation — the
+  probe will cure the child itself (kill and warm-resume in place). Wait for
+  the `suspend cure <k>/<max> — …` line rather than intervening.
+- **Not live with cures exhausted, or no suspend detected at all.** `status`
+  prints the `cures exhausted (<k>/<max> this generation) — kill -INT -<pgid> then smart-mcps-orchestrate resume <run_id>` line, or there was never a
+  `machine suspend detected` line to explain the silence. This is the one
+  case left that needs your hand: `kill -INT -<pgid>`, then `resume`.
+
 ## When a terminal `failed` line appears without an escalation
 
 `group $GID: terminal failed — branch …, worktree …, retry with: smart-mcps-orchestrate retry $RUN $GID` means the group hit its re-entry
-cap or `on_group_failure=halt` classed it terminal. That `retry` is the
+cap or `on_group_failure=halt` classed it terminal. Resumes after you stopped
+the driver with `kill -INT`/`-TERM` do not count toward that cap — only
+resumes after a crash or reboot do. `status` keeps showing the old failure
+line after `retry` until the next `resume` picks the group up. That `retry` is the
 **subcommand** (release the group), not the escalation action. Run it only
 after the cause is fixed on the integration branch, then `resume`.

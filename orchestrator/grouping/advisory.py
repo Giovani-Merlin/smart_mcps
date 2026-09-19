@@ -284,6 +284,7 @@ def build_advisory_report(
             louvain_resolution=config.partition.louvain_resolution,
             granularity=level,
             target_fill_ratio=config.partition.target_fill_ratio,
+        merge_ceiling_ratio=config.partition.merge_ceiling_ratio,
         )
         partition = strategy.partition(graph)
         partitions[level] = partition

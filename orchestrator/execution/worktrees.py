@@ -812,6 +812,114 @@ def relocate_large_files(
     return relocated
 
 
+#: Under a group's run directory: git-ignored files rescued before its worktree
+#: is removed (see ``rescue_ignored_outputs``).
+IGNORED_OUTPUTS_DIRNAME = "ignored-outputs"
+
+#: Git-ignored directories that are environments or tool caches — rebuilt on
+#: demand, never a group's deliverable — so ``rescue_ignored_outputs`` skips them.
+REGENERABLE_DIRNAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".hypothesis",
+        ".tox",
+        ".nox",
+        ".cache",
+        "htmlcov",
+        ".coder-scratch",
+        ".review-scratch",
+    }
+)
+
+
+def rescue_ignored_outputs(
+    worktree: Path,
+    dest_dir: Path,
+    *,
+    cap_bytes: int,
+    log: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Copy git-ignored files a group produced into ``dest_dir`` before its
+    worktree is removed; returns the repo-relative paths copied.
+
+    ``git worktree remove`` deletes ignored files without a word, and neither
+    the merge nor the leftover patch sees them: r20260905 g2 built the plan's
+    four EPUBs into an ignored ``output/`` and they died with the worktree.
+    Environments and caches (``REGENERABLE_DIRNAMES``, ``*.egg-info``) and
+    symlinks (the shared data layer, already safe) are skipped. Files are
+    visited in sorted order; past ``cap_bytes`` the rest are named with their
+    size in ``skipped.txt`` instead of copied.
+    """
+    if not worktree.is_dir():
+        return []
+    listing = _git(
+        worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"
+    )
+    if listing.returncode != 0:
+        return []
+
+    def keep(rel: Path) -> bool:
+        return not any(
+            part in REGENERABLE_DIRNAMES or part.endswith(".egg-info") for part in rel.parts
+        )
+
+    candidates: list[Path] = []
+    for entry in filter(None, listing.stdout.split("\0")):
+        root = worktree / entry.rstrip("/")
+        if root.is_symlink() or not keep(root.relative_to(worktree)):
+            continue
+        if root.is_file():
+            candidates.append(root)
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            base = Path(dirpath)
+            dirnames[:] = [d for d in dirnames if not (base / d).is_symlink() and keep(Path(d))]
+            candidates.extend(
+                base / name
+                for name in filenames
+                if not (base / name).is_symlink() and not name.endswith(".pyc")
+            )
+
+    rescued: list[str] = []
+    skipped: list[tuple[str, int]] = []
+    total = 0
+    for path in sorted(candidates):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(worktree)
+        size = path.stat().st_size
+        if total + size > cap_bytes:
+            skipped.append((str(rel), size))
+            continue
+        total += size
+        target = dest_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        rescued.append(str(rel))
+    if skipped:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        lines = "\n".join(f"{name} ({size} bytes)" for name, size in skipped)
+        (dest_dir / "skipped.txt").write_text(lines + "\n")
+    if log is not None and (rescued or skipped):
+        shown = ", ".join(rescued[:5]) + (
+            f" (+{len(rescued) - 5} more)" if len(rescued) > 5 else ""
+        )
+        message = f"rescued {len(rescued)} git-ignored file(s) from {worktree.name} into {dest_dir}"
+        if rescued:
+            message += f": {shown}"
+        if skipped:
+            message += f"; {len(skipped)} over the {cap_bytes} byte cap named in skipped.txt"
+        log(message)
+    return rescued
+
+
 def diff_stat(worktree: Path, base_ref: str) -> str:
     """Best-effort diff summary for generation handoffs (plan U7); never raises."""
     committed = _git(worktree, "diff", "--stat", base_ref)

@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from orchestrator.execution.liveness import ChildActivity
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 
 HEARTBEAT_NAME = "heartbeat.json"
@@ -85,9 +86,15 @@ class RoundHeartbeat:
         interval: float = DEFAULT_INTERVAL_SECONDS,
         log: Callable[[str], None] | None = None,
         log_interval: float = DEFAULT_LOG_INTERVAL_SECONDS,
+        activity_provider: Callable[[], ChildActivity | None] | None = None,
     ) -> None:
         self.paths = paths
         self.group_id = group_id
+        # Plan U1: the review loop hangs a lookup of this group's live child
+        # off here (`ActivityRegistry.current`, bound to the group's cwd), so
+        # `snapshot()` can carry what the child last did without this module
+        # knowing anything about sessions or registries itself.
+        self.activity_provider = activity_provider
         # What the periodic line calls the thing it is reporting on. A run-scoped
         # heartbeat has no group to name, and "group None" would be worse than
         # nothing in the one log an operator reads while waiting.
@@ -119,10 +126,54 @@ class RoundHeartbeat:
         # transcript probe here — `start_fork` blocks for the round's whole
         # first turn, so this thread is the only thing awake to notice the
         # transcript file appearing. Same contract as everything else here: it
-        # can never fail a round, so `_loop` wraps the call.
+        # can never fail a round, so `_loop` wraps the call. Toggled on and off
+        # through a round by the review loop itself.
         self.on_tick: Callable[[], None] | None = None
+        # Additional tick hooks that, unlike `on_tick`, are never cleared out
+        # from under their owner (plan U2: the LivenessProbe installs itself
+        # here once and runs for the group's whole life, alongside whatever
+        # `on_tick` happens to hold at any given moment).
+        self._tick_hooks: list[Callable[[], None]] = []
+        # Facts the liveness probe writes (plan U2) — absent entirely until a
+        # probe has ticked at least once, which is what lets a reader tell a
+        # pre-liveness heartbeat apart from a live one with no signal.
+        self._liveness_facts: dict = {}
 
     # ------------------------------------------------------------------ facts
+
+    @property
+    def round_no(self) -> int:
+        with self._lock:
+            return self._round
+
+    @property
+    def generation_no(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def current_phase(self) -> str | None:
+        """The base phase (never the rate-limit overlay) — what the liveness
+        probe compares against ``LAUNCH_PHASES``."""
+        with self._lock:
+            return self._phase
+
+    def add_tick_hook(self, hook: Callable[[], None]) -> None:
+        """Register a tick hook that runs for as long as this heartbeat does,
+        independent of whatever `on_tick` is set to at any given moment."""
+        self._tick_hooks.append(hook)
+
+    def liveness_facts(self) -> dict:
+        with self._lock:
+            return dict(self._liveness_facts)
+
+    def set_liveness_facts(self, facts: dict) -> None:
+        """Overwrite the liveness facts and write them out immediately — the
+        same "announce it now, don't wait for the next tick" contract
+        `mark_phase` already has, since a reader polling in between would
+        otherwise see stale evidence for up to a full interval."""
+        with self._lock:
+            self._liveness_facts = dict(facts)
+        self.write_once()
 
     def mark_round(self, generation: int, round_no: int) -> None:
         """Record that a round just started. In-memory; the thread does the I/O."""
@@ -206,19 +257,37 @@ class RoundHeartbeat:
                 else None
             )
             paused = round(self._paused_seconds_locked(now), 1)
-            return {
-                "schema_version": SCHEMA_VERSION,
-                "group_id": self.group_id,
-                "started_at": self._started_at,
-                "generation": self._generation,
-                "round": self._round,
-                "round_started_at": self._round_started_at,
-                "phase": phase,
-                "phase_elapsed_s": round(now - phase_since, 1),
-                "round_elapsed_s": round_elapsed,
-                "paused_s": paused,
-                "updated_at": _now(),
-            }
+            liveness = dict(self._liveness_facts)
+        activity = self._current_activity()
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "group_id": self.group_id,
+            "started_at": self._started_at,
+            "generation": self._generation,
+            "round": self._round,
+            "round_started_at": self._round_started_at,
+            "phase": phase,
+            "phase_elapsed_s": round(now - phase_since, 1),
+            "round_elapsed_s": round_elapsed,
+            "paused_s": paused,
+            "last_event_at": activity.last_event_at if activity else None,
+            "last_event_type": activity.last_event_type if activity else None,
+            "child_pid": activity.pid if activity else None,
+            "child_spawned_at": activity.spawned_at if activity else None,
+            "updated_at": _now(),
+        }
+        payload.update(liveness)
+        return payload
+
+    def _current_activity(self) -> ChildActivity | None:
+        """Best-effort by the same contract as everything else here: an
+        activity lookup must never fail a snapshot, let alone a round."""
+        if self.activity_provider is None:
+            return None
+        try:
+            return self.activity_provider()
+        except Exception:  # noqa: BLE001 - evidence is never worth a round
+            return None
 
     def _due_log_line(self) -> str | None:
         """The periodic "still here" line, or None when one is not due yet.
@@ -278,15 +347,19 @@ class RoundHeartbeat:
             self._maybe_on_tick()
 
     def _maybe_on_tick(self) -> None:
-        """Run the caller's tick hook, if any — same never-fail contract as
-        ``write_once``: evidence gathering must not be able to kill a round."""
-        hook = self.on_tick
-        if hook is None:
-            return
-        try:
-            hook()
-        except Exception:  # noqa: BLE001 - see write_once
-            pass
+        """Run every tick hook — the review loop's own `on_tick` (toggled on
+        and off through a round) plus every permanent hook `add_tick_hook`
+        installed (plan U2's LivenessProbe). Same never-fail contract as
+        ``write_once``: evidence gathering must not be able to kill a round,
+        and one hook's failure must not stop the others from running."""
+        hooks = list(self._tick_hooks)
+        if self.on_tick is not None:
+            hooks.append(self.on_tick)
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 - see write_once
+                pass
 
     def _maybe_log(self) -> None:
         """Same contract as ``write_once``: evidence is never worth a round, so a
