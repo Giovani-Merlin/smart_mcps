@@ -177,6 +177,16 @@ passed. Both lines live inside one bullet and assemble into a single
 planning session may write plain behavioural sentences instead and leave the
 `Run:`/`Pass:` split to `/orchestrator-deepen`.
 
+An item a worker **cannot** run inside its sandbox is written
+`Run (driver):` instead of `Run:` — the run-driver runs it and reports the
+evidence. The standing case is the live tier (`-m llm`, anything spawning a
+nested `claude`): the worker is Landlock-confined to its own worktree and its
+own `~/.claude/projects/<slug>`, so the nested session cannot write its
+transcript, and the rule that denies it is what keeps a worker out of other
+sessions' `memory/`. `/orchestrator-deepen`'s sandbox sweep is where every
+`Run:` line is checked against the allowlist; a planning session that already
+knows an item is driver-only may mark it here.
+
 A `Pass:` on a **real-model output** (an LLM's answer, a transcription, a
 generated summary) never uses a hard `= 0` — "0 hallucinations", "0 errors"
 is unfalsifiable in one run and a coder facing it either fakes the pass or

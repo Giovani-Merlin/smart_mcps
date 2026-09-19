@@ -258,6 +258,54 @@ tool):
   later run tell whether the plan changed underneath an existing enrichment).
   Never touch the YAML task map or any unit id.
 
+## Phase 4b — Sandbox sweep: can a coder actually run each `Run:`?
+
+The last pass before hand-off, over **every** `Run:` line the plan now
+carries, deepened or not. A worker is Landlock-confined (see
+`orchestrator/execution/confinement.py`) to: its own worktree, its own
+`~/.claude/projects/<slug-of-that-worktree>`, the worktree's git dirs, the
+probed `~/.claude` runtime dirs, `~/.claude/.credentials.json`, the
+orchestrator cache root, `system_write_paths()` (`/tmp` among them), and
+whatever `[session] extra_write_paths` adds. Reads are never restricted;
+**writes outside that list fail with `PermissionError`**, and the worker
+usually reports it as a mysterious environment defect.
+
+For each `Run:` command, ask what it *writes* and where:
+
+| the command writes…                                             | verdict                                                                    |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| inside the worktree (build output, `.coder-scratch/`, test tmp) | fine — nothing to do                                                       |
+| a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted)     |
+| a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit             |
+| a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                              |
+
+**The standing case for `Run (driver):` is the live tier** — any `-m llm`
+test, or anything else spawning a nested `claude`. Its transcript goes to
+`~/.claude/projects/<slug-of-its-own-cwd>`, a directory named after a fixture
+path that does not exist when the config is written, and the only blanket
+allowlist that would cover it is `~/.claude/projects` wholesale — which is
+exactly the rule that keeps a worker out of every other session's `memory/`.
+Do not propose loosening it. (A test that pins its fixture cwd to a fixed
+path *can* be allowlisted instead — offer that only if the human wants the
+check to run inside the sandbox.)
+
+Write the decision into the plan:
+
+- Allowlisted → name the path in the unit's prose, and tell the human the
+  config line to add before launch. This skill never edits
+  `.orchestrator/config.toml`; a missing line is a launch-time failure the
+  run-driver's preflight is supposed to catch.
+- Driver-run → rewrite the item's command line as `Run (driver): <command>`.
+  `smart-mcps-orchestrate group` sets `driver_run` on that item, the coder
+  prompt tells the coder not to run it and to report it `skipped` with notes
+  `driver-run`, the verification gate stops holding the group on it, and the
+  run log names the pending items at merge for the driver to run.
+
+Report the sweep as one short block: how many `Run:` lines, how many now
+driver-run, and which config lines the human must add. An item that needs a
+path nobody can name is not verifiable — say so rather than marking it
+driver-run.
+
 ## Phase 5 — Hand off
 
 This skill is **optional for every run** — a plan that was never deepened is

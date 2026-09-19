@@ -162,6 +162,22 @@ class TestAssembleGroupSpecs:
         assert "`POST /api/items` creates an item." in descriptions
         assert "the items page renders a table." in descriptions
 
+    def test_a_run_driver_marker_in_the_plan_reaches_the_spec_item(self):
+        """The marker is written once, in the plan, and every later reader —
+        the coder prompt, the verification gate — works off the flag."""
+        plan = PLAN.replace(
+            "- **Verification**: `app/main.py` exists.",
+            "- **Verification**: the live test passes.\n"
+            "    Run (driver): `uv run pytest -q -m llm`\n"
+            "    Pass: green.",
+        )
+        specs = assemble_group_specs(make_inputs(plan))
+        items = {item.id: item for spec in specs.values() for item in spec.verification}
+        driver_items = [item for item in items.values() if item.driver_run]
+        assert len(driver_items) == 1
+        assert "Run (driver):" in driver_items[0].description
+        assert all(not item.driver_run for item in items.values() if item not in driver_items)
+
     def test_missing_unit_verification_fails_naming_the_unit(self):
         with pytest.raises(AssemblyError, match="u3"):
             assemble_group_specs(make_inputs(PLAN_NO_VERIFICATION_U3))

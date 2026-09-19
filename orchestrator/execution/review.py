@@ -486,6 +486,21 @@ class _GroupExecution:
     def _on_cure(self, pid: int, generation: int, session_id: str) -> None:
         self._cures[generation] = self.ctx.record_cure()
 
+    def _log_driver_run_items(self) -> None:
+        """Name the items the coder was told not to run, once, at merge.
+
+        A `driver_run` item passes the verification gate untouched (see
+        `unmet_required_verification`), so without this line the only trace
+        of an unrun check would be a `skipped` result buried in the report.
+        The driver reads this line and runs them before `finish`.
+        """
+        pending = [item.id for item in self.group.verification if item.driver_run]
+        if pending:
+            self._log(
+                f"group {self.gid}: {len(pending)} driver-run verification item(s) "
+                f"not run by the coder — {', '.join(pending)}"
+            )
+
     def _decisions_text(self) -> str:
         """Binding operator decisions for this group, rendered fresh from disk
         at every prompt build (plan U9) so a later answer reaches every
@@ -1303,6 +1318,7 @@ class _GroupExecution:
                     diagnosis += f"\n[operator] {response.answer}"
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
+            self._log_driver_run_items()
             return True
 
     def _log_remerge(self, reason: str) -> None:

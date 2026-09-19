@@ -47,10 +47,20 @@ def render_identity(run_id: str, group: Group) -> str:
 def _verification_lines(items: list[VerificationItem]) -> str:
     if not items:
         return "- none specified; verify against the spec itself"
-    return "\n".join(
-        f"- [{item.id}] {item.description}" + ("" if item.required else " (optional)")
-        for item in items
-    )
+    lines = []
+    for item in items:
+        suffix = "" if item.required else " (optional)"
+        if item.driver_run:
+            # Spelled out rather than tagged: the one thing that must not
+            # happen is a coder spending rounds trying to run it anyway, which
+            # is what cost r20260916-113121's g4 a retirement and a question.
+            suffix = (
+                " — DRIVER-RUN: do NOT run this one. The operator runs it "
+                "outside your sandbox. Report it as `skipped` with notes "
+                "`driver-run`; it does not hold your report back."
+            )
+        lines.append(f"- [{item.id}] {item.description}{suffix}")
+    return "\n".join(lines)
 
 
 def render_coder_nudge_contract(error: str, verification_ids: Sequence[str]) -> str:

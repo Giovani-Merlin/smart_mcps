@@ -308,7 +308,16 @@ When the process exits (signal **(b)**):
         not skip the loop. Leaving `one-pager.md` absent is fine — `finish`
         generates the other formats without it and the PR body falls back
         to the run-record lines and the report link.
-   4. Check what the run produced **outside git**. A group worktree's
+   4. **Run every `driver-run` verification item the run deferred to you.**
+      `grep "driver-run verification item" logs/run.log` names them per group
+      (the coder was told not to run them — a nested `claude` cannot write its
+      transcript from inside a confined worktree). Run each from the group's
+      worktree, or from the integration worktree once merged, and paste the
+      result into the one-pager's Run notes. A live-tier item costs real
+      tokens (`-m llm`, ~$0.20 and a few minutes here) — that is the price of
+      the evidence, not a reason to skip it. A failure here is a finding: fix
+      it and re-verify, or say plainly in the report that the item is unproven.
+   5. Check what the run produced **outside git**. A group worktree's
       git-ignored files are copied into
       `.orchestrator/runs/$RUN/groups/<gid>/ignored-outputs/` before merge or
       `finish` removes it (environments and caches skipped; past the cap they
@@ -317,7 +326,7 @@ When the process exits (signal **(b)**):
       `leftover.patch`. Move anything the human needs from there, or from
       `git -C .worktrees/$RUN/integration status --ignored --porcelain`,
       somewhere durable.
-   5. Run `smart-mcps-orchestrate finish $RUN` (again, to refresh the PR body)
+   6. Run `smart-mcps-orchestrate finish $RUN` (again, to refresh the PR body)
       only after the human has seen the one-pager — it copies
       `.orchestrator/notes-$RUN.md` into the run dir as `driver-notes.md`,
       renders `[docs] formats` onto the integration branch (the one-pager
