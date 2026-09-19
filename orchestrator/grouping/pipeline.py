@@ -724,6 +724,7 @@ def compute_partition(
         louvain_resolution=config.partition.louvain_resolution,
         granularity=config.partition.granularity,
         target_fill_ratio=config.partition.target_fill_ratio,
+        merge_ceiling_ratio=config.partition.merge_ceiling_ratio,
         recorder=recorder,
         declared=declared_edges,
     )

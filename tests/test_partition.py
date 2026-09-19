@@ -143,6 +143,42 @@ class TestMerge:
         merged = merge_small_groups(g, {"a": 0, "b": 1}, lambda n: 3.0, budget_cap=5.0)
         assert groups_of(merged) == {frozenset({"a"}), frozenset({"b"})}
 
+    def test_merge_leaves_headroom_below_the_hard_cap(self):
+        """r20260916-113121 g4: the merge landed at 98% of a 200k cap
+        (196,217) and the coder then retired at 253,891 against the 250k
+        breaker. `target_fill_ratio` only ranks candidates, so nothing
+        rejected it. The ceiling does."""
+        g = graph("a b".split(), dependencies={("a", "b"): 1.0})
+        # Merged work 196 of a 200 cap: legal under the old rule, over the
+        # 0.9 ceiling (180).
+        work = {"a": 116.0, "b": 80.0}
+        merged = merge_small_groups(g, {"a": 0, "b": 1}, lambda n: work[n], budget_cap=200.0)
+        assert groups_of(merged) == {frozenset({"a"}), frozenset({"b"})}
+
+        # Same shape, comfortably inside the ceiling: still merges.
+        small = {"a": 60.0, "b": 40.0}
+        assert groups_of(
+            merge_small_groups(g, {"a": 0, "b": 1}, lambda n: small[n], budget_cap=200.0)
+        ) == {frozenset({"a", "b"})}
+
+        # And the ceiling is opt-outable for a caller that wants the old rule.
+        assert groups_of(
+            merge_small_groups(
+                g, {"a": 0, "b": 1}, lambda n: work[n], budget_cap=200.0, merge_ceiling_ratio=1.0
+            )
+        ) == {frozenset({"a", "b"})}
+
+    def test_the_ceiling_holds_at_every_granularity(self):
+        """`monolithic` drops the parallelism guards, never the arithmetic
+        that keeps a coder inside its breaker."""
+        g = graph("a b".split(), dependencies={("a", "b"): 1.0})
+        work = {"a": 116.0, "b": 80.0}
+        for level in ("independent", "balanced", "monolithic"):
+            merged = merge_small_groups(
+                g, {"a": 0, "b": 1}, lambda n: work[n], budget_cap=200.0, granularity=level
+            )
+            assert groups_of(merged) == {frozenset({"a"}), frozenset({"b"})}, level
+
     def test_merge_never_serializes_parallel_branches(self):
         """Plan U1 scenario: a merge that would regress the simulated makespan is refused.
 

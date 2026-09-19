@@ -203,6 +203,20 @@ class PartitionConfig(BaseModel):
     # merges outright and start fragmenting groups that would otherwise merge
     # cleanly. Overridable via ``[partition] target_fill_ratio``.
     target_fill_ratio: float = 0.75
+    # The *hard* ceiling on a merge, as a fraction of ``budget_cap`` — distinct
+    # from ``target_fill_ratio``, which only ranks candidates and therefore
+    # loses to any higher-priority key. r20260916-113121's g4 merged the
+    # trailing `evidence` unit into `cli-surfaces` at 196,217 of a 200,000 cap
+    # (98%), then retired at 253,891 real context against the 250,000 breaker:
+    # the band preferred a smaller merge, but nothing *stopped* this one.
+    #
+    # A merge is an estimate compounded twice (read-cost model, then
+    # ``coder_slack_multiplier``), so the last tenth of the cap is exactly
+    # where the estimate is least trustworthy. Splitting a group costs one
+    # extra worker session; overshooting the breaker costs the whole
+    # generation. `split_over_budget` still uses the full cap — a single
+    # indivisible unit above the ceiling must remain legal.
+    merge_ceiling_ratio: float = 0.9
 
 
 class EstimatorConfig(BaseModel):
