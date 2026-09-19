@@ -276,6 +276,11 @@ When the process exits (signal **(b)**):
       written after that only lands if you run `finish` again to refresh the
       PR body.
       `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
+      Expect the next merge to sweep that still-untracked scaffold into a
+      `recover(<run>): integration work stranded by an interrupted run`
+      commit — the merge cannot tell a driver's draft from a crashed group's
+      leftovers. Harmless: `finish` overwrites the file with the filled-in
+      one-pager and commits it under `docs/runs/$RUN/`.
       Then fill it in with the extract-then-abstract recipe:
       - **Extract.** Build one prompt from two XML-delimited sources and
         nothing else — never a transcript:
