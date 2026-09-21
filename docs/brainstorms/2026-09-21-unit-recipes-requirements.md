@@ -104,14 +104,39 @@ registry, and the pricing that makes non-code work visible to the grouper.
   well-factored base — shared code, not an inheritance mechanism built for its
   own sake.
 
-- **Dynamic fan-out is deferred.** A research unit cannot spawn downstream work
-  in v1. Doing it safely requires a validated work manifest, a server-side
-  template allow-list, server-side cost re-estimation, atomic budget
-  reservation, immutable manifest versioning, and the replay discipline that a
-  retry must replay the recorded manifest rather than re-prompt a
-  nondeterministic planner. That is a subsystem and a plan of its own; the
-  research was unambiguous that treating the planner as trusted is how people
-  got hurt. Recipes are valuable on the existing static DAG.
+- **The pipeline is human-planned. Agents never create nodes.** This is a
+  standing design principle, not a v1 deferral waiting on machinery. A human
+  plans the pipeline; the grouper partitions it deterministically; the DAG is
+  snapshotted at run start. **No unit may create, spawn or expand another
+  unit** — not in v1, not later, unless this principle is deliberately revisited
+  and overturned.
+
+  What a unit *may* do instead is the model the orchestrator already runs on:
+  **repeat until it completes, or until it hits a declared cap — and then a
+  human acts.** Rounds bounded by the round budget, spec rewrites bounded by
+  `max_rewrites`, generations bounded by the generation cap; exhausting a cap is
+  a Work Failure, which is terminal by design precisely so a human looks at it
+  via Retry. Every recipe inherits that model unchanged (R10, R18). A research
+  unit that finds three candidate strategies does not spawn three
+  implementation units; it writes them into its artifact, and a human re-plans.
+
+  The prior art supports this rather than merely permitting it. Every published
+  mechanism for runtime expansion — Airflow dynamic task mapping, Argo
+  `withParam`, Flyte `map_task`, LangGraph `Send`, Dagster `DynamicOut`,
+  Metaflow `foreach` — creates *instances of nodes that already exist in the
+  plan*; only GitLab child pipelines and Temporal child workflows permit an
+  arbitrary new subgraph, and both push the entire admission problem onto the
+  caller. The documented failure modes of letting an LLM shape its own
+  downstream pipeline are unbounded decomposition, plans that are
+  schema-valid but operationally nonsense, nondeterministic retry silently
+  changing the work list, and re-planning loops — and the platform caps that
+  exist (Airflow's 1,024 map length, Argo's depth 100, LangGraph's 25
+  supersteps) exist to protect schedulers and event histories, not budgets.
+  A human-planned DAG makes all of that moot rather than manageable.
+
+  This is also why the artifact story matters so much (R16): with no automatic
+  expansion, the Artifact Manifest is how one node's findings reach the next
+  node and the human, and it is the only handoff channel that needs to work.
 
 - **A group is single-recipe, as a hard invariant.** A `Group`
   (`orchestrator/model.py:64`) has one spec, one intensity and one task list,
@@ -307,11 +332,26 @@ registry, and the pricing that makes non-code work visible to the grouper.
   remains 2, and a consumer that does not know the new role values must not
   break on them.
 
+### Bounded repetition
+
+- R18. `repeat-then-human` — **A unit repeats until it completes or hits a cap;
+  a cap then hands control to a human.** Every recipe is bounded by the same
+  three dials the orchestrator already enforces — the round budget, the spec
+  rewrite cap, and the generation cap — and exhausting any of them is a Work
+  Failure, terminal by design so an operator looks at it via Retry. No recipe
+  introduces an unbounded loop, a "run until satisfied" mode, or a
+  self-extension path. **No unit may create, spawn or expand another unit under
+  any circumstances**, and a recipe whose output attempts to declare new work is
+  an error naming the unit, not an instruction the orchestrator follows.
+
 ## Non-Goals
 
-- **Dynamic fan-out.** No unit may spawn downstream units, emit a work
-  manifest, or change the run's DAG. The DAG is computed up front and
-  snapshotted at run start, as today.
+- **Any form of automatic node creation.** No unit may spawn downstream units,
+  emit a work manifest the orchestrator executes, or change the run's DAG. This
+  is a standing design principle (see Key Decisions), not a v1 limitation: the
+  human plans the pipeline, and a node that cannot finish escalates to a human
+  rather than growing the graph. The DAG is computed up front and snapshotted
+  at run start, as today.
 - **The `evaluate`, `run`, `llm-batch` and `interview` recipes.** Each needs
   machinery this work does not build — a measurement contract, detached
   execution with wall-clock and dollar caps, shard/schema/retry handling, or
