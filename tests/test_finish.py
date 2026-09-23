@@ -305,7 +305,7 @@ def test_pr_body_without_one_pager_is_header_lines_and_postmortem(repo, tmp_path
 
 
 def test_pr_body_lists_findings_no_group_picked_up(repo, tmp_path, monkeypatch):
-    from orchestrator.execution.review import SurpriseBoard
+    from orchestrator.execution.surprises import SurpriseBoard
     from orchestrator.model import Surprise
 
     run_id = "r3r"

@@ -19,8 +19,8 @@ import pytest
 from orchestrator.config import ExecutionConfig
 from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
-from orchestrator.execution.review import GroupFailure
 from orchestrator.execution.scheduler import (
+    GroupFailure,
     TERMINAL_STATES,
     GroupRunState,
     GroupState,

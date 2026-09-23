@@ -26,7 +26,7 @@ from orchestrator.execution.preflight import (
     frontend_detection_notes,
     run_preflight,
 )
-from orchestrator.execution.review import MergeConflict
+from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.worktrees import create_worktree, group_branch
 from orchestrator.model import Group, ReviewIntensity
 
