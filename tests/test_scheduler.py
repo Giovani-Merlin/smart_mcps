@@ -19,8 +19,8 @@ import pytest
 from orchestrator.config import ExecutionConfig
 from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
-from orchestrator.execution.review import GroupFailure
 from orchestrator.execution.scheduler import (
+    GroupFailure,
     TERMINAL_STATES,
     GroupRunState,
     GroupState,
@@ -338,13 +338,14 @@ def test_interrupted_is_a_known_non_terminal_state():
     )
 
 
-def test_groupfailure_is_the_same_class_via_either_import_path():
-    """GroupFailure lives in scheduler.py (plan U1 Decisions) — review.py's
-    import of it must resolve to the identical class, not a shadow copy."""
+def test_groupfailure_is_defined_only_in_scheduler():
+    """GroupFailure lives in scheduler.py (plan U1 Decisions); as of U7,
+    review.py no longer re-exports it — importers use scheduler.py directly."""
     import orchestrator.execution.review as review
     import orchestrator.execution.scheduler as scheduler
 
-    assert review.GroupFailure is scheduler.GroupFailure
+    assert scheduler.GroupFailure is GroupFailure
+    assert not hasattr(review, "GroupFailure")
 
 
 @pytest.mark.asyncio

@@ -49,15 +49,31 @@ per group when the deepen skill needs it.
 
 **Driver:** `smart-mcps-orchestrate run`.
 Executes the groups: `scheduler.py` enforces a serial concurrency cap,
-`review.py` drives each group through coder/reviewer generations and rounds
-to a merge gate. Every worker session starts **fresh** — no forked base
-session — because forking bought no real prompt-cache reuse once cwd is a
-per-group worktree (`adr/0007`); the base context text is simply prepended to
-each worker's first prompt. If a group fails, a mid-run rewrite speccer LLM
-call revises its spec from the failure history (the one LLM call this stage
-still makes); surprises found by any worker are recorded on the
-`SurpriseBoard`. `/orchestrator-run` is the skill that launches, watches, and
-triages a run end-to-end, including HITL escalations.
+`review.py` is the composition root of a group's execution — it holds
+`ReviewDeps`, `make_executor`, and `_GroupExecution`, whose `__init__` births
+every attribute the mixins below read (`orchestrator/execution/host.py`
+declares that seam as `ExecutionHost`), then drives each group through
+coder/reviewer generations and rounds to a merge gate. Every worker session
+starts **fresh** — no forked base session — because forking bought no real
+prompt-cache reuse once cwd is a per-group worktree (`adr/0007`); the base
+context text is simply prepended to each worker's first prompt. If a group
+fails, a mid-run rewrite speccer LLM call revises its spec from the failure
+history (the one LLM call this stage still makes); surprises found by any
+worker are recorded on the `SurpriseBoard`. `/orchestrator-run` is the skill
+that launches, watches, and triages a run end-to-end, including HITL
+escalations.
+
+The execution package splits a group's responsibilities into six modules,
+each a mixin composed onto `_GroupExecution`:
+
+| module                      | owns                                                                            | reads off the host                                         |
+| --------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `execution/generation.py`   | the generation lifecycle: launch/re-entry, the round loop, the breaker, handoff | `coder_sid`, `coder_entry`, `handoff_prompt`, `_heartbeat` |
+| `execution/reviewer.py`     | the reviewer round and its scratch archive                                      | `reviewer_sid`, `workspace`, `extra_pass_done`             |
+| `execution/records.py`      | session records, usage bookkeeping, transcript watching                         | `coder_sid`, `coder_entry`, `_heartbeat`                   |
+| `execution/merge_ladder.py` | the merge gate, untracked ladder, flake re-run, conflict resolution             | `coder_sid`, `_flake_reruns`, `_untracked_strikes`         |
+| `execution/escalating.py`   | escalation, approval gates, the coder-question channel, rewrite, relaunch       | `rewrites`, `sessions_spawned`, `handoff_prompt`           |
+| `execution/surprises.py`    | the cross-group `SurpriseBoard` and the prompt-note channels                    | `_briefing_notes`, `_operator_notes`, `_env_failure`       |
 
 ## 7. Resume / resolve / finish
 

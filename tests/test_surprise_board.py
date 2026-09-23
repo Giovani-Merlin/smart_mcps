@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 
 from orchestrator.execution.manifest import RunPaths
-from orchestrator.execution.review import (
+from orchestrator.execution.surprises import (
     REASON_GROUP_COMPLETED,
     REASON_RUN_ENDED,
     REASON_UNKNOWN_GROUP,

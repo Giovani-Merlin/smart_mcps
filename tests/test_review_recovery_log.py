@@ -13,8 +13,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.execution.manifest import RunPaths
-from orchestrator.execution.review import GroupFailure
-from orchestrator.execution.scheduler import GroupState, Scheduler
+from orchestrator.execution.scheduler import GroupFailure, GroupState, Scheduler
 from orchestrator.execution.sessions import ReportError
 from orchestrator.execution.worktrees import group_branch, worktree_path
 from orchestrator.model import Group, ReviewIntensity

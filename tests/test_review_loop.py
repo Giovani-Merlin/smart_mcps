@@ -17,14 +17,10 @@ import pytest
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import ManifestStore, RunPaths
-from orchestrator.execution.review import (
-    GroupFailure,
-    MergeConflict,
-    ReviewDeps,
-    SurpriseBoard,
-    make_executor,
-)
-from orchestrator.execution.scheduler import GroupContext, GroupState, RunAbort
+from orchestrator.execution.merge import MergeConflict
+from orchestrator.execution.review import ReviewDeps, make_executor
+from orchestrator.execution.surprises import SurpriseBoard
+from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState, RunAbort
 from orchestrator.execution.sessions import (
     RoundResult,
     RoundUsage,
@@ -1143,7 +1139,7 @@ async def test_reentry_forks_fresh_when_the_spec_was_rewritten_under_the_session
 
 @pytest.mark.asyncio
 async def test_reentry_warm_resumes_when_the_spec_hash_matches(tmp_path):
-    from orchestrator.execution.review import _spec_hash
+    from orchestrator.execution.records import _spec_hash
 
     runner = StubRunner({"r1-g1-reviewer-g1": [verdict("approved")]})
     runner.prompts["sess-warm"] = []
@@ -1158,7 +1154,7 @@ async def test_reentry_warm_resumes_when_the_spec_hash_matches(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_fresh_coder_entry_records_the_spec_hash(tmp_path):
-    from orchestrator.execution.review import _spec_hash
+    from orchestrator.execution.records import _spec_hash
 
     runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
     harness = Harness(tmp_path, runner)
