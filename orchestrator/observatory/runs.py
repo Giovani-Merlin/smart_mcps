@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orchestrator.execution.heartbeat import read_heartbeat
 from orchestrator.execution.manifest import ManifestStore, RunPaths
-from orchestrator.execution.review import surprise_residue
+from orchestrator.execution.surprises import surprise_residue
 from orchestrator.execution.scheduler import GroupRunState, GroupState, RunState
 from orchestrator.execution.transcript_events import ActivityEntry, activity_tail
 from orchestrator.execution.worktrees import read_provisioning_record

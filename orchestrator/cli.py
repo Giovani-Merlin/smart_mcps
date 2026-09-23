@@ -94,12 +94,14 @@ from orchestrator.execution.preflight import (
 from orchestrator.execution.retry import RetryConflictError, RetryError, retry_group
 from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, render_conflict_resolve_prompt
 from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
+from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.review import (
-    MergeConflict,
     ReviewDeps,
+    make_executor,
+)
+from orchestrator.execution.surprises import (
     SurpriseBoard,
     format_residue_report,
-    make_executor,
     surprise_residue,
 )
 from orchestrator.execution.scheduler import (
