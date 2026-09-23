@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import tomllib
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -21,13 +22,13 @@ from pydantic import BaseModel, Field
 #: Deny still wins — `disallowed_tools` keeps the repo-global git mutators and the
 #: operator-memory rules blocked regardless of what appears here.
 #:
-#: Each executable rule is paired with a `*/`-prefixed twin by
-#: `_with_path_qualified_forms`, because a rule matches the command *as written*
-#: and one program has many names: `python` and `.venv/bin/python` are the same
-#: interpreter but different strings. Group g2 of run r20260812-202855 died on
-#: `.venv/bin/python -m pytest …` with `Bash(python *)` sitting right there in
-#: this list — the npm incident's structural twin, a missing *spelling* rather
-#: than a missing tool.
+#: Each executable rule is paired with one path-qualified form per entry of
+#: `PATH_PREFIXES` by `with_path_prefixes`, because a rule matches the command
+#: *as written* and one program has many names: `python` and `.venv/bin/python`
+#: are the same interpreter but different strings. Group g2 of run r20260812-202855
+#: died on `.venv/bin/python -m pytest …` with `Bash(python *)` sitting right
+#: there in this list — the npm incident's structural twin, a missing *spelling*
+#: rather than a missing tool.
 _BASE_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
     "Write",
@@ -84,36 +85,90 @@ _BASE_ALLOWED_TOOLS: tuple[str, ...] = (
 )
 
 
-def _with_path_qualified_forms(rules: tuple[str, ...]) -> tuple[str, ...]:
-    """Pair every `Bash(<cmd>…)` rule with a `Bash(*/<cmd>…)` twin.
+#: Where a worker legitimately invokes a tool by path. Each is anchored — no
+#: leading wildcard — and `./x` needs its own entry because `Bash(x …)` does not
+#: match `./x …`. A worker's *absolute* worktree paths are added per call by
+#: `worktree_path_rules`, since the worktree is only known at launch.
+PATH_PREFIXES: tuple[str, ...] = (
+    ".venv/bin/",
+    "./.venv/bin/",
+    "node_modules/.bin/",
+    "./node_modules/.bin/",
+    "/usr/bin/",
+    "/usr/local/bin/",
+    "/bin/",
+)
+
+#: Relative to a worker's cwd; `worktree_path_rules` makes these absolute.
+WORKTREE_BIN_DIRS: tuple[str, ...] = (".venv/bin/", "node_modules/.bin/")
+
+
+def _qualifiable_body(rule: str) -> str | None:
+    """The `<cmd> …` of a bare-name `Bash(<cmd> …)` rule, else None.
+
+    Non-Bash entries (`Read`, `Edit`, …) and argument-less ones (`Bash(env)`)
+    have no path to qualify; rules that are already path-qualified or
+    wildcard-led are left alone rather than prefixed a second time.
+    """
+    if not rule.startswith("Bash(") or rule == "Bash(env)":
+        return None
+    body = rule[len("Bash(") :]
+    if body.startswith(("*", "/", ".")):
+        return None
+    return body
+
+
+def with_path_prefixes(rules: Sequence[str], prefixes: Sequence[str]) -> tuple[str, ...]:
+    """Pair every bare-name `Bash(<cmd>…)` rule with one `Bash(<prefix><cmd>…)`
+    per prefix.
 
     A worker legitimately invokes tools by path — `.venv/bin/python`,
     `./node_modules/.bin/vite`, `/usr/bin/make` — and those strings match none of
-    the bare-name rules. The wildcard form was chosen by probing the real CLI
-    (`tests/test_permission_patterns_live.py`), which is the only authority here:
+    the bare-name rules. The shape was chosen by probing the real CLI
+    (`tests/test_permission_patterns_live.py`), which is the only authority here.
+    On Claude Code 2.1.281 (re-probed 2026-09-23):
 
-        Bash(python *)            denied
-        Bash(*python *)           denied      <- a bare leading * does NOT work
-        Bash(*/python *)          ALLOWED     <- the wildcard must align to a `/`
-        Bash(.venv/bin/python *)  ALLOWED     <- exact, but one path per rule
+        Bash(python *)             denied   for .venv/bin/python -c 1
+        Bash(.venv/bin/python *)   ALLOWED  anchored: exact prefix only
+        Bash(./.venv/bin/python *) ALLOWED  `./` is a different string
+        Bash(*/python *)           ALLOWED  but ALSO for `.venv/bin/other ./python x`
+        Bash(*python *)            ALLOWED  but ALSO for `.venv/bin/mypython`
 
-    So `*/` is the general form, and `*` alone is not. `Bash(*)` would also work
-    and is deliberately not used: it grants every command, which is the ceiling
-    this list exists to stay below.
-
-    Non-Bash entries (`Read`, `Edit`, …) and argument-less ones (`Bash(env)`) are
-    passed through untouched — there is no path to qualify.
+    Until 2.1.280 a leading `*` did not match at all and `*/<cmd>` aligned to a
+    path, so this function shipped `Bash(*/<cmd> …)` twins. The CLI now treats a
+    leading `*` as a free glob spanning spaces, which turned every twin into "any
+    command with a `/<cmd> ` argument". Anchored prefixes cannot over-grant, at
+    the cost of one rule per spelling. `Bash(*)` stays out for the same reason:
+    this list is a ceiling.
     """
     out: list[str] = []
     for rule in rules:
         out.append(rule)
-        if rule.startswith("Bash(") and rule != "Bash(env)":
-            out.append(f"Bash(*/{rule[len('Bash(') :]}")
+        body = _qualifiable_body(rule)
+        if body is not None:
+            out.extend(f"Bash({prefix}{body}" for prefix in prefixes)
     return tuple(out)
 
 
-#: The baseline as shipped: every rule above, plus its path-qualified twin.
-DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = _with_path_qualified_forms(_BASE_ALLOWED_TOOLS)
+def worktree_path_rules(rules: Sequence[str], cwd: Path) -> list[str]:
+    """Absolute-path forms of `rules` for one worker's cwd.
+
+    A coder that resolves its interpreter (`$(pwd)/.venv/bin/python`, a
+    traceback path pasted back into a command) writes the worktree's absolute
+    path, which no static prefix can anticipate.
+    """
+    root = str(cwd).rstrip("/") + "/"
+    prefixes = [root + d for d in WORKTREE_BIN_DIRS]
+    return [
+        f"Bash({prefix}{body}"
+        for rule in rules
+        if (body := _qualifiable_body(rule)) is not None
+        for prefix in prefixes
+    ]
+
+
+#: The baseline as shipped: every rule above, plus its path-qualified forms.
+DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = with_path_prefixes(_BASE_ALLOWED_TOOLS, PATH_PREFIXES)
 
 #: Plan U17: three independently settable models, one per role. Workers (coder
 #: and reviewer forks) are the bulk of spend and the bulk of their work is

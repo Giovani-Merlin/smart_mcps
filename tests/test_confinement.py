@@ -657,6 +657,13 @@ def test_worker_argv_carries_the_default_allowlist(tmp_path):
     allowed = argv[argv.index("--allowedTools") + 1]
     for rule in ("Bash(npm *)", "Bash(uv *)", "Bash(git *)", "Read", "Edit"):
         assert rule in allowed, f"{rule} missing from --allowedTools"
+    # The worker's own absolute interpreter path, which no static prefix can
+    # anticipate, is granted per call — and nothing leads with a wildcard, which
+    # since Claude Code 2.1.280 grants any command carrying the rest of the rule.
+    rules = allowed.split(",")
+    assert f"Bash({tmp_path}/.venv/bin/python *)" in rules
+    assert f"Bash({tmp_path}/node_modules/.bin/npx *)" in rules
+    assert not [r for r in rules if r.startswith("Bash(*")]
 
     # Deny still beats allow: the git mutators stay blocked even though
     # `Bash(git *)` is allowed.
