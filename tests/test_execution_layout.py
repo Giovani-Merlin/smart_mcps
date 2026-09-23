@@ -16,10 +16,11 @@ from pathlib import Path
 
 from orchestrator.execution.host import ExecutionHost
 from orchestrator.execution.review import _GroupExecution
+from orchestrator.execution.merge_ladder import MergeLadder
 from orchestrator.execution.surprises import SurpriseHandling
 from tests.test_review_loop import Harness, StubRunner, make_group
 
-MIXINS = [SurpriseHandling]
+MIXINS = [MergeLadder, SurpriseHandling]
 
 
 def test_new_modules_import_with_no_cycle():
@@ -29,10 +30,12 @@ def test_new_modules_import_with_no_cycle():
         [
             "orchestrator.execution.host",
             "orchestrator.execution.surprises",
+            "orchestrator.execution.merge_ladder",
             "orchestrator.execution.review",
         ],
         [
             "orchestrator.execution.review",
+            "orchestrator.execution.merge_ladder",
             "orchestrator.execution.surprises",
             "orchestrator.execution.host",
         ],
@@ -99,5 +102,6 @@ def test_review_module_reexports_are_the_documented_transitional_set():
         "REASON_GROUP_COMPLETED",
         "REASON_UNKNOWN_GROUP",
         "REASON_RUN_ENDED",
+        "MergeConflict",
     ):
         assert hasattr(review, name)
