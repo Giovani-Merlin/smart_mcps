@@ -14,7 +14,7 @@ import pytest
 
 from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.preflight import PreflightBaseline, PreflightFailure
-from orchestrator.execution.review import GroupFailure
+from orchestrator.execution.scheduler import GroupFailure
 from orchestrator.execution.scheduler import GroupState
 from orchestrator.model import EscalationKind
 

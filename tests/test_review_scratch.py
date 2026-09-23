@@ -13,7 +13,8 @@ import pytest
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.manifest import ManifestStore, RunPaths, archive_review_scratch
 from orchestrator.execution.prompting import REVIEW_SCRATCH_DIRNAME, render_reviewer_prompt
-from orchestrator.execution.review import ReviewDeps, SurpriseBoard, make_executor
+from orchestrator.execution.review import ReviewDeps, make_executor
+from orchestrator.execution.surprises import SurpriseBoard
 from orchestrator.execution.scheduler import GroupContext
 from orchestrator.execution.sessions import RoundResult, RoundUsage
 from orchestrator.execution.worktrees import ensure_excluded
