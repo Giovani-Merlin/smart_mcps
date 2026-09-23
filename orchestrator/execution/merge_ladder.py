@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from orchestrator.execution.escalating import _is_retry, _operator_surprise
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.manifest import archive_review_scratch
@@ -34,7 +35,6 @@ from orchestrator.model import (
     EscalationKind,
     EscalationResponse,
     Group,
-    HumanAction,
     SessionEntry,
     Surprise,
 )
@@ -395,13 +395,3 @@ def _move_paths(worktree: Path, paths: list[str], dest_dir: Path) -> None:
             else:
                 target.unlink()
         shutil.move(str(source), str(target))
-
-
-def _is_retry(response: EscalationResponse | None) -> bool:
-    return response is not None and response.action == HumanAction.RETRY
-
-
-def _operator_surprise(group_id: str, answer: str) -> Surprise:
-    """Fold an operator's free-text guidance into the next rewrite as a surprise —
-    no ``rewrite_spec`` signature change (plan Phase D)."""
-    return Surprise(kind="other", description=f"[operator] {answer}", affected_groups=[group_id])
