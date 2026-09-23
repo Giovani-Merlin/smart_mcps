@@ -18,7 +18,6 @@ from pathlib import Path
 
 from orchestrator.config import ExecutionConfig, PreflightConfig, WorkspaceConfig
 from orchestrator.execution.preflight import PreflightBaseline, run_preflight
-from orchestrator.execution.review import MergeConflict
 from orchestrator.execution.worktrees import (
     IGNORED_OUTPUTS_DIRNAME,
     WorktreeError,
@@ -36,6 +35,15 @@ from orchestrator.execution.worktrees import (
     write_provisioning_record,
 )
 from orchestrator.model import Group
+
+
+class MergeConflict(Exception):
+    """Raised by the merge seam (U8). Routes the merging group to rewriting and
+    fans a surprise out to the groups involved."""
+
+    def __init__(self, message: str, affected_groups: list[str] | None = None):
+        super().__init__(message)
+        self.affected_groups = affected_groups or []
 
 
 class MergeError(Exception):
