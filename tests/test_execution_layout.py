@@ -17,13 +17,21 @@ from pathlib import Path
 from orchestrator.execution.host import ExecutionHost
 from orchestrator.execution.review import _GroupExecution
 from orchestrator.execution.escalating import EscalationHandlers
+from orchestrator.execution.generation import GenerationLoop
 from orchestrator.execution.merge_ladder import MergeLadder
 from orchestrator.execution.records import SessionRecords
 from orchestrator.execution.reviewer import ReviewerRound
 from orchestrator.execution.surprises import SurpriseHandling
 from tests.test_review_loop import Harness, StubRunner, make_group
 
-MIXINS = [MergeLadder, EscalationHandlers, SurpriseHandling, SessionRecords, ReviewerRound]
+MIXINS = [
+    MergeLadder,
+    EscalationHandlers,
+    SurpriseHandling,
+    SessionRecords,
+    ReviewerRound,
+    GenerationLoop,
+]
 
 
 def test_new_modules_import_with_no_cycle():
@@ -37,10 +45,12 @@ def test_new_modules_import_with_no_cycle():
             "orchestrator.execution.merge_ladder",
             "orchestrator.execution.records",
             "orchestrator.execution.reviewer",
+            "orchestrator.execution.generation",
             "orchestrator.execution.review",
         ],
         [
             "orchestrator.execution.review",
+            "orchestrator.execution.generation",
             "orchestrator.execution.reviewer",
             "orchestrator.execution.records",
             "orchestrator.execution.merge_ladder",
@@ -121,7 +131,16 @@ def test_execution_modules_import_graph_is_acyclic():
     is the one allowed inter-mixin edge. `TYPE_CHECKING` imports are skipped."""
     import ast
 
-    names = ["surprises", "merge_ladder", "escalating", "records", "reviewer", "host", "review"]
+    names = [
+        "surprises",
+        "merge_ladder",
+        "escalating",
+        "records",
+        "reviewer",
+        "generation",
+        "host",
+        "review",
+    ]
     root = Path(__file__).resolve().parents[1] / "orchestrator" / "execution"
     graph: dict[str, set[str]] = {}
     for name in names:
@@ -138,6 +157,7 @@ def test_execution_modules_import_graph_is_acyclic():
     assert graph["surprises"] == set()
     assert graph["records"] == set()
     assert graph["reviewer"] == set()
+    assert graph["generation"] == {"records"}
 
     visiting: set[str] = set()
     done: set[str] = set()
