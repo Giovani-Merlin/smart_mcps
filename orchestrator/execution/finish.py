@@ -26,7 +26,7 @@ from orchestrator.execution.manifest import (
     effective_group,
 )
 from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, REVIEW_SCRATCH_DIRNAME
-from orchestrator.execution.review import SurpriseBoard, format_residue_report, surprise_residue
+from orchestrator.execution.surprises import SurpriseBoard, format_residue_report, surprise_residue
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.execution.worktrees import (
     IGNORED_OUTPUTS_DIRNAME,

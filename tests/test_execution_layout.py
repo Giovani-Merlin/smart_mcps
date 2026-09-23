@@ -108,14 +108,15 @@ def test_no_method_name_collides_across_mixins():
             seen[name] = mixin
 
 
-def test_review_module_reexports_are_the_documented_transitional_set():
-    """Guards the U7 cleanup: these are exactly the names review.py must stop
-    defining once every unit has moved its piece out."""
+def test_review_module_keeps_only_the_mixin_bases_it_composes():
+    """Post-U7: review.py still imports SurpriseHandling (a base class of
+    _GroupExecution) but none of the other names that used to be transitional
+    re-exports — those are asserted absent by
+    test_review_module_reexports_nothing_it_no_longer_defines above."""
     import orchestrator.execution.review as review
 
+    assert hasattr(review, "SurpriseHandling")
     for name in (
-        "SurpriseBoard",
-        "SurpriseHandling",
         "surprise_residue",
         "format_residue_report",
         "REASON_GROUP_COMPLETED",
@@ -123,7 +124,7 @@ def test_review_module_reexports_are_the_documented_transitional_set():
         "REASON_RUN_ENDED",
         "MergeConflict",
     ):
-        assert hasattr(review, name)
+        assert not hasattr(review, name)
 
 
 def test_execution_modules_import_graph_is_acyclic():
@@ -174,3 +175,20 @@ def test_execution_modules_import_graph_is_acyclic():
 
     for name in names:
         visit(name)
+
+
+def test_review_module_reexports_nothing_it_no_longer_defines():
+    """U7 cleanup: every transitional re-export is gone and review.py defines
+    only ReviewDeps, make_executor and _GroupExecution."""
+    from orchestrator.execution import review
+
+    for name in (
+        "SurpriseBoard",
+        "surprise_residue",
+        "format_residue_report",
+        "REASON_UNKNOWN_GROUP",
+        "MergeConflict",
+        "_spec_hash",
+        "GroupFailure",
+    ):
+        assert not hasattr(review, name), name

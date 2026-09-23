@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from orchestrator.config import BreakerConfig, ExecutionConfig, LivenessConfig
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
@@ -41,45 +42,22 @@ from orchestrator.execution.scheduler import (
     GroupContext,
     GroupState,
 )
-from orchestrator.execution.scheduler import (
-    GroupFailure as GroupFailure,
-)  # accidental re-export (see plan) — left for U6 to switch
 from orchestrator.execution.sessions import SessionRunner
-from orchestrator.execution.merge import (
-    MergeConflict as MergeConflict,
-)  # transitional re-export — removed in U7
 from orchestrator.execution.escalating import EscalationHandlers
 from orchestrator.execution.generation import GenerationLoop
 from orchestrator.execution.merge_ladder import MergeLadder
 from orchestrator.execution.records import SessionRecords
-from orchestrator.execution.records import (
-    _spec_hash as _spec_hash,
-)  # transitional re-export — removed in U7
 from orchestrator.execution.reviewer import ReviewerRound
-from orchestrator.execution.surprises import SurpriseBoard, SurpriseHandling
-
-# transitional re-export — removed in U7
-from orchestrator.execution.surprises import (
-    REASON_GROUP_COMPLETED as REASON_GROUP_COMPLETED,
-)
-from orchestrator.execution.surprises import (
-    REASON_RUN_ENDED as REASON_RUN_ENDED,
-)
-from orchestrator.execution.surprises import (
-    REASON_UNKNOWN_GROUP as REASON_UNKNOWN_GROUP,
-)
-from orchestrator.execution.surprises import (
-    format_residue_report as format_residue_report,
-)
-from orchestrator.execution.surprises import (
-    surprise_residue as surprise_residue,
-)
+from orchestrator.execution.surprises import SurpriseHandling
 from orchestrator.model import (
     Group,
     RunManifest,
     SessionEntry,
     Surprise,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - annotation-only, no runtime binding
+    from orchestrator.execution.surprises import SurpriseBoard
 
 
 @dataclass
