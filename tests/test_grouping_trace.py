@@ -127,6 +127,16 @@ class TestMergeRejectionReasonsClosedSet:
         merge_small_groups(g, {"a": 0, "b": 1}, lambda n: 3.0, budget_cap=5.0, recorder=recorder)
         assert [m.reason for m in recorder.trace.merges] == ["over_budget"]
 
+    def test_over_merge_ceiling_reason_on_the_known_shape(self):
+        """A merge that fits the budget cap but not its headroom band. Before
+        this reason joined the closed set the recorder raised a pydantic
+        ValidationError mid-partition (r20260923-163956, g3 merge gate)."""
+        g = _graph("a b".split(), dependencies={("a", "b"): 1.0})
+        recorder = TraceRecorder()
+        merge_small_groups(g, {"a": 0, "b": 1}, lambda n: 2.4, budget_cap=5.0, recorder=recorder)
+        assert [m.reason for m in recorder.trace.merges] == ["over_merge_ceiling"]
+        assert "over_merge_ceiling" in MERGE_REJECTION_REASONS
+
     def test_not_chain_compatible_reason_on_the_known_shape(self):
         """A candidate pair must exist (a dependency edge between the two
         groups) for chain_compatible to even run: here a->b makes {b} a

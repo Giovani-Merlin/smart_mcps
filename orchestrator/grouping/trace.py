@@ -37,10 +37,16 @@ MERGE_REJECTION_REASONS = (
     "not_chain_compatible",
     "makespan_regression",
     "would_create_cycle",
+    "over_merge_ceiling",
 )
 
 MergeReason = Literal[
-    "over_budget", "not_chain_compatible", "makespan_regression", "would_create_cycle", ""
+    "over_budget",
+    "not_chain_compatible",
+    "makespan_regression",
+    "would_create_cycle",
+    "over_merge_ceiling",
+    "",
 ]
 
 
@@ -128,7 +134,8 @@ class MergeCandidateEntry(BaseModel):
     ``reason`` is only meaningful when ``accepted`` is ``False``, and is then
     always one of the closed set established by plan U4's guards
     (``over_budget``, ``not_chain_compatible``, ``makespan_regression``,
-    ``would_create_cycle``) — never a free-text explanation.
+    ``would_create_cycle``), plus ``over_merge_ceiling`` — within the budget
+    but inside the merge headroom band — never a free-text explanation.
     """
 
     round: int
