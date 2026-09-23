@@ -18,10 +18,12 @@ from orchestrator.execution.host import ExecutionHost
 from orchestrator.execution.review import _GroupExecution
 from orchestrator.execution.escalating import EscalationHandlers
 from orchestrator.execution.merge_ladder import MergeLadder
+from orchestrator.execution.records import SessionRecords
+from orchestrator.execution.reviewer import ReviewerRound
 from orchestrator.execution.surprises import SurpriseHandling
 from tests.test_review_loop import Harness, StubRunner, make_group
 
-MIXINS = [MergeLadder, EscalationHandlers, SurpriseHandling]
+MIXINS = [MergeLadder, EscalationHandlers, SurpriseHandling, SessionRecords, ReviewerRound]
 
 
 def test_new_modules_import_with_no_cycle():
@@ -33,10 +35,14 @@ def test_new_modules_import_with_no_cycle():
             "orchestrator.execution.surprises",
             "orchestrator.execution.escalating",
             "orchestrator.execution.merge_ladder",
+            "orchestrator.execution.records",
+            "orchestrator.execution.reviewer",
             "orchestrator.execution.review",
         ],
         [
             "orchestrator.execution.review",
+            "orchestrator.execution.reviewer",
+            "orchestrator.execution.records",
             "orchestrator.execution.merge_ladder",
             "orchestrator.execution.escalating",
             "orchestrator.execution.surprises",
@@ -115,7 +121,7 @@ def test_execution_modules_import_graph_is_acyclic():
     is the one allowed inter-mixin edge. `TYPE_CHECKING` imports are skipped."""
     import ast
 
-    names = ["surprises", "merge_ladder", "escalating", "host", "review"]
+    names = ["surprises", "merge_ladder", "escalating", "records", "reviewer", "host", "review"]
     root = Path(__file__).resolve().parents[1] / "orchestrator" / "execution"
     graph: dict[str, set[str]] = {}
     for name in names:
@@ -130,6 +136,8 @@ def test_execution_modules_import_graph_is_acyclic():
     assert graph["merge_ladder"] & {"surprises", "escalating"} == {"escalating"}
     assert graph["escalating"] == set()
     assert graph["surprises"] == set()
+    assert graph["records"] == set()
+    assert graph["reviewer"] == set()
 
     visiting: set[str] = set()
     done: set[str] = set()
