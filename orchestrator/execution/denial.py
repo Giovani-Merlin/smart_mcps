@@ -61,6 +61,10 @@ _KERNEL_PATTERNS = (
     r"read-only file system",
     r"operation not permitted",
     r"permission denied \(os error",
+    # coreutils' strerror shape, which carries no errno: `touch: cannot touch
+    # '/x/probe.txt': Permission denied` (observed live 2026-09-23 under Landlock).
+    # A quoted path followed by `: Permission denied` is libc, never the harness.
+    r"cannot [\w ]+ ['‘`][^'’`\n]+['’`]: permission denied",
 )
 
 #: Permission-layer wording. Narrower on purpose: a bare "permission denied" is

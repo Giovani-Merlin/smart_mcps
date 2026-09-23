@@ -42,6 +42,7 @@ def test_every_errno_rendering_of_the_same_denial_lands_in_one_kind():
         "EACCES: permission denied, mkdir '/home/op/.cache'",
         "error: Read-only file system (os error 30)",
         "mkdir: cannot create directory: Operation not permitted",
+        "touch: cannot touch '/home/op/.cache/probe.txt': Permission denied",
     ):
         assert classify_denial(denied_command="npm ci", denial_error=text) == (
             DenialKind.KERNEL_DENIED
