@@ -60,6 +60,25 @@ def canonical_pair(a: str, b: str) -> Pair:
     return (a, b) if a <= b else (b, a)
 
 
+def subgraph_excluding(graph: TaskGraph, exclude: frozenset[str]) -> TaskGraph:
+    """Induced subgraph on ``graph.nodes - exclude`` (plan U4): keeps only the
+    affinity/dependency edges with both endpoints inside, and each kept node's
+    metadata. Used to isolate the fixed-singleton (non-``code`` recipe) nodes
+    from every clustering/budget/merge/repair stage — those stages must never
+    see or move a node this excludes."""
+    keep = graph.nodes - exclude
+    affinity = {
+        pair: w for pair, w in graph.affinity.items() if pair[0] in keep and pair[1] in keep
+    }
+    dependencies = {
+        pair: w for pair, w in graph.dependencies.items() if pair[0] in keep and pair[1] in keep
+    }
+    metadata = {node: graph.metadata.get(node, {}) for node in keep}
+    return TaskGraph(
+        nodes=frozenset(keep), affinity=affinity, dependencies=dependencies, metadata=metadata
+    )
+
+
 @dataclass(frozen=True)
 class TaskGraph:
     """Weighted task graph: symmetric affinity for clustering, directed dependencies."""
@@ -120,6 +139,27 @@ class TaskGraph:
                 f"dependency cycle among tasks {sorted(component)}: {shown}{more} — "
                 "task precedence must be a DAG"
             )
+
+
+class UnsplittableSingletonCycleError(Exception):
+    """Plan U4: a fixed singleton (a non-``code`` recipe unit) cycles with a
+    ``code`` group and no dependency-respecting split separates them — the
+    boundary-split machinery in ``_resolve_singleton_cycles`` only cuts a
+    ``code`` group into an "upstream of the singleton" half and a "downstream
+    of the singleton" half; when a declared ``slice`` block straddles that cut,
+    or the cyclic component does not reduce to exactly one singleton and one
+    code group, there is no legal split and this is raised instead, naming the
+    singleton(s) and every ``code`` task caught in the cycle.
+    """
+
+    def __init__(self, singletons: list[str], code_tasks: list[str]):
+        self.singletons = singletons
+        self.code_tasks = code_tasks
+        super().__init__(
+            f"cannot isolate recipe unit(s) {', '.join(singletons)}: cycles with code "
+            f"task(s) {', '.join(code_tasks)} and no dependency-respecting split "
+            "separates them (a declared slice may span the boundary)"
+        )
 
 
 class GroupCycleError(Exception):
@@ -344,6 +384,14 @@ class DefaultPartitionStrategy:
     after every ``partition()`` call by comparing group membership after each
     stage, not by re-running anything. ``flags`` (R10) accumulates one message per
     repaired group that could not be re-split back under budget.
+
+    ``fixed_singletons`` (plan U4) names nodes that are never clustered, split,
+    merged or repaired here — each becomes its own group, added back only after
+    every ``code`` node has been through the full pipeline on the induced
+    subgraph that excludes them (``subgraph_excluding``). A code group left
+    cycling against a fixed singleton (a build → run → tune shape) is split at
+    that boundary by ``_resolve_singleton_cycles`` rather than merged with it,
+    since a fixed singleton may never share a group with anything else.
     """
 
     work_fn: WorkFn = lambda node: 1.0
@@ -358,6 +406,7 @@ class DefaultPartitionStrategy:
     # withdraws these. `None` means "no declared-edge information available" — the
     # conservative default that reproduces pre-U10 behaviour (merge, never withdraw).
     declared: frozenset[Pair] | None = None
+    fixed_singletons: frozenset[str] = frozenset()
     last_stage: str | None = field(default=None, init=False)
     flags: list[str] = field(default_factory=list, init=False)
     # Structured counterpart to the overshoot strings in ``flags`` (plan U9):
@@ -376,63 +425,89 @@ class DefaultPartitionStrategy:
         if not graph.nodes:
             self.last_stage = None
             return {}
-        roles = detect_hub_roles(graph, threshold=self.hub_threshold, recorder=self.recorder)
-        atoms = slice_atoms(graph, roles)
+        singletons = self.fixed_singletons & graph.nodes
+        code_graph = subgraph_excluding(graph, singletons)
         stages: list[tuple[str, Partition]] = []
-        if atoms:
-            unit_graph, self_loops, unit_of = _contract_slices(graph, atoms)
-            unit_roles = {unit_of[node]: role for node, role in roles.items()}
-            unit_partition = _hub_isolated_clustering(
-                unit_graph, unit_roles, self.louvain_resolution, self_loops, recorder=self.recorder
-            )
-            partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
-            stages.append(("contraction", dict(partition)))
-            self._record_stage("contraction", partition)
-            unit_partition = lift_independent(unit_graph, unit_partition)
-            partition = {node: unit_partition[unit_of[node]] for node in graph.nodes}
-            stages.append(("lift", dict(partition)))
-            self._record_stage("lift", partition)
+
+        if not code_graph.nodes:
+            partition = {node: i for i, node in enumerate(sorted(singletons))}
+            stages.append(("singleton", dict(partition)))
         else:
-            partition = _hub_isolated_clustering(
-                graph, roles, self.louvain_resolution, recorder=self.recorder
+            roles = detect_hub_roles(
+                code_graph, threshold=self.hub_threshold, recorder=self.recorder
             )
-            stages.append(("louvain", dict(partition)))
-            self._record_stage("louvain", partition)
-            partition = lift_independent(graph, partition)
-            stages.append(("lift", dict(partition)))
-            self._record_stage("lift", partition)
-        if self.budget_cap is not None:
-            partition = split_over_budget(
-                graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+            atoms = slice_atoms(code_graph, roles)
+            if atoms:
+                unit_graph, self_loops, unit_of = _contract_slices(code_graph, atoms)
+                unit_roles = {unit_of[node]: role for node, role in roles.items()}
+                unit_partition = _hub_isolated_clustering(
+                    unit_graph,
+                    unit_roles,
+                    self.louvain_resolution,
+                    self_loops,
+                    recorder=self.recorder,
+                )
+                partition = {node: unit_partition[unit_of[node]] for node in code_graph.nodes}
+                stages.append(("contraction", dict(partition)))
+                self._record_stage("contraction", partition)
+                unit_partition = lift_independent(unit_graph, unit_partition)
+                partition = {node: unit_partition[unit_of[node]] for node in code_graph.nodes}
+                stages.append(("lift", dict(partition)))
+                self._record_stage("lift", partition)
+            else:
+                partition = _hub_isolated_clustering(
+                    code_graph, roles, self.louvain_resolution, recorder=self.recorder
+                )
+                stages.append(("louvain", dict(partition)))
+                self._record_stage("louvain", partition)
+                partition = lift_independent(code_graph, partition)
+                stages.append(("lift", dict(partition)))
+                self._record_stage("lift", partition)
+            if self.budget_cap is not None:
+                partition = split_over_budget(
+                    code_graph, partition, self.work_fn, self.budget_cap, recorder=self.recorder
+                )
+                stages.append(("split", dict(partition)))
+                self._record_stage("split", partition)
+            partition = merge_small_groups(
+                code_graph,
+                partition,
+                self.work_fn,
+                self.budget_cap,
+                recorder=self.recorder,
+                granularity=self.granularity,
+                target_fill_ratio=self.target_fill_ratio,
+                merge_ceiling_ratio=self.merge_ceiling_ratio,
             )
-            stages.append(("split", dict(partition)))
-            self._record_stage("split", partition)
-        partition = merge_small_groups(
-            graph,
-            partition,
-            self.work_fn,
-            self.budget_cap,
-            recorder=self.recorder,
-            granularity=self.granularity,
-            target_fill_ratio=self.target_fill_ratio,
-            merge_ceiling_ratio=self.merge_ceiling_ratio,
-        )
-        stages.append(("merge", dict(partition)))
-        self._record_stage("merge", partition)
-        partition = repair_cycles(
-            graph,
-            partition,
-            self.work_fn,
-            self.budget_cap,
-            self.flags,
-            recorder=self.recorder,
-            degenerate=self.degenerate_repairs,
-            declared=self.declared,
-        )
-        stages.append(("repair", dict(partition)))
-        self._record_stage("repair", partition)
-        partition = _renumber(partition)
-        self._record_stage("renumber", partition)
+            stages.append(("merge", dict(partition)))
+            self._record_stage("merge", partition)
+            partition = repair_cycles(
+                code_graph,
+                partition,
+                self.work_fn,
+                self.budget_cap,
+                self.flags,
+                recorder=self.recorder,
+                degenerate=self.degenerate_repairs,
+                declared=self.declared,
+            )
+            stages.append(("repair", dict(partition)))
+            self._record_stage("repair", partition)
+            partition = _renumber(partition)
+            self._record_stage("renumber", partition)
+
+            if singletons:
+                next_gid = max(partition.values(), default=-1) + 1
+                for offset, node in enumerate(sorted(singletons)):
+                    partition[node] = next_gid + offset
+                stages.append(("isolate_singletons", dict(partition)))
+
+        if singletons:
+            partition = _resolve_singleton_cycles(graph, partition, singletons, self.flags)
+            partition = _renumber(partition)
+            stages.append(("split_singletons", dict(partition)))
+            self._record_stage("split_singletons", partition)
+
         build_group_dag(graph, partition)  # an orchestrator bug if this still raises (plan U5)
         self.last_stage = _last_modifying_stage(stages)
         return partition
@@ -777,6 +852,130 @@ def _blocks_of(members: list[str], block_of: dict[str, str]) -> dict[str, list[s
     for node in members:
         blocks[block_of[node]].append(node)
     return {block_id: sorted(nodes) for block_id, nodes in blocks.items()}
+
+
+def _reachable_forward(start: str, successors: Mapping[str, list[str]]) -> set[str]:
+    """Nodes reachable from ``start`` following ``successors`` edges (excludes ``start``)."""
+    seen: set[str] = set()
+    stack = list(successors.get(start, ()))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(successors.get(current, ()))
+    return seen
+
+
+def _ancestors_and_descendants(graph: TaskGraph, node: str) -> tuple[set[str], set[str]]:
+    """Task-level ancestor/descendant sets of ``node`` over ``graph.dependencies``."""
+    successors: dict[str, list[str]] = defaultdict(list)
+    predecessors: dict[str, list[str]] = defaultdict(list)
+    for up, down in graph.dependencies:
+        successors[up].append(down)
+        predecessors[down].append(up)
+    return _reachable_forward(node, predecessors), _reachable_forward(node, successors)
+
+
+def _split_group_at_singleton(
+    graph: TaskGraph, members: list[str], singleton: str, block_of: Mapping[str, str]
+) -> tuple[list[str], list[str]] | None:
+    """Try to cut ``members`` (one ``code`` group) into a half upstream of
+    ``singleton`` and a half downstream of it (plan U4's build → run → tune
+    shape). A member that is neither an ancestor nor a descendant of the
+    singleton is attached to whichever half it is directly dependency-adjacent
+    to inside the group, falling back deterministically to the downstream half.
+    Returns ``None`` — unsplittable — when the singleton touches only one side,
+    or when a declared slice block would be cut in two.
+    """
+    ancestors, descendants = _ancestors_and_descendants(graph, singleton)
+    member_set = set(members)
+    before = member_set & ancestors
+    after = member_set & descendants
+    if before & after:
+        return None
+    unresolved = member_set - before - after
+    if unresolved:
+        intra: dict[str, set[str]] = defaultdict(set)
+        for up, down in graph.dependencies:
+            if up in member_set and down in member_set:
+                intra[up].add(down)
+                intra[down].add(up)
+        changed = True
+        while changed and unresolved:
+            changed = False
+            for node in sorted(unresolved):
+                neighbors = intra.get(node, set())
+                if neighbors & before and not (neighbors & after):
+                    before.add(node)
+                    unresolved.discard(node)
+                    changed = True
+                elif neighbors & after and not (neighbors & before):
+                    after.add(node)
+                    unresolved.discard(node)
+                    changed = True
+        for node in sorted(unresolved):
+            after.add(node)
+    if not before or not after:
+        return None
+    blocks_before = {block_of[n] for n in before}
+    blocks_after = {block_of[n] for n in after}
+    if blocks_before & blocks_after:
+        return None
+    return sorted(before), sorted(after)
+
+
+def _raise_unsplittable(
+    partition: Partition, component: list[int], singleton_gid_of: dict[int, str]
+) -> None:
+    code_tasks = sorted(
+        n for n, gid in partition.items() if gid in component and gid not in singleton_gid_of
+    )
+    singleton_names = sorted(singleton_gid_of[gid] for gid in component if gid in singleton_gid_of)
+    raise UnsplittableSingletonCycleError(singleton_names, code_tasks)
+
+
+def _resolve_singleton_cycles(
+    graph: TaskGraph, partition: Partition, singletons: frozenset[str], flags: list[str]
+) -> Partition:
+    """Plan U4: split any ``code`` group left cycling against a fixed singleton
+    at the singleton's boundary, over the full (code + singleton) graph — the
+    shape a bottom-up affinity merge can produce even though the singleton
+    itself was never a merge candidate (a code group both feeding and
+    consuming the same run unit). Raises ``UnsplittableSingletonCycleError``
+    when a cyclic component cannot be reduced to exactly one code group and
+    one singleton, or the split it implies would cut a declared slice.
+    """
+    if not singletons:
+        return partition
+    partition = dict(partition)
+    block_of = _slice_block_of(graph)
+    while True:
+        singleton_gid_of = {partition[s]: s for s in singletons}
+        group_edges = _group_edges(graph, partition)
+        gids = set(partition.values())
+        cyclic = [c for c in _strongly_connected_components(group_edges, gids) if len(c) > 1]
+        if not cyclic:
+            return partition
+        component = cyclic[0]
+        comp_singleton_gids = [gid for gid in component if gid in singleton_gid_of]
+        comp_code_gids = [gid for gid in component if gid not in singleton_gid_of]
+        if len(comp_singleton_gids) != 1 or len(comp_code_gids) != 1:
+            _raise_unsplittable(partition, component, singleton_gid_of)
+        code_gid = comp_code_gids[0]
+        singleton_node = singleton_gid_of[comp_singleton_gids[0]]
+        members = sorted(n for n, gid in partition.items() if gid == code_gid)
+        split = _split_group_at_singleton(graph, members, singleton_node, block_of)
+        if split is None:
+            _raise_unsplittable(partition, component, singleton_gid_of)
+        before, after = split
+        new_gid = max(partition.values()) + 1
+        for node in after:
+            partition[node] = new_gid
+        flags.append(
+            f"partition: split group at run unit {singleton_node!r} to break a cycle — "
+            f"{', '.join(before)} kept upstream, {', '.join(after)} moved downstream"
+        )
 
 
 def split_over_budget(
