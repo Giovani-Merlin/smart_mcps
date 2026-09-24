@@ -276,7 +276,9 @@ class TestSizeHints:
         with pytest.raises(TaskMapError, match=r"t1.*'huge'.*large.*medium.*small"):
             parse_task_map(plan_with(map_yaml), make_client(tmp_path))
 
-    def test_size_hints_on_existing_file_raises_naming_it(self, tmp_path):
+    def test_size_hints_on_existing_file_is_ignored_with_a_flag(self, tmp_path):
+        # A plan whose own run created the hinted file must still regroup
+        # (r20260924-134934: the merged plan was a hard parse error).
         map_yaml = (
             "# orchestrator-task-map v1\n"
             "tasks:\n"
@@ -286,8 +288,11 @@ class TestSizeHints:
             "    size_hints:\n"
             "      existing.py: small\n"
         )
-        with pytest.raises(TaskMapError, match=r"t1.*existing\.py.*already exists"):
-            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        result = parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        (mapping,) = result.mappings
+        assert mapping.files == ("existing.py",)
+        assert mapping.size_hints == ()
+        assert any("existing.py" in f and "hint ignored" in f for f in result.flags)
 
     def test_size_hints_wrong_shape_raises(self, tmp_path):
         map_yaml = (

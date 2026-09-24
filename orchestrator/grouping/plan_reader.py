@@ -121,10 +121,13 @@ def parse_task_map(
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (client.repo_root / file).is_file():
+                # A hint prices unwritten work only. Once the plan's own run has
+                # written the file, the hint is stale, not wrong: price the real
+                # file and say so, or a plan could never be regrouped after it ran.
                 if file in raw_size_hints:
-                    raise TaskMapError(
-                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
-                        "hints price unwritten (prospective) work only"
+                    flags.append(
+                        f"task map: task {task_id} size_hints names {file}, which now exists "
+                        "— hint ignored, priced by its real size"
                     )
                 files.append(file)
             else:
@@ -193,12 +196,7 @@ def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapp
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (repo_root / file).is_file():
-                if file in raw_size_hints:
-                    raise TaskMapError(
-                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
-                        "hints price unwritten (prospective) work only"
-                    )
-                files.append(file)
+                files.append(file)  # a stale hint on an existing file is ignored
             else:
                 prospective.append(file)
         size_hints = tuple(
