@@ -177,8 +177,8 @@ A split preserves, byte-for-byte, on every task id and unit that survives into
 an output document:
 
 - every field of the task-map entry (`description`, `slice`, `files`,
-  `size_hints`, `symbols`, `depends_on`, `implements`, `consumes`) — the
-  entry's bytes are copied, not re-serialized;
+  `size_hints`, `symbols`, `depends_on`, `implements`, `consumes`, and — v2 —
+  `recipe`, `recipe_args`) — the entry's bytes are copied, not re-serialized;
 - the entry's relative order within its output document;
 - the matching `### U<N>.` unit section's full text, including every bullet
   this document describes and any enrichment `/orchestrator-deepen` added.
@@ -195,4 +195,57 @@ change value between two plan documents.
 
 The marker line pins the contract version. Additive evolution bumps the minor
 semantics here and keeps the parser accepting v1 blocks; incompatible changes
-mint `orchestrator-task-map v2` (candidate already parked: `feature_tags`).
+mint a new marker version. The parser accepts `orchestrator-task-map v1` and
+`orchestrator-task-map v2` through one marker regex, shared by every
+consumer (`parse_task_map`, `parse_task_map_for_pricing`, `strip_task_map`,
+`task_map_block_span`, and `plan_sections.py`'s auxiliary task-id scan); a
+`v3` marker (or any other unsupported number) is a hard error naming the
+version found.
+
+## v2: `recipe` and `recipe_args` (Unit Recipes, plan U2)
+
+A v2 block (marker `# orchestrator-task-map v2`) adds exactly two optional
+per-task keys on top of everything v1 has:
+
+| Field         | Required | Type    | Semantics                                                                                                                                                                                                                                                                                                 |
+| ------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recipe`      | no       | string  | Names a registered Unit Recipe (`orchestrator/recipes/`). Defaults to `"code"` when omitted — a v2 task with no `recipe` key parses identically to the same task marked v1.                                                                                                                               |
+| `recipe_args` | no       | mapping | Validated by the named recipe's own pydantic args model. A `code` task (the default) must not carry this key at all — `code` takes no args. A recipe declaring an args model validates `recipe_args` (or `{}` if omitted) against it; a missing required field is a hard error naming the task and field. |
+
+A v1 block carrying either key is a hard error telling the author to mark
+the block v2. An unknown `recipe` name is a hard error naming the task and
+listing every registered recipe. A non-`code` unit may not carry `slice` — a
+non-code unit is always its own group (plan U4), so slice's must-link
+grouping semantics don't apply to it.
+
+### Example: a `run` task
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: u5-render-podcast
+    description: Render the podcast audio from the approved script
+    recipe: run
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/render_podcast.py
+          wall_clock_min: 12.0
+      outputs:
+        - data/podcast/episode-01.mp3
+      commit_paths: []
+    depends_on: [u4-script-review]
+    implements: []
+    consumes: []
+```
+
+`recipe`'s args model, pricing, completion contract, reviewer prompt, and
+merge policy are the registry entry's business (`orchestrator/recipes/`), not
+this parser's — `plan_reader.py` only validates that the args parse and that
+the `recipe`/`slice` combination is legal.
+
+### Split/plan-check byte-preservation
+
+`smart-mcps-orchestrate split` and `plan-check --against` preserve `recipe`
+and `recipe_args` exactly as they preserve every other map field (verbatim
+bytes, never re-serialized) — see "Mechanical split" below, whose field list
+now includes both.

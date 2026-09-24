@@ -104,7 +104,10 @@ class TaskMapping:
     declared class (small/medium/large) instead of the flat per-file allowance
     (plan U7), ``depends_on`` names upstream task ids, ``slice`` is the
     vertical-slice must-link label, and ``implements``/``consumes`` are matched
-    route/contract tags.
+    route/contract tags. ``recipe`` (task-map v2, plan U2) names a registered
+    Unit Recipe (``"code"`` for every v1 map and any v2 task that omits it);
+    ``recipe_args`` is that recipe's own validated args model instance, or
+    ``None`` for ``code`` and for any recipe declaring no args model.
     """
 
     task_id: str
@@ -113,6 +116,8 @@ class TaskMapping:
     prospective_files: tuple[str, ...] = ()
     size_hints: tuple[tuple[str, str], ...] = ()
     depends_on: tuple[str, ...] = ()
+    recipe: str = "code"
+    recipe_args: object | None = None
     slice: str | None = None
     implements: tuple[str, ...] = ()
     consumes: tuple[str, ...] = ()
