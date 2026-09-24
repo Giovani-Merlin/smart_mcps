@@ -424,3 +424,27 @@ def test_missing_measurements_file_completes_with_note(tmp_path, repo):
     entry = deps.artifacts.load().entries["g7"]
     assert "measurements_missing" in entry.summary
     assert entry.measurements == {}
+
+
+# ----------------------------------------------- no commit_paths: merge skipped
+
+
+def test_unit_that_commits_nothing_completes_without_merging(tmp_path, repo):
+    # A run unit with no commit_paths "never commits" (plan). The real merge
+    # refuses a branch with no commits ahead, so the executor must skip it —
+    # found by the driver's live g7-7 probe on r20260924-134934.
+    git(repo, "branch", "orchestrator/run-rtest")
+    run_dir = tmp_path / "run"
+    group = make_group({"commands": [{"cmd": "true", "wall_clock_min": 1}]})
+
+    def refusing_merge(group: Group, wt: Path) -> str:
+        raise AssertionError("merge_group called for a unit that committed nothing")
+
+    deps = make_deps(repo, run_dir, repo, merge_group=refusing_merge)
+
+    state, _ctx = asyncio.run(_run(deps, group))
+
+    assert state == GroupState.COMPLETED
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert deps.artifacts.load().entries["g7"].status == "complete"
+    assert git(repo, "rev-parse", "orchestrator/run-rtest").strip() == head
