@@ -332,7 +332,10 @@ The named bundle that determines how one plan unit is executed — its prompt,
 tool allowlist, completion contract, reviewer prompt, merge behaviour, pricing
 function and handoff prompt. Declared per unit in the task map
 (`recipe: research`); a unit declaring none runs `code`, today's coder-and-
-reviewer machine, unchanged. Always written "Unit Recipe" in prose, never bare
+reviewer machine, unchanged. v1 of the registry (`orchestrator/recipes/`)
+ships exactly two entries, `code` and `run`; `research` and `synthesize` are
+named in the origin brainstorm as the next increment's, not yet registered.
+Always written "Unit Recipe" in prose, never bare
 "recipe" — for the same reason \[[Preflight Kind]\] is never bare "kind".
 _Avoid_: kind (taken by \[[Preflight Kind]\]), machine (taken by machine
 suspend/wake, which \[[Suspend Cure]\] depends on), role (taken by SessionRole:
