@@ -80,6 +80,25 @@ def run_is_finishable(repo_root: Path, run_id: str) -> tuple[bool, list[str]]:
     return (not bad, bad)
 
 
+def pending_driver_run_items(repo_root: Path, run_id: str) -> dict[str, list[str]]:
+    """Required ``driver_run`` verification items per group, from each group's
+    spec in force (rewrites included). The coder is told not to run them and
+    nothing records the driver running them, so a run holding any is never
+    auto-finished: r20260924-134934 merged a `run` recipe that could not start,
+    and only the driver's live items — run after the last merge — showed it."""
+    paths = RunPaths(repo_root, run_id)
+    if not paths.groups_path.is_file():
+        return {}
+    grouping = GroupingResult.model_validate_json(paths.groups_path.read_text())
+    pending: dict[str, list[str]] = {}
+    for group in grouping.groups:
+        items = effective_group(paths, group).verification
+        ids = [item.id for item in items if item.driver_run and item.required]
+        if ids:
+            pending[group.id] = ids
+    return pending
+
+
 def _group_is_merged(repo_root: Path, run_id: str, tip: str, gid: str, entry) -> bool:
     if entry.state not in (GroupState.COMPLETED, GroupState.RESOLVED):
         return False

@@ -84,7 +84,12 @@ from orchestrator.execution.manifest import (
     validate_grouping_name,
 )
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
-from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
+from orchestrator.execution.finish import (
+    FinishError,
+    finish_run,
+    pending_driver_run_items,
+    run_is_finishable,
+)
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.preflight import (
     PreflightFailure,
@@ -2398,6 +2403,18 @@ def _maybe_auto_finish(repo_root: Path, run_id: str, paths: RunPaths) -> None:
     ok, _ = run_is_finishable(repo_root, run_id)
     if not ok:
         print(f"finish when ready with: {finish_cmd}")
+        return
+    pending = pending_driver_run_items(repo_root, run_id)
+    if pending:
+        count = sum(len(ids) for ids in pending.values())
+        listed = "; ".join(f"{gid}: {', '.join(ids)}" for gid, ids in pending.items())
+        line = (
+            f"run {run_id}: not auto-finishing — {count} driver-run verification "
+            f"item(s) wait for the run driver ({listed})"
+        )
+        log_event(paths, line)
+        print(line)
+        print(f"run them, then finish with: {finish_cmd}")
         return
     try:
         finish_run(repo_root, run_id, log=lambda m: log_event(paths, m))

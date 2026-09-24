@@ -319,13 +319,18 @@ When the process exits (signal **(b)**):
 2. If groups failed: say which, why (the `failure:` line), and whether
    `smart-mcps-orchestrate retry $RUN <gid>` + `resume` is a sane salvage
    (it is, when the integration tip has since moved past the cause).
-3. If every group completed/resolved, the CLI **auto-finished** (push + PR)
-   the moment the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`. It
-   prints `finish when ready with: smart-mcps-orchestrate finish $RUN` only
-   in the not-finishable case (a group whose branch is not on the integration
-   tip), and that is the only time you run `finish` by hand. The one-pager /
-   report step below therefore happens **on the PR after the fact**: write it,
-   then re-run `finish` to refresh the PR body. **The record the human
+3. If every group completed/resolved **and no group carries a required
+   `Run (driver):` item**, the CLI **auto-finished** (push + PR) the moment
+   the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`; the one-pager
+   then lands on the PR after the fact (write it, re-run `finish`). When
+   driver-run items exist, the CLI holds instead — `run <id>: not
+   auto-finishing — N driver-run verification item(s) wait for the run
+   driver (<gid>: <ids>; …)` — because those items are the only evidence
+   that exercises the merged code for real (r20260924-134934 merged a `run`
+   recipe that could not start, and only the driver's live items showed it).
+   Run them (step 4), fix what they find, write the one-pager, then run
+   `finish` yourself. It also prints `finish when ready with: …` in the
+   not-finishable case (a group whose branch is not on the integration tip). **The record the human
    approves from is the report, not this session's prose** — see
    `docs/orchestrator-report.md` for the full format contract. Before (re-)running
    `finish`:
@@ -344,16 +349,14 @@ When the process exits (signal **(b)**):
    3. Write the one-pager — it IS the PR body and IS the Summary at the top
       of `report.html`, so it is the record the human approves from. Write it
       directly into the integration worktree, since that is where `finish`
-      looks for it, and **before the last group merges**: the CLI
-      auto-finishes the moment every group is terminal, and a one-pager
-      written after that only lands if you run `finish` again to refresh the
-      PR body.
+      looks for it, **once the run has ended** (no merge left to sweep it):
       `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
-      Expect the next merge to sweep that still-untracked scaffold into a
-      `recover(<run>): integration work stranded by an interrupted run`
-      commit — the merge cannot tell a driver's draft from a crashed group's
-      leftovers. Harmless: `finish` overwrites the file with the filled-in
-      one-pager and commits it under `docs/runs/$RUN/`.
+      Do not scaffold it while groups are still merging: the next merge
+      sweeps the untracked draft into a `recover(<run>): integration work
+      stranded by an interrupted run` commit, and an unfilled scaffold makes
+      any `finish` — the CLI's own auto-finish included — abort on
+      validation (r20260924-134934). Drafting early is fine elsewhere, e.g.
+      under `.orchestrator/`, copied in after the run ends.
       Then fill it in with the extract-then-abstract recipe:
       - **Extract.** Build one prompt from two XML-delimited sources and
         nothing else — never a transcript:

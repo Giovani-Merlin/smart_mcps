@@ -23,6 +23,7 @@ from orchestrator.execution.finish import (
     FinishError,
     _delete_branch_if_merged,
     finish_run,
+    pending_driver_run_items,
     run_is_finishable,
 )
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
@@ -40,6 +41,7 @@ from orchestrator.model import (
     GroupManifestEntry,
     ReviewIntensity,
     RunManifest,
+    VerificationItem,
 )
 
 
@@ -978,3 +980,48 @@ def test_finish_never_writes_docs_runlog(repo, tmp_path):
     assert not (integration_wt / "docs" / "RUNLOG.md").exists()
     assert not (repo / "docs" / "RUNLOG.md").exists()
     assert (integration_wt / "docs" / "runs" / run_id / "CHANGELOG-entry.md").is_file()
+
+
+LIVE = "Run (driver): `uv run pytest -m llm tests/test_x.py` — Pass: green."
+
+
+def test_pending_driver_run_items_reads_required_items_from_the_spec_in_force(repo):
+    run_id = "r-dr"
+    g1 = make_group("g1").model_copy(
+        update={
+            "verification": [
+                VerificationItem(id="g1-1", description="unit tests pass"),
+                VerificationItem(id="g1-2", description=LIVE),
+                VerificationItem(id="g1-3", description=LIVE, required=False),
+            ]
+        }
+    )
+    g2 = make_group("g2")
+    paths, _ = setup_run(repo, run_id, [g1, g2])
+    # A mid-run rewrite of g2 added a live item; groups.json never sees it.
+    rewritten = g2.model_copy(
+        update={"verification": [VerificationItem(id="g2-v1", description=LIVE)]}
+    )
+    spec_dir = paths.group_dir("g2")
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(spec_dir / "spec-gen1.json", rewritten.model_dump_json())
+
+    assert pending_driver_run_items(repo, run_id) == {"g1": ["g1-2"], "g2": ["g2-v1"]}
+
+
+def test_auto_finish_holds_while_driver_run_items_are_pending(repo, monkeypatch, capsys):
+    import orchestrator.cli as cli
+
+    finished: list[str] = []
+    monkeypatch.setattr(cli, "run_is_finishable", lambda root, rid: (True, []))
+    monkeypatch.setattr(cli, "pending_driver_run_items", lambda root, rid: {"g7": ["g7-7"]})
+    monkeypatch.setattr(cli, "finish_run", lambda root, rid, **kw: finished.append(rid))
+    paths = RunPaths(repo, "r-hold")
+    paths.run_dir.mkdir(parents=True, exist_ok=True)
+
+    cli._maybe_auto_finish(repo, "r-hold", paths)
+
+    assert finished == []
+    out = capsys.readouterr().out
+    assert "not auto-finishing" in out and "g7: g7-7" in out
+    assert "finish --repo" in out
