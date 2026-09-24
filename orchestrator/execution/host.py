@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from orchestrator.execution.heartbeat import RoundHeartbeat
     from orchestrator.execution.review import ReviewDeps
     from orchestrator.execution.scheduler import GroupContext
-    from orchestrator.model import Group, SessionEntry
+    from orchestrator.model import CoderReport, Group, SessionEntry
 
 
 class ExecutionHost(Protocol):
@@ -56,6 +56,7 @@ class ExecutionHost(Protocol):
     _heartbeat: RoundHeartbeat
     _cures: dict[int, int]
     _current_round_no: int
+    _last_report: CoderReport | None
 
     # Cross-mixin methods a mixin may call on the host without defining
     # itself. Declared as `def` stubs, not variable annotations, so they are
@@ -116,6 +117,8 @@ class ExecutionHost(Protocol):
     def _apply_env_notice(self, prompt: str) -> str: ...
 
     def _apply_operator_note(self, prompt: str) -> str: ...
+
+    def _apply_artifact_inputs(self, prompt: str) -> str: ...
 
     async def _approve_gate(self, kind: object, prompt: str) -> None: ...
 

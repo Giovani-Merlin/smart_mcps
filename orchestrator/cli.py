@@ -41,6 +41,7 @@ from orchestrator.config import (
     WorkspaceConfig,
     load_config,
 )
+from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.auth import AuthLadder
 from orchestrator.execution.confinement import (
     default_cache_root,
@@ -2160,6 +2161,7 @@ def _cmd_run(
             paths=paths,
             workspace=config.workspace,
         )
+        artifact_store = ArtifactManifestStore(paths)
 
         # Construction is circular on paper (scheduler → executor → deps → runner →
         # scheduler.tracker); the executor closes over a slot assigned once deps exist —
@@ -2180,6 +2182,7 @@ def _cmd_run(
                 broker=broker,
                 policy=policy,
                 resolve=resolve_deps,
+                artifacts=artifact_store,
             )
         except (SchedulerError, RunStateVersionError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2314,6 +2317,8 @@ def _cmd_run(
             board=SurpriseBoard(paths, groups=grouping.groups),
             workspace_for=workspace_for,
             merge_group=merger.merge_group,
+            artifacts=artifact_store,
+            groups_by_id={g.id: g for g in grouping.groups},
             # The rewrite path is the run's other claude call, and it is a one-shot
             # `claude -p` rather than a session — so it needs the same gate, applied
             # at its own boundary.
@@ -2647,13 +2652,12 @@ def _resolve_deps(
             return False
         return True
 
-    def merge_for_resolve(group: Group) -> None:
+    def merge_for_resolve(group: Group) -> str:
         worktree = worktree_for(group)
         attempts_left = execution.max_conflict_resolve_attempts
         while True:
             try:
-                merger.merge_group(group, worktree)
-                return
+                return merger.merge_group(group, worktree)
             except MergeConflict as exc:
                 session_id = latest_coder_session_id(group.id) if attempts_left > 0 else None
                 if session_id is None:
@@ -2676,7 +2680,7 @@ def _resolve_deps(
                 )
                 raise ResolvePreflightFailed(str(exc)) from exc
             except MergeError:
-                return  # commits_ahead already gated this — defensive no-op
+                return ""  # commits_ahead already gated this — defensive no-op
 
     return ResolveDeps(
         commit_stranded=commit_stranded,

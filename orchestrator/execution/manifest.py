@@ -182,6 +182,12 @@ class RunPaths:
         return self.run_dir / "manifest.json"
 
     @property
+    def artifact_manifest_path(self) -> Path:
+        """The run-level Artifact Manifest (plan U6): what every group
+        produced, indexed once for downstream prompts and the Run Bundle."""
+        return self.run_dir / "artifacts.json"
+
+    @property
     def state_path(self) -> Path:
         return self.run_dir / "state.json"
 

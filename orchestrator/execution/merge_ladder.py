@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, ArtifactEntry
 from orchestrator.execution.escalating import _is_retry, _operator_surprise
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.merge import MergeConflict
@@ -29,7 +30,7 @@ from orchestrator.execution.prompting import (
 )
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
 from orchestrator.execution.sessions import SessionError, nudge_until_report
-from orchestrator.execution.worktrees import ensure_excluded, integration_branch
+from orchestrator.execution.worktrees import changed_paths, ensure_excluded, integration_branch
 from orchestrator.model import (
     CoderReport,
     EscalationKind,
@@ -56,6 +57,7 @@ class MergeLadder:
     coder_entry: SessionEntry | None
     _flake_reruns: int
     _untracked_strikes: int
+    _last_report: CoderReport | None
     _heartbeat: RoundHeartbeat
     _log: Callable[[str], None]
     _escalate: Callable[..., Awaitable[EscalationResponse | None]]
@@ -88,8 +90,14 @@ class MergeLadder:
             self._heartbeat.mark_phase("merging into integration")  # F4
             self._log(f"group {self.gid}: merge attempt")
             self._archive_coder_scratch()
+            # Read before the merge, not after (plan U6): `merge_group` removes
+            # the group's own worktree on success, so `self.workspace` no
+            # longer exists by the time control returns here.
+            paths = changed_paths(self.workspace, self.deps.base_ref_for(self.group))
             try:
-                await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
+                merge_sha = await asyncio.to_thread(
+                    self.deps.merge_group, self.group, self.workspace
+                )
             except MergeConflict as exc:
                 self._log(f"group {self.gid}: merge conflict ({exc})")
                 conflict = Surprise(
@@ -173,7 +181,30 @@ class MergeLadder:
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             self._log_driver_run_items()
+            self._register_code_artifact(commit=merge_sha, paths=paths)
             return True
+
+    def _register_code_artifact(self, *, commit: str, paths: list[str]) -> None:
+        """Register this group's Artifact Manifest entry on a successful
+        merge (plan U6 Goal). A no-op when no Artifact Manifest is wired —
+        every construction site that predates this unit."""
+        store = self.deps.artifacts
+        if store is None:
+            return
+        summary = self._last_report.summary if self._last_report is not None else self.group.summary
+        store.register(
+            ArtifactEntry(
+                artifact_id=self.gid,
+                group_id=self.gid,
+                tasks=list(self.group.tasks),
+                recipe=self.group.recipe,
+                paths=paths,
+                commit=commit,
+                schema="CoderReport",
+                summary=summary[:ARTIFACT_SUMMARY_MAX_CHARS],
+                status="complete",
+            )
+        )
 
     def _log_remerge(self, reason: str) -> None:
         """The cheap ``preflight_failed`` resolution: refresh + preflight + merge
