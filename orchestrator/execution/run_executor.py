@@ -37,7 +37,7 @@ from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, Artifac
 from orchestrator.execution.confinement import build_policy, landlock_preexec
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import atomic_write_text, log_event
-from orchestrator.execution.merge import MergeConflict
+from orchestrator.execution.merge import MergeConflict, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
 from orchestrator.execution.run_child import (
     RunChildState,
@@ -56,7 +56,12 @@ from orchestrator.execution.scheduler import (
     GroupState,
     RunAbort,
 )
-from orchestrator.execution.worktrees import _git, _git_ok, data_layer_write_paths
+from orchestrator.execution.worktrees import (
+    _git,
+    _git_ok,
+    data_layer_write_paths,
+    integration_branch,
+)
 from orchestrator.model import EscalationContext, EscalationKind, EscalationRequest, HumanAction
 from orchestrator.prompts import load_template
 from orchestrator.recipes.run import CommandResult, RunArgs, RunRecord
@@ -374,6 +379,13 @@ class _RunExecution:
                 "-m",
                 f"run({self.deps.run_id}): {self.gid} {self.group.name}",
             )
+        # With nothing committed the unit "never commits" (plan): skip the merge,
+        # which refuses an empty branch, and record the commit the run ran on.
+        base = integration_branch(self.deps.run_id)
+        base_exists = _git(self.workspace, "rev-parse", "--verify", "--quiet", base).returncode == 0
+        if base_exists and commits_ahead(self.workspace, base, "HEAD") == 0:
+            log_event(self.paths, f"group {self.gid}: run recipe committed nothing; merge skipped")
+            return _git_ok(self.workspace, "rev-parse", "HEAD").strip()
         try:
             return await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
         except (MergeConflict, PreflightFailure) as exc:
