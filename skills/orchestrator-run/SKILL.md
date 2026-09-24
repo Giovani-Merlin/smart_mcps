@@ -49,7 +49,10 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    accepts it explicitly — workers fork from the launch commit, so anything
    uncommitted is invisible to them.
 2. **Config exists and names the data.** `.orchestrator/config.toml` must
-   exist. If the plan names data inputs (a corpus, a PDF, a model), then
+   exist — print the absolute path you actually read
+   (`realpath .orchestrator/config.toml`; F6, r20260924: a driver launched
+   from a worktree read a different config than the one it had edited). If
+   the plan names data inputs (a corpus, a PDF, a model), then
    `[workspace] data_dirs` must list a directory covering each, and each listed
    directory must exist and be non-empty (`find <dir> -type f | head -1`).
    `[session] provision_on_failure = "warn"` is only acceptable with a stated
@@ -82,8 +85,10 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    trip; a plan declaring a non-enabled recipe fails naming the units and the
    config key.
 
-Report the six results in one short block. Refuse to continue on any red
-item; do not "launch and see".
+Report the six results in one short block, with two explicit lines from
+item 2: the config path read, and "`[docs] formats` present: …" — an
+absent formats line is silent everywhere except the launch warning nobody
+reads back. Refuse to continue on any red item; do not "launch and see".
 
 ## Phase 1 — Launch, detached
 
@@ -261,6 +266,7 @@ it blocks (the `blocks` clause on the raise line):
 | `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                                                                                                 |
 | `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                                                                                             |
 | `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite                                                                                            |
+| same                                        | a fix you must commit (fixture, dep, config)              | commit on the **integration branch only** — the retry re-merges it into the group branch before the gate; a worktree commit too leaves duplicates (triage-guide)   |
 | same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                                                                                             |
 | same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)                                                                                 |
 | `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                                                                                                  |
