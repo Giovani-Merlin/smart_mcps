@@ -97,7 +97,6 @@ from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.review import (
     ReviewDeps,
-    make_executor,
 )
 from orchestrator.execution.surprises import (
     SurpriseBoard,
@@ -144,6 +143,13 @@ from orchestrator.grouping.advisory import (
     finding_task_groups,
     serialize_advisory_report,
 )
+from orchestrator.execution.dispatch import (
+    RecipeDispatchError,
+    make_executor,
+    recipe_gate_violations,
+    unknown_recipe_groups,
+)
+from orchestrator.recipes import registered_names
 from orchestrator.grouping.estimator import PRICE_CAP_APPROXIMATION_NOTE, PriceReport, price_plan
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
@@ -1274,6 +1280,18 @@ def _print_partition_report(trace: GroupingTrace) -> None:
             print(f"  - {flag}")
 
 
+def _print_run_group(group: Group) -> None:
+    """`group --dry-run`: a non-`code` group's declared work, verbatim."""
+    args = group.recipe_args or {}
+    wall = f"{group.estimated_wall_clock_s:.0f}s" if group.estimated_wall_clock_s else "default"
+    print(f"  recipe: {group.recipe} (wall clock {wall})")
+    for command in args.get("commands", []):
+        print(f"    $ {command['cmd']}  [{command['wall_clock_min']:g} min]")
+    for key in ("outputs", "commit_paths", "allow_write"):
+        if args.get(key):
+            print(f"    {key}: {', '.join(args[key])}")
+
+
 def _print_report(result: GroupingResult) -> None:
     print(f"plan: {result.plan_path}")
     print(f"groups: {len(result.groups)}")
@@ -1287,6 +1305,8 @@ def _print_report(result: GroupingResult) -> None:
         print(f"  difficulty: {group.difficulty:.2f} → {group.intensity.value}")
         print(f"  depends on: {deps}")
         print(f"  verification: {len(group.verification)} item(s)")
+        if group.recipe != "code":
+            _print_run_group(group)
     if result.flags:
         print("\nflags:")
         for flag in result.flags:
@@ -1892,6 +1912,31 @@ def _cmd_run(
     # against a branch already checked out under it. Fresh runs are a no-op
     # (no spec-gen files exist yet).
     groups = [effective_group(paths, group) for group in grouping.groups]
+    # Recipe gate (before any worktree, provisioning or session exists): unknown
+    # recipes always refuse; a non-`code` recipe must be in `[recipes] enabled`
+    # for every group that has yet to finish. Finished groups never block.
+    unknown = unknown_recipe_groups(groups)
+    if unknown:
+        print(
+            "error: group(s) "
+            + ", ".join(f"{g.id} (recipe {g.recipe!r})" for g in unknown)
+            + f" name an unregistered recipe; registered recipes: {list(registered_names())}",
+            file=sys.stderr,
+        )
+        return 1
+    gate_states: dict = {}
+    if resume:
+        gate_states = RunState.model_validate_json(paths.state_path.read_text()).groups
+    blocked = recipe_gate_violations(groups, gate_states, config.recipes.enabled)
+    if blocked:
+        print(
+            "error: group(s) "
+            + ", ".join(f"{g.id} (recipe {g.recipe!r})" for g in blocked)
+            + " use a recipe not in `[recipes] enabled` "
+            f"(currently {config.recipes.enabled}) — enable it in the config or re-plan",
+            file=sys.stderr,
+        )
+        return 1
     intensity_override_line: str | None = None
     if getattr(args, "review_intensity", None):
         intensity = ReviewIntensity(args.review_intensity)
@@ -2288,8 +2333,24 @@ def _cmd_run(
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
             activity=activity,
             liveness=config.liveness,
+            triage=_triage_provider(
+                with_usage_limit_retry(
+                    llm_runner
+                    or functools.partial(claude_json_runner, model=config.recipes.run.triage_model),
+                    gate,
+                ),
+                orch_dir / "failures",
+                JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
+                config.recipes.run.triage_model,
+            ),
+            workspace_config=config.workspace,
+            recipes_config=config.recipes,
         )
-        executor_slot.append(make_executor(deps))
+        try:
+            executor_slot.append(make_executor(deps, groups, gate_states))
+        except RecipeDispatchError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
         try:
             with _interruptible_pause(gate):
@@ -2702,6 +2763,43 @@ def _rewrite_group_spec(
         recorder=recorder,
         subject=subject,
     )
+
+
+def _triage_provider(
+    llm_runner: JsonRunner,
+    failure_dir: Path,
+    recorder: JsonlCallRecorder,
+    model: str | None,
+):
+    """`ReviewDeps.triage` seam: one `claude -p` JSON call, recorded as an
+    `llm_calls` row with ``operation: run_triage``. Never relaunches anything."""
+    schema = {
+        "title": "run_triage",
+        "type": "object",
+        "properties": {
+            "verdict": {"enum": ["work_failure", "needs_decision"]},
+            "diagnosis": {"type": "string"},
+        },
+        "required": ["verdict", "diagnosis"],
+    }
+
+    def triage(prompt: str) -> dict:
+        def validate(payload: dict) -> dict:
+            if payload["verdict"] not in ("work_failure", "needs_decision"):
+                raise ValueError("verdict must be work_failure or needs_decision")
+            return {"verdict": payload["verdict"], "diagnosis": str(payload["diagnosis"])}
+
+        return call_llm_json(
+            llm_runner,
+            prompt,
+            schema,
+            validate,
+            failure_dir=failure_dir,
+            recorder=recorder,
+            subject={"operation": "run_triage", "model": model},
+        )
+
+    return triage
 
 
 def _rewrite_provider(

@@ -21,7 +21,13 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from orchestrator.config import BreakerConfig, ExecutionConfig, LivenessConfig
+from orchestrator.config import (
+    BreakerConfig,
+    ExecutionConfig,
+    LivenessConfig,
+    RecipesConfig,
+    WorkspaceConfig,
+)
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.liveness import (
@@ -102,6 +108,12 @@ class ReviewDeps:
     # probe is installed and heartbeats carry no Sign of Life facts.
     activity: ActivityRegistry | None = None
     liveness: LivenessConfig | None = None
+    # Seams for non-`code` recipe executors (the `run` recipe); all None keeps
+    # every `code` construction site unchanged. ``triage`` is a one-shot LLM
+    # call: prompt -> validated JSON payload.
+    triage: Callable[[str], dict] | None = None
+    workspace_config: WorkspaceConfig | None = None
+    recipes_config: RecipesConfig | None = None
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
