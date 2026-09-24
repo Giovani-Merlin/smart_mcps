@@ -462,12 +462,6 @@ tasks:
       - orchestrator/recipes/code.py
       - orchestrator/recipes/run.py
       - tests/test_recipe_registry.py
-    size_hints:
-      orchestrator/recipes/__init__.py: small
-      orchestrator/recipes/registry.py: medium
-      orchestrator/recipes/code.py: small
-      orchestrator/recipes/run.py: medium
-      tests/test_recipe_registry.py: medium
     symbols: []
     depends_on: []
     implements: ["UnitRecipe"]
@@ -504,8 +498,6 @@ tasks:
       - orchestrator/grouping/partition.py
       - orchestrator/grouping/pipeline.py
       - tests/test_recipe_partition.py
-    size_hints:
-      tests/test_recipe_partition.py: medium
     symbols: []
     depends_on: [u2-recipe-field, u3-recipe-pricing]
     implements: []
@@ -518,9 +510,6 @@ tasks:
       - orchestrator/execution/review.py
       - orchestrator/cli.py
       - tests/test_executor_dispatch.py
-    size_hints:
-      orchestrator/execution/dispatch.py: small
-      tests/test_executor_dispatch.py: medium
     symbols: []
     depends_on: [u1-recipe-registry, u3-recipe-pricing]
     implements: ["executor-dispatch"]
@@ -536,9 +525,6 @@ tasks:
       - orchestrator/execution/host.py
       - orchestrator/execution/scheduler.py
       - tests/test_artifact_manifest.py
-    size_hints:
-      orchestrator/execution/artifacts.py: medium
-      tests/test_artifact_manifest.py: medium
     symbols: []
     depends_on: [u3-recipe-pricing]
     implements: ["ArtifactManifest"]
@@ -566,12 +552,6 @@ tasks:
       - orchestrator/prompts/run_triage.md
       - tests/test_run_child.py
       - tests/test_run_executor.py
-    size_hints:
-      orchestrator/execution/run_child.py: medium
-      orchestrator/execution/run_executor.py: large
-      orchestrator/prompts/run_triage.md: small
-      tests/test_run_child.py: medium
-      tests/test_run_executor.py: large
     symbols: []
     depends_on: [u1-recipe-registry, u5-executor-dispatch, u6-artifact-manifest]
     implements: []
@@ -585,8 +565,6 @@ tasks:
       - skills/orchestrator-run/SKILL.md
       - CONTEXT.md
       - tests/test_run_recipe_live.py
-    size_hints:
-      tests/test_run_recipe_live.py: medium
     symbols: []
     depends_on: [u2-recipe-field, u7-bundle-additive, u8-run-recipe]
     implements: []
