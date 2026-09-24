@@ -74,8 +74,15 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    if the human clearly wants a fresh run, say so and pass `--run-id`
    explicitly. A non-tty launch skips the CLI's `[y/N]` prompt, so this check
    is yours, not the CLI's.
+6. **Every non-`code` recipe the grouping uses is allow-listed.** If any group
+   in `groups.json` carries a `recipe` other than `code` (a `run` group,
+   plan U1/U4), its name must appear in `.orchestrator/config.toml`'s
+   `[recipes] enabled`. This is checked again at `run` time — the config can
+   change between `group` and `run` — but catching it here saves the round
+   trip; a plan declaring a non-enabled recipe fails naming the units and the
+   config key.
 
-Report the five results in one short block. Refuse to continue on any red
+Report the six results in one short block. Refuse to continue on any red
 item; do not "launch and see".
 
 ## Phase 1 — Launch, detached
@@ -175,6 +182,10 @@ Greppable anchors, all in `logs/run.log`:
 | group done           | `group <gid>: completed`                                                                                                   |
 | group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                     |
 | run ended by you     | `run <id> aborted by operator: …`                                                                                          |
+| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                      |
+| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)             |
+| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                       |
+| run recipe done      | `group <gid>: run recipe completed`                                                                                        |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
   `triage-guide.md`, "When status reports Not Live", for the three cases and
@@ -188,6 +199,32 @@ Greppable anchors, all in `logs/run.log`:
   reporting from here.
 
 Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend" logs/run.log`.
+
+### What a live `run` group looks like
+
+A `run` group (`recipe: run`, plan U8) has no coder, reviewer, round, or
+generation — its heartbeat instead marks phases `worktree`, then
+`command <n>/<total> · <elapsed>s/<cap>s` for each declared command in turn,
+then `merging into integration`. There is exactly one worktree for the whole
+group's lifetime (no per-generation relaunch), so `run recipe worktree ready`
+appears once and every command after it runs in that same worktree.
+
+**Re-adoption, not restart.** If the orchestrator process itself restarts
+mid-command (a crash, not a deliberate stop), the resumed run finds the
+child's pid still alive from its recorded state file and re-adopts it rather
+than relaunching — logged as `re-adopted run child pid <pid> for command <n>`
+— so a long render already in progress is never re-paid. A command that died
+along with the previous orchestrator process (no exit file, pid gone) is
+reported as a run failure for that command, not silently retried.
+
+**Cancellation is a polled kill, not an instant one.** The executor waits on
+the command by polling for its exit file roughly once a second
+(`asyncio.sleep`, not an event-driven wait) — it does not use `pidfd_open` or
+`select` to detect the exit instantly. A Ctrl-C on the driver process, or an
+Observatory Stop, cancels the executor's await; on that cancellation it kills
+the command's whole process group before propagating, so the Run Child does
+not survive the run being stopped. Expect up to roughly a second of latency
+between the stop signal and the kill, not an instant exit.
 
 ## Phase 3 — Triage every escalation
 
@@ -237,6 +274,42 @@ Rules that override the table:
 
 Log every escalation and its resolution (id, kind, group, cause, action,
 text) to the notes file at the moment you answer it.
+
+### Triaging a `runner` diagnosis
+
+A `run` group has no coder, so `coder_blocked` above does not apply to it. On
+a failing command, missing declared output, `commit_paths` violation, or
+merge failure, the group's own one-shot `claude -p` triage call runs first
+(recorded as an `llm_calls` row, `operation: run_triage`, labeled `runner` in
+the Observatory) and returns a `verdict` of `work_failure` or
+`needs_decision`:
+
+- `work_failure` — the group goes straight to FAILED; `logs/run.log` carries
+  `group <gid>: run failure — <summary>` followed by the triage's diagnosis.
+  Read the diagnosis and the command's own `.out`/`.err` files under
+  `<group_dir>/run/attempt-<k>/` before deciding what to fix — the diagnosis
+  is a best-effort read of the tail, not a verdict to trust blindly.
+- `needs_decision` — only raised as an actual `coder_blocked`-kind escalation
+  when `[escalation] enabled = true`; with HITL off (the default) it is
+  folded straight into the same FAILED-group failure text instead, so with
+  HITL off you will never see this as a pending escalation — read it off the
+  failure text the same way.
+
+Either way, fix the underlying cause (environment, a bad command, a wrong
+`recipe_args` field, the launch branch) the same way as any other
+`coder_blocked` fix, then release and retry the group:
+
+1. `smart-mcps-orchestrate retry $RUN <gid>` (the CLI subcommand, not the
+   escalation action — a `run` group is never mid-escalation the way a coder
+   group is).
+2. A bare `retry` resumes the group's **next** attempt from the first command
+   that did **not** exit 0 in the previous attempt — commands that already
+   succeeded are not re-run. The plain `retry` CLI takes no note text or
+   `--from-start` flag as an argument. To force every command to re-run from
+   the beginning instead, write a file containing `--from-start` to
+   `<group_dir>/run/retry-note.txt` **before** issuing `retry` — the next
+   attempt reads and deletes that file itself.
+3. `smart-mcps-orchestrate resume $RUN`.
 
 ## Phase 4 — Finish
 

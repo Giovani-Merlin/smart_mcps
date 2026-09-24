@@ -66,9 +66,7 @@ first question:
 - **One question at a time** via `AskUserQuestion`, **each with a recommended
   answer** (first option, labeled `(Recommended)`).
 - **No bare IDs, no short forms, ever.** Cite a requirement or unit by its
-  own document line, verbatim — `R2. bundle-v2 — export writes a
-  self-contained ingest/ package`, `U3. package-writer — v2 export writes
-  <run_dir>/ingest/ as a self-contained package` — never `U3` or
+  own document line, verbatim — `R2. bundle-v2 — export writes a self-contained ingest/ package`, `U3. package-writer — v2 export writes <run_dir>/ingest/ as a self-contained package` — never `U3` or
   `U3 package-writer`; print the legend (full headings) for the IDs a
   question touches right before the call; put the stakes clause in the stem;
   header chip is ID + slug (`U3 package`), never `Q2`. Keep the running
@@ -152,6 +150,11 @@ a stranger unit can consume with no other context.
 - **Summary**: <one tagged sentence — what this unit ships, used verbatim in
   the shared digest every worker's context carries>
 - **Goal**: <what done looks like>
+- **Recipe**: — <or a registered Unit Recipe name (`orchestrator/recipes/`),
+  e.g. `run`, with its `recipe_args` mapping indented beneath. `—` means
+  `code`, today's coder-and-reviewer machine, and is what almost every unit
+  uses. Writing the recipe here is what tells the task map to emit that
+  unit's task-id block as v2 — see "Recipe and the task map version" below>
 - **Files**: `existing/path.py`, `new/path.py` *(new, medium)*
 - **Symbols**: — <or `existing_fn`, `ExistingClass` — optional; see the
   dense-codebase trade-off in Phase 2>
@@ -192,6 +195,54 @@ generated summary) never uses a hard `= 0` — "0 hallucinations", "0 errors"
 is unfalsifiable in one run and a coder facing it either fakes the pass or
 gives up. Write "< baseline" with the baseline named, or "≤ N with the
 residuals listed", so the item is checkable and an honest miss is reportable.
+
+### `run` vs a coder's `Run (driver):` item
+
+Both let the plan ask for a command to execute for real, but they are
+different machines. A coder unit with a `Run (driver):` verification item is
+still `code`: a `claude` session does the work and the run-driver only runs
+the one command the worker's sandbox can't. A **`run` unit** has no coder or
+reviewer at all — the orchestrator itself launches the declared
+`recipe_args.commands` as confined Run Children (plan U8) and merges what
+they produce. Reach for `recipe: run` when the unit's whole job *is* running
+something long, expensive, or already-scripted with no code to write or
+review — rendering media, an ingest pipeline over real data, training a
+model — especially past the ~10-minute single-tool-call cap a coder's own
+turn is bound by, since a Run Child's wall-clock cap is independent of that.
+Keep it a coder unit when there is code to write, review, or iterate on, even
+if that code's own verification runs a long command.
+
+A `run` unit's `recipe_args` (validated by `RunArgs`,
+`orchestrator/recipes/run.py`) names `commands` (each a `cmd` and a
+`wall_clock_min` cap), optional `outputs` (repo-relative paths that must
+exist when the last command exits 0), optional `measurements` (a JSON file
+path whose top-level scalar keys become non-gating observations), optional
+`commit_paths` (globs — anything else in `git status --porcelain` fails the
+unit) and optional `allow_write` (extra Landlock write paths beyond the
+worker profile and the data layer; an entry equal to or containing
+`~/.claude` or `~/.claude/projects` is a parse-time error and stays that way
+— never propose widening it). A `run` unit takes no reviewer at any
+intensity and prices as its declared wall clock plus a fixed triage-token
+allowance, not file arithmetic — see `docs/orchestrator-task-map.md`'s v2
+section for the full field table and a worked example. It must not carry
+`slice` — a non-`code` unit is always its own group.
+
+Before a `run` unit reaches `group`, its recipe must be in
+`[recipes] enabled` in `.orchestrator/config.toml` — tell the human the
+config line to add; this skill never edits the config itself.
+
+### The `PATH`-not-absolute-path rule
+
+A coder's `Run:` line, and a `run` unit's `recipe_args.commands[].cmd`, both
+execute inside a confined worktree whose Bash allowlist is anchored to
+`PATH_PREFIXES` (commit `3d93936`) — a rule resolved by *name on `PATH`*, not
+by absolute path. Write `uv run scripts/foo.py`, never
+`/home/.../scripts/foo.py` or a path baked in from the planning session's own
+checkout; the worktree the command actually runs in is a different path on
+disk. A command that needs a binary or path the allowlist doesn't already
+cover is exactly the case for the deepen skill's sandbox sweep (or, if the
+whole unit's job is running that command, a `run` unit's `allow_write`) —
+never a route around it by hardcoding a path that happens to work today.
 
 ## Task Map
 
@@ -253,8 +304,7 @@ The verifier flags such paths (check 9); prefer fixing them in the plan or
 the config before the run rather than discovering it four groups in.
 
 **Check the config while planning, not after.** If any unit reads or produces
-data files, open `.orchestrator/config.toml` and confirm `[workspace]
-data_dirs` exists and names the directory those files live in (create the
+data files, open `.orchestrator/config.toml` and confirm `[workspace] data_dirs` exists and names the directory those files live in (create the
 block with the human if it does not — e.g. `data_dirs = ["data"]`), then
 write every such path in the plan relative to that directory (`data/…`), so
 the units, the verification items, and the workers all point at the shared,
@@ -265,8 +315,7 @@ uncommitted copy.
   passes") is self-referential: a worker who mocks the library under test
   satisfies it honestly and the run learns nothing. Pair such items with one
   that touches the real thing — the actual library installed and called, a
-  real input file from a data dir, a real command's output ("`gab render
-  data/sample.txt` produces a WAV ≥ 2 s using the installed `piper` model").
+  real input file from a data dir, a real command's output ("`gab render data/sample.txt` produces a WAV ≥ 2 s using the installed `piper` model").
   If no real oracle exists yet because the data or model is not available,
   say so in the item and route the input through `[workspace] data_dirs`
   rather than accepting a mock as the oracle.
@@ -358,8 +407,7 @@ verifier for each fix; one verification pass plus inline fixes is the budget.
   /orchestrator-deepen docs/plans/<the-plan>.md
   ```
 
-  And the step after that: the run is driven by `/orchestrator-run
-  docs/plans/<the-plan>.md`, not by a bare `smart-mcps-orchestrate run` — the
+  And the step after that: the run is driven by `/orchestrator-run docs/plans/<the-plan>.md`, not by a bare `smart-mcps-orchestrate run` — the
   run-driver session preflights the environment, launches detached with HITL
   on, and triages escalations itself.
 
