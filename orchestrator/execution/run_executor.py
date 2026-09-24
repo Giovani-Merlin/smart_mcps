@@ -29,6 +29,7 @@ import json
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from string import Template
@@ -299,10 +300,17 @@ class _RunExecution:
             )
             atomic_write_text(state_path, state.model_dump_json(indent=2) + "\n")
 
-        self._heartbeat_phase(n, len(self.args.commands), state, cap_seconds)
+        total = len(self.args.commands)
+        self._heartbeat_phase(n, total, state, cap_seconds)
         try:
             exit_code = await self._await_exit(
-                state.pid, exit_path, state.started_monotonic, cap_seconds
+                state.pid,
+                exit_path,
+                state.started_monotonic,
+                cap_seconds,
+                relabel=lambda elapsed: self._heartbeat.relabel_phase(
+                    self._phase_label(n, total, elapsed, cap_seconds)
+                ),
             )
         except asyncio.CancelledError:
             kill_process_group(state.pid)
@@ -322,13 +330,26 @@ class _RunExecution:
         return CommandResult(cmd=command.cmd, exit_status=exit_code, duration_s=duration)
 
     async def _await_exit(
-        self, pid: int, exit_path: Path, started_monotonic: float, cap_seconds: float
+        self,
+        pid: int,
+        exit_path: Path,
+        started_monotonic: float,
+        cap_seconds: float,
+        relabel: Callable[[float], None] | None = None,
     ) -> int | None:
+        """Poll until the child's exit file appears (or the child vanishes).
+
+        ``relabel`` is called with the elapsed seconds on every poll so the
+        heartbeat's ``Ns/caps`` label keeps moving: on r20260924 it froze at
+        ``0s/60s`` for a whole command because it was written once, at launch.
+        """
         while True:
             if exit_path.is_file():
                 text = exit_path.read_text().strip()
                 return int(text) if text else None
             elapsed = time.monotonic() - started_monotonic
+            if relabel is not None:
+                relabel(elapsed)
             if elapsed > cap_seconds:
                 kill_process_group(pid)
                 raise TimedOut(f"exceeded wall_clock_min cap of {cap_seconds / 60:.2f} minutes")
@@ -336,11 +357,15 @@ class _RunExecution:
             if not process_alive(pid) and not exit_path.is_file():
                 return None
 
+    @staticmethod
+    def _phase_label(n: int, total: int, elapsed: float, cap_seconds: float) -> str:
+        return f"command {n}/{total} · {elapsed:.0f}s/{cap_seconds:.0f}s"
+
     def _heartbeat_phase(
         self, n: int, total: int, state: RunChildState, cap_seconds: float
     ) -> None:
         elapsed = time.monotonic() - state.started_monotonic
-        self._heartbeat.mark_phase(f"command {n}/{total} · {elapsed:.0f}s/{cap_seconds:.0f}s")
+        self._heartbeat.mark_phase(self._phase_label(n, total, elapsed, cap_seconds))
 
     # ------------------------------------------------------------ output
 

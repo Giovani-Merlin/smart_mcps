@@ -448,3 +448,44 @@ def test_unit_that_commits_nothing_completes_without_merging(tmp_path, repo):
     head = git(repo, "rev-parse", "HEAD").strip()
     assert deps.artifacts.load().entries["g7"].status == "complete"
     assert git(repo, "rev-parse", "orchestrator/run-rtest").strip() == head
+
+
+# ------------------------------------------------------- heartbeat label
+
+
+def test_heartbeat_label_advances_while_a_command_runs(tmp_path, repo, monkeypatch):
+    """r20260924: the run recipe's `command 1/1 · 0s/60s` label froze for the
+    whole command because it was marked once at launch. Every poll must
+    relabel it, and only the first one may restart the phase."""
+    from orchestrator.execution import run_executor as mod
+    from orchestrator.execution.heartbeat import RoundHeartbeat
+
+    monkeypatch.setattr(mod, "DEFAULT_POLL_INTERVAL_S", 0.05)
+    marked: list[str] = []
+    relabelled: list[str] = []
+    real_mark = RoundHeartbeat.mark_phase
+    real_relabel = RoundHeartbeat.relabel_phase
+
+    def spy_mark(self, phase):
+        marked.append(phase)
+        real_mark(self, phase)
+
+    def spy_relabel(self, phase):
+        relabelled.append(phase)
+        real_relabel(self, phase)
+
+    monkeypatch.setattr(RoundHeartbeat, "mark_phase", spy_mark)
+    monkeypatch.setattr(RoundHeartbeat, "relabel_phase", spy_relabel)
+
+    args = {"commands": [{"cmd": "sleep 1.5", "wall_clock_min": 1}], "commit_paths": []}
+    deps = make_deps(repo, tmp_path / "run", repo)
+    state, _ctx = asyncio.run(_run(deps, make_group(args)))
+
+    assert state == GroupState.COMPLETED
+    command_labels = [m for m in marked if m.startswith("command 1/1 · ")]
+    assert len(command_labels) == 1, marked
+    assert command_labels[0].endswith("/60s")
+    assert len(set(relabelled)) >= 2, relabelled
+    assert all(
+        label.startswith("command 1/1 · ") and label.endswith("/60s") for label in relabelled
+    )
