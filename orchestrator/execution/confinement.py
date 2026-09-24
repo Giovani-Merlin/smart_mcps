@@ -397,6 +397,7 @@ def build_policy(
     project_slug: str | None = None,
     system_paths: Sequence[Path] | None = None,
     cache_dirs: Sequence[Path] | None = None,
+    extra_write: Sequence[Path] | None = None,
 ) -> ConfinementPolicy:
     """The policy for a worker running in ``worktree`` with ``~/.claude`` at
     ``claude_home``. ``project_slug`` defaults to the real CLI's own encoding
@@ -413,6 +414,12 @@ def build_policy(
     root once and derives both the worker's environment and this list from it, so
     there is exactly one place where "which caches exist" is decided; deriving it
     again here would be a second place, free to disagree.
+
+    ``extra_write`` is allowlisted exactly as handed in too — the ``run``
+    recipe's Run Child extends the worker profile with the run's shared
+    ``data_dirs`` and a unit's declared ``recipe_args.allow_write`` paths
+    (``RunArgs._allow_write_safe`` already refuses anything that would reopen
+    ``~/.claude`` or ``~/.claude/projects``).
     """
     slug = project_slug or encode_cwd(worktree)
     project_dir = claude_home / "projects" / slug
@@ -449,6 +456,7 @@ def build_policy(
             *credentials,
             *system,
             *(list(cache_dirs) if cache_dirs else []),
+            *(list(extra_write) if extra_write else []),
         ],
         read_only=[],
     )
