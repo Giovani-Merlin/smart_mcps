@@ -1282,6 +1282,28 @@ async def test_reentry_resumes_round_numbering_from_completed_rounds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spec_rewrite_fallback_fork_continues_round_numbering(tmp_path):
+    # The spec-rewrite fallback forks a fresh coder in the same generation; it
+    # used to restart at round 1 and overwrite the pre-interrupt round-1 report,
+    # leaving a stale higher round as "latest" (r20260924-134934, g8).
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness, spec_sha256="0" * 64)
+    group_dir = harness.store.paths.group_dir("g1")
+    group_dir.mkdir(parents=True)
+    stale_report = group_dir / "report-g1-r1.json"
+    stale_report.write_text('{"round": "pre-interrupt report"}')
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert stale_report.read_text() == '{"round": "pre-interrupt report"}'
+    assert (group_dir / "report-g1-r2.json").exists()
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 generation 1 round 2: started") for line in lines)
+
+
+@pytest.mark.asyncio
 async def test_reentry_falls_through_to_fork_when_context_exceeds_the_breaker_limit(tmp_path):
     # R5: the persisted context pre-check trips before any resume is attempted.
     runner = StubRunner(

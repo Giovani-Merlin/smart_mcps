@@ -233,7 +233,6 @@ class GenerationLoop:
         self.ctx.set_state(GroupState.RUNNING)
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
-        is_reentry = reentry is not None
         self._flake_reruns = 0
         # Re-entry (warm-resumed or fallback-forked) continues this generation's
         # numbering rather than starting over, so round-numbered artifacts don't
@@ -245,11 +244,12 @@ class GenerationLoop:
         # announce its own number before it blocks. `completed_round_count` reads
         # only the report artifacts already on disk and takes nothing from the
         # resume, so hoisting it changes no number.
-        rounds = (
-            completed_round_count(self.deps.store.paths, self.gid, self.generation)
-            if is_reentry
-            else 0
-        )
+        #
+        # Read from disk unconditionally: a fallback fork (e.g. the spec was
+        # rewritten under the session) leaves no re-entry entry behind but still
+        # continues this generation, and a genuinely fresh generation has no
+        # artifacts yet, so it reads 0.
+        rounds = completed_round_count(self.deps.store.paths, self.gid, self.generation)
         if reentry is not None:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
@@ -315,8 +315,7 @@ class GenerationLoop:
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
         result = first
-        # Guarded on `is_reentry`, not on whether the resume succeeded: a
-        # fallback fork *is* round N of the same generation, and `_reenter`
+        # A fallback fork *is* round N of the same generation, and `_reenter`
         # already announced N before it blocked. The fresh-fork branch above
         # announces its own round before `start_fork` too, so nothing further is
         # needed here in either case.

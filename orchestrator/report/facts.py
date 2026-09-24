@@ -127,7 +127,7 @@ class GroupFacts(BaseModel):
 class VerificationFacts(BaseModel):
     item_id: str
     description: str
-    status: str = "unverified"  # pass | fail | unverified
+    status: str = "unverified"  # pass | fail | unverified | driver-run
     evidence: str = ""
 
 
@@ -593,7 +593,17 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         for task_id in tasks:
             task_to_group[task_id] = export_group.id
         if source_group is not None:
-            verification_by_task.update(_attribute_verification(source_group, units_by_id))
+            attributed = _attribute_verification(source_group, units_by_id)
+            # A rewritten spec renumbers its items, so slicing it by the plan's
+            # bullet counts matches nothing in the coder's report. For a
+            # single-unit group every item in force is that unit's own.
+            if (
+                shown_group is not None
+                and len(source_group.tasks) == 1
+                and shown_group.verification != source_group.verification
+            ):
+                attributed = {source_group.tasks[0]: list(shown_group.verification)}
+            verification_by_task.update(attributed)
 
         sessions = _session_facts(paths, export_group.id, list(export_group.sessions))
         for s in sessions:
@@ -713,9 +723,15 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
 
         items = verification_by_task.get(task_id, [])
         verification_facts: list[VerificationFacts] = []
-        for description, item in zip(unit.verification, items):
+        gating: list[str] = []  # statuses of the items the merge gate holds on
+        for item in items:
             result = results_by_item.get(item.id)
-            if result is None:
+            if item.driver_run and (result is None or result.get("status") != "pass"):
+                # The coder is told not to run these; the driver runs them after
+                # the merge and records the outcome in its notes, not here.
+                status = "driver-run"
+                evidence = (result or {}).get("notes", "")
+            elif result is None:
                 status = "unverified"
                 evidence = ""
             elif result.get("status") == "pass":
@@ -732,11 +748,12 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                     item_id=item.id, description=item.description, status=status, evidence=evidence
                 )
             )
+            if item.required and not item.driver_run:
+                gating.append(status)
 
         group_landed = group_id is not None and group_state_by_id.get(group_id) in _LANDED_STATES
-        all_pass = (
-            all(v.status == "pass" for v in verification_facts) if verification_facts else True
-        )
+        # The same items the merge gate holds on: required, not driver-run.
+        all_pass = all(status == "pass" for status in gating)
         landed = group_landed and all_pass
 
         units.append(
