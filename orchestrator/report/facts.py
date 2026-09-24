@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 from pydantic import BaseModel, Field
 
 from orchestrator.execution.export import build_export
-from orchestrator.execution.manifest import RunPaths, effective_group
+from orchestrator.execution.manifest import RunPaths, effective_group, latest_report
 from orchestrator.execution.worktrees import integration_branch
 from orchestrator.grouping.plan_sections import UnitSection, parse_plan_sections, unit_key_for_task
 from orchestrator.model import Group, GroupingResult, VerificationItem
@@ -514,28 +514,6 @@ def _session_facts(paths: RunPaths, group_id: str, export_sessions: list) -> lis
     return facts
 
 
-def _latest_report(paths: RunPaths, group_id: str) -> dict | None:
-    import json
-
-    directory = paths.group_dir(group_id)
-    if not directory.is_dir():
-        return None
-    best: tuple[tuple[int, int], Path] | None = None
-    for path in directory.glob("report-g*-r*.json"):
-        match = re.match(r"^report-g(\d+)-r(\d+)\.json$", path.name)
-        if not match:
-            continue
-        key = (int(match.group(1)), int(match.group(2)))
-        if best is None or key > best[0]:
-            best = (key, path)
-    if best is None:
-        return None
-    try:
-        return json.loads(best[1].read_text())
-    except (OSError, ValueError):
-        return None
-
-
 # ---------------------------------------------------------------- assembly
 
 
@@ -665,10 +643,10 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
             )
 
         tests = _group_tests(paths, export_group.id)
-        latest_report = _latest_report(paths, export_group.id)
+        newest_report = latest_report(paths, export_group.id)
         report_summary = None
-        if latest_report is not None:
-            raw_summary = latest_report.get("summary")
+        if newest_report is not None:
+            raw_summary = newest_report.get("summary")
             if isinstance(raw_summary, str) and raw_summary.strip():
                 report_summary = raw_summary.strip()
 
@@ -715,7 +693,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         unit = units_by_id[unit_id]
         task_id = next((t for t in task_to_group if unit_key_for_task(t) == unit_id), unit_id)
         group_id = task_to_group.get(task_id)
-        report = _latest_report(paths, group_id) if group_id else None
+        report = latest_report(paths, group_id) if group_id else None
         results_by_item = {}
         if report:
             for result in report.get("verification_results") or []:

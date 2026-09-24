@@ -24,6 +24,7 @@ from orchestrator.execution.manifest import (
     RunPaths,
     archive_review_scratch,
     effective_group,
+    latest_report,
 )
 from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, REVIEW_SCRATCH_DIRNAME
 from orchestrator.execution.surprises import SurpriseBoard, format_residue_report, surprise_residue
@@ -81,11 +82,13 @@ def run_is_finishable(repo_root: Path, run_id: str) -> tuple[bool, list[str]]:
 
 
 def pending_driver_run_items(repo_root: Path, run_id: str) -> dict[str, list[str]]:
-    """Required ``driver_run`` verification items per group, from each group's
-    spec in force (rewrites included). The coder is told not to run them and
-    nothing records the driver running them, so a run holding any is never
+    """Required ``driver_run`` verification items per group that nobody has
+    passed yet, from each group's spec in force (rewrites included). Nothing
+    records the driver running them, so a run holding any is never
     auto-finished: r20260924-134934 merged a `run` recipe that could not start,
-    and only the driver's live items — run after the last merge — showed it."""
+    and only the driver's live items — run after the last merge — showed it.
+    The coder may attempt a sandbox-safe one (r20260924); an item its latest
+    report marks ``pass`` is settled and drops out here."""
     paths = RunPaths(repo_root, run_id)
     if not paths.groups_path.is_file():
         return {}
@@ -93,10 +96,23 @@ def pending_driver_run_items(repo_root: Path, run_id: str) -> dict[str, list[str
     pending: dict[str, list[str]] = {}
     for group in grouping.groups:
         items = effective_group(paths, group).verification
-        ids = [item.id for item in items if item.driver_run and item.required]
+        passed = _passed_item_ids(latest_report(paths, group.id))
+        ids = [
+            item.id for item in items if item.driver_run and item.required and item.id not in passed
+        ]
         if ids:
             pending[group.id] = ids
     return pending
+
+
+def _passed_item_ids(report: dict | None) -> set[str]:
+    if not report:
+        return set()
+    return {
+        r.get("item_id")
+        for r in report.get("verification_results") or []
+        if isinstance(r, dict) and r.get("status") == "pass"
+    }
 
 
 def _group_is_merged(repo_root: Path, run_id: str, tip: str, gid: str, entry) -> bool:

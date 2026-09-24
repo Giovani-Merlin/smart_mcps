@@ -1025,3 +1025,74 @@ def test_auto_finish_holds_while_driver_run_items_are_pending(repo, monkeypatch,
     out = capsys.readouterr().out
     assert "not auto-finishing" in out and "g7: g7-7" in out
     assert "finish --repo" in out
+
+
+def _write_report(paths: RunPaths, gid: str, gen: int, rnd: int, results: list[dict]) -> None:
+    group_dir = paths.group_dir(gid)
+    group_dir.mkdir(parents=True, exist_ok=True)
+    body = {"status": "completed", "summary": "done", "verification_results": results}
+    atomic_write_text(group_dir / f"report-g{gen}-r{rnd}.json", json.dumps(body))
+
+
+def test_pending_driver_run_items_drops_an_item_the_coder_passed(repo):
+    """r20260924: the coder may attempt a sandbox-safe driver item; one it
+    passed is settled and must not hold auto-finish or be re-run."""
+    run_id = "r-dr-pass"
+    g1 = make_group("g1").model_copy(
+        update={
+            "verification": [
+                VerificationItem(id="g1-2", description=LIVE),
+                VerificationItem(id="g1-3", description=LIVE),
+            ]
+        }
+    )
+    paths, _ = setup_run(repo, run_id, [g1])
+    _write_report(
+        paths,
+        "g1",
+        1,
+        1,
+        [
+            {"item_id": "g1-2", "status": "pass", "notes": "ran it"},
+            {"item_id": "g1-3", "status": "skipped", "notes": "driver-run"},
+        ],
+    )
+    assert pending_driver_run_items(repo, run_id) == {"g1": ["g1-3"]}
+
+
+def test_pending_driver_run_items_keeps_a_failed_item(repo):
+    run_id = "r-dr-fail"
+    g1 = make_group("g1").model_copy(
+        update={"verification": [VerificationItem(id="g1-2", description=LIVE)]}
+    )
+    paths, _ = setup_run(repo, run_id, [g1])
+    _write_report(paths, "g1", 1, 1, [{"item_id": "g1-2", "status": "fail", "notes": "red"}])
+    assert pending_driver_run_items(repo, run_id) == {"g1": ["g1-2"]}
+
+
+def test_pending_driver_run_items_reads_the_latest_report_only(repo):
+    """A pass in round 1 that round 2 downgraded to skipped is not a pass."""
+    run_id = "r-dr-latest"
+    g1 = make_group("g1").model_copy(
+        update={"verification": [VerificationItem(id="g1-2", description=LIVE)]}
+    )
+    paths, _ = setup_run(repo, run_id, [g1])
+    _write_report(paths, "g1", 1, 1, [{"item_id": "g1-2", "status": "pass", "notes": ""}])
+    _write_report(paths, "g1", 1, 2, [{"item_id": "g1-2", "status": "skipped", "notes": ""}])
+    assert pending_driver_run_items(repo, run_id) == {"g1": ["g1-2"]}
+    # And the other way round: the newest generation's pass wins over an old skip.
+    _write_report(paths, "g1", 2, 1, [{"item_id": "g1-2", "status": "pass", "notes": ""}])
+    assert pending_driver_run_items(repo, run_id) == {}
+
+
+def test_latest_report_picks_max_generation_then_round_and_none_without_a_dir(tmp_path):
+    from orchestrator.execution.manifest import latest_report
+
+    paths = RunPaths(tmp_path, "r-lr")
+    assert latest_report(paths, "g1") is None
+    _write_report(paths, "g1", 1, 3, [{"item_id": "a", "status": "pass"}])
+    _write_report(paths, "g1", 2, 1, [{"item_id": "b", "status": "pass"}])
+    _write_report(paths, "g1", 1, 9, [{"item_id": "c", "status": "pass"}])
+    report = latest_report(paths, "g1")
+    assert report is not None
+    assert report["verification_results"][0]["item_id"] == "b"

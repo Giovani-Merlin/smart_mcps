@@ -69,8 +69,14 @@ def test_the_coder_prompt_tells_the_coder_not_to_run_it():
 
     assert "[g4-1] unit tests pass" in prompt
     driver_line = next(line for line in prompt.splitlines() if "[g4-5]" in line)
-    assert "DRIVER-RUN: do NOT run this one" in driver_line
+    # r20260924: the coder *may* attempt a sandbox-safe driver item; only a
+    # nested `claude` (or a write outside the sandbox) is off limits.
+    assert "DRIVER-RUN" in driver_line
+    assert "nested `claude`" in driver_line
+    assert "`pass`" in driver_line
+    assert "`skipped`" in driver_line
     assert "`driver-run`" in driver_line
+    assert "do NOT run" not in driver_line
 
 
 def test_marker_with_a_comma_is_recognised():

@@ -54,10 +54,16 @@ def _verification_lines(items: list[VerificationItem]) -> str:
             # Spelled out rather than tagged: the one thing that must not
             # happen is a coder spending rounds trying to run it anyway, which
             # is what cost r20260916-113121's g4 a retirement and a question.
+            # r20260924-134934 relaxed "do NOT run" to "may attempt": a
+            # sandbox-safe driver item skipped by the coder was only run
+            # after the merge, when the seam it would have caught was
+            # already in. The gate still never holds on it.
             suffix = (
-                " — DRIVER-RUN: do NOT run this one. The operator runs it "
-                "outside your sandbox. Report it as `skipped` with notes "
-                "`driver-run`; it does not hold your report back."
+                " — DRIVER-RUN: run it only if it spawns no nested `claude` "
+                "(no `-m llm`, no `claude -p`) and writes nowhere outside "
+                "your sandbox; if you ran it, report `pass`/`fail` with the "
+                "evidence in notes; otherwise `skipped` with notes "
+                "`driver-run`. Either way it never holds your report back."
             )
         lines.append(f"- [{item.id}] {item.description}{suffix}")
     return "\n".join(lines)

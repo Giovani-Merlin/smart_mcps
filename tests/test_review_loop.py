@@ -2161,3 +2161,53 @@ async def test_paired_group_with_a_verification_gap_never_reaches_the_reviewer(t
         if "approved | changes_required" in text
     ]
     assert len(reviewer_prompts) == 1
+
+
+# --------------------------------------------------- driver-run items at merge
+# r20260924: the coder may attempt a sandbox-safe driver-run item. The merge
+# log lists the ones it passed separately from the ones still owed, so the
+# driver runs only what nobody has run.
+
+DRIVER_LIVE = "Run (driver): `uv run pytest -m llm tests/test_x.py` — Pass: green."
+
+
+def _driver_group(intensity=ReviewIntensity.SELF_VERIFY) -> Group:
+    return make_group(
+        intensity=intensity,
+        verification=[
+            VerificationItem(id="v1", description="tests pass"),
+            VerificationItem(id="g1-5", description=DRIVER_LIVE, driver_run=True),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_log_names_a_driver_run_item_the_coder_passed(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {"item_id": "g1-5", "status": "pass", "notes": "ran it: 17 passed"},
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_driver_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any("1 driver-run verification item(s) passed by the coder — g1-5" in ln for ln in lines)
+    assert not any("not run by the coder" in ln for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_merge_log_names_a_driver_run_item_the_coder_skipped_as_pending(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {"item_id": "g1-5", "status": "skipped", "notes": "driver-run"},
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_driver_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(
+        "1 driver-run verification item(s) not run by the coder — g1-5" in ln for ln in lines
+    )
+    assert not any("passed by the coder" in ln for ln in lines)

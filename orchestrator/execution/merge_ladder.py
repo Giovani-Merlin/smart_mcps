@@ -68,14 +68,28 @@ class MergeLadder:
     _make_coder_on_turn: Callable[..., object]
 
     def _log_driver_run_items(self) -> None:
-        """Name the items the coder was told not to run, once, at merge.
+        """Name the driver-run items still owed, once, at merge.
 
         A `driver_run` item passes the verification gate untouched (see
         `unmet_required_verification`), so without this line the only trace
         of an unrun check would be a `skipped` result buried in the report.
-        The driver reads this line and runs them before `finish`.
+        The driver reads this line and runs them before `finish`. Since
+        r20260924 the coder *may* attempt a sandbox-safe one, so an item its
+        latest report marks `pass` is listed as passed, not as pending.
         """
-        pending = [item.id for item in self.group.verification if item.driver_run]
+        passed_ids: set[str] = set()
+        if self._last_report is not None:
+            passed_ids = {
+                r.item_id for r in self._last_report.verification_results if r.status == "pass"
+            }
+        driver_items = [item.id for item in self.group.verification if item.driver_run]
+        passed = [i for i in driver_items if i in passed_ids]
+        pending = [i for i in driver_items if i not in passed_ids]
+        if passed:
+            self._log(
+                f"group {self.gid}: {len(passed)} driver-run verification item(s) "
+                f"passed by the coder — {', '.join(passed)}"
+            )
         if pending:
             self._log(
                 f"group {self.gid}: {len(pending)} driver-run verification item(s) "

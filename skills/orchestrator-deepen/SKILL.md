@@ -275,9 +275,12 @@ For each `Run:` command, ask what it *writes* and where:
 | a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted) |
 | a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit         |
 | a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                          |
+| `/tmp`, or kills/resumes a child process                        | fine — `Run:`; process control is not a write                          |
 
-**The standing case for `Run (driver):` is the live tier** — any `-m llm`
-test, or anything else spawning a nested `claude`. Its transcript goes to
+**The default is `Run:`; `Run (driver):` only when the command spawns a nested
+`claude` or writes to a path outside the allowlist that cannot be declared in
+advance.** The standing case is the live tier — any `-m llm` test, or
+anything else spawning a nested `claude`. Its transcript goes to
 `~/.claude/projects/<slug-of-its-own-cwd>`, a directory named after a fixture
 path that does not exist when the config is written, and the only blanket
 allowlist that would cover it is `~/.claude/projects` wholesale — which is
@@ -294,9 +297,11 @@ Write the decision into the plan:
   run-driver's preflight is supposed to catch.
 - Driver-run → rewrite the item's command line as `Run (driver): <command>`.
   `smart-mcps-orchestrate group` sets `driver_run` on that item, the coder
-  prompt tells the coder not to run it and to report it `skipped` with notes
-  `driver-run`, the verification gate stops holding the group on it, and the
-  run log names the pending items at merge for the driver to run.
+  prompt tells the coder it may attempt it only if it spawns no nested
+  `claude` and writes nowhere outside the sandbox (report `pass`/`fail` with
+  evidence, otherwise `skipped` with notes `driver-run`), the verification
+  gate never holds the group on it, and the run log names at merge the items
+  the coder did not pass, for the driver to run.
 
 Report the sweep as one short block: how many `Run:` lines, how many now
 driver-run, and which config lines the human must add. An item that needs a

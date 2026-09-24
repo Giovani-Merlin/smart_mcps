@@ -390,9 +390,11 @@ When the process exits (signal **(b)**):
         generates the other formats without it and the PR body falls back
         to the run-record lines and the report link.
    4. **Run every `driver-run` verification item the run deferred to you.**
-      `grep "driver-run verification item" logs/run.log` names them per group
-      (the coder was told not to run them — a nested `claude` cannot write its
-      transcript from inside a confined worktree). Run each from the group's
+      `grep "not run by the coder" logs/run.log` names them per group — the
+      merge log lists only the items the coder did not pass (a coder may
+      attempt a sandbox-safe one; a nested `claude` cannot write its
+      transcript from inside a confined worktree, so those it always leaves
+      to you). A `passed by the coder` line needs nothing. Run each from the group's
       worktree, or from the integration worktree once merged, and paste the
       result into the one-pager's Run notes. A live-tier item costs real
       tokens (`-m llm`, ~$0.20 and a few minutes here) — that is the price of
