@@ -2,30 +2,39 @@
 
 ## TL;DR
 
-one short paragraph of context, optional
-
-- one bullet naming the outcome (POINTER)
-- one bullet naming the cost or risk (POINTER)
-- one bullet naming what changed (POINTER)
+- All 8 groups completed, run serially from the deepened plan for $60.82 across 11 sessions; g7 (the `run` executor) and g8 (docs) were the only multi-round groups. (g7)
+- The `run` recipe was broken end to end as merged: it could not dispatch, could not finish a unit that commits nothing, and a failed unit was merged as RESOLVED. The driver found all three in live verification and fixed each on the integration branch with a regression test. (orchestrator/execution/run_executor.py)
+- With those fixes every driver-run item passes on the integration tip — live e2e, Landlock under the real home, kill -9 re-adoption, the live two-group and triage tests — and a second session closed the four seam gaps; the full suite reads 2062 passed. (tests/test_run_recipe_live.py)
 
 ## Problems found
 
-one short paragraph of context, optional
+Every group passed its own verification; the defects below sit on seams between groups or behind stubs, and only a real run exposed them.
 
-- one bullet per problem, each ending with the pointer that proves it (POINTER)
-  optional indented continuation lines: more detail, no pointer needed
+- `dispatch._resolve_factory` split the executor path on the last `.`, while the registry spells it `module:attr`, so every `run` group refused to start; `code` was special-cased and hid it. (orchestrator/execution/dispatch.py)
+- The `run` executor always called `merge_group`, which refuses a branch with no commits, so a unit with no `commit_paths` ended INTERRUPTED after its commands succeeded; the executor tests stub the merge. (g7-7)
+- Autonomous resolve committed a failed `run` group's leftover outputs and merged them as RESOLVED, bypassing the `commit_paths` gate (R15). (orchestrator/execution/scheduler.py)
+- A speccer rewrite drops `driver_run` from verification items; only the grouping assembler set it. g8 was rewritten before launch, so its "Run (driver):" items became coder-gated and unpassable inside Landlock; fixed after the run by deriving the flag in the model. (orchestrator/model.py)
+  The marker regex also misses the plan's "Run (driver), optional —" wording, so that item was required even before the rewrite.
+- The plan invalidated itself once merged: `size_hints` mark U1–U8 files as prospective, the files now exist, and `group` on the plan was a hard parse error (now a flag, fixed after the run). That made g8's "the plan still groups" item contradict its five-file scope item. (docs/plans/2026-09-24-001-feat-unit-recipes-run-plan.md)
+- The group heartbeat read "still starting the coder" for a whole coder round, because the probe flipped the phase only when the newest event was `assistant` and streaming makes it `stream_event`; fixed after the run. (orchestrator/execution/liveness.py)
+- The report counted 4/9 units landed: driver-run items read "unverified", a rewritten spec's items were sliced by the original plan, and the spec-rewrite resume restarted g8 at round 1, overwriting the pre-interrupt round-1 report; all three fixed after the run. (orchestrator/report/facts.py)
+- Auto-finish fired the moment g8 merged, before any driver-run item ran; only the invalid draft one-pager stopped a push of the broken recipe. The CLI now holds while required driver-run items exist. (orchestrator/execution/finish.py)
 
 ## Run notes
 
-one short paragraph of context, optional
+No escalation was raised; every intervention below came from driver-run verification or from watching g8 loop.
 
-- one bullet per thing the driver did — a hand fix, an escalation's cause, what was recovered — each ending with the pointer it concerns (POINTER)
+- Preflight committed the finished deepen pass (U1–U9) and the ADR 0011 edit, which were uncommitted; the run launched on that commit. (90ea45ee)
+- g2-3, g6-1, g4-4 and g7-5 passed as run: an old `groups.json` loads with every recipe `code`, an old run exports with `schema_version` 2 and no manifest key, the live e2e suite passes 10/10, and a Run Child is denied another project's `~/.claude/projects` dir while a declared `allow_write` path is writable. (g7-5)
+- g7-7 on a scratch fixture found the dispatch bug, then the empty-merge bug; after both fixes a kill -9 of the orchestrator mid-`sleep 120` was re-adopted on resume with the same pid, one `sleep` ever existed, and the group completed. (g7-7)
+- g8's first coder retired after 3 rounds ($16.95), and the second generation oscillated applying and reverting the plan fix. The driver stopped the run with SIGINT, cherry-picked the coder's `size_hints` drop onto integration, merged integration into g8's branch, and wrote an operator `spec-gen2.json` restoring `driver_run` on v5/v6; the fresh coder then passed in one round ($0.98). (g8/coder/gen2)
+- g8-v5, the live two-group run, passed 6/6. g8-v6, the live triage test, first ended RESOLVED; after the scheduler fix it ended FAILED as intended, which exposed a test that asserted exit 0 and a vacuous diagnosis check. Both were corrected, and the live file now passes 7/7. (g8)
+- Auto-finish aborted before pushing because the unfilled one-pager scaffold, swept into a recover commit, failed validation; nothing reached the remote until this report. (docs/runs/r20260924-134934/one-pager.md)
+- After the run, on the human's request, the driver fixed the orchestrator defects above on the integration branch — plan reader, driver-run flag, phase flip, auto-finish guard, round numbering, landed metric — each with a regression test; full suite 2034 passed and both live suites 17/17. (orchestrator/execution/generation.py)
+- A second session landed the gap fixes, one commit each with a revert-checked regression test: an `interface_exports` difficulty signal, active only when non-zero (against this run's trace, g1/g2/g4/g5 read paired); a `SURPRISE … (already merged)` line in run.log; a coder prompt allowing a driver item that spawns no nested `claude`; a heartbeat relabel per poll; the preflight baseline captured in the provisioned integration worktree (a stale `node_modules` gave 606 UI tests at launch against 649 at the gate); a nonzero exit with zero failures named `unattributed_exit`. (orchestrator/execution/merge.py)
 
 ## Next steps
 
-one short paragraph of context, optional
-
-- <action>: <why it matters and what "done" looks like> (POINTER)
-  - how: optional sub-bullet with the concrete first move
-
-<!-- valid pointers: 90ea45ee, ced9c023, docs/orchestrator-task-map.md, docs/run-bundle-contract.md, g1, g1-1, g1-10, g1-2, g1-3, g1-4, g1-5, g1-6, g1-7, g1-8, g1-9, g1/coder/gen1, g1/reviewer/gen1, g2, g2-1, g2-2, g2-3, g2-4, g2-5, g2-6, g2-7, g2/coder/gen1, g3, g3-1, g3-2, g3-3, g3-4, g3-5, g3-6, g3/coder/gen1, g4, g4-1, g4-2, g4-3, g4-4, g4-5, g4-6, g4-7, g4/coder/gen1, g5, g5-1, g5-2, g5-3, g5-4, g5-5, g5-6, g5/coder/gen1, g6, g6-1, g6-2, g6-3, g6/coder/gen1, g7, g7-1, g7-10, g7-11, g7-12, g7-2, g7-3, g7-4, g7-5, g7-6, g7-7, g7-8, g7-9, g7/coder/gen1, g8, g8-1, g8-2, g8-3, g8-4, orchestrator/cli.py, orchestrator/config.py, orchestrator/execution/artifacts.py, orchestrator/execution/confinement.py, orchestrator/execution/dispatch.py, orchestrator/execution/export.py, orchestrator/execution/generation.py, orchestrator/execution/host.py, orchestrator/execution/manifest.py, orchestrator/execution/merge.py, orchestrator/execution/merge_ladder.py, orchestrator/execution/review.py, orchestrator/execution/run_child.py, orchestrator/execution/run_executor.py, orchestrator/execution/scheduler.py, orchestrator/execution/worktrees.py, orchestrator/grouping/estimator.py, orchestrator/grouping/graphing.py, orchestrator/grouping/partition.py, orchestrator/grouping/pipeline.py, orchestrator/grouping/plan_reader.py, orchestrator/grouping/plan_sections.py, orchestrator/grouping/trace.py, orchestrator/model.py, orchestrator/prompts/run_triage.md, orchestrator/recipes/__init__.py, orchestrator/recipes/code.py, orchestrator/recipes/registry.py, orchestrator/recipes/run.py, tests/test_artifact_manifest.py, tests/test_cli_price.py, tests/test_executor_dispatch.py, tests/test_export.py, tests/test_model.py, tests/test_plan_edit.py, tests/test_plan_reader.py, tests/test_recipe_partition.py, tests/test_recipe_registry.py, tests/test_run_child.py, tests/test_run_executor.py, u1, u2, u3, u4, u5, u6, u7, u8, u9, ui/src/components/AttemptGrid.test.tsx, ui/src/types.ts -->
+- Drive one run on a repo with a `ui/` frontend and no `node_modules` in the main checkout: "done" is the launch line `preflight baseline: captured … in <integration worktree>` with a test count matching the gate. (orchestrator/cli.py)
+- Watch the next grouping for `interface_exports` in the trace and `→ paired` on its interface producers; the bidirectional form was declined. (orchestrator/grouping/pipeline.py)
+- Label the untracked-file commit by cause (F5) and dedupe near-duplicate surprises (F7), both deferred as cosmetic. (orchestrator/execution/merge_ladder.py)
