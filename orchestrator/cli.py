@@ -2319,7 +2319,7 @@ def _cmd_run(
             # id against the run's real group and task ids at mark time, instead
             # of silently accumulating dead buckets under ids nothing will ever
             # read.
-            board=SurpriseBoard(paths, groups=grouping.groups),
+            board=SurpriseBoard(paths, groups=grouping.groups, is_settled=scheduler.is_settled),
             workspace_for=workspace_for,
             merge_group=merger.merge_group,
             artifacts=artifact_store,

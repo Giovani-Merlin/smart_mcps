@@ -145,7 +145,10 @@ that fires on any of:
 - **(c)** a new terminal group line in `logs/run.log` —
   `group <gid>: completed`, `group <gid>: failed (…)`,
   `group <gid>: resolved (…)`, `group <gid>: terminal failed — …`,
-  `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`.
+  `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`;
+- **(d)** a `SURPRISE ` line in `logs/run.log` — a coder's finding about a
+  group already merged, or about nothing in the plan (non-blocking; act on it
+  while the source coder is still up, see the table below).
 
 There is no manual wedge check to run here anymore. The Liveness probe
 watches the worker child itself — a real Sign of Life inside a configurable
@@ -186,6 +189,7 @@ Greppable anchors, all in `logs/run.log`:
 | run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)             |
 | run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                       |
 | run recipe done      | `group <gid>: run recipe completed`                                                                                        |
+| late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` (non-blocking; read it now, not at finish) |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
   `triage-guide.md`, "When status reports Not Live", for the three cases and
@@ -198,7 +202,13 @@ Greppable anchors, all in `logs/run.log`:
   probe has used its budget for this generation and will only keep
   reporting from here.
 
-Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend" logs/run.log`.
+- **`SURPRISE … (already merged)`** is a coder's finding about a group whose
+  work is already in the integration branch — nobody will consume it, so the
+  residue report was the only place it used to surface. Read it when it
+  lands: a seam bug named here is cheapest to fix while the source group's
+  coder is still up (`answer` it, or note it for the finish).
+
+Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend|SURPRISE" logs/run.log`.
 
 ### What a live `run` group looks like
 

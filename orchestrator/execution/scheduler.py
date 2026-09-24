@@ -407,6 +407,17 @@ class Scheduler:
                 if entry.state in (GroupState.PENDING, GroupState.READY)
             )
 
+    def is_settled(self, gid: str) -> bool:
+        """True once a group's work is in the integration branch (COMPLETED or
+        RESOLVED) — the point past which a surprise naming it has no consumer
+        (the SurpriseBoard's late-surprise anchor line)."""
+        with self._lock:
+            entry = self.state.groups.get(gid)
+            return entry is not None and entry.state in (
+                GroupState.COMPLETED,
+                GroupState.RESOLVED,
+            )
+
     def _record_pid(self, pid: int, context: str) -> None:
         record = _describe_process(pid, context)
         with self._lock:

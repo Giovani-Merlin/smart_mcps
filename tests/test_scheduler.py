@@ -131,9 +131,12 @@ async def test_pending_group_ids_names_groups_not_yet_started(tmp_path):
     run = asyncio.create_task(scheduler.run())
     await wait_until(lambda: scheduler.state.groups["g1"].state == GroupState.RUNNING)
     assert scheduler.pending_group_ids() == ["g2", "g3"]
+    assert not scheduler.is_settled("g1") and not scheduler.is_settled("g2")
     gate.set()
     await run
     assert scheduler.pending_group_ids() == []
+    assert scheduler.is_settled("g1") and scheduler.is_settled("g3")
+    assert not scheduler.is_settled("g99")  # unknown group is never settled
 
 
 @pytest.mark.asyncio
@@ -1792,3 +1795,23 @@ def test_a_broken_state_write_never_replaces_the_interrupt_with_a_traceback(tmp_
     scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=completing_executor())
     monkeypatch.setattr(scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone")))
     scheduler.mark_interrupted()  # must not raise
+
+
+def test_is_settled_true_only_for_completed_or_resolved(tmp_path):
+    scheduler = Scheduler(
+        groups=[make_group(f"g{i}") for i in range(1, 7)],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=lambda ctx: None,
+        config=ExecutionConfig(concurrency=1),
+    )
+    states = {
+        "g1": GroupState.COMPLETED,
+        "g2": GroupState.RESOLVED,
+        "g3": GroupState.PENDING,
+        "g4": GroupState.RUNNING,
+        "g5": GroupState.FAILED,
+        "g6": GroupState.MERGING,
+    }
+    for gid, state in states.items():
+        scheduler.state.groups[gid].state = state
+    assert [gid for gid in states if scheduler.is_settled(gid)] == ["g1", "g2"]
