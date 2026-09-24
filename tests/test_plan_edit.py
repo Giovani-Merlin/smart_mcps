@@ -226,11 +226,27 @@ class TestValidatePlan:
     def test_plan_without_map_or_units_is_valid(self):
         assert validate_plan("# a foreign plan\n\njust prose\n") == []
 
+    def test_v2_marked_plan_is_valid(self):
+        """g1-10: plan-check's structural validation treats a v2 map exactly
+        like v1 — it never calls parse_task_map (never reaches an LLM), so
+        the version marker alone doesn't change its shape."""
+        v2_text = PLAN_TEXT.replace("# orchestrator-task-map v1", "# orchestrator-task-map v2")
+        assert validate_plan(v2_text) == []
+
 
 class TestPlanCheckCli:
     def test_exits_zero_on_well_formed_plan(self, tmp_path, capsys):
         plan = tmp_path / "sample-plan.md"
         plan.write_text(PLAN_TEXT)
+        exit_code = main(["plan-check", str(plan)])
+        assert exit_code == 0
+        assert "internally consistent" in capsys.readouterr().out
+
+    def test_exits_zero_on_v2_marked_plan(self, tmp_path, capsys):
+        plan = tmp_path / "sample-plan.md"
+        plan.write_text(
+            PLAN_TEXT.replace("# orchestrator-task-map v1", "# orchestrator-task-map v2")
+        )
         exit_code = main(["plan-check", str(plan)])
         assert exit_code == 0
         assert "internally consistent" in capsys.readouterr().out
