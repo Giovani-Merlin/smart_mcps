@@ -10,6 +10,7 @@ import pytest
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.dispatch import (
+    _resolve_factory,
     RecipeDispatchError,
     make_executor,
     recipe_gate_violations,
@@ -21,6 +22,7 @@ from orchestrator.execution.review import make_executor as make_code_executor
 from orchestrator.execution.scheduler import GroupContext, GroupRunState, GroupState
 from orchestrator.execution.surprises import SurpriseBoard
 from orchestrator.model import Group, ReviewIntensity, RunManifest, Surprise
+from orchestrator.recipes import registered_names
 
 from tests.test_review_loop import BASE_CONTEXT, StubRunner, coder_report, make_group
 
@@ -123,3 +125,11 @@ def test_recipe_gate_allows_enabled_recipe():
     group = make_group(gid="g9").model_copy(update={"recipe": "run"})
     blocked = recipe_gate_violations([group], {}, enabled=["run"])
     assert blocked == []
+
+
+@pytest.mark.parametrize("name", sorted(registered_names()))
+def test_every_registered_recipe_executor_resolves(name):
+    # The registry spells executors ``module:attr``; a dispatcher that splits on
+    # the last ``.`` resolved ``code`` (special-cased) but never ``run`` — found by
+    # the driver's live g7-7 probe on r20260924-134934.
+    assert callable(_resolve_factory(name))

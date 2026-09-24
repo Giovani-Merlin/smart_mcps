@@ -38,7 +38,11 @@ def _resolve_factory(recipe_name: str) -> ExecutorFactory:
         raise RecipeDispatchError(
             f"unknown recipe {recipe_name!r}; registered recipes: {list(registered_names())}"
         ) from None
-    module_path, _, attr = recipe.executor.rpartition(".")
+    # The registry spells executors ``module:attr`` (recipes/code.py, recipes/run.py);
+    # a plain dotted path is accepted too.
+    module_path, sep, attr = recipe.executor.partition(":")
+    if not sep:
+        module_path, _, attr = recipe.executor.rpartition(".")
     try:
         return getattr(importlib.import_module(module_path), attr)
     except (ImportError, AttributeError) as exc:
