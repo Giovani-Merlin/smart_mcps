@@ -80,6 +80,9 @@ class Group(BaseModel):
     tasks: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
     estimated_tokens: int = 0
+    recipe: str = "code"
+    recipe_args: dict | None = None
+    estimated_wall_clock_s: int | None = None
 
 
 class GroupingResult(BaseModel):
@@ -94,6 +97,7 @@ class SessionRole(StrEnum):
     BASE = "base"
     CODER = "coder"
     REVIEWER = "reviewer"
+    RUNNER = "runner"
 
 
 class SessionEntry(BaseModel):

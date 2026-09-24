@@ -67,6 +67,10 @@ class NodeWorkEntry(BaseModel):
     bytes_tokens: float
     file_allowance_tokens: float
     total: float
+    recipe: str = "code"
+    wall_clock_s: float | None = None
+    # True when a recipe default stood in for a wall clock the plan omitted.
+    priced_by_default: bool | None = None
 
 
 class BudgetArithmetic(BaseModel):
