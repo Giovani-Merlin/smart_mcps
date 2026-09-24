@@ -13,7 +13,10 @@ pipes, and is recorded per attempt under the group's directory — never in
 `live_pids`, so the reaper never sees it. On resume the `run` executor re-adopts
 a child that is still the same process (kernel start time + argv[0], the
 identity check `LivePid` already uses), keeps polling it, and reads the exit
-file when it ends; the wall-clock cap counts from the original start.
+file when it ends; the wall-clock cap counts *awake* time — `CLOCK_MONOTONIC`
+from launch, which excludes suspend and is comparable across an orchestrator
+restart within one boot. Only an unclean death leaves a child to re-adopt: a
+deliberate stop (Ctrl-C, Stop) kills its process group.
 
 **Why.** The alternative, kill-and-relaunch, is simpler and keeps "no process
 outlives its orchestrator" true, but it re-pays the whole command after every
