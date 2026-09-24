@@ -16,9 +16,9 @@ def price_code(
 ) -> RecipePrice:
     # Lazy: grouping.estimator (via plan_reader) imports back into grouping,
     # and this module must not import grouping at load time.
-    from orchestrator.grouping.estimator import node_work
+    from orchestrator.grouping.estimator import code_node_work
 
-    return RecipePrice(tokens=node_work(metadata, config))
+    return RecipePrice(tokens=code_node_work(metadata, config))
 
 
 CODE_RECIPE = UnitRecipe(

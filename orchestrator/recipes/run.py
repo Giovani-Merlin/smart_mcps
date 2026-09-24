@@ -13,7 +13,7 @@ from orchestrator.recipes.registry import RecipePrice, UnitRecipe
 SUMMARY_MAX_CHARS = 2000
 # Fixed token allowance for the one-shot failure triage, and the wall clock a
 # unit without a declared one takes (recorded in the grouping trace).
-TRIAGE_TOKEN_ALLOWANCE = 4000
+TRIAGE_TOKEN_ALLOWANCE = 20_000
 DEFAULT_WALL_CLOCK_MIN = 10.0
 
 
@@ -99,7 +99,9 @@ def price_run(
     else:
         minutes, defaulted = DEFAULT_WALL_CLOCK_MIN, True
     return RecipePrice(
-        tokens=float(TRIAGE_TOKEN_ALLOWANCE), wall_clock_s=minutes * 60.0, defaulted=defaulted
+        tokens=float(metadata.get("triage_tokens") or TRIAGE_TOKEN_ALLOWANCE),
+        wall_clock_s=minutes * 60.0,
+        defaulted=defaulted,
     )
 
 

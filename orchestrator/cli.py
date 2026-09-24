@@ -1171,10 +1171,14 @@ def _print_price_report(report: PriceReport, plan_path: Path) -> None:
     print("\nper-task work:")
     for task in report.tasks:
         slice_note = f" (slice: {task.slice})" if task.slice else ""
+        wall_note = f", wall clock {task.wall_clock_s:.0f}s" if task.wall_clock_s else ""
         print(
             f"  {task.task_id}: {task.node_work:.0f} node work / "
-            f"{task.coder_work:.0f} coder work{slice_note}"
+            f"{task.coder_work:.0f} coder work{slice_note} [recipe: {task.recipe}{wall_note}]"
         )
+
+    if report.run_wall_clock_s:
+        print(f"\nrun wall clock (summed): {report.run_wall_clock_s:.0f}s")
 
     print("\nper-slice work vs. cap:")
     for slice_price in report.slices:

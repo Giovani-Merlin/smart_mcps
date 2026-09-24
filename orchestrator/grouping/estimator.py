@@ -55,6 +55,20 @@ _SIZE_HINT_FIELDS = {
 def node_work(metadata: Mapping[str, object], config: EstimatorConfig) -> float:
     """Per-task work in tokens — the hook injected into the partition strategy.
 
+    Dispatches on the metadata's ``recipe`` (default ``code``): ``code`` is
+    ``code_node_work`` bit-for-bit; any other recipe prices through the registry.
+    """
+    recipe = str(metadata.get("recipe") or "code")
+    if recipe == "code":
+        return code_node_work(metadata, config)
+    from orchestrator.recipes.registry import get_recipe
+
+    return get_recipe(recipe).price(metadata.get("recipe_args"), metadata, config).tokens  # type: ignore[arg-type]
+
+
+def code_node_work(metadata: Mapping[str, object], config: EstimatorConfig) -> float:
+    """The ``code`` recipe's arithmetic.
+
     Uses the metadata shape the codegraph adapter emits (source_bytes, files).
     Prospective files contribute zero source bytes but count in the per-file
     allowance — they will exist by the time the group runs, and pricing them at
@@ -106,6 +120,9 @@ class TaskPrice:
     slice: str | None
     node_work: float
     coder_work: float
+    recipe: str = "code"
+    wall_clock_s: float | None = None
+    priced_by_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,6 +157,7 @@ class PriceReport:
     base_tokens: int
     head: float
     budget_cap: float
+    run_wall_clock_s: float = 0.0
 
     @property
     def over_cap(self) -> bool:
@@ -163,6 +181,7 @@ def price_task_mappings(
     repo_root: Path,
     base_tokens: int,
     config: EstimatorConfig,
+    triage_tokens: int | None = None,
 ) -> PriceReport:
     """Price every task mapping from working-tree byte counts (plan U7), with no
     graph and no codegraph client — ``source_bytes_of`` and ``node_work`` both
@@ -170,6 +189,26 @@ def price_task_mappings(
     """
     task_prices: dict[str, TaskPrice] = {}
     for mapping in mappings:
+        if mapping.recipe != "code":
+            from orchestrator.recipes.registry import get_recipe
+
+            run_metadata = {
+                "recipe": mapping.recipe,
+                "recipe_args": mapping.recipe_args,
+                "triage_tokens": triage_tokens,
+            }
+            price = get_recipe(mapping.recipe).price(mapping.recipe_args, run_metadata, config)  # type: ignore[arg-type]
+            # Triage tokens are not a coder read cost: no coder multiplier.
+            task_prices[mapping.task_id] = TaskPrice(
+                task_id=mapping.task_id,
+                slice=mapping.slice,
+                node_work=price.tokens,
+                coder_work=price.tokens,
+                recipe=mapping.recipe,
+                wall_clock_s=price.wall_clock_s,
+                priced_by_default=price.defaulted,
+            )
+            continue
         metadata = {
             "source_bytes": source_bytes_of(repo_root, mapping.files),
             "files": mapping.files,
@@ -220,6 +259,7 @@ def price_task_mappings(
         base_tokens=base_tokens,
         head=head,
         budget_cap=budget_cap,
+        run_wall_clock_s=sum(t.wall_clock_s or 0.0 for t in task_prices.values()),
     )
 
 
@@ -239,7 +279,9 @@ def price_plan(plan_path: Path, repo_root: Path, config: OrchestratorConfig) -> 
         )
     base_context = compile_base_context(repo_root, plan_path, "")
     base_tokens = int(len(base_context) / config.estimator.bytes_per_token)
-    return price_task_mappings(mappings, repo_root, base_tokens, config.estimator)
+    return price_task_mappings(
+        mappings, repo_root, base_tokens, config.estimator, config.recipes.run.triage_tokens
+    )
 
 
 @dataclass(frozen=True)

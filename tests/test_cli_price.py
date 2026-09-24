@@ -68,6 +68,91 @@ tasks:
 """
 
 
+RUN_RECIPE_PRICE_PLAN = """# feat: one run task for pricing
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: render-podcast
+    description: render the podcast audio
+    recipe: run
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/render.py --chapter 1
+          wall_clock_min: 30.0
+        - cmd: uv run scripts/render.py --chapter 2
+          wall_clock_min: 45.0
+```
+"""
+
+TWO_RUN_TASKS_PRICE_PLAN = """# feat: two run tasks for pricing
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: render-1
+    description: render chapter 1
+    recipe: run
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/render.py --chapter 1
+          wall_clock_min: 60.0
+  - task_id: render-2
+    description: render chapter 2
+    recipe: run
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/render.py --chapter 2
+          wall_clock_min: 90.0
+```
+"""
+
+
+class TestRunRecipePricing:
+    """g2-2/g2-7: a `run` task prices at the fixed triage allowance (never the
+    coder multiplier), and its declared wall clock is summed in seconds."""
+
+    def test_run_task_prices_at_triage_allowance_and_summed_wall_clock(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(RUN_RECIPE_PRICE_PLAN)
+
+        report = price_plan(plan_path=plan, repo_root=repo, config=OrchestratorConfig())
+        [task] = report.tasks
+        assert task.recipe == "run"
+        assert task.coder_work == 20_000
+        assert task.node_work == 20_000
+        assert task.wall_clock_s == 4_500
+        assert not task.priced_by_default
+        assert report.run_wall_clock_s == 4_500
+
+    def test_run_task_price_ignores_coder_slack_multiplier(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(RUN_RECIPE_PRICE_PLAN)
+
+        config = OrchestratorConfig()
+        config.estimator.coder_slack_multiplier = 5.0
+        report = price_plan(plan_path=plan, repo_root=repo, config=config)
+        [task] = report.tasks
+        assert task.coder_work == 20_000
+
+    def test_two_run_tasks_sum_wall_clock_in_seconds(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        plan = repo / "plan.md"
+        plan.write_text(TWO_RUN_TASKS_PRICE_PLAN)
+
+        report = price_plan(plan_path=plan, repo_root=repo, config=OrchestratorConfig())
+        assert report.run_wall_clock_s == 9_000
+
+
 class TestOverCapSliceCli:
     def _repo(self, tmp_path, token_budget: int | None = None):
         repo = tmp_path / "repo"
