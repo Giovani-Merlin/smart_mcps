@@ -1117,6 +1117,28 @@ async def test_failed_group_with_nothing_lost_stays_failed_and_settles(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_failed_run_group_is_never_resolved_from_stranded_work(tmp_path):
+    # A `run` group commits only its `commit_paths` (R15); resolve would commit
+    # and merge its leftover outputs — found by the driver's live g8-v6 triage
+    # test on r20260924-134934, which ended RESOLVED instead of FAILED.
+    resolve = StubResolve(commits_ahead=1)
+    group = make_group("g1").model_copy(update={"recipe": "run"})
+    scheduler = Scheduler(
+        groups=[group],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(GroupFailure("command 1/1 exited 3")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert resolve.committed == []
+    assert resolve.merged == []
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.FAILED
+    assert persisted.groups["g1"].resolve_settled is True
+
+
+@pytest.mark.asyncio
 async def test_resolve_conflict_stops_the_run(tmp_path):
     resolve = StubResolve(commits_ahead=1, conflict=True)
     scheduler = Scheduler(

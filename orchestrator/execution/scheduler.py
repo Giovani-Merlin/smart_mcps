@@ -752,7 +752,18 @@ class Scheduler:
         """
         if self._resolve is None:
             return GroupState.FAILED
-        if self._broker is not None and self._policy is not None:
+        recipe = self.groups[gid].recipe
+        if recipe != "code":
+            # A non-`code` group may commit only its declared `commit_paths`
+            # (plan R15); committing its leftovers here would bypass that gate
+            # and merge a failed run's partial outputs. `retry` is its recovery.
+            log_event(
+                self.paths,
+                f"group {gid}: {recipe} group — stranded-work resolve skipped "
+                f"(retry is its recovery)",
+            )
+            final = GroupState.FAILED
+        elif self._broker is not None and self._policy is not None:
             final = await self._resolve_via_escalation(gid)
         else:
             final = await self._resolve_autonomously(gid)
