@@ -210,8 +210,9 @@ class IntegrationMerger:
             self.ensure()
             return _git_ok(self.repo_root, "rev-parse", self.branch).strip()
 
-    def merge_group(self, group: Group, worktree: Path) -> None:
+    def merge_group(self, group: Group, worktree: Path) -> str:
         """Merge an approved group's branch; raises MergeConflict on collision.
+        Returns the merge commit sha (plan U6: the Artifact Manifest's `commit`).
 
         Refreshes the group worktree onto the current integration tip, runs
         Preflight on that refreshed tree, and only then merges — all under one
@@ -263,6 +264,7 @@ class IntegrationMerger:
                     f"{', '.join(conflicted) or 'unknown files'}",
                     affected_groups=[group.id, *self._groups_owning(conflicted)],
                 )
+            merge_sha = _git_ok(integration_wt, "rev-parse", "HEAD").strip()
             self.merged.append(group)
             # A group may have registered a new large file mid-run; the
             # integration tree gets its link now rather than at the next ensure().
@@ -280,6 +282,7 @@ class IntegrationMerger:
                 remove_worktree(self.repo_root, worktree)
             except WorktreeError:
                 pass
+            return merge_sha
 
     def _groups_owning(self, paths: list[str]) -> list[str]:
         """Already-merged groups whose declared files collide with the conflict."""

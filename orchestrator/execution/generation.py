@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from orchestrator.execution.artifacts import ArtifactEntry, render_artifact_inputs_block
 from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import artifact_name, completed_round_count
@@ -107,6 +108,7 @@ class GenerationLoop:
     _apply_briefing: Callable[[str], str]
     _apply_env_notice: Callable[[str], str]
     _apply_operator_note: Callable[[str], str]
+    _last_report: CoderReport | None
     _approve_gate: Callable[..., Awaitable[None]]
     _escalate: Callable[..., Awaitable[object]]
     _merge: Callable[[], Awaitable[bool]]
@@ -148,6 +150,35 @@ class GenerationLoop:
                 f"warm-resuming session {exc.session_id} after suspend cure"
             )
             return await self._worker_call(partial(recover, exc.session_id), recover=recover)
+
+    def _upstream_artifact_entries(self) -> list[ArtifactEntry]:
+        """Registered entries for every direct upstream group whose recipe is
+        not `code`, in `Group.dependencies` order (plan U6 Goal). Empty when
+        no Artifact Manifest is wired (`deps.artifacts is None`, every
+        construction site that predates this unit) or none of the group's
+        direct upstreams is a non-`code` recipe."""
+        store = self.deps.artifacts
+        if store is None:
+            return []
+        entries: list[ArtifactEntry] = []
+        for dep_id in self.group.dependencies:
+            upstream = self.deps.groups_by_id.get(dep_id)
+            if upstream is None or upstream.recipe == "code":
+                continue
+            entry = store.get(dep_id)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def _apply_artifact_inputs(self, prompt: str) -> str:
+        """Fold non-`code` direct upstreams' Artifact Manifest entries into
+        `prompt` (plan U6 Goal). A no-op — byte-identical `prompt` — when
+        there is nothing to fold in, so a code-only plan's prompts are
+        unchanged."""
+        block = render_artifact_inputs_block(self._upstream_artifact_entries())
+        if not block:
+            return prompt
+        return f"{prompt}\n\n{block}"
 
     async def run(self) -> GroupState:
         # interactive tier only: approve before anything is launched.
@@ -228,6 +259,7 @@ class GenerationLoop:
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
             prompt = self._apply_operator_note(prompt)
+            prompt = self._apply_artifact_inputs(prompt)
             self.handoff_prompt = None
             # The session id is generated and recorded *before* the blocking fork
             # call, not after (plan U7): a crash mid-call would otherwise leave no
@@ -406,6 +438,7 @@ class GenerationLoop:
                 await self._approve_gate(
                     EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
                 )
+                self._last_report = report
                 return await self._merge()
             if verdict.status in ("too_hard", "structural"):
                 self._log(f"{self._round_tag(rounds)}: ended ({verdict.status})")
