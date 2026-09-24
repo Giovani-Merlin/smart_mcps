@@ -175,8 +175,9 @@ def detect_check_steps(
       pre-existing behaviour for a node-only checkout).
     - ``<dir>/package.json`` **and** ``<dir>/node_modules``, for the first
       ``dir`` in ``frontend_dirs`` that has both -> that frontend's own
-      suites: ``vitest`` when it is a devDependency (JUnit reporter, ids
-      prefixed ``<dir>::``), otherwise ``npm test``; plus ``tsc --noEmit``
+      suites: ``vitest`` when it is a devDependency (JUnit reporter for the
+      gate plus the default reporter so the log keeps vitest's own output,
+      ids prefixed ``<dir>::``), otherwise ``npm test``; plus ``tsc --noEmit``
       when ``typescript`` is a devDependency and ``<dir>/tsconfig.json``
       exists.
 
@@ -223,7 +224,20 @@ def detect_check_steps(
             steps.append(
                 CheckStep(
                     name="vitest",
-                    argv=["npx", "vitest", "run", "--reporter=junit", f"--outputFile={ui_junit}"],
+                    # Two reporters (F3, r20260924): `junit` for the gate's
+                    # failing-test set, `default` so the step log still carries
+                    # vitest's own diagnosis — with junit alone the log held
+                    # nothing but the XML path, and an "Unhandled Errors" exit
+                    # was undiagnosable from the run directory. The per-reporter
+                    # `--outputFile.junit=` keeps `default` on stdout.
+                    argv=[
+                        "npx",
+                        "vitest",
+                        "run",
+                        "--reporter=default",
+                        "--reporter=junit",
+                        f"--outputFile.junit={ui_junit}",
+                    ],
                     subdir=frontend,
                     junit_path=ui_junit,
                     id_prefix=f"{frontend}::",

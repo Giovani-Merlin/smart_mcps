@@ -657,7 +657,12 @@ def test_uv_and_ui_markers_detect_pytest_then_vitest_then_tsc(tmp_path):
     assert vitest_step.subdir == "ui"
     assert vitest_step.id_prefix == "ui::"
     assert vitest_step.junit_path == out_dir / "preflight-junit-ui.xml"
-    assert f"--outputFile={out_dir / 'preflight-junit-ui.xml'}" in vitest_step.argv
+    # F3 (r20260924): both reporters, and the junit file bound per-reporter so
+    # the default reporter's diagnosis stays on stdout (→ the step log).
+    assert "--reporter=default" in vitest_step.argv
+    assert "--reporter=junit" in vitest_step.argv
+    assert f"--outputFile.junit={out_dir / 'preflight-junit-ui.xml'}" in vitest_step.argv
+    assert not any(a.startswith("--outputFile=") for a in vitest_step.argv)
     assert tsc_step.argv == ["npx", "tsc", "--noEmit"]
     assert tsc_step.junit_path is None
 
