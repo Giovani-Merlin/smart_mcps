@@ -2079,19 +2079,6 @@ def _cmd_run(
                 )
                 return 1
             snapshot_grouping(source_grouping_dir, paths.run_dir)
-            # Plan U2: what was already red on the launch branch, captured once
-            # before any group worktree exists — a resumed run reuses it rather
-            # than recapturing against a launch branch it no longer sits on.
-            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
-            baseline = capture_preflight_baseline(
-                repo_root,
-                config=config.preflight,
-                output_dir=paths.run_dir,
-                commit_sha=launch_commit_sha,
-                log=lambda message: log_event(paths, message),
-                uv_run_args=config.session.provision_args,
-            )
-            save_baseline(paths.preflight_baseline_path, baseline)
         # Plan U3/R41: the resolved admission policy, recorded once — an operator
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.
@@ -2112,9 +2099,10 @@ def _cmd_run(
             repo_root,
             run_id,
             preflight_config=config.preflight,
-            # Read back rather than reusing the local `baseline`: a resumed run
-            # never recaptures one, but the file from the original launch is
-            # still the right reference for the merge gate.
+            # A resumed run never recaptures a baseline: the file from the
+            # original launch is still the right reference for the merge gate.
+            # A fresh run has none yet — it is captured below, in the
+            # provisioned integration worktree, and set on the merger then.
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
             preflight_output_dir=paths.group_dir,
             log=lambda message: log_event(paths, message),
@@ -2128,13 +2116,35 @@ def _cmd_run(
             workspace=config.workspace,
         )
         try:
-            merger.ensure()
+            integration_path = merger.ensure()
         except WorktreeError as exc:
             # ProvisioningError lands here too: with provision_on_failure="fail"
             # a dependency spec that cannot build stops the run before any
             # group starts, with uv's actual error in the message.
             print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
             return 1
+        if not resume:
+            # Plan U2: what was already red on the launch branch, captured once
+            # before any group worktree exists — a resumed run reuses it rather
+            # than recapturing against a launch branch it no longer sits on.
+            # F1 (r20260924): captured in the *provisioned integration
+            # worktree*, not the operator's checkout — every group gate runs
+            # in a worktree `_provision_once` provisioned the same way, so a
+            # stale `node_modules` in the main checkout made the baseline
+            # incomparable (606 UI tests at launch vs 649 at the gate). The
+            # integration branch is cut from HEAD, so the sha is the launch
+            # commit either way.
+            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
+            baseline = capture_preflight_baseline(
+                integration_path,
+                config=config.preflight,
+                output_dir=paths.run_dir,
+                commit_sha=launch_commit_sha,
+                log=lambda message: log_event(paths, message),
+                uv_run_args=config.session.provision_args,
+            )
+            save_baseline(paths.preflight_baseline_path, baseline)
+            merger.set_preflight_baseline(load_baseline(paths.preflight_baseline_path))
 
         # The lifecycle log is always on (R10): the run-start line lands in every
         # mode; only the escalation channel itself is HITL-gated. Built before the

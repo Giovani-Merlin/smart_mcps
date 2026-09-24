@@ -119,6 +119,15 @@ class IntegrationMerger:
         self._provision_strict = provision_strict
         self._workspace = workspace
 
+    def set_preflight_baseline(self, baseline: PreflightBaseline | None) -> None:
+        """Install the baseline after construction (F1, r20260924): a fresh run
+        captures it in the integration worktree, which only exists once
+        ``ensure()`` has run — so the merger is built first, with no baseline,
+        and told about it here. The launch reads the saved file back rather
+        than passing the object through, so the merger holds exactly what a
+        resume would load."""
+        self._preflight_baseline = baseline
+
     def ensure(self) -> Path:
         """Create (or reuse) the integration branch and its worktree. Idempotent."""
         path = create_worktree(

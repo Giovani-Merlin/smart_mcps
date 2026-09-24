@@ -768,9 +768,14 @@ def capture_preflight_baseline(
     """Run every check step once on the launch branch and record its result
     (plan U2).
 
-    Runs directly against ``repo_root`` — the launch branch, not a group
-    worktree — so there is no clean-tree gate here: a baseline capture is not a
-    merge attempt. Unlike the gate, this does **not** stop at the first failing
+    ``repo_root`` is the tree to run in. Since F1 (r20260924) the launch passes
+    the *provisioned integration worktree* at the launch commit — provisioned
+    by ``IntegrationMerger._provision_once`` exactly like every group worktree
+    a gate runs in, so ``detect_frontend_dir``'s ``node_modules`` requirement
+    is met by the same ``provision_node_env`` and the baseline is comparable
+    to the gate. ``commit_sha`` stays the launch HEAD, which the integration
+    branch is cut from. There is no clean-tree gate here: a baseline capture
+    is not a merge attempt. Unlike the gate, this does **not** stop at the first failing
     step: a group's ``tsc`` failure can only be excused if the launch branch's
     own ``tsc`` exit code is on record, and a red pytest run must not hide it.
     A step that cannot be run at all is simply absent from ``steps``; when *no*
@@ -840,7 +845,7 @@ def capture_preflight_baseline(
     first = recorded[0]
     _log(
         f"preflight baseline: captured {len(recorded)} step(s) at {commit_sha} "
-        f"({len(first.tests)} test outcome(s) from '{first.name}')"
+        f"in {repo_root} ({len(first.tests)} test outcome(s) from '{first.name}')"
     )
     return PreflightBaseline(
         command=first.command,
