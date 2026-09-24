@@ -53,7 +53,12 @@ export interface RunState {
 
 // --------------------------------------------------------------------- model.py
 
-export type SessionRole = "base" | "coder" | "reviewer";
+// "runner" is not a real session role — it never backs a `SessionEntry`. It
+// is the label the Observatory gives a synthetic per-group row it builds for
+// a `run_triage` LLM call (plan U7), the same way a rewrite renders as an
+// "orchestrator" row: the call left no worker session, but its cost and
+// outcome still belong on the board.
+export type SessionRole = "base" | "coder" | "reviewer" | "runner";
 
 // RoundUsage (execution/sessions.py:68) — one round's four token classes, as
 // parsed from that round's CLI envelope.
