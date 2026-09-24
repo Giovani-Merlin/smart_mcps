@@ -147,7 +147,7 @@ def _build_repo(tmp_path_factory, *, commands_exit: str = "0") -> Path:
     return repo
 
 
-def _run_main(repo: Path, run_id: str) -> str:
+def _run_main(repo: Path, run_id: str, *, expected_exit: int = 0) -> str:
     log_path = repo / "run.log"
     with log_path.open("w") as sink:
         saved, sys.stdout = sys.stdout, sink
@@ -158,7 +158,7 @@ def _run_main(repo: Path, run_id: str) -> str:
         finally:
             sys.stdout = saved
     output = log_path.read_text()
-    assert exit_code == 0, f"run exited {exit_code}\n{output}"
+    assert exit_code == expected_exit, f"run exited {exit_code}\n{output}"
     return output
 
 
@@ -254,7 +254,8 @@ def triage_repo(tmp_path_factory) -> Path:
 def test_triage_runs_once_and_group_fails(triage_repo):
     run_id = "run-recipe-triage1"
     started = time.time()
-    output = _run_main(triage_repo, run_id)
+    # A run whose only group FAILED exits 1.
+    output = _run_main(triage_repo, run_id, expected_exit=1)
     elapsed = time.time() - started
     assert elapsed < RUN_TIMEOUT_S, f"the run did not terminate ({elapsed:.0f}s)\n{output}"
 
@@ -276,4 +277,4 @@ def test_triage_runs_once_and_group_fails(triage_repo):
     assert isinstance(response["diagnosis"], str) and response["diagnosis"], response
 
     failure = state["groups"]["g1"]["failure"] or ""
-    assert response["diagnosis"] in failure or failure, failure
+    assert response["diagnosis"] in failure, failure
