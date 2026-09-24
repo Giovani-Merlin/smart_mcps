@@ -339,6 +339,14 @@ suspend/wake, which \[[Suspend Cure]\] depends on), role (taken by SessionRole:
 base/coder/reviewer), executor (taken by the scheduler's Executor seam), agent
 type (a recipe is a category of work, not a category of agent)
 
+**Run Child**:
+The detached process a `run` \[[Unit Recipe]\] unit's declared command executes
+in — launched by the orchestrator itself, not by a worker, under the worker
+Landlock profile plus the unit's declared extra write paths, and re-adopted
+(not killed) when a resumed run finds it still alive (ADR 0011).
+_Avoid_: worker (a worker is a `claude` session), job (says nothing about
+ownership across a crash)
+
 **Artifact Manifest**:
 The run-level index of every declared output a run produced — one entry per
 artifact carrying its id, path, sha256, producing unit, declared schema,
