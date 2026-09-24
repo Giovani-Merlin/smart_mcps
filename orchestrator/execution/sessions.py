@@ -38,6 +38,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from orchestrator.config import worktree_path_rules
 from orchestrator.execution.confinement import (
     build_policy,
     default_cache_root,
@@ -697,7 +698,8 @@ class SessionRunner:
         if self.permission_mode:
             argv += ["--permission-mode", self.permission_mode]
         if self.allowed_tools:
-            argv += ["--allowedTools", ",".join(self.allowed_tools)]
+            allowed = [*self.allowed_tools, *worktree_path_rules(self.allowed_tools, cwd)]
+            argv += ["--allowedTools", ",".join(allowed)]
         denied = self.effective_disallowed_tools()
         if denied:
             argv += ["--disallowedTools", ",".join(denied)]

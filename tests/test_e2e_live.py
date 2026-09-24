@@ -376,7 +376,24 @@ def test_withholding_a_tool_leaves_nothing_at_all_on_the_wire(live_repo):
         )
 
 
-def test_a_kernel_write_denial_does_reach_the_wire(live_repo, tmp_path):
+@pytest.fixture
+def outside_dir():
+    """A directory outside every read-write root the probe grants.
+
+    Until 2026-09-23 this was `tmp_path / "outside"`, which sits under the
+    granted `/tmp`: the write always succeeded, and the test only ever failed
+    for an unrelated reason (a user hook's `uv run` erroring inside Landlock).
+    """
+    import tempfile
+
+    base = Path.home() / ".cache" / "smart-mcps-live-probe"
+    base.mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(dir=base))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def test_a_kernel_write_denial_does_reach_the_wire(live_repo, outside_dir):
     """The other half: where the corroborator is real.
 
     Here the tool *is* allowed, so the command runs and the kernel refuses it —
@@ -388,9 +405,9 @@ def test_a_kernel_write_denial_does_reach_the_wire(live_repo, tmp_path):
 
     from orchestrator.execution.confinement import ConfinementPolicy, landlock_preexec
 
-    forbidden = tmp_path / "outside"
-    forbidden.mkdir()
-    # Only the repo and /dev/null are writable; `forbidden` deliberately is not.
+    forbidden = outside_dir
+    # Only the repo, /dev/null and /tmp are writable; `forbidden` deliberately is
+    # not — which is why it cannot live under `tmp_path` (that is inside /tmp).
     policy = ConfinementPolicy(read_write=[live_repo, Path("/dev/null"), Path("/tmp")])
     preexec_fn, applied = landlock_preexec(policy)
     assert applied.applied

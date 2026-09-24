@@ -60,3 +60,18 @@ durable:
 | Anything the repo should carry        | `docs/` — committed                                                                 |
 
 Write it durably **as you go**, not at the end. A restart gives no notice.
+
+### In a remote container, only a pushed commit is durable
+
+The table above assumes a local machine, where `.orchestrator/` outlives the
+Claude Code process. **In Claude Code on the web the repository lives in an
+ephemeral container that is reclaimed after inactivity**, and `.orchestrator/`
+is gitignored — so it is destroyed with the container, and so is the
+auto-memory directory. `/tmp` and `.orchestrator/` are equally volatile there.
+
+So when the session is a remote container, the table collapses to one row:
+**anything worth keeping goes into `docs/` and is committed and pushed.**
+Use `.orchestrator/` for genuinely throwaway intermediates only, and promote
+anything a later session would want — findings, research, handoff notes —
+into committed documents before the work is done. `docs/research/` and
+`docs/handoffs/` exist for exactly this.

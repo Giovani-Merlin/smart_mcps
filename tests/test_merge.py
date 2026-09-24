@@ -9,7 +9,7 @@ import pytest
 
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
-from orchestrator.execution.review import MergeConflict
+from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.worktrees import (
     WorktreeError,
     create_worktree,

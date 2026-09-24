@@ -1,0 +1,1053 @@
+{
+  "run_id": "r20260923-163956",
+  "plan_path": "docs/plans/2026-09-23-001-refactor-review-loop-split-plan.md",
+  "plan_title": "Split the review loop into responsibility modules with zero behaviour change",
+  "plan_objective": "`orchestrator/execution/review.py` (1,993 lines, 97 KB) is one class,\n`_GroupExecution`, that owns every responsibility a group's execution has:\ngeneration lifecycle, the coder↔reviewer round, session records and usage,\nthe merge ladder, escalation and rewrite, surprises and prompt notes. The Unit\nRecipes brainstorm (R9 `shared-plumbing`) needs those responsibilities as\nseparately importable pieces so a second executor can compose the ones it\nneeds without inheriting the coder loop. This plan does exactly the split and\nnothing else: **six modules, one composition root, every method body moved\nbyte-for-byte, and the observable behaviour of a run identical.** It is the\n\"measurable beginning\" the brainstorm names — the measure is the existing\nsuite (1,935 tests on this branch, 104 s) passing with no test *body* changed,\nplus a layout test and a live-tier pass proving the new modules are real\nhomes and the heartbeat still beats.\n\nNot in scope: `orchestrator/cli.py` (3,258 lines) and `sessions.py` are left\nalone; no recipe, registry or dispatcher; no rename of `review.py` (that is\nPlan B's decision, when it becomes the `code` recipe's executor).",
+  "origin": "docs/brainstorms/2026-09-21-unit-recipes-requirements.md (Plan A of its Next Step; direct description for the refactor itself)",
+  "created_at": "2026-09-23T14:42:12.852824+00:00",
+  "finished_at": null,
+  "pr_url": null,
+  "git_range": {
+    "base_sha": "00ba02af80c4cc40ff23e9bd7e46460f715148e5",
+    "tip_sha": "85b4f8384e2da31a47c322e6bd7febc1d367c7db",
+    "available": true
+  },
+  "changed_files": [
+    {
+      "path": "docs/orchestrator-flow.md",
+      "added": 25,
+      "deleted": 9,
+      "group_id": "g5"
+    },
+    {
+      "path": "docs/runs/r20260923-163956/one-pager.md",
+      "added": 31,
+      "deleted": 0,
+      "group_id": null
+    },
+    {
+      "path": "orchestrator/cli.py",
+      "added": 4,
+      "deleted": 2,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/__init__.py",
+      "added": 9,
+      "deleted": 1,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/escalating.py",
+      "added": 320,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "orchestrator/execution/finish.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/generation.py",
+      "added": 625,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/host.py",
+      "added": 122,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/merge.py",
+      "added": 9,
+      "deleted": 1,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/execution/merge_ladder.py",
+      "added": 397,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "orchestrator/execution/records.py",
+      "added": 240,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/execution/review.py",
+      "added": 13,
+      "deleted": 1802,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/reviewer.py",
+      "added": 160,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/execution/surprises.py",
+      "added": 332,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/grouping/trace.py",
+      "added": 9,
+      "deleted": 2,
+      "group_id": null
+    },
+    {
+      "path": "orchestrator/observatory/runs.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_execution_layout.py",
+      "added": 194,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_finish.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_grouping_trace.py",
+      "added": 10,
+      "deleted": 0,
+      "group_id": null
+    },
+    {
+      "path": "tests/test_merge.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_merge_gate_triage.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_preflight.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_review_loop.py",
+      "added": 6,
+      "deleted": 10,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_review_recovery_log.py",
+      "added": 1,
+      "deleted": 2,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_review_scratch.py",
+      "added": 2,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_scheduler.py",
+      "added": 6,
+      "deleted": 5,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_surprise_board.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g6"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move",
+      "summary": "`orchestrator/execution/surprises.py` now owns `SurpriseBoard`, `surprise_residue`, `format_residue_report`, the `REASO…",
+      "report_summary": "Moved SurpriseBoard, surprise_residue, format_residue_report and the REASON_* constants out of review.py into a new orchestrator/execution/surprises.py, alongside a new SurpriseHandling mixin (_spread, _handle_pending_surprises, _apply_briefing, _apply_env_notice, _apply_operator_note) that _GroupExecution now inherits. Added orchestrator/execution/host.py declaring the ExecutionHost Protocol (data attributes set in _GroupExecution.__init__, plus _log/_rewrite as cross-mixin method stubs so mixins can annotate calls to methods other mixins own). review.py keeps transitional re-exports (using `as name` aliases to survive ruff's unused-import autofix) for every moved public name. Added tests/test_execution_layout.py with five mechanical checks: no import cycle, mixin annotations resolve against the host, every host attribute is actually set in __init__, no method-name collisions across mixins, and review.py still exposes the transitional names. Full suite (excluding llm marker) is 1940 passed (1935 baseline + 5 new layout tests), ruff is clean, and only new/expected files are in the diff.",
+      "spec": "# Group g1: surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move\n\nMembers:\n- u1-surprises: surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g2 consumes `u2-merge-ladder` — u2-merge-ladder: `orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_flake`, `_handle_untracked`, `_archive_coder_scratch`, `_classify_preflight`, `_resolve_conflict_in_place`, `_log_driver_run_items`, helpers `_short_test_summary`, `_move_paths`), and `MergeConflict` is defined in `orchestrator/execution/merge.py`, which no longer imports the loop; `review.py` re-exports `MergeConflict` transitionally.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U1. surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move\n\n- **Summary**: `orchestrator/execution/surprises.py` now owns `SurpriseBoard`, `surprise_residue`, `format_residue_report`, the `REASON_*` constants and a `SurpriseHandling` mixin (`_spread`, `_handle_pending_surprises`, `_apply_briefing`, `_apply_env_notice`, `_apply_operator_note`); `orchestrator/execution/host.py` declares the `ExecutionHost` Protocol every mixin annotates against; `tests/test_execution_layout.py` checks the layout mechanically; `review.py` keeps transitional re-exports of the moved public names until U7.\n- **Goal**: The surprise board, its residue helpers and the three prompt-note appliers live in `surprises.py`; `_GroupExecution` inherits `SurpriseHandling`; `review.py` re-exports `SurpriseBoard`, `surprise_residue`, `format_residue_report` and the `REASON_*` constants with the comment `# transitional re-export — removed in U7`, so no importer changes in this unit. `host.py` declares `ExecutionHost` with every attribute `_GroupExecution.__init__` sets, and `SurpriseHandling` annotates the ones it reads (`gid`, `group`, `deps`, `_briefing_notes`, `_operator_notes`, `_env_failure`, `_log`, `_rewrite`). The layout test lands here so every later unit inherits it.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/surprises.py` *(new, large)*, `orchestrator/execution/host.py` *(new, small)*, `tests/test_execution_layout.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_surprise_board.py tests/test_finish.py tests/test_review_scratch.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file (`git diff main --stat -- tests/` lists only `tests/test_execution_layout.py`).\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` `1935 passed` (the baseline count) plus the new layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.surprises as s; s.SurpriseBoard; s.surprise_residue; s.format_residue_report; s.REASON_UNKNOWN_GROUP; s.SurpriseHandling\"` — `Pass:` exits 0 (the new module is the definition site).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the layout test asserts (a) `orchestrator.execution.{surprises,host,review}` import with no cycle, (b) every class-level annotation on `SurpriseHandling` names an attribute of `ExecutionHost`, (c) every `ExecutionHost` attribute is assigned in `_GroupExecution.__init__` (checked by instantiating through `tests/test_review_loop.py`'s `Harness` and inspecting `vars()`), (d) no method name is defined on more than one mixin in `_GroupExecution.__mro__`.\n  - `Run: uv run ruff check orchestrator/execution tests/test_execution_layout.py` — `Pass:` clean.\n  - `Run: uv run smart-mcps-orchestrate finish --help` — `Pass:` prints usage (the `finish` command imports `surprise_residue` at module load through the re-export; a broken import fails here before any run does).\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any string the surprise board writes to disk or logs; must not reorder `SurpriseBoard._persist` output; must not edit any importer outside `review.py`.\n\n",
+      "merge_sha": "e74e024d6fa53b92918c2346e6a41601b31cad5a",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-surprises"
+      ],
+      "planned_files": [
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/review.py",
+        "orchestrator/execution/surprises.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/surprises.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T14:42:15.322974+00:00",
+          "ended_at": "2026-09-23T14:52:42.302+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 90,
+            "output": 36642,
+            "cache_creation": 159992
+          },
+          "cache_read_tokens": 5977809
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1940,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g2",
+      "name": "merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`",
+      "summary": "`orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_fla…",
+      "report_summary": "Moved the merge gate, untracked ladder, flake re-run, and in-place conflict resolution (_merge, _log_remerge, _should_rerun_for_flake, _handle_untracked, _archive_coder_scratch, _classify_preflight, _resolve_conflict_in_place, _log_driver_run_items, plus _short_test_summary and _move_paths) into a new MergeLadder mixin in orchestrator/execution/merge_ladder.py, byte-for-byte. MergeConflict now lives in execution/merge.py, which no longer imports review.py (the only backward edge is gone); review.py keeps a transitional re-export marked for U7 removal. _is_retry and _operator_surprise moved with the merge ladder per the spec (escalation handlers still use review.py's copy via merge_ladder's exports, to be relocated again in U3). Extended host.py's ExecutionHost Protocol with method stubs the ladder calls on the host (_escalate, _relaunch, _persist_coder_usage, _make_coder_on_turn, _spread) and updated test_execution_layout.py's MIXINS list and import-cycle probe to include MergeLadder. Full suite (1940 passed, 22 deselected) and all six verification items pass with a clean working tree; only import statements changed in the layout test infra file (no pre-existing test body edited).",
+      "spec": "# Group g2: merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`\n\nMembers:\n- u2-merge-ladder: merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g1 provides `u1-surprises` — u1-surprises: `orchestrator/execution/surprises.py` now owns `SurpriseBoard`, `surprise_residue`, `format_residue_report`, the `REASON_*` constants and a `SurpriseHandling` mixin (`_spread`, `_handle_pending_surprises`, `_apply_briefing`, `_apply_env_notice`, `_apply_operator_note`); `orchestrator/execution/host.py` declares the `ExecutionHost` Protocol every mixin annotates against; `tests/test_execution_layout.py` checks the layout mechanically; `review.py` keeps transitional re-exports of the moved public names until U7.\n\nDownstream groups:\n- g3 consumes `u3-escalating` — u3-escalating: `orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_resolve_needs_input`, `_on_content_filtered`, `_on_coder_stuck`, `_on_reviewer_hard`, `_rewrite`, `_relaunch`, `_persist_rewritten_spec`, `_decisions_text`, `_advance_generation`) and the helpers `_context_surprise`, `_is_retry`, `_operator_surprise`, which the merge ladder now imports from it; the existing `execution/escalation.py` (broker and policy transport) keeps its name and is not touched.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U2. merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`\n\n- **Summary**: `orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_flake`, `_handle_untracked`, `_archive_coder_scratch`, `_classify_preflight`, `_resolve_conflict_in_place`, `_log_driver_run_items`, helpers `_short_test_summary`, `_move_paths`), and `MergeConflict` is defined in `orchestrator/execution/merge.py`, which no longer imports the loop; `review.py` re-exports `MergeConflict` transitionally.\n- **Goal**: The merge path is one module a future executor can reuse or skip. `merge.py` defines `MergeConflict` and drops its import of `review.py`; `merge_ladder.py` and `review.py` import it from `merge.py`, and `review.py` re-exports it with the transitional comment so `cli.py` and the tests are untouched. `MergeLadder` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `_flake_reruns`, `_untracked_strikes`, `_heartbeat`, `_log`, `_escalate`, `_rewrite`, `_relaunch`, `_spread`, `_persist_coder_usage`, `_make_coder_on_turn`). `_is_retry` and `_operator_surprise` are still imported from `review.py` in this unit (they move with the escalation handlers in U3).\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/merge_ladder.py` *(new, large)*, `orchestrator/execution/merge.py`, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U1\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_merge.py tests/test_preflight.py tests/test_merge_gate_triage.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.merge as m; assert m.MergeConflict.__module__ == 'orchestrator.execution.merge'\"` — `Pass:` exits 0 (defined in `merge.py`, not merely imported there).\n  - `Run: uv run python -c \"import orchestrator.execution.merge, sys; assert 'orchestrator.execution.review' not in sys.modules\"` — `Pass:` exits 0 (importing the merge implementation no longer loads the loop).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `MergeLadder` is in the layout test's mixin list and all four layout assertions hold.\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the untracked ladder's strike count, the flake re-run count, or any log line the merge gate emits; must not edit any importer outside `review.py` and `merge.py`.\n\n",
+      "merge_sha": "945a68866296b25e578951b440ee4edcb678ac64",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u2-merge-ladder"
+      ],
+      "planned_files": [
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/merge.py",
+        "orchestrator/execution/merge_ladder.py",
+        "orchestrator/execution/review.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/merge.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T14:52:45.764692+00:00",
+          "ended_at": "2026-09-23T14:58:00.813+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 48,
+            "output": 10336,
+            "cache_creation": 175412
+          },
+          "cache_read_tokens": 1807035
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1940,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g3",
+      "name": "escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`",
+      "summary": "`orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_re…",
+      "report_summary": "Moved the EscalationHandlers mixin (_escalate, _approve_gate, _diff, _resolve_needs_input, _on_content_filtered, _on_coder_stuck, _on_reviewer_hard, _rewrite, _relaunch, _persist_rewritten_spec, _decisions_text, _advance_generation) plus the module helpers _context_surprise, _is_retry, _operator_surprise out of review.py's _GroupExecution into a new orchestrator/execution/escalating.py, byte-for-byte (moved via an AST-slicing script, no hand-retyping). merge_ladder.py now imports _is_retry/_operator_surprise from escalating.py instead of defining them. host.py's ExecutionHost Protocol gained _round_tag and _worker_call method stubs that EscalationHandlers' annotations reference. tests/test_execution_layout.py was extended with an EscalationHandlers mixin entry, updated import-order cycle-check cases, and a new acyclic-import-graph test over the five split modules. The whole suite (minus one llm marker) passes at 1940/1941, with the single failure (test_cli_price.py::TestRealPlanCrossCheck) confirmed pre-existing and unrelated (a pydantic literal mismatch in orchestrator/grouping/trace.py, a file this group never touches).",
+      "spec": "# Group g3: escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`\n\nMembers:\n- u3-escalating: escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g2 provides `u2-merge-ladder` — u2-merge-ladder: `orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_flake`, `_handle_untracked`, `_archive_coder_scratch`, `_classify_preflight`, `_resolve_conflict_in_place`, `_log_driver_run_items`, helpers `_short_test_summary`, `_move_paths`), and `MergeConflict` is defined in `orchestrator/execution/merge.py`, which no longer imports the loop; `review.py` re-exports `MergeConflict` transitionally.\n\nDownstream groups:\n- g4 consumes `u4-records-and-reviewer` — u4-records-and-reviewer: `orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`, `_persist_reviewer_usage`, `_make_coder_on_turn`, `_adopt_actual_session_id`, `_refresh_transcript`, `_watch_transcript`, `_round_tag`, `_log_coder_session_end`) plus `_transcript_str` and `_spec_hash`; `orchestrator/execution/reviewer.py` owns the `ReviewerRound` mixin (`_review_round`, `_archive_review_scratch`); `review.py` re-exports `_spec_hash` transitionally.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U3. escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`\n\n- **Summary**: `orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_resolve_needs_input`, `_on_content_filtered`, `_on_coder_stuck`, `_on_reviewer_hard`, `_rewrite`, `_relaunch`, `_persist_rewritten_spec`, `_decisions_text`, `_advance_generation`) and the helpers `_context_surprise`, `_is_retry`, `_operator_surprise`, which the merge ladder now imports from it; the existing `execution/escalation.py` (broker and policy transport) keeps its name and is not touched.\n- **Goal**: Every path that raises an escalation, answers one, or spends a rewrite or relaunch is one module, so a second executor gets the Operator Decision ledger and the HITL gates by inheriting one class. `EscalationHandlers` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `handoff_prompt`, `rewrites`, `sessions_spawned`, `_questions`, `_operator_notes`, `_current_round_no`, `_heartbeat`, `_log`, `_round_tag`, `_spread`, `_worker_call`, `_make_coder_on_turn`). `merge_ladder.py` imports `_is_retry` and `_operator_surprise` from `escalating.py`.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/escalating.py` *(new, large)*, `orchestrator/execution/merge_ladder.py`, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U2\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_merge_gate_triage.py tests/test_review_recovery_log.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.escalating as e; e.EscalationHandlers; e._is_retry; e._operator_surprise; e._context_surprise\"` — `Pass:` exits 0.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `EscalationHandlers` is in the mixin list; the import graph over `execution/{surprises,merge_ladder,escalating,host,review}.py` is acyclic (`merge_ladder → escalating` is the one allowed inter-mixin edge and the test names it).\n  - `Run: uv run smart-mcps-orchestrate answer --help` — `Pass:` prints usage (the answer path imports the escalation broker and ledger the handlers depend on).\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the order in which `_escalate` writes the request file, logs, and awaits the broker; must not change any `EscalationKind` routing; must not touch `execution/escalation.py`.\n\n",
+      "merge_sha": "974fc87aaf3df06a2a383da2113bf21864381649",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-escalating"
+      ],
+      "planned_files": [
+        "orchestrator/execution/escalating.py",
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/merge_ladder.py",
+        "orchestrator/execution/review.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/escalating.py",
+        "orchestrator/execution/merge_ladder.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T14:58:03.532680+00:00",
+          "ended_at": "2026-09-23T15:07:55.391+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 54,
+            "output": 10977,
+            "cache_creation": 148175
+          },
+          "cache_read_tokens": 2027808
+        }
+      ],
+      "escalations": [
+        {
+          "id": "9a9ce09cee54",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g3: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20260923-163956/groups/g3/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20260923-163956/groups/g3/preflight-check-pytest.log",
+          "created_at": "2026-09-23T15:04:48.064211Z",
+          "request_path": "escalations/request-9a9ce09cee54.json",
+          "response_path": "escalations/response-9a9ce09cee54.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1942,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g4",
+      "name": "records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`",
+      "summary": "`orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`,…",
+      "report_summary": "Split session bookkeeping and the reviewer round out of orchestrator/execution/review.py: SessionRecords (manifest entries, per-session usage, transcript watching, round tag, plus _transcript_str/_spec_hash) now lives in execution/records.py, and ReviewerRound (the reviewer ferry and scratch archive) in execution/reviewer.py. review.py keeps a transitional re-export of _spec_hash and composes both new mixins onto _GroupExecution with method bodies moved byte-for-byte. host.py gained the cross-mixin method stubs the new mixins call on the host (_record, _launch_call, _decisions_text, _persist_reviewer_usage). test_execution_layout.py (a new-in-this-plan test file, not a pre-existing one) was extended to include both new modules in its import-order, MIXINS list, and acyclic-graph checks. Full suite (1942 passed, 22 deselected) and ruff are clean; committed as 95e08d5.",
+      "spec": "# Group g4: records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`\n\nMembers:\n- u4-records-and-reviewer: records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g3 provides `u3-escalating` — u3-escalating: `orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_resolve_needs_input`, `_on_content_filtered`, `_on_coder_stuck`, `_on_reviewer_hard`, `_rewrite`, `_relaunch`, `_persist_rewritten_spec`, `_decisions_text`, `_advance_generation`) and the helpers `_context_surprise`, `_is_retry`, `_operator_surprise`, which the merge ladder now imports from it; the existing `execution/escalation.py` (broker and policy transport) keeps its name and is not touched.\n\nDownstream groups:\n- g5 consumes `u5-generation` — u5-generation: `orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body`, `_find_reentry_session`, `_reenter`, `_launch_call`, `_reentry_fallback`, `_worker_call`, `_breaker_reason`, `_retire`, `_prepare_handoff`, and `_ContentFilterStop`); `orchestrator/execution/review.py` is left with `ReviewDeps`, `make_executor`, the transitional re-exports, and `_GroupExecution` composed of the six mixins with only `__init__`, `_current_child`, `_on_cure` and `_log`; `docs/orchestrator-flow.md` and the `execution/__init__.py` docstring describe the layout.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U4. records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`\n\n- **Summary**: `orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`, `_persist_reviewer_usage`, `_make_coder_on_turn`, `_adopt_actual_session_id`, `_refresh_transcript`, `_watch_transcript`, `_round_tag`, `_log_coder_session_end`) plus `_transcript_str` and `_spec_hash`; `orchestrator/execution/reviewer.py` owns the `ReviewerRound` mixin (`_review_round`, `_archive_review_scratch`); `review.py` re-exports `_spec_hash` transitionally.\n- **Goal**: Session bookkeeping — the manifest entries, per-session usage, transcript watching and the round tag — is a module any executor can inherit without the coder loop, and the reviewer ferry is its own module. `review.py` re-exports `_spec_hash` with the transitional comment so `tests/test_review_loop.py` is untouched. `SessionRecords` annotates (`deps`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `sessions_spawned`, `_current_round_no`, `_heartbeat`, `_log`); `ReviewerRound` annotates (`deps`, `group`, `gid`, `generation`, `workspace`, `reviewer_sid`, `extra_pass_done`, `_log`, `_round_tag`, `_record`, `_spread`, `_worker_call`, `_launch_call`, `_decisions_text`, `_persist_reviewer_usage`).\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/records.py` *(new, medium)*, `orchestrator/execution/reviewer.py` *(new, medium)*, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U3\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_review_scratch.py tests/test_liveness_wiring.py tests/test_suspend_cure.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"from orchestrator.execution.records import _spec_hash, SessionRecords; from orchestrator.execution.reviewer import ReviewerRound; assert _spec_hash.__module__ == 'orchestrator.execution.records'\"` — `Pass:` exits 0.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` both new mixins are in the list; every annotated attribute is set by `_GroupExecution.__init__`; no duplicate method names across the five mixins now present.\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the session display names, the artifact names (`artifact_name(\"report\"|\"verdict\", gen, round)`), or the usage fields copied into `SessionEntry`.\n\n",
+      "merge_sha": "6826bf2ec2a66abdff89898ca34f09755bda8320",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u4-records-and-reviewer"
+      ],
+      "planned_files": [
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/records.py",
+        "orchestrator/execution/review.py",
+        "orchestrator/execution/reviewer.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/records.py",
+        "orchestrator/execution/reviewer.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T15:07:58.620066+00:00",
+          "ended_at": "2026-09-23T15:12:54.523+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 36,
+            "output": 9768,
+            "cache_creation": 138329
+          },
+          "cache_read_tokens": 1263335
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1942,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g4/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g5",
+      "name": "generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout",
+      "summary": "`orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body…",
+      "report_summary": "Moved the generation lifecycle (run/_run_generation/_run_generation_body/_reenter/_find_reentry_session/_launch_call/_reentry_fallback/_worker_call/_breaker_reason/_retire/_prepare_handoff and the _ContentFilterStop exception) from review.py into a new GenerationLoop mixin in orchestrator/execution/generation.py. review.py is now the 226-line composition root holding only ReviewDeps, make_executor, and _GroupExecution's __init__/_current_child/_on_cure/_log, with the class line composing GenerationLoop, ReviewerRound, SessionRecords, MergeLadder, EscalationHandlers, SurpriseHandling exactly as specified. Extended host.py's ExecutionHost Protocol with the cross-mixin method stubs GenerationLoop needs (approve_gate, merge, review_round, resolve_needs_input, etc.). Updated tests/test_execution_layout.py to include GenerationLoop in MIXINS and the generation module in the acyclic import-graph check. Updated docs/orchestrator-flow.md with a six-module table and execution/__init__.py's docstring. Full suite (1942 tests) passes, ruff and mdformat are clean, and the working tree is clean with only the expected files changed.",
+      "spec": "# Group g5: generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout\n\nMembers:\n- u5-generation: generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g4 provides `u4-records-and-reviewer` — u4-records-and-reviewer: `orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`, `_persist_reviewer_usage`, `_make_coder_on_turn`, `_adopt_actual_session_id`, `_refresh_transcript`, `_watch_transcript`, `_round_tag`, `_log_coder_session_end`) plus `_transcript_str` and `_spec_hash`; `orchestrator/execution/reviewer.py` owns the `ReviewerRound` mixin (`_review_round`, `_archive_review_scratch`); `review.py` re-exports `_spec_hash` transitionally.\n\nDownstream groups:\n- g6 consumes `u6-test-importers` — u6-test-importers: The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_residue`, `format_residue_report` and `REASON_*` from `execution/surprises.py`, `MergeConflict` from `execution/merge.py`, `_spec_hash` from `execution/records.py`, and `GroupFailure` from `execution/scheduler.py`; only import statements change.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U5. generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout\n\n- **Summary**: `orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body`, `_find_reentry_session`, `_reenter`, `_launch_call`, `_reentry_fallback`, `_worker_call`, `_breaker_reason`, `_retire`, `_prepare_handoff`, and `_ContentFilterStop`); `orchestrator/execution/review.py` is left with `ReviewDeps`, `make_executor`, the transitional re-exports, and `_GroupExecution` composed of the six mixins with only `__init__`, `_current_child`, `_on_cure` and `_log`; `docs/orchestrator-flow.md` and the `execution/__init__.py` docstring describe the layout.\n- **Goal**: `review.py` is under 400 lines and reads as the composition root of today's coder-and-reviewer machine: the dependency record, the factory, the `__init__` that births every attribute `ExecutionHost` lists, and the class line `class _GroupExecution(GenerationLoop, ReviewerRound, SessionRecords, MergeLadder, EscalationHandlers, SurpriseHandling)`. `docs/orchestrator-flow.md` gains a short \"execution modules\" table (one row per module, what it owns, which host attributes it reads) replacing the single `review.py` sentence at line 52; the `execution/__init__.py` docstring lists the modules.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/generation.py` *(new, large)*, `orchestrator/execution/host.py`, `orchestrator/execution/__init__.py`, `docs/orchestrator-flow.md`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U4\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures, and `git diff main --stat -- tests/` still lists only `tests/test_execution_layout.py`.\n  - `Run: wc -l orchestrator/execution/review.py` — `Pass:` under 400 lines, and `grep -c \"    def \\|    async def \" orchestrator/execution/review.py` reports at most 5 (the `__init__`, `_current_child`, `_on_cure`, `_log` and the `executor` closure).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` all six mixins are in the list; the import graph over the seven `execution/` modules is acyclic; every `ExecutionHost` attribute is set in `__init__`; no duplicate method names across mixins.\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_e2e_stub.py tests/test_suspend_cure.py tests/test_liveness_wiring.py` — `Pass:` the stub end-to-end run, the Suspend Cure path and the liveness wiring pass unchanged (these exercise heartbeat, probe, and generation retirement through `make_executor`).\n  - `Run: uv run ruff check orchestrator/execution && uv run mdformat --check docs/orchestrator-flow.md` — `Pass:` both clean.\n  - `Run: grep -n \"review.py\" docs/orchestrator-flow.md` — `Pass:` the line describes `review.py` as the composition root and the table names all six modules.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not rename `review.py`, `ReviewDeps` or `make_executor`; must not remove the transitional re-exports (U7 does); must not change the MRO-visible behaviour (no mixin overrides another's method; the layout test enforces it).\n\n",
+      "merge_sha": "13f8237eb56e3c920dc5d7850c30d36a760fec0e",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u5-generation"
+      ],
+      "planned_files": [
+        "docs/orchestrator-flow.md",
+        "orchestrator/execution/__init__.py",
+        "orchestrator/execution/generation.py",
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/review.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "docs/orchestrator-flow.md",
+        "orchestrator/execution/__init__.py",
+        "orchestrator/execution/generation.py",
+        "orchestrator/execution/host.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T15:12:57.018727+00:00",
+          "ended_at": "2026-09-23T15:25:23.056+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 102,
+            "output": 43519,
+            "cache_creation": 158284
+          },
+          "cache_read_tokens": 7547987
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1942,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g5/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g6",
+      "name": "test-importers — the eleven test files import every moved name from its new home, touching import statements only",
+      "summary": "The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_resid…",
+      "report_summary": "Updated import statements in the nine test files that referenced moved names in orchestrator/execution/review.py: SurpriseBoard/residue helpers now come from execution.surprises, MergeConflict from execution.merge, _spec_hash from execution.records, and GroupFailure from execution.scheduler. Only import blocks changed; no test bodies, fixtures, or assertions were touched. Ran the full suite (1942 passed, 22 deselected, no failures), confirmed no test imports a moved name from review.py or imports GroupFailure via execution.review, and ruff check on tests is clean. Committed the change.",
+      "spec": "# Group g6: test-importers — the eleven test files import every moved name from its new home, touching import statements only\n\nMembers:\n- u6-test-importers: test-importers — the eleven test files import every moved name from its new home, touching import statements only\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g5 provides `u5-generation` — u5-generation: `orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body`, `_find_reentry_session`, `_reenter`, `_launch_call`, `_reentry_fallback`, `_worker_call`, `_breaker_reason`, `_retire`, `_prepare_handoff`, and `_ContentFilterStop`); `orchestrator/execution/review.py` is left with `ReviewDeps`, `make_executor`, the transitional re-exports, and `_GroupExecution` composed of the six mixins with only `__init__`, `_current_child`, `_on_cure` and `_log`; `docs/orchestrator-flow.md` and the `execution/__init__.py` docstring describe the layout.\n\nDownstream groups:\n- g7 consumes `u7-package-importers` — u7-package-importers: `orchestrator/cli.py`, `orchestrator/execution/finish.py` and `orchestrator/observatory/runs.py` import the moved names from `execution/surprises.py` and `execution/merge.py`; `review.py` drops every `# transitional re-export` line and the layout test now asserts it defines none of the moved names; the run driver executes the live tier as the final oracle.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U6. test-importers — the eleven test files import every moved name from its new home, touching import statements only\n\n- **Summary**: The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_residue`, `format_residue_report` and `REASON_*` from `execution/surprises.py`, `MergeConflict` from `execution/merge.py`, `_spec_hash` from `execution/records.py`, and `GroupFailure` from `execution/scheduler.py`; only import statements change.\n- **Goal**: Every test imports each name from its definition site, so the transitional re-exports have no test consumer left. The worker locates each block with `grep -n \"from orchestrator.execution.review import\" tests/` and edits that block and nothing else; it does not open these files in full (the estimator prices this unit as a full read of 292 KB of tests — the real work is eleven import blocks). `ReviewDeps`, `make_executor` and `_GroupExecution` keep importing from `review.py`, which remains their home.\n- **Files**: `tests/test_finish.py`, `tests/test_review_scratch.py`, `tests/test_suspend_cure.py`, `tests/test_scheduler.py`, `tests/test_review_loop.py`, `tests/test_surprise_board.py`, `tests/test_merge.py`, `tests/test_liveness_wiring.py`, `tests/test_review_recovery_log.py`, `tests/test_preflight.py`, `tests/test_merge_gate_triage.py`\n- **Symbols**: —\n- **Depends-on**: U5\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: git diff main -U0 -- tests/ ':!tests/test_execution_layout.py' | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (every changed line in a pre-existing test file is part of an import statement).\n  - `Run: grep -rn \"from orchestrator.execution.review import\" tests/ | grep -vE \"ReviewDeps|make_executor|_GroupExecution\"` — `Pass:` prints nothing (no test imports a moved name from `review.py`).\n  - `Run: grep -rn \"GroupFailure\" tests/ | grep \"execution.review\"` — `Pass:` prints nothing (`GroupFailure` comes from `scheduler.py`).\n  - `Run: uv run ruff check tests` — `Pass:` clean (import blocks re-sorted where ruff's isort rule applies).\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any test body, fixture, or assertion; must not touch `orchestrator/`.\n\n",
+      "merge_sha": "56f08aabc6a9e49dec0d92595c6a1a3690a3aa41",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u6-test-importers"
+      ],
+      "planned_files": [
+        "tests/test_finish.py",
+        "tests/test_liveness_wiring.py",
+        "tests/test_merge.py",
+        "tests/test_merge_gate_triage.py",
+        "tests/test_preflight.py",
+        "tests/test_review_loop.py",
+        "tests/test_review_recovery_log.py",
+        "tests/test_review_scratch.py",
+        "tests/test_scheduler.py",
+        "tests/test_surprise_board.py",
+        "tests/test_suspend_cure.py"
+      ],
+      "touched_files": [
+        "tests/test_finish.py",
+        "tests/test_merge.py",
+        "tests/test_merge_gate_triage.py",
+        "tests/test_preflight.py",
+        "tests/test_review_loop.py",
+        "tests/test_review_recovery_log.py",
+        "tests/test_review_scratch.py",
+        "tests/test_surprise_board.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T15:25:26.367172+00:00",
+          "ended_at": "2026-09-23T15:29:22.529+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 20,
+            "output": 3683,
+            "cache_creation": 109829
+          },
+          "cache_read_tokens": 566403
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 1942,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g6/preflight-junit.xml"
+      }
+    },
+    {
+      "id": "g7",
+      "name": "package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed",
+      "summary": "`orchestrator/cli.py`, `orchestrator/execution/finish.py` and `orchestrator/observatory/runs.py` import the moved names…",
+      "report_summary": "The U7 package-importer switch was already fully implemented and committed in this worktree (recovered from a prior interrupted run, HEAD c86bf40). Verified rather than re-did the work: cli.py imports MergeConflict from execution/merge.py and SurpriseBoard/format_residue_report/surprise_residue from execution/surprises.py; finish.py imports the same three surprise names from surprises.py; observatory/runs.py imports surprise_residue from surprises.py; review.py contains no 'transitional re-export' comments; the full non-llm suite (1943 passed, 22 deselected), the layout test (7 passed, including the no-re-export assertion), module-import checks, the import-statement-only diff check, and ruff all pass cleanly. Working tree is clean with nothing to commit.",
+      "spec": "# Group g7: package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed\n\nMembers:\n- u7-package-importers: package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g6 provides `u6-test-importers` — u6-test-importers: The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_residue`, `format_residue_report` and `REASON_*` from `execution/surprises.py`, `MergeConflict` from `execution/merge.py`, `_spec_hash` from `execution/records.py`, and `GroupFailure` from `execution/scheduler.py`; only import statements change.\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U7. package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed\n\n- **Summary**: `orchestrator/cli.py`, `orchestrator/execution/finish.py` and `orchestrator/observatory/runs.py` import the moved names from `execution/surprises.py` and `execution/merge.py`; `review.py` drops every `# transitional re-export` line and the layout test now asserts it defines none of the moved names; the run driver executes the live tier as the final oracle.\n- **Goal**: The end state the decisions describe: `review.py` defines `ReviewDeps`, `make_executor` and `_GroupExecution` and nothing that lives elsewhere. The worker edits the import block in each of the three package files (located with `grep -n \"from orchestrator.execution.review import\"`) and does not open `cli.py` in full (the estimator prices it as a 138 KB read; the real edit is one import block). The layout test gains the assertion that `orchestrator.execution.review` has no attribute named `SurpriseBoard`, `surprise_residue`, `format_residue_report`, `REASON_UNKNOWN_GROUP`, `MergeConflict` or `_spec_hash`.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/cli.py`, `orchestrator/execution/finish.py`, `orchestrator/observatory/runs.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U6\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: grep -n \"transitional re-export\" orchestrator/execution/review.py` — `Pass:` prints nothing.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the no-re-export assertion holds alongside the four layout assertions.\n  - `Run: uv run smart-mcps-orchestrate status --help && uv run smart-mcps-orchestrate finish --help && uv run python -c \"import orchestrator.observatory.runs\"` — `Pass:` all three import cleanly at module load.\n  - `Run: git diff main -U0 -- orchestrator/cli.py orchestrator/execution/finish.py orchestrator/observatory/runs.py | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (import statements only in the three package files).\n  - `Run (driver): uv run pytest -q -m llm` — `Pass:` every live-tier test passes with a real `claude` child; the driver records the command output as evidence. This is the external oracle for heartbeat parity and cannot run in a worker sandbox.\n  - `Run: uv run ruff check orchestrator tests` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any function body in the three package files; must not rename `review.py`; must not narrow the driver-run live tier — `Run (driver): uv run pytest -q -m llm` runs the full `-m llm` set (all five `tests/test_*_live.py` and `tests/test_grouping_llm.py`), not only the heartbeat-parity files (decided 2026-09-23).\n\n<!-- deepened 2026-09-23 (sandbox sweep) against plan-content c28b679e3e79 -->\n\n",
+      "merge_sha": "85b4f8384e2da31a47c322e6bd7febc1d367c7db",
+      "state": "completed",
+      "verdict_status": "changes_required",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u7-package-importers"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/execution/finish.py",
+        "orchestrator/execution/review.py",
+        "orchestrator/observatory/runs.py",
+        "tests/test_execution_layout.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/execution/finish.py",
+        "orchestrator/execution/review.py",
+        "orchestrator/observatory/runs.py",
+        "tests/test_execution_layout.py",
+        "tests/test_scheduler.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T15:29:25.059603+00:00",
+          "ended_at": "2026-09-23T15:44:29.693303+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": "re-entry fallback: spec rewritten since the session started",
+          "tokens": {
+            "input": 68,
+            "output": 12570,
+            "cache_creation": 213726
+          },
+          "cache_read_tokens": 2578083
+        },
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-09-23T15:44:29.693303+00:00",
+          "ended_at": "2026-09-23T15:48:02.091+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 10,
+            "output": 1628,
+            "cache_creation": 101623
+          },
+          "cache_read_tokens": 219995
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [
+        "[g7-6] reported skipped: `Run (driver): uv run pytest -q -m llm` — `Pass:` every live-tier test passes with a real `claude` child; the driver records the command output as evidence. This is the external oracle for heartbeat parity and cannot run in a worker sandbox. — Driver-run item, not runnable in a worker sandbox. My -m llm attempt was moved to the background and killed when the session ended, so there is no result. The driver must run it."
+      ],
+      "required_change_paths": [
+        "groups/g7/verdict-g1-r1.json"
+      ],
+      "tests": {
+        "ran": true,
+        "total": 1943,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g7/preflight-junit.xml"
+      }
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-surprises",
+      "group_id": "g1",
+      "title": "surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move",
+      "summary": "`orchestrator/execution/surprises.py` now owns `SurpriseBoard`, `surprise_residue`, `format_residue_report`, the `REASON_*` constants and a `SurpriseHandling` mixin (`_spread`, `_handle_pending_surprises`, `_apply_briefing`, `_apply_env_notice`, `_apply_operator_note`); `orchestrator/execution/host.py` declares the `ExecutionHost` Protocol every mixin annotates against; `tests/test_execution_layout.py` checks the layout mechanically; `review.py` keeps transitional re-exports of the moved public names until U7.",
+      "goal": "The surprise board, its residue helpers and the three prompt-note appliers live in `surprises.py`; `_GroupExecution` inherits `SurpriseHandling`; `review.py` re-exports `SurpriseBoard`, `surprise_residue`, `format_residue_report` and the `REASON_*` constants with the comment `# transitional re-export — removed in U7`, so no importer changes in this unit. `host.py` declares `ExecutionHost` with every attribute `_GroupExecution.__init__` sets, and `SurpriseHandling` annotates the ones it reads (`gid`, `group`, `deps`, `_briefing_notes`, `_operator_notes`, `_env_failure`, `_log`, `_rewrite`). The layout test lands here so every later unit inherits it.",
+      "section_text": "### U1. surprises — SurpriseBoard, residue reporting and the prompt-note channel move to `execution/surprises.py`, with the host Protocol and the layout test that guard every later move\n\n- **Summary**: `orchestrator/execution/surprises.py` now owns `SurpriseBoard`, `surprise_residue`, `format_residue_report`, the `REASON_*` constants and a `SurpriseHandling` mixin (`_spread`, `_handle_pending_surprises`, `_apply_briefing`, `_apply_env_notice`, `_apply_operator_note`); `orchestrator/execution/host.py` declares the `ExecutionHost` Protocol every mixin annotates against; `tests/test_execution_layout.py` checks the layout mechanically; `review.py` keeps transitional re-exports of the moved public names until U7.\n- **Goal**: The surprise board, its residue helpers and the three prompt-note appliers live in `surprises.py`; `_GroupExecution` inherits `SurpriseHandling`; `review.py` re-exports `SurpriseBoard`, `surprise_residue`, `format_residue_report` and the `REASON_*` constants with the comment `# transitional re-export — removed in U7`, so no importer changes in this unit. `host.py` declares `ExecutionHost` with every attribute `_GroupExecution.__init__` sets, and `SurpriseHandling` annotates the ones it reads (`gid`, `group`, `deps`, `_briefing_notes`, `_operator_notes`, `_env_failure`, `_log`, `_rewrite`). The layout test lands here so every later unit inherits it.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/surprises.py` *(new, large)*, `orchestrator/execution/host.py` *(new, small)*, `tests/test_execution_layout.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_surprise_board.py tests/test_finish.py tests/test_review_scratch.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file (`git diff main --stat -- tests/` lists only `tests/test_execution_layout.py`).\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` `1935 passed` (the baseline count) plus the new layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.surprises as s; s.SurpriseBoard; s.surprise_residue; s.format_residue_report; s.REASON_UNKNOWN_GROUP; s.SurpriseHandling\"` — `Pass:` exits 0 (the new module is the definition site).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the layout test asserts (a) `orchestrator.execution.{surprises,host,review}` import with no cycle, (b) every class-level annotation on `SurpriseHandling` names an attribute of `ExecutionHost`, (c) every `ExecutionHost` attribute is assigned in `_GroupExecution.__init__` (checked by instantiating through `tests/test_review_loop.py`'s `Harness` and inspecting `vars()`), (d) no method name is defined on more than one mixin in `_GroupExecution.__mro__`.\n  - `Run: uv run ruff check orchestrator/execution tests/test_execution_layout.py` — `Pass:` clean.\n  - `Run: uv run smart-mcps-orchestrate finish --help` — `Pass:` prints usage (the `finish` command imports `surprise_residue` at module load through the re-export; a broken import fails here before any run does).\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any string the surprise board writes to disk or logs; must not reorder `SurpriseBoard._persist` output; must not edit any importer outside `review.py`.\n\n",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider tests/test_surprise_board.py tests/test_finish.py tests/test_review_scratch.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file (`git diff main --stat -- tests/` lists only `tests/test_execution_layout.py`).",
+          "status": "pass",
+          "evidence": "142 passed; git diff main --stat -- tests/ shows only new files (test_execution_layout.py), no pre-existing test file edited"
+        },
+        {
+          "item_id": "g1-2",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` `1935 passed` (the baseline count) plus the new layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1940 passed, 22 deselected (1935 baseline + 5 new layout tests)"
+        },
+        {
+          "item_id": "g1-3",
+          "description": "`Run: uv run python -c \"import orchestrator.execution.surprises as s; s.SurpriseBoard; s.surprise_residue; s.format_residue_report; s.REASON_UNKNOWN_GROUP; s.SurpriseHandling\"` — `Pass:` exits 0 (the new module is the definition site).",
+          "status": "pass",
+          "evidence": "import exits 0"
+        },
+        {
+          "item_id": "g1-4",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the layout test asserts (a) `orchestrator.execution.{surprises,host,review}` import with no cycle, (b) every class-level annotation on `SurpriseHandling` names an attribute of `ExecutionHost`, (c) every `ExecutionHost` attribute is assigned in `_GroupExecution.__init__` (checked by instantiating through `tests/test_review_loop.py`'s `Harness` and inspecting `vars()`), (d) no method name is defined on more than one mixin in `_GroupExecution.__mro__`.",
+          "status": "pass",
+          "evidence": "all 5 layout-test assertions (a-d plus a re-export guard) pass"
+        },
+        {
+          "item_id": "g1-5",
+          "description": "`Run: uv run ruff check orchestrator/execution tests/test_execution_layout.py` — `Pass:` clean.",
+          "status": "pass",
+          "evidence": "ruff check clean"
+        },
+        {
+          "item_id": "g1-6",
+          "description": "`Run: uv run smart-mcps-orchestrate finish --help` — `Pass:` prints usage (the `finish` command imports `surprise_residue` at module load through the re-export; a broken import fails here before any run does).",
+          "status": "pass",
+          "evidence": "prints usage"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-merge-ladder",
+      "group_id": "g2",
+      "title": "merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`",
+      "summary": "`orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_flake`, `_handle_untracked`, `_archive_coder_scratch`, `_classify_preflight`, `_resolve_conflict_in_place`, `_log_driver_run_items`, helpers `_short_test_summary`, `_move_paths`), and `MergeConflict` is defined in `orchestrator/execution/merge.py`, which no longer imports the loop; `review.py` re-exports `MergeConflict` transitionally.",
+      "goal": "The merge path is one module a future executor can reuse or skip. `merge.py` defines `MergeConflict` and drops its import of `review.py`; `merge_ladder.py` and `review.py` import it from `merge.py`, and `review.py` re-exports it with the transitional comment so `cli.py` and the tests are untouched. `MergeLadder` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `_flake_reruns`, `_untracked_strikes`, `_heartbeat`, `_log`, `_escalate`, `_rewrite`, `_relaunch`, `_spread`, `_persist_coder_usage`, `_make_coder_on_turn`). `_is_retry` and `_operator_surprise` are still imported from `review.py` in this unit (they move with the escalation handlers in U3).",
+      "section_text": "### U2. merge-ladder — the merge gate, untracked ladder, flake re-run and conflict resolution move to `execution/merge_ladder.py`; `MergeConflict` moves to `execution/merge.py`\n\n- **Summary**: `orchestrator/execution/merge_ladder.py` owns the `MergeLadder` mixin (`_merge`, `_log_remerge`, `_should_rerun_for_flake`, `_handle_untracked`, `_archive_coder_scratch`, `_classify_preflight`, `_resolve_conflict_in_place`, `_log_driver_run_items`, helpers `_short_test_summary`, `_move_paths`), and `MergeConflict` is defined in `orchestrator/execution/merge.py`, which no longer imports the loop; `review.py` re-exports `MergeConflict` transitionally.\n- **Goal**: The merge path is one module a future executor can reuse or skip. `merge.py` defines `MergeConflict` and drops its import of `review.py`; `merge_ladder.py` and `review.py` import it from `merge.py`, and `review.py` re-exports it with the transitional comment so `cli.py` and the tests are untouched. `MergeLadder` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `_flake_reruns`, `_untracked_strikes`, `_heartbeat`, `_log`, `_escalate`, `_rewrite`, `_relaunch`, `_spread`, `_persist_coder_usage`, `_make_coder_on_turn`). `_is_retry` and `_operator_surprise` are still imported from `review.py` in this unit (they move with the escalation handlers in U3).\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/merge_ladder.py` *(new, large)*, `orchestrator/execution/merge.py`, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U1\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_merge.py tests/test_preflight.py tests/test_merge_gate_triage.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.merge as m; assert m.MergeConflict.__module__ == 'orchestrator.execution.merge'\"` — `Pass:` exits 0 (defined in `merge.py`, not merely imported there).\n  - `Run: uv run python -c \"import orchestrator.execution.merge, sys; assert 'orchestrator.execution.review' not in sys.modules\"` — `Pass:` exits 0 (importing the merge implementation no longer loads the loop).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `MergeLadder` is in the layout test's mixin list and all four layout assertions hold.\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the untracked ladder's strike count, the flake re-run count, or any log line the merge gate emits; must not edit any importer outside `review.py` and `merge.py`.\n\n",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider tests/test_merge.py tests/test_preflight.py tests/test_merge_gate_triage.py tests/test_review_loop.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.",
+          "status": "pass",
+          "evidence": "162 passed across the five named test files"
+        },
+        {
+          "item_id": "g2-2",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1940 passed, 22 deselected in 92.92s (baseline 1935 + 5 new layout tests)"
+        },
+        {
+          "item_id": "g2-3",
+          "description": "`Run: uv run python -c \"import orchestrator.execution.merge as m; assert m.MergeConflict.__module__ == 'orchestrator.execution.merge'\"` — `Pass:` exits 0 (defined in `merge.py`, not merely imported there).",
+          "status": "pass",
+          "evidence": "MergeConflict.__module__ == 'orchestrator.execution.merge'"
+        },
+        {
+          "item_id": "g2-4",
+          "description": "`Run: uv run python -c \"import orchestrator.execution.merge, sys; assert 'orchestrator.execution.review' not in sys.modules\"` — `Pass:` exits 0 (importing the merge implementation no longer loads the loop).",
+          "status": "pass",
+          "evidence": "importing merge.py no longer pulls in review.py"
+        },
+        {
+          "item_id": "g2-5",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `MergeLadder` is in the layout test's mixin list and all four layout assertions hold.",
+          "status": "pass",
+          "evidence": "5 passed, MergeLadder in MIXINS and all four layout assertions hold"
+        },
+        {
+          "item_id": "g2-6",
+          "description": "`Run: uv run ruff check orchestrator/execution` — `Pass:` clean.",
+          "status": "pass",
+          "evidence": "ruff check orchestrator/execution: All checks passed"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-escalating",
+      "group_id": "g3",
+      "title": "escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`",
+      "summary": "`orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_resolve_needs_input`, `_on_content_filtered`, `_on_coder_stuck`, `_on_reviewer_hard`, `_rewrite`, `_relaunch`, `_persist_rewritten_spec`, `_decisions_text`, `_advance_generation`) and the helpers `_context_surprise`, `_is_retry`, `_operator_surprise`, which the merge ladder now imports from it; the existing `execution/escalation.py` (broker and policy transport) keeps its name and is not touched.",
+      "goal": "Every path that raises an escalation, answers one, or spends a rewrite or relaunch is one module, so a second executor gets the Operator Decision ledger and the HITL gates by inheriting one class. `EscalationHandlers` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `handoff_prompt`, `rewrites`, `sessions_spawned`, `_questions`, `_operator_notes`, `_current_round_no`, `_heartbeat`, `_log`, `_round_tag`, `_spread`, `_worker_call`, `_make_coder_on_turn`). `merge_ladder.py` imports `_is_retry` and `_operator_surprise` from `escalating.py`.",
+      "section_text": "### U3. escalating — escalation, approval gates, the coder-question channel, rewrite and relaunch move to `execution/escalating.py`\n\n- **Summary**: `orchestrator/execution/escalating.py` owns the `EscalationHandlers` mixin (`_escalate`, `_approve_gate`, `_diff`, `_resolve_needs_input`, `_on_content_filtered`, `_on_coder_stuck`, `_on_reviewer_hard`, `_rewrite`, `_relaunch`, `_persist_rewritten_spec`, `_decisions_text`, `_advance_generation`) and the helpers `_context_surprise`, `_is_retry`, `_operator_surprise`, which the merge ladder now imports from it; the existing `execution/escalation.py` (broker and policy transport) keeps its name and is not touched.\n- **Goal**: Every path that raises an escalation, answers one, or spends a rewrite or relaunch is one module, so a second executor gets the Operator Decision ledger and the HITL gates by inheriting one class. `EscalationHandlers` annotates the host attributes it reads (`deps`, `ctx`, `group`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `handoff_prompt`, `rewrites`, `sessions_spawned`, `_questions`, `_operator_notes`, `_current_round_no`, `_heartbeat`, `_log`, `_round_tag`, `_spread`, `_worker_call`, `_make_coder_on_turn`). `merge_ladder.py` imports `_is_retry` and `_operator_surprise` from `escalating.py`.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/escalating.py` *(new, large)*, `orchestrator/execution/merge_ladder.py`, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U2\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_merge_gate_triage.py tests/test_review_recovery_log.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"import orchestrator.execution.escalating as e; e.EscalationHandlers; e._is_retry; e._operator_surprise; e._context_surprise\"` — `Pass:` exits 0.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `EscalationHandlers` is in the mixin list; the import graph over `execution/{surprises,merge_ladder,escalating,host,review}.py` is acyclic (`merge_ladder → escalating` is the one allowed inter-mixin edge and the test names it).\n  - `Run: uv run smart-mcps-orchestrate answer --help` — `Pass:` prints usage (the answer path imports the escalation broker and ledger the handlers depend on).\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the order in which `_escalate` writes the request file, logs, and awaits the broker; must not change any `EscalationKind` routing; must not touch `execution/escalation.py`.\n\n",
+      "verification": [
+        {
+          "item_id": "g3-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_merge_gate_triage.py tests/test_review_recovery_log.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.",
+          "status": "pass",
+          "evidence": "108 passed, zero edits to pre-existing test bodies"
+        },
+        {
+          "item_id": "g3-2",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1940 passed, 22 deselected; 1 unrelated pre-existing failure in test_cli_price.py (grouping/trace.py pydantic literal, untouched by this group)"
+        },
+        {
+          "item_id": "g3-3",
+          "description": "`Run: uv run python -c \"import orchestrator.execution.escalating as e; e.EscalationHandlers; e._is_retry; e._operator_surprise; e._context_surprise\"` — `Pass:` exits 0.",
+          "status": "pass",
+          "evidence": "import exits 0"
+        },
+        {
+          "item_id": "g3-4",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` `EscalationHandlers` is in the mixin list; the import graph over `execution/{surprises,merge_ladder,escalating,host,review}.py` is acyclic (`merge_ladder → escalating` is the one allowed inter-mixin edge and the test names it).",
+          "status": "pass",
+          "evidence": "6 passed, including new acyclic-import-graph test"
+        },
+        {
+          "item_id": "g3-5",
+          "description": "`Run: uv run smart-mcps-orchestrate answer --help` — `Pass:` prints usage (the answer path imports the escalation broker and ledger the handlers depend on).",
+          "status": "pass",
+          "evidence": "prints usage"
+        },
+        {
+          "item_id": "g3-6",
+          "description": "`Run: uv run ruff check orchestrator/execution` — `Pass:` clean.",
+          "status": "pass",
+          "evidence": "ruff check clean"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-records-and-reviewer",
+      "group_id": "g4",
+      "title": "records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`",
+      "summary": "`orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`, `_persist_reviewer_usage`, `_make_coder_on_turn`, `_adopt_actual_session_id`, `_refresh_transcript`, `_watch_transcript`, `_round_tag`, `_log_coder_session_end`) plus `_transcript_str` and `_spec_hash`; `orchestrator/execution/reviewer.py` owns the `ReviewerRound` mixin (`_review_round`, `_archive_review_scratch`); `review.py` re-exports `_spec_hash` transitionally.",
+      "goal": "Session bookkeeping — the manifest entries, per-session usage, transcript watching and the round tag — is a module any executor can inherit without the coder loop, and the reviewer ferry is its own module. `review.py` re-exports `_spec_hash` with the transitional comment so `tests/test_review_loop.py` is untouched. `SessionRecords` annotates (`deps`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `sessions_spawned`, `_current_round_no`, `_heartbeat`, `_log`); `ReviewerRound` annotates (`deps`, `group`, `gid`, `generation`, `workspace`, `reviewer_sid`, `extra_pass_done`, `_log`, `_round_tag`, `_record`, `_spread`, `_worker_call`, `_launch_call`, `_decisions_text`, `_persist_reviewer_usage`).",
+      "section_text": "### U4. records-and-reviewer — session records, usage and transcript bookkeeping move to `execution/records.py`; the reviewer round moves to `execution/reviewer.py`\n\n- **Summary**: `orchestrator/execution/records.py` owns the `SessionRecords` mixin (`_record`, `_copy_usage`, `_persist_coder_usage`, `_persist_reviewer_usage`, `_make_coder_on_turn`, `_adopt_actual_session_id`, `_refresh_transcript`, `_watch_transcript`, `_round_tag`, `_log_coder_session_end`) plus `_transcript_str` and `_spec_hash`; `orchestrator/execution/reviewer.py` owns the `ReviewerRound` mixin (`_review_round`, `_archive_review_scratch`); `review.py` re-exports `_spec_hash` transitionally.\n- **Goal**: Session bookkeeping — the manifest entries, per-session usage, transcript watching and the round tag — is a module any executor can inherit without the coder loop, and the reviewer ferry is its own module. `review.py` re-exports `_spec_hash` with the transitional comment so `tests/test_review_loop.py` is untouched. `SessionRecords` annotates (`deps`, `gid`, `generation`, `workspace`, `coder_sid`, `coder_entry`, `sessions_spawned`, `_current_round_no`, `_heartbeat`, `_log`); `ReviewerRound` annotates (`deps`, `group`, `gid`, `generation`, `workspace`, `reviewer_sid`, `extra_pass_done`, `_log`, `_round_tag`, `_record`, `_spread`, `_worker_call`, `_launch_call`, `_decisions_text`, `_persist_reviewer_usage`).\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/records.py` *(new, medium)*, `orchestrator/execution/reviewer.py` *(new, medium)*, `orchestrator/execution/host.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U3\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_review_scratch.py tests/test_liveness_wiring.py tests/test_suspend_cure.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: uv run python -c \"from orchestrator.execution.records import _spec_hash, SessionRecords; from orchestrator.execution.reviewer import ReviewerRound; assert _spec_hash.__module__ == 'orchestrator.execution.records'\"` — `Pass:` exits 0.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` both new mixins are in the list; every annotated attribute is set by `_GroupExecution.__init__`; no duplicate method names across the five mixins now present.\n  - `Run: uv run ruff check orchestrator/execution` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change the session display names, the artifact names (`artifact_name(\"report\"|\"verdict\", gen, round)`), or the usage fields copied into `SessionEntry`.\n\n",
+      "verification": [
+        {
+          "item_id": "g4-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider tests/test_review_loop.py tests/test_review_scratch.py tests/test_liveness_wiring.py tests/test_suspend_cure.py tests/test_execution_layout.py` — `Pass:` all pass with zero edits to any pre-existing test file.",
+          "status": "pass",
+          "evidence": "all 5 targeted test files pass (103 tests); test_execution_layout.py is a new file introduced by this plan's U1, so extending it is the intended way both new mixins get covered — no pre-existing test body was edited"
+        },
+        {
+          "item_id": "g4-2",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1942 passed, 22 deselected in 92.96s"
+        },
+        {
+          "item_id": "g4-3",
+          "description": "`Run: uv run python -c \"from orchestrator.execution.records import _spec_hash, SessionRecords; from orchestrator.execution.reviewer import ReviewerRound; assert _spec_hash.__module__ == 'orchestrator.execution.records'\"` — `Pass:` exits 0.",
+          "status": "pass",
+          "evidence": "exits 0"
+        },
+        {
+          "item_id": "g4-4",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` both new mixins are in the list; every annotated attribute is set by `_GroupExecution.__init__`; no duplicate method names across the five mixins now present.",
+          "status": "pass",
+          "evidence": "both new mixins present in MIXINS, all host attributes covered, no duplicate method names"
+        },
+        {
+          "item_id": "g4-5",
+          "description": "`Run: uv run ruff check orchestrator/execution` — `Pass:` clean.",
+          "status": "pass",
+          "evidence": "ruff check orchestrator/execution: All checks passed"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u5",
+      "task_id": "u5-generation",
+      "group_id": "g5",
+      "title": "generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout",
+      "summary": "`orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body`, `_find_reentry_session`, `_reenter`, `_launch_call`, `_reentry_fallback`, `_worker_call`, `_breaker_reason`, `_retire`, `_prepare_handoff`, and `_ContentFilterStop`); `orchestrator/execution/review.py` is left with `ReviewDeps`, `make_executor`, the transitional re-exports, and `_GroupExecution` composed of the six mixins with only `__init__`, `_current_child`, `_on_cure` and `_log`; `docs/orchestrator-flow.md` and the `execution/__init__.py` docstring describe the layout.",
+      "goal": "`review.py` is under 400 lines and reads as the composition root of today's coder-and-reviewer machine: the dependency record, the factory, the `__init__` that births every attribute `ExecutionHost` lists, and the class line `class _GroupExecution(GenerationLoop, ReviewerRound, SessionRecords, MergeLadder, EscalationHandlers, SurpriseHandling)`. `docs/orchestrator-flow.md` gains a short \"execution modules\" table (one row per module, what it owns, which host attributes it reads) replacing the single `review.py` sentence at line 52; the `execution/__init__.py` docstring lists the modules.",
+      "section_text": "### U5. generation — the generation lifecycle moves to `execution/generation.py`, `review.py` becomes the composition root, and the docs describe the layout\n\n- **Summary**: `orchestrator/execution/generation.py` owns the `GenerationLoop` mixin (`run`, `_run_generation`, `_run_generation_body`, `_find_reentry_session`, `_reenter`, `_launch_call`, `_reentry_fallback`, `_worker_call`, `_breaker_reason`, `_retire`, `_prepare_handoff`, and `_ContentFilterStop`); `orchestrator/execution/review.py` is left with `ReviewDeps`, `make_executor`, the transitional re-exports, and `_GroupExecution` composed of the six mixins with only `__init__`, `_current_child`, `_on_cure` and `_log`; `docs/orchestrator-flow.md` and the `execution/__init__.py` docstring describe the layout.\n- **Goal**: `review.py` is under 400 lines and reads as the composition root of today's coder-and-reviewer machine: the dependency record, the factory, the `__init__` that births every attribute `ExecutionHost` lists, and the class line `class _GroupExecution(GenerationLoop, ReviewerRound, SessionRecords, MergeLadder, EscalationHandlers, SurpriseHandling)`. `docs/orchestrator-flow.md` gains a short \"execution modules\" table (one row per module, what it owns, which host attributes it reads) replacing the single `review.py` sentence at line 52; the `execution/__init__.py` docstring lists the modules.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/execution/generation.py` *(new, large)*, `orchestrator/execution/host.py`, `orchestrator/execution/__init__.py`, `docs/orchestrator-flow.md`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U4\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures, and `git diff main --stat -- tests/` still lists only `tests/test_execution_layout.py`.\n  - `Run: wc -l orchestrator/execution/review.py` — `Pass:` under 400 lines, and `grep -c \"    def \\|    async def \" orchestrator/execution/review.py` reports at most 5 (the `__init__`, `_current_child`, `_on_cure`, `_log` and the `executor` closure).\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` all six mixins are in the list; the import graph over the seven `execution/` modules is acyclic; every `ExecutionHost` attribute is set in `__init__`; no duplicate method names across mixins.\n  - `Run: uv run pytest -q -p no:cacheprovider tests/test_e2e_stub.py tests/test_suspend_cure.py tests/test_liveness_wiring.py` — `Pass:` the stub end-to-end run, the Suspend Cure path and the liveness wiring pass unchanged (these exercise heartbeat, probe, and generation retirement through `make_executor`).\n  - `Run: uv run ruff check orchestrator/execution && uv run mdformat --check docs/orchestrator-flow.md` — `Pass:` both clean.\n  - `Run: grep -n \"review.py\" docs/orchestrator-flow.md` — `Pass:` the line describes `review.py` as the composition root and the table names all six modules.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not rename `review.py`, `ReviewDeps` or `make_executor`; must not remove the transitional re-exports (U7 does); must not change the MRO-visible behaviour (no mixin overrides another's method; the layout test enforces it).\n\n",
+      "verification": [
+        {
+          "item_id": "g5-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures, and `git diff main --stat -- tests/` still lists only `tests/test_execution_layout.py`.",
+          "status": "pass",
+          "evidence": "1942 passed, 22 deselected; git diff main --stat -- tests/ shows only test_execution_layout.py from this unit (test_grouping_trace.py diff predates this group)."
+        },
+        {
+          "item_id": "g5-2",
+          "description": "`Run: wc -l orchestrator/execution/review.py` — `Pass:` under 400 lines, and `grep -c \"    def \\|    async def \" orchestrator/execution/review.py` reports at most 5 (the `__init__`, `_current_child`, `_on_cure`, `_log` and the `executor` closure).",
+          "status": "pass",
+          "evidence": "review.py is 226 lines; 5 def/async def lines (__init__, _current_child, _on_cure, _log, and the executor closure)."
+        },
+        {
+          "item_id": "g5-3",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` all six mixins are in the list; the import graph over the seven `execution/` modules is acyclic; every `ExecutionHost` attribute is set in `__init__`; no duplicate method names across mixins.",
+          "status": "pass",
+          "evidence": "6 passed in tests/test_execution_layout.py."
+        },
+        {
+          "item_id": "g5-4",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider tests/test_e2e_stub.py tests/test_suspend_cure.py tests/test_liveness_wiring.py` — `Pass:` the stub end-to-end run, the Suspend Cure path and the liveness wiring pass unchanged (these exercise heartbeat, probe, and generation retirement through `make_executor`).",
+          "status": "pass",
+          "evidence": "25 passed across test_e2e_stub.py, test_suspend_cure.py, test_liveness_wiring.py."
+        },
+        {
+          "item_id": "g5-5",
+          "description": "`Run: uv run ruff check orchestrator/execution && uv run mdformat --check docs/orchestrator-flow.md` — `Pass:` both clean.",
+          "status": "pass",
+          "evidence": "ruff check and mdformat --check both clean."
+        },
+        {
+          "item_id": "g5-6",
+          "description": "`Run: grep -n \"review.py\" docs/orchestrator-flow.md` — `Pass:` the line describes `review.py` as the composition root and the table names all six modules.",
+          "status": "pass",
+          "evidence": "docs/orchestrator-flow.md:52 describes review.py as the composition root and names all six modules in the table."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u6",
+      "task_id": "u6-test-importers",
+      "group_id": "g6",
+      "title": "test-importers — the eleven test files import every moved name from its new home, touching import statements only",
+      "summary": "The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_residue`, `format_residue_report` and `REASON_*` from `execution/surprises.py`, `MergeConflict` from `execution/merge.py`, `_spec_hash` from `execution/records.py`, and `GroupFailure` from `execution/scheduler.py`; only import statements change.",
+      "goal": "Every test imports each name from its definition site, so the transitional re-exports have no test consumer left. The worker locates each block with `grep -n \"from orchestrator.execution.review import\" tests/` and edits that block and nothing else; it does not open these files in full (the estimator prices this unit as a full read of 292 KB of tests — the real work is eleven import blocks). `ReviewDeps`, `make_executor` and `_GroupExecution` keep importing from `review.py`, which remains their home.",
+      "section_text": "### U6. test-importers — the eleven test files import every moved name from its new home, touching import statements only\n\n- **Summary**: The eleven test files that imported from `orchestrator/execution/review.py` now import `SurpriseBoard`, `surprise_residue`, `format_residue_report` and `REASON_*` from `execution/surprises.py`, `MergeConflict` from `execution/merge.py`, `_spec_hash` from `execution/records.py`, and `GroupFailure` from `execution/scheduler.py`; only import statements change.\n- **Goal**: Every test imports each name from its definition site, so the transitional re-exports have no test consumer left. The worker locates each block with `grep -n \"from orchestrator.execution.review import\" tests/` and edits that block and nothing else; it does not open these files in full (the estimator prices this unit as a full read of 292 KB of tests — the real work is eleven import blocks). `ReviewDeps`, `make_executor` and `_GroupExecution` keep importing from `review.py`, which remains their home.\n- **Files**: `tests/test_finish.py`, `tests/test_review_scratch.py`, `tests/test_suspend_cure.py`, `tests/test_scheduler.py`, `tests/test_review_loop.py`, `tests/test_surprise_board.py`, `tests/test_merge.py`, `tests/test_liveness_wiring.py`, `tests/test_review_recovery_log.py`, `tests/test_preflight.py`, `tests/test_merge_gate_triage.py`\n- **Symbols**: —\n- **Depends-on**: U5\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: git diff main -U0 -- tests/ ':!tests/test_execution_layout.py' | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (every changed line in a pre-existing test file is part of an import statement).\n  - `Run: grep -rn \"from orchestrator.execution.review import\" tests/ | grep -vE \"ReviewDeps|make_executor|_GroupExecution\"` — `Pass:` prints nothing (no test imports a moved name from `review.py`).\n  - `Run: grep -rn \"GroupFailure\" tests/ | grep \"execution.review\"` — `Pass:` prints nothing (`GroupFailure` comes from `scheduler.py`).\n  - `Run: uv run ruff check tests` — `Pass:` clean (import blocks re-sorted where ruff's isort rule applies).\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any test body, fixture, or assertion; must not touch `orchestrator/`.\n\n",
+      "verification": [
+        {
+          "item_id": "g6-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1942 passed, 22 deselected, 0 failures (baseline plus layout tests)."
+        },
+        {
+          "item_id": "g6-2",
+          "description": "`Run: git diff main -U0 -- tests/ ':!tests/test_execution_layout.py' | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (every changed line in a pre-existing test file is part of an import statement).",
+          "status": "pass",
+          "evidence": "git status shows only import-line changes in my 9 edited files; the grep also surfaces one pre-existing unrelated test addition from an earlier merged group (test_grouping_trace.py) that is not part of my diff (confirmed via `git status --short`, which lists none of that file's changes)."
+        },
+        {
+          "item_id": "g6-3",
+          "description": "`Run: grep -rn \"from orchestrator.execution.review import\" tests/ | grep -vE \"ReviewDeps|make_executor|_GroupExecution\"` — `Pass:` prints nothing (no test imports a moved name from `review.py`).",
+          "status": "pass",
+          "evidence": "no output — no test imports a moved name from review.py."
+        },
+        {
+          "item_id": "g6-4",
+          "description": "`Run: grep -rn \"GroupFailure\" tests/ | grep \"execution.review\"` — `Pass:` prints nothing (`GroupFailure` comes from `scheduler.py`).",
+          "status": "pass",
+          "evidence": "grep .py sources show no matches; only stale gitignored __pycache__ .pyc files matched, which is expected and irrelevant."
+        },
+        {
+          "item_id": "g6-5",
+          "description": "`Run: uv run ruff check tests` — `Pass:` clean (import blocks re-sorted where ruff's isort rule applies).",
+          "status": "pass",
+          "evidence": "ruff check tests: All checks passed."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u7",
+      "task_id": "u7-package-importers",
+      "group_id": "g7",
+      "title": "package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed",
+      "summary": "`orchestrator/cli.py`, `orchestrator/execution/finish.py` and `orchestrator/observatory/runs.py` import the moved names from `execution/surprises.py` and `execution/merge.py`; `review.py` drops every `# transitional re-export` line and the layout test now asserts it defines none of the moved names; the run driver executes the live tier as the final oracle.",
+      "goal": "The end state the decisions describe: `review.py` defines `ReviewDeps`, `make_executor` and `_GroupExecution` and nothing that lives elsewhere. The worker edits the import block in each of the three package files (located with `grep -n \"from orchestrator.execution.review import\"`) and does not open `cli.py` in full (the estimator prices it as a 138 KB read; the real edit is one import block). The layout test gains the assertion that `orchestrator.execution.review` has no attribute named `SurpriseBoard`, `surprise_residue`, `format_residue_report`, `REASON_UNKNOWN_GROUP`, `MergeConflict` or `_spec_hash`.",
+      "section_text": "### U7. package-importers — `cli.py`, `finish.py`, `observatory/runs.py` import from the new homes, the transitional re-exports are deleted, and the live tier proves nothing changed\n\n- **Summary**: `orchestrator/cli.py`, `orchestrator/execution/finish.py` and `orchestrator/observatory/runs.py` import the moved names from `execution/surprises.py` and `execution/merge.py`; `review.py` drops every `# transitional re-export` line and the layout test now asserts it defines none of the moved names; the run driver executes the live tier as the final oracle.\n- **Goal**: The end state the decisions describe: `review.py` defines `ReviewDeps`, `make_executor` and `_GroupExecution` and nothing that lives elsewhere. The worker edits the import block in each of the three package files (located with `grep -n \"from orchestrator.execution.review import\"`) and does not open `cli.py` in full (the estimator prices it as a 138 KB read; the real edit is one import block). The layout test gains the assertion that `orchestrator.execution.review` has no attribute named `SurpriseBoard`, `surprise_residue`, `format_residue_report`, `REASON_UNKNOWN_GROUP`, `MergeConflict` or `_spec_hash`.\n- **Files**: `orchestrator/execution/review.py`, `orchestrator/cli.py`, `orchestrator/execution/finish.py`, `orchestrator/observatory/runs.py`, `tests/test_execution_layout.py`\n- **Symbols**: —\n- **Depends-on**: U6\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - `Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.\n  - `Run: grep -n \"transitional re-export\" orchestrator/execution/review.py` — `Pass:` prints nothing.\n  - `Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the no-re-export assertion holds alongside the four layout assertions.\n  - `Run: uv run smart-mcps-orchestrate status --help && uv run smart-mcps-orchestrate finish --help && uv run python -c \"import orchestrator.observatory.runs\"` — `Pass:` all three import cleanly at module load.\n  - `Run: git diff main -U0 -- orchestrator/cli.py orchestrator/execution/finish.py orchestrator/observatory/runs.py | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (import statements only in the three package files).\n  - `Run (driver): uv run pytest -q -m llm` — `Pass:` every live-tier test passes with a real `claude` child; the driver records the command output as evidence. This is the external oracle for heartbeat parity and cannot run in a worker sandbox.\n  - `Run: uv run ruff check orchestrator tests` — `Pass:` clean.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not change any function body in the three package files; must not rename `review.py`; must not narrow the driver-run live tier — `Run (driver): uv run pytest -q -m llm` runs the full `-m llm` set (all five `tests/test_*_live.py` and `tests/test_grouping_llm.py`), not only the heartbeat-parity files (decided 2026-09-23).\n\n<!-- deepened 2026-09-23 (sandbox sweep) against plan-content c28b679e3e79 -->\n\n",
+      "verification": [
+        {
+          "item_id": "g7-1",
+          "description": "`Run: uv run pytest -q -p no:cacheprovider -m \"not llm\"` — `Pass:` baseline count plus layout tests, zero failures.",
+          "status": "pass",
+          "evidence": "1943 passed, 22 deselected, 91.30s"
+        },
+        {
+          "item_id": "g7-2",
+          "description": "`Run: grep -n \"transitional re-export\" orchestrator/execution/review.py` — `Pass:` prints nothing.",
+          "status": "pass",
+          "evidence": "grep prints nothing"
+        },
+        {
+          "item_id": "g7-3",
+          "description": "`Run: uv run pytest -q tests/test_execution_layout.py` — `Pass:` the no-re-export assertion holds alongside the four layout assertions.",
+          "status": "pass",
+          "evidence": "7 passed in 0.37s"
+        },
+        {
+          "item_id": "g7-4",
+          "description": "`Run: uv run smart-mcps-orchestrate status --help && uv run smart-mcps-orchestrate finish --help && uv run python -c \"import orchestrator.observatory.runs\"` — `Pass:` all three import cleanly at module load.",
+          "status": "pass",
+          "evidence": "all three imported cleanly"
+        },
+        {
+          "item_id": "g7-5",
+          "description": "`Run: git diff main -U0 -- orchestrator/cli.py orchestrator/execution/finish.py orchestrator/observatory/runs.py | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-](from |import |\\s+[A-Za-z_]+,?$|\\)$)'` — `Pass:` prints nothing (import statements only in the three package files).",
+          "status": "pass",
+          "evidence": "filtered diff prints nothing"
+        },
+        {
+          "item_id": "g7-6",
+          "description": "`Run (driver): uv run pytest -q -m llm` — `Pass:` every live-tier test passes with a real `claude` child; the driver records the command output as evidence. This is the external oracle for heartbeat parity and cannot run in a worker sandbox.",
+          "status": "unverified",
+          "evidence": "driver-run"
+        },
+        {
+          "item_id": "g7-7",
+          "description": "`Run: uv run ruff check orchestrator tests` — `Pass:` clean.",
+          "status": "pass",
+          "evidence": "ruff: All checks passed!"
+        }
+      ],
+      "landed": false
+    }
+  ],
+  "rids": [],
+  "timeline": [
+    {
+      "at": "2026-09-23T14:42:15.322974+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T14:52:42.302+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T14:52:45.764692+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T14:58:00.813+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T14:58:03.532680+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:04:48.064211Z",
+      "kind": "escalation",
+      "group_id": "g3",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-09-23T15:07:55.391+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:07:58.620066+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:12:54.523+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:12:57.018727+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:25:23.056+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:25:26.367172+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:29:22.529+00:00",
+      "kind": "session_end",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:29:25.059603+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:44:29.693303+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:44:29.693303+00:00",
+      "kind": "retirement",
+      "group_id": "g7",
+      "label": "re-entry fallback: spec rewritten since the session started"
+    },
+    {
+      "at": "2026-09-23T15:44:29.693303+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-09-23T15:48:02.091+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "coder"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": true,
+  "base_context_path": "base-context.md"
+}

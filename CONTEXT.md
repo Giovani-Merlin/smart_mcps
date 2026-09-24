@@ -326,3 +326,25 @@ process group and warm-resumes the same session in-process. Counted per group an
 generation, capped, and never a Re-entry.
 _Avoid_: watchdog kill (implies any silence can trigger it), restart (the
 session and worktree are kept)
+
+**Unit Recipe**:
+The named bundle that determines how one plan unit is executed — its prompt,
+tool allowlist, completion contract, reviewer prompt, merge behaviour, pricing
+function and handoff prompt. Declared per unit in the task map
+(`recipe: research`); a unit declaring none runs `code`, today's coder-and-
+reviewer machine, unchanged. Always written "Unit Recipe" in prose, never bare
+"recipe" — for the same reason \[[Preflight Kind]\] is never bare "kind".
+_Avoid_: kind (taken by \[[Preflight Kind]\]), machine (taken by machine
+suspend/wake, which \[[Suspend Cure]\] depends on), role (taken by SessionRole:
+base/coder/reviewer), executor (taken by the scheduler's Executor seam), agent
+type (a recipe is a category of work, not a category of agent)
+
+**Artifact Manifest**:
+The run-level index of every declared output a run produced — one entry per
+artifact carrying its id, path, sha256, producing unit, declared schema,
+bounded summary and status. Lives in the \[[Run Directory]\] and rides the
+\[[Run Bundle]\] as an additive key. It is what a downstream unit's prompt
+receives *instead of* the payload: the entry, never the file body, which the
+unit opens only when it needs the detail.
+_Avoid_: artifact store (that is `data_dirs` — the bytes; this is the index
+over them), findings index (research is only one of its producers)
