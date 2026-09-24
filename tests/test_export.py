@@ -13,6 +13,7 @@ import datetime
 import json
 from pathlib import Path
 
+from orchestrator.execution.artifacts import ArtifactEntry, ArtifactManifestStore
 from orchestrator.execution.export import (
     SCHEMA_VERSION,
     ExportError,
@@ -816,3 +817,106 @@ def test_failed_llm_call_without_session_is_flagged_missing(tmp_path: Path) -> N
     assert call.session_id is None
     assert call.transcript_missing is True
     assert call.events_path is None
+
+
+# ---------------------------------------------------------- artifact manifest
+
+
+def test_no_artifacts_json_exports_null_and_omits_the_key(tmp_path: Path) -> None:
+    """Additive: a run that predates plan U6 has no `artifacts.json`, so the
+    bundle carries no `artifact_manifest` field at all — not even as null."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    assert not paths.artifact_manifest_path.exists()
+
+    export = _export(paths, root)
+    assert export.artifact_manifest is None
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert "artifact_manifest" not in payload
+
+
+def test_artifact_manifest_and_run_triage_call_export_together(tmp_path: Path) -> None:
+    """A `run` group's registered entry, plus a `run_triage` LLM call about
+    the same group, both surface in the bundle — the manifest under
+    `artifact_manifest`, the call under `llm_calls`, with the group's usual
+    report/verdict `artifacts` list left untouched."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+
+    group_dir = paths.group_dir("g1")
+    group_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(group_dir / "report-g1-r1.json", json.dumps({"status": "completed"}))
+
+    ArtifactManifestStore(paths).register(
+        ArtifactEntry(
+            artifact_id="g1-run",
+            group_id="g1",
+            tasks=["u8"],
+            recipe="run",
+            paths=["outputs/episode.mp3"],
+            sha256={"outputs/episode.mp3": "deadbeef"},
+            commit="abc123",
+            schema="RunRecord",
+            summary="rendered the episode",
+            status="complete",
+            measurements={"duration_s": 42.5},
+            recorded_at="2026-01-01T00:30:00+00:00",
+        )
+    )
+
+    _write_llm_index(
+        paths,
+        [
+            _llm_call(
+                1,
+                None,
+                None,
+                **{
+                    "gen_ai.operation.name": "run_triage",
+                    "subject": {"group_ids": ["g1"], "rewrite_context": []},
+                },
+            )
+        ],
+    )
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+
+    [entry] = payload["artifact_manifest"]
+    assert entry["artifact_id"] == "g1-run"
+    assert entry["group_id"] == "g1"
+    assert entry["recipe"] == "run"
+    assert entry["paths"] == ["outputs/episode.mp3"]
+    assert entry["sha256"] == {"outputs/episode.mp3": "deadbeef"}
+    assert entry["commit"] == "abc123"
+    assert entry["schema"] == "RunRecord"
+    assert entry["status"] == "complete"
+    assert entry["measurements"] == {"duration_s": 42.5}
+
+    [call] = payload["llm_calls"]
+    assert call["operation"] == "run_triage"
+    assert call["group_ids"] == ["g1"]
+
+    [group] = payload["groups"]
+    [artifact] = group["artifacts"]
+    assert artifact["kind"] == "coder_report"
+    assert artifact["path"] == "groups/g1/report-g1-r1.json"
+
+
+def test_unreadable_artifacts_json_degrades_to_null(tmp_path: Path) -> None:
+    """The Artifact Manifest is inert by contract on both sides, same as
+    `llm/calls.json` — a malformed file must never fail an otherwise-whole
+    bundle."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    paths.artifact_manifest_path.write_text("{not json")
+
+    export = _export(paths, root)
+    assert export.artifact_manifest is None
+    assert export.groups[0].sessions[0].events_count > 0
