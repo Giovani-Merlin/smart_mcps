@@ -537,3 +537,27 @@ def test_phase_flip_from_launch_phase_to_round_running_on_first_assistant_event(
     assert hb.snapshot()["phase"] == "round 1 running"
     # The pre-existing transcript-probe hook still ran on the same tick.
     assert transcript_calls == ["transcript", "transcript"]
+
+
+def test_phase_flips_when_the_newest_event_is_a_stream_event_after_an_assistant_one(tmp_path):
+    # Partial-message streaming makes the newest event a `stream_event` on
+    # almost every tick; the flip must key on the sticky first-assistant stamp.
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, "g1")
+    hb.mark_round(generation=1, round_no=1)
+    hb.mark_phase("starting the coder")
+    at = _iso(time.time())
+    child = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=at,
+        last_event_at=at,
+        last_event_type="stream_event",
+        first_assistant_at=at,
+    )
+    probe = LivenessProbe(
+        hb, LivenessConfig(window_seconds=600), lambda: child, proc_root=tmp_path / "proc"
+    )
+    probe.tick()
+    assert hb.snapshot()["phase"] == "round 1 running"
