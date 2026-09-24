@@ -350,6 +350,21 @@ class MergeLadder:
             if summary_tail:
                 diagnosis += f"\n{summary_tail}"
             return diagnosis, False
+        if comparison.verdict == "unattributed_exit":
+            # F2 (r20260924): the runner exited nonzero with no failing test to
+            # name — vitest's "Unhandled Errors", a crashed worker. Still this
+            # diff's to answer for (the launch branch's step exited 0), but
+            # "new failures" would send the coder hunting for a test that does
+            # not exist; point at the log section that carries the cause.
+            rc = exc.exit_code if exc.exit_code is not None else "nonzero"
+            where = str(exc.output_path) if exc.output_path is not None else "the step log"
+            diagnosis = (
+                f"preflight failed (regression): `{exc.step_name or 'check'}` exited {rc} "
+                f"with 0 failing tests — see the Unhandled Errors section of {where}"
+            )
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, True
         # Name the tests this diff actually broke. The raw summary tail lists
         # every FAILED line, pre-existing ones included, and a rewrite spec
         # built from it sends the next coder to fix tests it did not break —

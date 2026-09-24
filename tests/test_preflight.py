@@ -14,6 +14,7 @@ import pytest
 from orchestrator.config import PreflightConfig
 from orchestrator.execution.merge import IntegrationMerger
 from orchestrator.execution.preflight import (
+    BaselineComparison,
     BaselineStep,
     CheckStep,
     PreflightBaseline,
@@ -925,7 +926,9 @@ def test_a_regression_with_no_junit_and_no_baseline_step_is_not_excused(tmp_path
         run_preflight(worktree, config=PreflightConfig(), output_dir=out_dir, baseline=baseline)
     assert excinfo.value.kind == "regression"
     assert excinfo.value.comparison is not None
-    assert excinfo.value.comparison.verdict == "new_failures"
+    # F2: an empty failing set is now named `unattributed_exit` rather than
+    # "new failures" it cannot list — still a failure, never an excuse.
+    assert excinfo.value.comparison.verdict == "unattributed_exit"
 
 
 def test_a_report_less_step_is_not_excused_by_an_unrelated_baseline_step(tmp_path, monkeypatch):
@@ -1008,3 +1011,74 @@ def test_the_pytest_step_keeps_the_pytest_exit_code_table(tmp_path, monkeypatch)
     with pytest.raises(PreflightFailure) as excinfo:
         run_preflight(worktree, config=PreflightConfig(), output_dir=tmp_path / "out")
     assert excinfo.value.kind == "env"
+
+
+# ------------------------------------------ exit≠0 with failures=0 (F2)
+# r20260924: vitest's "Unhandled Errors" exits 1 with a junit report holding
+# zero failures. The failing-test set is empty, so it can neither be excused
+# nor named; the step falls through to the exit-code comparison.
+
+
+def test_a_junit_step_with_zero_failures_is_excused_when_the_baseline_step_also_failed(tmp_path):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    baseline = PreflightBaseline(
+        command=["pytest"],
+        commit_sha="deadbeef",
+        exit_code=1,
+        captured=True,
+        tests={},
+        steps=[BaselineStep(name="configured", command=["pytest"], exit_code=1)],
+    )
+    logged: list[str] = []
+    out_dir = tmp_path / "out"
+    script = _junit_writer({"test_fine": "passed"})  # exits 1, failures=0
+    config = PreflightConfig(
+        check_command=["python3", "-c", script, f"--junitxml={out_dir / 'preflight-junit.xml'}"]
+    )
+    run_preflight(worktree, config=config, output_dir=out_dir, log=logged.append, baseline=baseline)
+    assert any("exited nonzero on the launch branch too" in line for line in logged)
+
+
+def test_a_junit_step_with_zero_failures_is_unattributed_when_the_baseline_step_was_clean(
+    tmp_path,
+):
+    worktree = tmp_path / "wt"
+    _init_repo(worktree)
+    baseline = PreflightBaseline(
+        command=["pytest"],
+        commit_sha="deadbeef",
+        exit_code=0,
+        captured=True,
+        tests={},
+        steps=[BaselineStep(name="configured", command=["pytest"], exit_code=0)],
+    )
+    out_dir = tmp_path / "out"
+    with pytest.raises(PreflightFailure) as excinfo:
+        _run_with_junit(worktree, out_dir, {"test_fine": "passed"}, baseline)
+    exc = excinfo.value
+    assert exc.kind == "regression"
+    assert exc.comparison is not None and exc.comparison.verdict == "unattributed_exit"
+    assert exc.exit_code == 1
+
+
+def test_unattributed_exit_diagnosis_names_the_step_exit_and_log(tmp_path):
+    from types import SimpleNamespace
+
+    from orchestrator.execution.merge_ladder import MergeLadder
+
+    log = tmp_path / "preflight-check-vitest.log"
+    log.write_text("⎯⎯ Unhandled Errors ⎯⎯\nError: worker exited unexpectedly\n")
+    exc = PreflightFailure(
+        "check command npx vitest run (step 'vitest') exited 1",
+        kind="regression",
+        output_path=log,
+        comparison=BaselineComparison(verdict="unattributed_exit"),
+        step_name="vitest",
+        exit_code=1,
+    )
+    stub = SimpleNamespace(deps=SimpleNamespace(preflight_baseline=None))
+    diagnosis, attributable = MergeLadder._classify_preflight(stub, exc)
+    assert attributable is True
+    assert "`vitest` exited 1 with 0 failing tests" in diagnosis
+    assert f"Unhandled Errors section of {log}" in diagnosis
