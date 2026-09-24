@@ -183,6 +183,8 @@ class GroupDifficultyEntry(BaseModel):
     hub_touches: int
     cross_group_edges: int
     verification_items: int
+    #: Defaulted so traces recorded before the signal existed still load.
+    interface_exports: int = 0
     difficulty: float
     intensity: str
     d_review: float

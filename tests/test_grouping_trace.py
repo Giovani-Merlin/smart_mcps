@@ -506,3 +506,24 @@ class TestRunGroupingFillsDifficulty:
         recorder = TraceRecorder()
         _compute(tmp_path, "greenfield-cross-stack", None, {}, recorder)
         assert recorder.trace.groups == []
+
+
+def test_a_difficulty_entry_recorded_before_interface_exports_still_loads():
+    """Stored fixture traces predate the r20260924 signal; the field defaults."""
+    from orchestrator.grouping.trace import GroupDifficultyEntry
+
+    legacy = {
+        "group_id": "g1",
+        "files_touched": 9,
+        "max_fan_in": 0,
+        "max_fan_out": 0,
+        "hub_touches": 1,
+        "cross_group_edges": 5,
+        "verification_items": 10,
+        "difficulty": 0.4577380952380952,
+        "intensity": "paired",
+        "d_review": 0.35,
+        "d_hard": 0.65,
+    }
+    entry = GroupDifficultyEntry.model_validate(legacy)
+    assert entry.interface_exports == 0

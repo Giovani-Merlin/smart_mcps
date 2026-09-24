@@ -20,6 +20,7 @@ from orchestrator.grouping.llm import LlmError, call_llm_json
 from orchestrator.grouping.mapper import MapperOutput
 from orchestrator.grouping.pipeline import (
     GrouperError,
+    _interface_exports,
     compute_partition,
     run_grouping,
     serialize_grouping,
@@ -1587,3 +1588,50 @@ class TestDegeneratePartitionProvenance:
             overshoot_messages=("partition: group containing 'a' stays 5 over the 10 cap",),
         )
         _check_degenerate_partition(graph=graph, repairs=[repair], allow_degenerate_partition=True)
+
+
+# ------------------------------------------------- interface_exports signal
+# r20260924: interface producers get a reviewer. The helper counts consuming
+# *groups* per producing group.
+
+
+def _mapping(task_id: str, implements=(), consumes=()):
+    from orchestrator.grouping.graphing import TaskMapping
+
+    return TaskMapping(task_id=task_id, implements=tuple(implements), consumes=tuple(consumes))
+
+
+def test_interface_exports_counts_consuming_groups_not_tags():
+    mappings = [
+        _mapping("u1", implements=["/a", "/b", "/c"]),  # three tags, one consumer group
+        _mapping("u2", consumes=["/a"]),
+        _mapping("u3", consumes=["/b", "/c"]),
+        _mapping("u4", implements=["/d"]),  # one tag, two consumer groups
+        _mapping("u5", consumes=["/d"]),
+        _mapping("u6", consumes=["/d"]),
+    ]
+    partition = {"u1": 0, "u2": 1, "u3": 1, "u4": 2, "u5": 3, "u6": 4}
+    assert _interface_exports(mappings, partition) == {0: 1, 2: 2}
+
+
+def test_interface_exports_ignores_consumption_inside_the_producers_own_group():
+    mappings = [
+        _mapping("u1", implements=["/a"]),
+        _mapping("u2", consumes=["/a"]),  # same group as u1
+        _mapping("u3", consumes=["/a"]),
+    ]
+    partition = {"u1": 0, "u2": 0, "u3": 1}
+    assert _interface_exports(mappings, partition) == {0: 1}
+
+
+def test_interface_exports_is_absent_for_a_pure_consumer_and_a_tag_nobody_consumes():
+    mappings = [
+        _mapping("u1", implements=["/a"]),
+        _mapping("u2", consumes=["/a"]),
+        _mapping("u3", implements=["/orphan"]),
+    ]
+    partition = {"u1": 0, "u2": 1, "u3": 2}
+    exports = _interface_exports(mappings, partition)
+    assert exports.get(1, 0) == 0  # the consumer exports nothing
+    assert exports.get(2, 0) == 0  # an unconsumed tag is not an export
+    assert exports == {0: 1}

@@ -339,12 +339,18 @@ class DifficultyConfig(BaseModel):
     weight_hub_touches: float = 2.0
     weight_cross_group_edges: float = 1.5
     weight_verification_items: float = 1.0
+    # Interface producers (r20260924): joins the mean only when the signal is
+    # > 0 — see `difficulty_score`. With 3.0/0.5 one consuming group lifts a
+    # typical 0.25 self_verify producer to ~0.37 (paired) and never lowers a
+    # tier.
+    weight_interface_exports: float = 3.0
 
     scale_files_touched: float = 6.0
     scale_max_fan: float = 10.0
     scale_hub_touches: float = 1.0
     scale_cross_group_edges: float = 3.0
     scale_verification_items: float = 5.0
+    scale_interface_exports: float = 0.5
 
     d_review: float = 0.35
     d_hard: float = 0.65

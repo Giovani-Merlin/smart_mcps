@@ -315,9 +315,10 @@ cap       = max(token_budget - head, 0)
 `base_tokens` is measured from the compiled base context at grouping time, so
 **the cap moves when your plan or CLAUDE.md grows.** In this repo it lands ≈84,000.
 
-**Difficulty → review intensity** (`estimator.py:99` and `:126`): a weighted sum of
+**Difficulty → review intensity** (`estimator.py:311` and `:349`): a weighted sum of
 saturating-normalized signals (files touched, max fan, hub touches, cross-group
-edges, verification count) mapped to a tier:
+edges, verification count, and — only when non-zero — interface exports, the
+number of other groups consuming a tag the group implements) mapped to a tier:
 
 ```python
 if difficulty < d_review: return SELF_VERIFY   # no reviewer session at all

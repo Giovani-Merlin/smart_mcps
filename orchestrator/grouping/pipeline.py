@@ -455,6 +455,33 @@ def _check_run_outputs(mappings: list[TaskMapping], config: OrchestratorConfig) 
     errors.raise_all(GrouperError)
 
 
+def _interface_exports(mappings: list[TaskMapping], partition: Partition) -> dict[int, int]:
+    """Per group, how many *other* groups consume a tag some member task
+    implements (the `interface_exports` difficulty signal, r20260924).
+
+    Counts consuming groups, not tags: a producer whose one tag feeds five
+    groups scores 5, one whose three tags all feed the same group scores 1.
+    Consumption inside the producer's own group is not an export. A task
+    absent from ``partition`` (a non-code singleton dropped before scoring)
+    is ignored on both sides.
+    """
+    implementers: dict[str, set[int]] = {}
+    consumers: dict[str, set[int]] = {}
+    for mapping in mappings:
+        gid = partition.get(mapping.task_id)
+        if gid is None:
+            continue
+        for tag in mapping.implements:
+            implementers.setdefault(tag, set()).add(gid)
+        for tag in mapping.consumes:
+            consumers.setdefault(tag, set()).add(gid)
+    exports: dict[int, set[int]] = {}
+    for tag, producers in implementers.items():
+        for gid in producers:
+            exports.setdefault(gid, set()).update(consumers.get(tag, set()) - {gid})
+    return {gid: len(others) for gid, others in exports.items() if others}
+
+
 def _assert_single_recipe(mappings: list[TaskMapping], partition: Partition) -> None:
     """Safety net beside ``_assert_slice_integrity``: no group should ever hold
     tasks of more than one recipe — the singleton isolation above is what keeps
@@ -956,6 +983,7 @@ def run_grouping(
     flags = list(mapper_out.flags) + list(outcome.flags) + [ASSEMBLED_FLAG]
     recipe_of = {m.task_id: m.recipe for m in mapper_out.mappings}
     recipe_args_of = {m.task_id: m.recipe_args for m in mapper_out.mappings}
+    exports_by_gid = _interface_exports(mapper_out.mappings, partition)
     groups: list[Group] = []
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
@@ -996,6 +1024,7 @@ def run_grouping(
                     if (up in member_set) != (down in member_set)
                 ),
                 verification_items=len(spec.verification),
+                interface_exports=exports_by_gid.get(gid, 0),
             )
             difficulty = difficulty_score(signals, config.difficulty)
             intensity = intensity_for(difficulty, config.difficulty)
@@ -1011,6 +1040,7 @@ def run_grouping(
                         hub_touches=signals.hub_touches,
                         cross_group_edges=signals.cross_group_edges,
                         verification_items=signals.verification_items,
+                        interface_exports=signals.interface_exports,
                         difficulty=difficulty,
                         intensity=intensity.value,
                         d_review=config.difficulty.d_review,

@@ -294,6 +294,11 @@ class DifficultySignals:
     hub_touches: int = 0
     cross_group_edges: int = 0
     verification_items: int = 0
+    #: How many *other* groups consume a route/contract tag some task in this
+    #: group implements (r20260924: the interface producers whose seams no
+    #: reviewer saw). Counts consuming groups, not tags — tag granularity is
+    #: the plan author's spelling.
+    interface_exports: int = 0
 
 
 def _saturating(value: float, scale: float) -> float:
@@ -304,7 +309,15 @@ def _saturating(value: float, scale: float) -> float:
 
 
 def difficulty_score(signals: DifficultySignals, config: DifficultyConfig) -> float:
-    """Normalized weighted sum in [0, 1)."""
+    """Normalized weighted sum in [0, 1).
+
+    ``interface_exports`` joins the weighted mean **only when it is > 0**. It
+    is a signal that a group produces an interface others build on, not a
+    property every group has a little of: carried in the denominator
+    unconditionally, every existing score would scale by the same factor and
+    a paired group at 0.46 would drop below ``d_review`` on the day the
+    signal shipped. Included conditionally, adding it can never lower a tier.
+    """
     weighted = [
         (
             config.weight_files_touched,
@@ -324,6 +337,13 @@ def difficulty_score(signals: DifficultySignals, config: DifficultyConfig) -> fl
             _saturating(signals.verification_items, config.scale_verification_items),
         ),
     ]
+    if signals.interface_exports > 0:
+        weighted.append(
+            (
+                config.weight_interface_exports,
+                _saturating(signals.interface_exports, config.scale_interface_exports),
+            )
+        )
     total_weight = sum(weight for weight, _ in weighted)
     if total_weight == 0:
         return 0.0
