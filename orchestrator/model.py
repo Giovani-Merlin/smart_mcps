@@ -37,7 +37,8 @@ class ReviewIntensity(StrEnum):
 #: `~/.claude/projects/<slug>` directory, so a nested `claude` cannot write the
 #: transcript it needs, and that confinement is exactly what keeps a worker out
 #: of every other session's `memory/` — it is not going to be loosened.
-DRIVER_RUN_RE = re.compile(r"\bRun\s*\(driver\)\s*:", re.IGNORECASE)
+#: `Run (driver):` and `Run (driver), optional —` both mark one.
+DRIVER_RUN_RE = re.compile(r"\bRun\s*\(driver\)\s*[:,]", re.IGNORECASE)
 
 
 def is_driver_run(description: str) -> bool:
@@ -48,9 +49,18 @@ class VerificationItem(BaseModel):
     id: str
     description: str
     required: bool = True
-    # Set from the description's ``Run (driver):`` marker at assembly time, so
-    # a spec carries the fact rather than every reader re-deriving it.
+    # Derived from the description's ``Run (driver):`` marker whenever an item
+    # is built, so a spec carries the fact rather than every reader re-deriving
+    # it. Derived here, not by one caller: the mid-run speccer rewrite builds
+    # items too, and an item that lost the flag gated a confined coder on a live
+    # test it cannot run (r20260924-134934, g8).
     driver_run: bool = False
+
+    @model_validator(mode="after")
+    def _derive_driver_run(self) -> VerificationItem:
+        if not self.driver_run and is_driver_run(self.description):
+            self.driver_run = True
+        return self
 
 
 class GroupSpec(BaseModel):
