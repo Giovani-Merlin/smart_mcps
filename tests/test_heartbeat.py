@@ -537,3 +537,78 @@ def test_phase_flip_from_launch_phase_to_round_running_on_first_assistant_event(
     assert hb.snapshot()["phase"] == "round 1 running"
     # The pre-existing transcript-probe hook still ran on the same tick.
     assert transcript_calls == ["transcript", "transcript"]
+
+
+def test_phase_flips_when_the_newest_event_is_a_stream_event_after_an_assistant_one(tmp_path):
+    # Partial-message streaming makes the newest event a `stream_event` on
+    # almost every tick; the flip must key on the sticky first-assistant stamp.
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, "g1")
+    hb.mark_round(generation=1, round_no=1)
+    hb.mark_phase("starting the coder")
+    at = _iso(time.time())
+    child = ChildActivity(
+        pid=1,
+        session_id="s1",
+        cwd="/work/g1",
+        spawned_at=at,
+        last_event_at=at,
+        last_event_type="stream_event",
+        first_assistant_at=at,
+    )
+    probe = LivenessProbe(
+        hb, LivenessConfig(window_seconds=600), lambda: child, proc_root=tmp_path / "proc"
+    )
+    probe.tick()
+    assert hb.snapshot()["phase"] == "round 1 running"
+
+
+# ------------------------------------------------------------ relabel_phase
+# The run recipe's label carries a moving `Ns/caps` counter (r20260924 froze
+# it at `0s/60s` because it was written once at launch). Refreshing it must
+# not restart the phase, starve the periodic line, or write a file per call.
+
+
+def test_relabel_keeps_phase_elapsed_growing(tmp_path):
+    hb = RoundHeartbeat(_paths(tmp_path), "g1")
+    hb.mark_phase("command 1/1 · 0s/60s")
+    time.sleep(0.05)
+    before = hb.snapshot()["phase_elapsed_s"]
+    hb.relabel_phase("command 1/1 · 1s/60s")
+    time.sleep(0.05)
+    after = hb.snapshot()
+    assert after["phase"] == "command 1/1 · 1s/60s"
+    assert after["phase_elapsed_s"] >= before, "a relabel must not restart the phase clock"
+    assert after["phase_elapsed_s"] >= 0.05
+
+
+def test_relabel_every_poll_still_lets_the_periodic_line_fire_with_the_latest_label(tmp_path):
+    """`mark_phase` per poll resets the log clock, so a 60 s line would never
+    become due while a command is polled every second."""
+    lines: list[str] = []
+    hb = RoundHeartbeat(_paths(tmp_path), "g1", interval=0.01, log=lines.append, log_interval=0.05)
+    hb.mark_phase("command 1/1 · 0s/60s")
+    hb.start()
+    try:
+        deadline = time.monotonic() + 0.2
+        i = 0
+        while time.monotonic() < deadline:
+            i += 1
+            hb.relabel_phase(f"command 1/1 · {i}s/60s")
+            time.sleep(0.01)
+        latest = f"command 1/1 · {i}s/60s"
+        time.sleep(0.07)  # one more log interval with the final label in place
+    finally:
+        hb.stop()
+    assert lines, "relabelling every poll must not suppress the periodic line"
+    assert any(f"still {latest}" in line for line in lines), lines
+
+
+def test_relabel_writes_no_file(tmp_path):
+    paths = _paths(tmp_path)
+    hb = RoundHeartbeat(paths, "g1")
+    hb.mark_phase("command 1/1 · 0s/60s")
+    path = heartbeat_path(paths, "g1")
+    stamp = path.read_text()
+    hb.relabel_phase("command 1/1 · 1s/60s")
+    assert path.read_text() == stamp, "the label reaches disk on the next tick, not per call"

@@ -209,6 +209,20 @@ class RoundHeartbeat:
         # enough to make a re-entry look like it was still on the round before.
         self.write_once()
 
+    def relabel_phase(self, phase: str) -> None:
+        """Rename the current phase without restarting it.
+
+        For a phase whose *label* carries a moving number — the run recipe's
+        ``command 1/1 · 37s/60s`` — and is refreshed every poll. ``mark_phase``
+        is the wrong tool for that cadence: it zeroes ``phase_elapsed_s``,
+        resets the log clock (so the 60 s "still …" line never becomes due) and
+        rewrites ``heartbeat.json`` on every call. This touches the label only;
+        the next regular tick carries it to disk and the periodic line names
+        whatever label is current when it fires.
+        """
+        with self._lock:
+            self._phase = phase
+
     def push_phase(self, phase: str) -> None:
         """Overlay a phase owned by something outside this group's loop, keeping
         the underlying one to restore.

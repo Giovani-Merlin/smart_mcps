@@ -49,7 +49,10 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    accepts it explicitly — workers fork from the launch commit, so anything
    uncommitted is invisible to them.
 2. **Config exists and names the data.** `.orchestrator/config.toml` must
-   exist. If the plan names data inputs (a corpus, a PDF, a model), then
+   exist — print the absolute path you actually read
+   (`realpath .orchestrator/config.toml`; F6, r20260924: a driver launched
+   from a worktree read a different config than the one it had edited). If
+   the plan names data inputs (a corpus, a PDF, a model), then
    `[workspace] data_dirs` must list a directory covering each, and each listed
    directory must exist and be non-empty (`find <dir> -type f | head -1`).
    `[session] provision_on_failure = "warn"` is only acceptable with a stated
@@ -74,9 +77,18 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    if the human clearly wants a fresh run, say so and pass `--run-id`
    explicitly. A non-tty launch skips the CLI's `[y/N]` prompt, so this check
    is yours, not the CLI's.
+6. **Every non-`code` recipe the grouping uses is allow-listed.** If any group
+   in `groups.json` carries a `recipe` other than `code` (a `run` group,
+   plan U1/U4), its name must appear in `.orchestrator/config.toml`'s
+   `[recipes] enabled`. This is checked again at `run` time — the config can
+   change between `group` and `run` — but catching it here saves the round
+   trip; a plan declaring a non-enabled recipe fails naming the units and the
+   config key.
 
-Report the five results in one short block. Refuse to continue on any red
-item; do not "launch and see".
+Report the six results in one short block, with two explicit lines from
+item 2: the config path read, and "`[docs] formats` present: …" — an
+absent formats line is silent everywhere except the launch warning nobody
+reads back. Refuse to continue on any red item; do not "launch and see".
 
 ## Phase 1 — Launch, detached
 
@@ -138,7 +150,10 @@ that fires on any of:
 - **(c)** a new terminal group line in `logs/run.log` —
   `group <gid>: completed`, `group <gid>: failed (…)`,
   `group <gid>: resolved (…)`, `group <gid>: terminal failed — …`,
-  `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`.
+  `run <id> aborted by operator: …`, `run <id> interrupted (SIGINT)`;
+- **(d)** a `SURPRISE ` line in `logs/run.log` — a coder's finding about a
+  group already merged, or about nothing in the plan (non-blocking; act on it
+  while the source coder is still up, see the table below).
 
 There is no manual wedge check to run here anymore. The Liveness probe
 watches the worker child itself — a real Sign of Life inside a configurable
@@ -175,6 +190,11 @@ Greppable anchors, all in `logs/run.log`:
 | group done           | `group <gid>: completed`                                                                                                   |
 | group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                     |
 | run ended by you     | `run <id> aborted by operator: …`                                                                                          |
+| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                      |
+| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)             |
+| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                       |
+| run recipe done      | `group <gid>: run recipe completed`                                                                                        |
+| late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` (non-blocking; read it now, not at finish) |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
   `triage-guide.md`, "When status reports Not Live", for the three cases and
@@ -187,7 +207,39 @@ Greppable anchors, all in `logs/run.log`:
   probe has used its budget for this generation and will only keep
   reporting from here.
 
-Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend" logs/run.log`.
+- **`SURPRISE … (already merged)`** is a coder's finding about a group whose
+  work is already in the integration branch — nobody will consume it, so the
+  residue report was the only place it used to surface. Read it when it
+  lands: a seam bug named here is cheapest to fix while the source group's
+  coder is still up (`answer` it, or note it for the finish).
+
+Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend|SURPRISE" logs/run.log`.
+
+### What a live `run` group looks like
+
+A `run` group (`recipe: run`, plan U8) has no coder, reviewer, round, or
+generation — its heartbeat instead marks phases `worktree`, then
+`command <n>/<total> · <elapsed>s/<cap>s` for each declared command in turn,
+then `merging into integration`. There is exactly one worktree for the whole
+group's lifetime (no per-generation relaunch), so `run recipe worktree ready`
+appears once and every command after it runs in that same worktree.
+
+**Re-adoption, not restart.** If the orchestrator process itself restarts
+mid-command (a crash, not a deliberate stop), the resumed run finds the
+child's pid still alive from its recorded state file and re-adopts it rather
+than relaunching — logged as `re-adopted run child pid <pid> for command <n>`
+— so a long render already in progress is never re-paid. A command that died
+along with the previous orchestrator process (no exit file, pid gone) is
+reported as a run failure for that command, not silently retried.
+
+**Cancellation is a polled kill, not an instant one.** The executor waits on
+the command by polling for its exit file roughly once a second
+(`asyncio.sleep`, not an event-driven wait) — it does not use `pidfd_open` or
+`select` to detect the exit instantly. A Ctrl-C on the driver process, or an
+Observatory Stop, cancels the executor's await; on that cancellation it kills
+the command's whole process group before propagating, so the Run Child does
+not survive the run being stopped. Expect up to roughly a second of latency
+between the stop signal and the kill, not an instant exit.
 
 ## Phase 3 — Triage every escalation
 
@@ -214,6 +266,7 @@ it blocks (the `blocks` clause on the raise line):
 | `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                                                                                                 |
 | `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                                                                                             |
 | `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite                                                                                            |
+| same                                        | a fix you must commit (fixture, dep, config)              | commit on the **integration branch only** — the retry re-merges it into the group branch before the gate; a worktree commit too leaves duplicates (triage-guide)   |
 | same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                                                                                             |
 | same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)                                                                                 |
 | `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                                                                                                  |
@@ -238,6 +291,42 @@ Rules that override the table:
 Log every escalation and its resolution (id, kind, group, cause, action,
 text) to the notes file at the moment you answer it.
 
+### Triaging a `runner` diagnosis
+
+A `run` group has no coder, so `coder_blocked` above does not apply to it. On
+a failing command, missing declared output, `commit_paths` violation, or
+merge failure, the group's own one-shot `claude -p` triage call runs first
+(recorded as an `llm_calls` row, `operation: run_triage`, labeled `runner` in
+the Observatory) and returns a `verdict` of `work_failure` or
+`needs_decision`:
+
+- `work_failure` — the group goes straight to FAILED; `logs/run.log` carries
+  `group <gid>: run failure — <summary>` followed by the triage's diagnosis.
+  Read the diagnosis and the command's own `.out`/`.err` files under
+  `<group_dir>/run/attempt-<k>/` before deciding what to fix — the diagnosis
+  is a best-effort read of the tail, not a verdict to trust blindly.
+- `needs_decision` — only raised as an actual `coder_blocked`-kind escalation
+  when `[escalation] enabled = true`; with HITL off (the default) it is
+  folded straight into the same FAILED-group failure text instead, so with
+  HITL off you will never see this as a pending escalation — read it off the
+  failure text the same way.
+
+Either way, fix the underlying cause (environment, a bad command, a wrong
+`recipe_args` field, the launch branch) the same way as any other
+`coder_blocked` fix, then release and retry the group:
+
+1. `smart-mcps-orchestrate retry $RUN <gid>` (the CLI subcommand, not the
+   escalation action — a `run` group is never mid-escalation the way a coder
+   group is).
+2. A bare `retry` resumes the group's **next** attempt from the first command
+   that did **not** exit 0 in the previous attempt — commands that already
+   succeeded are not re-run. The plain `retry` CLI takes no note text or
+   `--from-start` flag as an argument. To force every command to re-run from
+   the beginning instead, write a file containing `--from-start` to
+   `<group_dir>/run/retry-note.txt` **before** issuing `retry` — the next
+   attempt reads and deletes that file itself.
+3. `smart-mcps-orchestrate resume $RUN`.
+
 ## Phase 4 — Finish
 
 When the process exits (signal **(b)**):
@@ -246,13 +335,18 @@ When the process exits (signal **(b)**):
 2. If groups failed: say which, why (the `failure:` line), and whether
    `smart-mcps-orchestrate retry $RUN <gid>` + `resume` is a sane salvage
    (it is, when the integration tip has since moved past the cause).
-3. If every group completed/resolved, the CLI **auto-finished** (push + PR)
-   the moment the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`. It
-   prints `finish when ready with: smart-mcps-orchestrate finish $RUN` only
-   in the not-finishable case (a group whose branch is not on the integration
-   tip), and that is the only time you run `finish` by hand. The one-pager /
-   report step below therefore happens **on the PR after the fact**: write it,
-   then re-run `finish` to refresh the PR body. **The record the human
+3. If every group completed/resolved **and no group carries a required
+   `Run (driver):` item**, the CLI **auto-finished** (push + PR) the moment
+   the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`; the one-pager
+   then lands on the PR after the fact (write it, re-run `finish`). When
+   driver-run items exist, the CLI holds instead — `run <id>: not
+   auto-finishing — N driver-run verification item(s) wait for the run
+   driver (<gid>: <ids>; …)` — because those items are the only evidence
+   that exercises the merged code for real (r20260924-134934 merged a `run`
+   recipe that could not start, and only the driver's live items showed it).
+   Run them (step 4), fix what they find, write the one-pager, then run
+   `finish` yourself. It also prints `finish when ready with: …` in the
+   not-finishable case (a group whose branch is not on the integration tip). **The record the human
    approves from is the report, not this session's prose** — see
    `docs/orchestrator-report.md` for the full format contract. Before (re-)running
    `finish`:
@@ -271,16 +365,14 @@ When the process exits (signal **(b)**):
    3. Write the one-pager — it IS the PR body and IS the Summary at the top
       of `report.html`, so it is the record the human approves from. Write it
       directly into the integration worktree, since that is where `finish`
-      looks for it, and **before the last group merges**: the CLI
-      auto-finishes the moment every group is terminal, and a one-pager
-      written after that only lands if you run `finish` again to refresh the
-      PR body.
+      looks for it, **once the run has ended** (no merge left to sweep it):
       `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
-      Expect the next merge to sweep that still-untracked scaffold into a
-      `recover(<run>): integration work stranded by an interrupted run`
-      commit — the merge cannot tell a driver's draft from a crashed group's
-      leftovers. Harmless: `finish` overwrites the file with the filled-in
-      one-pager and commits it under `docs/runs/$RUN/`.
+      Do not scaffold it while groups are still merging: the next merge
+      sweeps the untracked draft into a `recover(<run>): integration work
+      stranded by an interrupted run` commit, and an unfilled scaffold makes
+      any `finish` — the CLI's own auto-finish included — abort on
+      validation (r20260924-134934). Drafting early is fine elsewhere, e.g.
+      under `.orchestrator/`, copied in after the run ends.
       Then fill it in with the extract-then-abstract recipe:
       - **Extract.** Build one prompt from two XML-delimited sources and
         nothing else — never a transcript:
@@ -314,9 +406,11 @@ When the process exits (signal **(b)**):
         generates the other formats without it and the PR body falls back
         to the run-record lines and the report link.
    4. **Run every `driver-run` verification item the run deferred to you.**
-      `grep "driver-run verification item" logs/run.log` names them per group
-      (the coder was told not to run them — a nested `claude` cannot write its
-      transcript from inside a confined worktree). Run each from the group's
+      `grep "not run by the coder" logs/run.log` names them per group — the
+      merge log lists only the items the coder did not pass (a coder may
+      attempt a sandbox-safe one; a nested `claude` cannot write its
+      transcript from inside a confined worktree, so those it always leaves
+      to you). A `passed by the coder` line needs nothing. Run each from the group's
       worktree, or from the integration worktree once merged, and paste the
       result into the one-pager's Run notes. A live-tier item costs real
       tokens (`-m llm`, ~$0.20 and a few minutes here) — that is the price of

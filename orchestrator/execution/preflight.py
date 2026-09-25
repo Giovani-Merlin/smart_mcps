@@ -87,6 +87,7 @@ class PreflightFailure(Exception):
         comparison: "BaselineComparison | None" = None,
         step_name: str | None = None,
         paths: Sequence[str] = (),
+        exit_code: int | None = None,
     ):
         super().__init__(reason)
         self.reason = reason
@@ -95,6 +96,7 @@ class PreflightFailure(Exception):
         self.comparison = comparison
         self.step_name = step_name
         self.paths = list(paths)
+        self.exit_code = exit_code
 
 
 def _classify_step_failure(step: "CheckStep", returncode: int, output: str) -> PreflightFailureKind:
@@ -175,8 +177,9 @@ def detect_check_steps(
       pre-existing behaviour for a node-only checkout).
     - ``<dir>/package.json`` **and** ``<dir>/node_modules``, for the first
       ``dir`` in ``frontend_dirs`` that has both -> that frontend's own
-      suites: ``vitest`` when it is a devDependency (JUnit reporter, ids
-      prefixed ``<dir>::``), otherwise ``npm test``; plus ``tsc --noEmit``
+      suites: ``vitest`` when it is a devDependency (JUnit reporter for the
+      gate plus the default reporter so the log keeps vitest's own output,
+      ids prefixed ``<dir>::``), otherwise ``npm test``; plus ``tsc --noEmit``
       when ``typescript`` is a devDependency and ``<dir>/tsconfig.json``
       exists.
 
@@ -223,7 +226,20 @@ def detect_check_steps(
             steps.append(
                 CheckStep(
                     name="vitest",
-                    argv=["npx", "vitest", "run", "--reporter=junit", f"--outputFile={ui_junit}"],
+                    # Two reporters (F3, r20260924): `junit` for the gate's
+                    # failing-test set, `default` so the step log still carries
+                    # vitest's own diagnosis — with junit alone the log held
+                    # nothing but the XML path, and an "Unhandled Errors" exit
+                    # was undiagnosable from the run directory. The per-reporter
+                    # `--outputFile.junit=` keeps `default` on stdout.
+                    argv=[
+                        "npx",
+                        "vitest",
+                        "run",
+                        "--reporter=default",
+                        "--reporter=junit",
+                        f"--outputFile.junit={ui_junit}",
+                    ],
                     subdir=frontend,
                     junit_path=ui_junit,
                     id_prefix=f"{frontend}::",
@@ -493,9 +509,12 @@ def _run_one_step(
     if kind == "regression":
         comparison = _excuse_comparison(step, steps_so_far=steps_so_far, baseline=baseline)
         if comparison.verdict == "pre_existing":
+            by_failing_set = step.junit_path is not None and bool(
+                failing_tests_from_steps(steps_so_far)
+            )
             excuse = (
                 "every failing test was already red on the launch branch"
-                if step.junit_path is not None
+                if by_failing_set
                 else "it exited nonzero on the launch branch too"
             )
             log(
@@ -510,6 +529,7 @@ def _run_one_step(
         output_path=output_path,
         comparison=comparison,
         step_name=step.name,
+        exit_code=result.returncode,
     )
 
 
@@ -538,8 +558,10 @@ def _excuse_comparison(
     """Can this step's failure be excused as pre-existing? (plan A1/A3)
 
     A JUnit step is compared by failing-test set — the union across every step
-    that wrote a report, with each step's ``id_prefix`` applied — but only when
-    that union is non-empty. An empty union is *no evidence*, not "nothing new".
+    that wrote a report, with each step's ``id_prefix`` applied — when that
+    union is non-empty. An empty union with a nonzero exit falls through to
+    the exit-code comparison (F2): excused if the launch branch's same step
+    also exited nonzero, else ``unattributed_exit``.
 
     A step with no report is compared by exit code against the baseline's
     record of the same step name; with no such record there is nothing
@@ -549,9 +571,16 @@ def _excuse_comparison(
         return BaselineComparison(verdict="no_baseline")
     if step.junit_path is not None:
         failing = failing_tests_from_steps(steps_so_far)
-        if not failing:
-            return BaselineComparison(verdict="new_failures")
-        return compare_to_baseline(baseline, failing)
+        if failing:
+            return compare_to_baseline(baseline, failing)
+        # F2 (r20260924): a nonzero exit with an empty failing set is the
+        # runner itself breaking (vitest "Unhandled Errors"), not "nothing
+        # new" — compare by exit code like a report-less step, and name it
+        # `unattributed_exit` when the launch branch's step was clean.
+        recorded = baseline.step(step.name)
+        if recorded is not None and recorded.exit_code != 0:
+            return BaselineComparison(verdict="pre_existing")
+        return BaselineComparison(verdict="unattributed_exit")
     recorded = baseline.step(step.name)
     if recorded is None:
         return BaselineComparison(verdict="new_failures")
@@ -654,7 +683,12 @@ def _parse_junit_results(xml_path: Path, *, id_prefix: str = "") -> dict[str, st
     return results
 
 
-BaselineVerdict = Literal["new_failures", "pre_existing", "no_baseline"]
+#: ``unattributed_exit`` (F2, r20260924): a JUnit step exited nonzero with
+#: zero failing tests — the runner itself broke (vitest "Unhandled Errors", a
+#: worker crash) — and the launch branch's same step exited 0. Not a
+#: pre-existing failure, but not a named test either; the diagnosis says so
+#: rather than claiming "new failures" it cannot list.
+BaselineVerdict = Literal["new_failures", "pre_existing", "no_baseline", "unattributed_exit"]
 
 
 class BaselineStep(BaseModel):
@@ -734,9 +768,14 @@ def capture_preflight_baseline(
     """Run every check step once on the launch branch and record its result
     (plan U2).
 
-    Runs directly against ``repo_root`` — the launch branch, not a group
-    worktree — so there is no clean-tree gate here: a baseline capture is not a
-    merge attempt. Unlike the gate, this does **not** stop at the first failing
+    ``repo_root`` is the tree to run in. Since F1 (r20260924) the launch passes
+    the *provisioned integration worktree* at the launch commit — provisioned
+    by ``IntegrationMerger._provision_once`` exactly like every group worktree
+    a gate runs in, so ``detect_frontend_dir``'s ``node_modules`` requirement
+    is met by the same ``provision_node_env`` and the baseline is comparable
+    to the gate. ``commit_sha`` stays the launch HEAD, which the integration
+    branch is cut from. There is no clean-tree gate here: a baseline capture
+    is not a merge attempt. Unlike the gate, this does **not** stop at the first failing
     step: a group's ``tsc`` failure can only be excused if the launch branch's
     own ``tsc`` exit code is on record, and a red pytest run must not hide it.
     A step that cannot be run at all is simply absent from ``steps``; when *no*
@@ -806,7 +845,7 @@ def capture_preflight_baseline(
     first = recorded[0]
     _log(
         f"preflight baseline: captured {len(recorded)} step(s) at {commit_sha} "
-        f"({len(first.tests)} test outcome(s) from '{first.name}')"
+        f"in {repo_root} ({len(first.tests)} test outcome(s) from '{first.name}')"
     )
     return PreflightBaseline(
         command=first.command,

@@ -238,3 +238,60 @@ def test_slug_word_is_not_mistaken_for_a_task_id():
     board.mark(s, source_group="g2")
     assert board.pending_for("g1") == []
     assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [s]
+
+
+# ----------------------------------------------------- late-surprise anchor
+# r20260924: a surprise about an already-merged group was only visible in the
+# end-of-run residue. The board now writes one `SURPRISE` line to run.log for
+# a surprise nobody will consume — the bucket is still appended as before.
+
+
+def _run_log(paths: RunPaths) -> str:
+    path = paths.run_dir / "logs" / "run.log"
+    return path.read_text() if path.is_file() else ""
+
+
+def test_surprise_for_a_settled_group_writes_an_anchor_line_and_still_persists(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups(), is_settled=lambda gid: gid == "g1")
+    board.mark(surprise("the merged helper lost its kwarg", ["g1"]), source_group="g2")
+    log = _run_log(paths)
+    assert (
+        "SURPRISE [other] group g2 → g1 (already merged): the merged helper lost its kwarg" in log
+    )
+    assert board.pending_for("g1") == [surprise("the merged helper lost its kwarg", ["g1"])]
+
+
+def test_surprise_for_a_pending_group_writes_no_anchor_line(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups(), is_settled=lambda gid: False)
+    board.mark(surprise("heads up", ["g3"]), source_group="g2")
+    assert "SURPRISE" not in _run_log(paths)
+
+
+def test_surprise_naming_no_group_writes_a_no_target_anchor_line(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups(), is_settled=lambda gid: False)
+    board.mark(surprise("future work: the CLI flag is undocumented", []), source_group="g4")
+    assert (
+        "SURPRISE [other] group g4 → (no target group): future work: the CLI flag is undocumented"
+        in _run_log(paths)
+    )
+
+
+def test_without_a_callable_the_board_reads_state_json_for_settledness(tmp_path):
+    from orchestrator.execution.manifest import atomic_write_text
+
+    paths = RunPaths(tmp_path, "r1")
+    state = RunState(run_id="r1", groups={"g1": GroupRunState(state=GroupState.COMPLETED)})
+    atomic_write_text(paths.state_path, state.model_dump_json())
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("late", ["g1"]), source_group="g2")
+    assert "SURPRISE [other] group g2 → g1 (already merged): late" in _run_log(paths)
+
+
+def test_without_a_callable_or_state_file_no_anchor_line_is_written(tmp_path):
+    paths = RunPaths(tmp_path, "r1")
+    board = SurpriseBoard(paths, groups=thirteen_groups())
+    board.mark(surprise("late", ["g1"]), source_group="g2")
+    assert "SURPRISE" not in _run_log(paths)

@@ -51,6 +51,27 @@ class TestGroup:
         with pytest.raises(ValidationError):
             make_group(difficulty=1.5)
 
+    def test_recipe_fields_round_trip(self):
+        group = make_group(
+            recipe="run",
+            recipe_args={"commands": [{"cmd": "make render", "wall_clock_min": 30}]},
+            estimated_wall_clock_s=1800,
+        )
+        assert Group.model_validate_json(group.model_dump_json()) == group
+
+    def test_group_with_no_recipe_key_defaults_to_code(self):
+        """g2-4: a groups.json serialized before recipe existed (no `recipe`
+        key) loads with recipe == "code"."""
+        legacy_json = (
+            '{"id": "g1", "name": "auth-service", '
+            '"summary": "Add token refresh", "spec": "spec text", '
+            '"difficulty": 0.4, "intensity": "paired"}'
+        )
+        group = Group.model_validate_json(legacy_json)
+        assert group.recipe == "code"
+        assert group.recipe_args is None
+        assert group.estimated_wall_clock_s is None
+
 
 class TestManifest:
     def test_round_trips_with_generations_and_retirement(self):
@@ -234,6 +255,18 @@ class TestReportSchemas:
         )
         assert GroupingResult.model_validate_json(result.model_dump_json()) == result
 
+    def test_legacy_groups_json_fixture_defaults_every_group_to_code(self):
+        """g2-4: a real groups.json serialized before `recipe` existed (no
+        `recipe` keys anywhere) loads with every group's recipe == "code"."""
+        import json
+        from pathlib import Path
+
+        fixture = Path(__file__).parent / "fixtures" / "runs" / "r20260828-220035" / "groups.json"
+        data = json.loads(fixture.read_text())
+        result = GroupingResult.model_validate(data)
+        assert result.groups
+        assert all(group.recipe == "code" for group in result.groups)
+
 
 class TestConfig:
     def test_defaults_load_without_config_file(self):
@@ -264,3 +297,37 @@ class TestConfig:
         assert config.difficulty.d_review == 0.2
         # untouched sections keep defaults
         assert config.breaker.context_token_limit == 250_000
+
+    def test_recipes_enabled_rejects_unregistered_name(self, tmp_path):
+        """g2-5: an unknown recipe in [recipes] enabled fails naming it and the
+        registered names."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[recipes]\nenabled = ["nope"]\n')
+        with pytest.raises(ValidationError) as exc_info:
+            load_config(config_file)
+        message = str(exc_info.value)
+        assert "nope" in message
+        assert "code" in message
+        assert "run" in message
+
+    def test_recipes_enabled_accepts_registered_name(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[recipes]\nenabled = ["run"]\n')
+        config = load_config(config_file)
+        assert config.recipes.enabled == ["run"]
+
+    def test_run_triage_model_inherits_session_model_when_unset(self, tmp_path):
+        """g2-6: with [session] model set and no triage_model, the resolved
+        RecipesConfig.run.triage_model inherits it."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[session]\nmodel = "sonnet"\n')
+        config = load_config(config_file)
+        assert config.recipes.run.triage_model == "sonnet"
+
+    def test_run_triage_model_explicit_value_is_not_overridden(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[session]\nmodel = "sonnet"\n\n[recipes.run]\ntriage_model = "opus"\n'
+        )
+        config = load_config(config_file)
+        assert config.recipes.run.triage_model == "opus"

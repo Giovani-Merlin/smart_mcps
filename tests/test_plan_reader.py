@@ -75,8 +75,10 @@ class TestBlockDetection:
             parse_task_map(text, make_client(tmp_path))
 
     def test_unsupported_version_fails_instead_of_falling_back(self, tmp_path):
-        text = "# plan\n\n```yaml\n# orchestrator-task-map v2\ntasks: []\n```\n"
-        with pytest.raises(TaskMapError, match="unsupported task map version v2"):
+        # v3 is a future, unsupported version (this parser reads v1/v2); v2
+        # itself is now supported — see TestTaskMapV2 for its own coverage.
+        text = "# plan\n\n```yaml\n# orchestrator-task-map v3\ntasks: []\n```\n"
+        with pytest.raises(TaskMapError, match="unsupported task map version v3"):
             parse_task_map(text, make_client(tmp_path))
 
 
@@ -274,7 +276,9 @@ class TestSizeHints:
         with pytest.raises(TaskMapError, match=r"t1.*'huge'.*large.*medium.*small"):
             parse_task_map(plan_with(map_yaml), make_client(tmp_path))
 
-    def test_size_hints_on_existing_file_raises_naming_it(self, tmp_path):
+    def test_size_hints_on_existing_file_is_ignored_with_a_flag(self, tmp_path):
+        # A plan whose own run created the hinted file must still regroup
+        # (r20260924-134934: the merged plan was a hard parse error).
         map_yaml = (
             "# orchestrator-task-map v1\n"
             "tasks:\n"
@@ -284,8 +288,11 @@ class TestSizeHints:
             "    size_hints:\n"
             "      existing.py: small\n"
         )
-        with pytest.raises(TaskMapError, match=r"t1.*existing\.py.*already exists"):
-            parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        result = parse_task_map(plan_with(map_yaml), make_client(tmp_path))
+        (mapping,) = result.mappings
+        assert mapping.files == ("existing.py",)
+        assert mapping.size_hints == ()
+        assert any("existing.py" in f and "hint ignored" in f for f in result.flags)
 
     def test_size_hints_wrong_shape_raises(self, tmp_path):
         map_yaml = (
@@ -386,6 +393,18 @@ class TestStripTaskMap:
         assert "orchestrator-task-map v1" not in stripped
         assert "# feat: x" in stripped
 
+    def test_v2_block_and_heading_removed_exactly_as_v1(self):
+        """g1-10: a v2 block never reaches an LLM context — strip_task_map
+        removes it (and its preceding heading) the same way it removes v1."""
+        v2_map = TestTaskMapV2.V2_NO_RECIPE
+        text = plan_with(v2_map) + "\n## Next section\nprose\n"
+        stripped = strip_task_map(text)
+        assert "orchestrator-task-map" not in stripped
+        assert "## Task Map" not in stripped
+        assert "```yaml" not in stripped
+        assert "# feat: toy" in stripped
+        assert "## Next section" in stripped
+
     def test_content_before_the_heading_is_byte_identical(self):
         """Only the heading + block span is removed — everything before it,
         including its own trailing blank-line paragraph break, is untouched."""
@@ -398,3 +417,135 @@ class TestStripTaskMap:
         once = strip_task_map(text)
         twice = strip_task_map(once)
         assert once == twice
+
+
+class TestTaskMapV2:
+    """Plan U2: the v2 marker carries `recipe`/`recipe_args`; v1 parses exactly
+    as before, and a v2 block with no `recipe` on any task is identical to the
+    same block marked v1."""
+
+    V2_NO_RECIPE = VALID_MAP.replace("# orchestrator-task-map v1", "# orchestrator-task-map v2")
+
+    RUN_TASK = (
+        "# orchestrator-task-map v2\n"
+        "tasks:\n"
+        "  - task_id: t1-render\n"
+        "    description: render the podcast audio\n"
+        "    recipe: run\n"
+        "    recipe_args:\n"
+        "      commands:\n"
+        "        - cmd: uv run scripts/render.py\n"
+        "          wall_clock_min: 5.0\n"
+        "    depends_on: []\n"
+        "    implements: []\n"
+        "    consumes: []\n"
+    )
+
+    def test_v1_map_unaffected_by_v2_support(self, tmp_path):
+        output = parse_task_map(
+            plan_with(VALID_MAP), make_client(tmp_path), allow_unknown_symbols=True
+        )
+        assert output is not None
+        assert all(m.recipe == "code" for m in output.mappings)
+        assert all(m.recipe_args is None for m in output.mappings)
+
+    def test_v2_block_no_recipe_matches_v1_mappings(self, tmp_path):
+        v1_output = parse_task_map(
+            plan_with(VALID_MAP), make_client(tmp_path), allow_unknown_symbols=True
+        )
+        v2_output = parse_task_map(
+            plan_with(self.V2_NO_RECIPE), make_client(tmp_path), allow_unknown_symbols=True
+        )
+        assert v1_output is not None and v2_output is not None
+        assert v1_output.descriptions == v2_output.descriptions
+        assert v1_output.flags == v2_output.flags
+        assert [m.task_id for m in v1_output.mappings] == [m.task_id for m in v2_output.mappings]
+        for m1, m2 in zip(v1_output.mappings, v2_output.mappings, strict=True):
+            assert m1.files == m2.files
+            assert m1.symbols == m2.symbols
+            assert m1.depends_on == m2.depends_on
+            assert m1.slice == m2.slice
+            assert m2.recipe == "code"
+            assert m2.recipe_args is None
+
+    def test_run_task_with_valid_recipe_args_parses(self, tmp_path):
+        output = parse_task_map(plan_with(self.RUN_TASK), make_client(tmp_path))
+        assert output is not None
+        [mapping] = output.mappings
+        assert mapping.recipe == "run"
+        assert mapping.recipe_args is not None
+        assert mapping.recipe_args.commands[0].cmd == "uv run scripts/render.py"
+
+    def test_run_task_empty_commands_raises_naming_task(self, tmp_path):
+        text = self.RUN_TASK.replace(
+            "      commands:\n"
+            "        - cmd: uv run scripts/render.py\n"
+            "          wall_clock_min: 5.0\n",
+            "      commands: []\n",
+        )
+        with pytest.raises(TaskMapError, match="t1-render"):
+            parse_task_map(plan_with(text), make_client(tmp_path))
+
+    def test_run_task_with_slice_raises_naming_task(self, tmp_path):
+        text = self.RUN_TASK.replace("    depends_on: []", "    slice: x\n    depends_on: []")
+        with pytest.raises(TaskMapError, match="t1-render"):
+            parse_task_map(plan_with(text), make_client(tmp_path))
+
+    def test_run_task_marked_v1_raises_naming_task(self, tmp_path):
+        text = self.RUN_TASK.replace("# orchestrator-task-map v2", "# orchestrator-task-map v1")
+        with pytest.raises(TaskMapError, match="t1-render"):
+            parse_task_map(plan_with(text), make_client(tmp_path))
+
+    def test_unknown_recipe_raises_naming_task_and_registered_names(self, tmp_path):
+        text = self.RUN_TASK.replace("recipe: run", "recipe: research")
+        with pytest.raises(TaskMapError) as excinfo:
+            parse_task_map(plan_with(text), make_client(tmp_path))
+        message = str(excinfo.value)
+        assert "t1-render" in message
+        assert "research" in message
+        assert "code" in message and "run" in message
+
+    def test_recipe_args_on_code_task_raises(self, tmp_path):
+        text = self.RUN_TASK.replace("recipe: run", "recipe: code")
+        with pytest.raises(TaskMapError, match="t1-render"):
+            parse_task_map(plan_with(text), make_client(tmp_path))
+
+
+class TestRealPlansStillParse:
+    """g1-6: every committed plan under docs/plans/ carrying a v1 task map
+    parses to the same MapperOutput before and after v2 support exists.
+
+    v1 parsing is byte-for-byte untouched by this change (no v1-only behaviour
+    was added, removed, or reordered — v2 is purely additive, gated by the
+    marker version). A plan whose v1 map is already unparseable for reasons
+    unrelated to recipes (e.g. stale ``size_hints`` from prior drift) raised
+    the identical ``TaskMapError`` before this change too; this test only
+    asserts the successful ones match, and that no failure mentions the new
+    recipe machinery."""
+
+    def test_every_v1_plan_parses_identically(self):
+        import glob
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        plan_paths = sorted(glob.glob(str(repo_root / "docs/plans/*.md")))
+        v1_plans = [p for p in plan_paths if "# orchestrator-task-map v1" in Path(p).read_text()]
+        assert v1_plans, "expected at least one committed v1 plan"
+
+        def runner(args):
+            return "[]" if args[0] == "query" else "{}"
+
+        for plan_path in v1_plans:
+            text = Path(plan_path).read_text()
+            client = CodegraphClient(repo_root=repo_root, runner=runner)
+            try:
+                output = parse_task_map(text, client, allow_unknown_symbols=True)
+            except TaskMapError as exc:
+                message = str(exc)
+                assert "which require the plan's task map to be marked v2" not in message, plan_path
+                assert "recipe_args" not in message, plan_path
+                assert "unknown recipe" not in message, plan_path
+                continue
+            assert output is not None, plan_path
+            assert all(m.recipe == "code" for m in output.mappings), plan_path
+            assert all(m.recipe_args is None for m in output.mappings), plan_path

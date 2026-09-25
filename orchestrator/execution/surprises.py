@@ -17,7 +17,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from orchestrator.execution.manifest import RunPaths, atomic_write_text
+from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.scheduler import GroupState, RunState
 from orchestrator.model import Group, Surprise, SurpriseResidueEntry
 
@@ -60,9 +60,21 @@ class SurpriseBoard:
     #: owned by one — otherwise silently dropped, per plan U11.
     RUN_LEVEL = "__run__"
 
-    def __init__(self, paths: RunPaths | None = None, *, groups: list[Group] | None = None) -> None:
+    def __init__(
+        self,
+        paths: RunPaths | None = None,
+        *,
+        groups: list[Group] | None = None,
+        is_settled: Callable[[str], bool] | None = None,
+    ) -> None:
         self._paths = paths
         self._lock = threading.Lock()
+        # r20260924: a surprise about a group that has already merged (or one
+        # naming no group at all) is delivered to nobody — until this it was
+        # only ever reported in the end-of-run residue, hours after the moment
+        # a driver could have acted on it. `is_settled` (the scheduler's live
+        # view) decides; without it the board reads `state.json` lazily.
+        self._is_settled = is_settled
         self._pending: dict[str, list[Surprise]] = {}
         self._group_ids: frozenset[str] | None = (
             frozenset(g.id for g in groups) if groups is not None else None
@@ -108,7 +120,42 @@ class SurpriseBoard:
                 keys.append(self.RUN_LEVEL)
             for key in keys:
                 self._append(key, surprise)
+                self._log_late_surprise(key, surprise, source_group)
             self._persist()
+
+    def _log_late_surprise(self, key: str, surprise: Surprise, source_group: str | None) -> None:
+        """One anchor line in run.log for a surprise nobody will consume —
+        non-blocking, no escalation: the driver greps `SURPRISE` and decides.
+        The bucket is still appended as before, so the residue report and
+        every existing reader see exactly what they saw."""
+        if self._paths is None:
+            return
+        src = source_group or "?"
+        desc = " ".join(surprise.description.split())
+        if len(desc) > 200:
+            desc = desc[:199] + "…"
+        if key == self.RUN_LEVEL:
+            line = f"SURPRISE [{surprise.kind}] group {src} → (no target group): {desc}"
+        elif self._settled(key):
+            line = f"SURPRISE [{surprise.kind}] group {src} → {key} (already merged): {desc}"
+        else:
+            return
+        try:
+            log_event(self._paths, line)
+        except OSError:  # evidence is never worth a surprise
+            pass
+
+    def _settled(self, gid: str) -> bool:
+        if self._is_settled is not None:
+            return self._is_settled(gid)
+        if self._paths is None:
+            return False
+        try:
+            state = RunState.model_validate_json(self._paths.state_path.read_text())
+        except (OSError, ValueError):
+            return False
+        entry = state.groups.get(gid)
+        return entry is not None and entry.state in (GroupState.COMPLETED, GroupState.RESOLVED)
 
     def _resolve(self, gid: str, surprise: Surprise, source_group: str | None) -> list[str]:
         """Map a raw ``affected_groups`` id to the buckets it should land in."""

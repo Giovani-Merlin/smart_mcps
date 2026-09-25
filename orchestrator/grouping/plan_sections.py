@@ -17,16 +17,15 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from orchestrator.grouping.plan_reader import _BLOCK as _TASK_MAP_BLOCK
 from orchestrator.grouping.plan_reader import strip_task_map
 
 _UNITS_HEADING = re.compile(r"^## Units[ \t]*$", re.MULTILINE)
 _H2_HEADING = re.compile(r"^## [ \t]*\S", re.MULTILINE)
 _UNIT_HEADING = re.compile(r"^### U(?P<num>\d+)\.[ \t]*(?P<rest>.*)$", re.MULTILINE)
 _BULLET = re.compile(r"^-\s+\*\*(?P<label>[^*]+)\*\*:\s?(?P<rest>.*)$")
-_TASK_MAP_BLOCK = re.compile(
-    r"```ya?ml[ \t]*\n(?P<body>[ \t]*# orchestrator-task-map v1[ \t]*\n.*?)```",
-    re.DOTALL,
-)
+# The one marker regex (v1 and v2) lives in plan_reader.py; this module used to
+# keep its own hardcoded v1-only copy for the auxiliary task_id extraction below.
 _TASK_ID_UNIT_PREFIX = re.compile(r"^u(\d+)-")
 
 # Public alias: plan_edit.py needs this exact pattern to locate unit-heading

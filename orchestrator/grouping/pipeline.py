@@ -12,10 +12,11 @@ import functools
 import hashlib
 import json
 import subprocess
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.grouping.assembler import ASSEMBLED_FLAG, AssemblyInputs, assemble_group_specs
@@ -37,6 +38,7 @@ from orchestrator.grouping.graphing import (
     EdgeProvenance,
     EdgeWeights,
     TaskGraph,
+    TaskMapping,
     await_index_quiescence,
     build_task_graph,
     index_fingerprint,
@@ -50,12 +52,14 @@ from orchestrator.grouping.partition import (
     DegenerateRepair,
     Pair,
     Partition,
+    UnsplittableSingletonCycleError,
     WorkFn,
     build_group_dag,
     canonical_pair,
     detect_hub_roles,
     find_slice_reentrant_paths,
     slice_atoms,
+    subgraph_excluding,
 )
 from orchestrator.grouping.plan_reader import TaskMapError, parse_task_map
 from orchestrator.grouping.plan_sections import parse_plan_sections
@@ -66,7 +70,8 @@ from orchestrator.grouping.trace import (
     NodeWorkEntry,
     TraceRecorder,
 )
-from orchestrator.model import Group, GroupingResult
+from orchestrator.model import Group, GroupingResult, ReviewIntensity
+from orchestrator.recipes.registry import get_recipe
 
 
 def _git_provenance(repo_root: Path) -> tuple[str, bool]:
@@ -401,6 +406,99 @@ def _flag_self_modification(mapper_out: MapperOutput) -> None:
         mapper_out.flags.append(SELF_MODIFICATION_FLAG)
 
 
+def _check_recipe_gate(mappings: list[TaskMapping], config: OrchestratorConfig) -> None:
+    """Plan U4: a non-``code`` recipe not named in ``[recipes] enabled`` fails
+    ``group`` naming every offending task, its recipe, and the config key —
+    checked again at run time (U5), since the config can change in between."""
+    enabled = set(config.recipes.enabled)
+    errors = ErrorAccumulator()
+    for mapping in sorted(mappings, key=lambda m: m.task_id):
+        if mapping.recipe != "code" and mapping.recipe not in enabled:
+            errors.add(
+                f"task {mapping.task_id} declares recipe {mapping.recipe!r}, which is not "
+                f"in [recipes] enabled (currently {sorted(enabled)})"
+            )
+    errors.raise_all(GrouperError)
+
+
+def _check_no_slice_on_non_code(mappings: list[TaskMapping]) -> None:
+    """A non-``code`` unit may not carry a ``slice`` (Decisions: single-recipe
+    groups): a slice is a must-link the code partitioner enforces, and a fixed
+    singleton is never allowed to share a group with anything."""
+    errors = ErrorAccumulator()
+    for mapping in sorted(mappings, key=lambda m: m.task_id):
+        if mapping.recipe != "code" and mapping.slice:
+            errors.add(
+                f"task {mapping.task_id} declares recipe {mapping.recipe!r} and slice "
+                f"{mapping.slice!r} — a non-code unit may not carry a slice"
+            )
+    errors.raise_all(GrouperError)
+
+
+def _check_run_outputs(mappings: list[TaskMapping], config: OrchestratorConfig) -> None:
+    """A ``run`` unit's ``recipe_args.outputs`` entry must live inside one of
+    the run's ``[workspace] data_dirs`` — a path outside them is a parse-shape
+    check the args model cannot make on its own (it doesn't see the config)."""
+    data_dirs = [PurePosixPath(d) for d in config.workspace.data_dirs]
+    errors = ErrorAccumulator()
+    for mapping in sorted(mappings, key=lambda m: m.task_id):
+        if mapping.recipe != "run":
+            continue
+        outputs = list(getattr(mapping.recipe_args, "outputs", None) or [])
+        for out in outputs:
+            out_path = PurePosixPath(out)
+            if not any(out_path == d or d in out_path.parents for d in data_dirs):
+                errors.add(
+                    f"task {mapping.task_id} run output {out!r} is outside every "
+                    f"[workspace] data_dirs entry ({[str(d) for d in data_dirs]})"
+                )
+    errors.raise_all(GrouperError)
+
+
+def _interface_exports(mappings: list[TaskMapping], partition: Partition) -> dict[int, int]:
+    """Per group, how many *other* groups consume a tag some member task
+    implements (the `interface_exports` difficulty signal, r20260924).
+
+    Counts consuming groups, not tags: a producer whose one tag feeds five
+    groups scores 5, one whose three tags all feed the same group scores 1.
+    Consumption inside the producer's own group is not an export. A task
+    absent from ``partition`` (a non-code singleton dropped before scoring)
+    is ignored on both sides.
+    """
+    implementers: dict[str, set[int]] = {}
+    consumers: dict[str, set[int]] = {}
+    for mapping in mappings:
+        gid = partition.get(mapping.task_id)
+        if gid is None:
+            continue
+        for tag in mapping.implements:
+            implementers.setdefault(tag, set()).add(gid)
+        for tag in mapping.consumes:
+            consumers.setdefault(tag, set()).add(gid)
+    exports: dict[int, set[int]] = {}
+    for tag, producers in implementers.items():
+        for gid in producers:
+            exports.setdefault(gid, set()).update(consumers.get(tag, set()) - {gid})
+    return {gid: len(others) for gid, others in exports.items() if others}
+
+
+def _assert_single_recipe(mappings: list[TaskMapping], partition: Partition) -> None:
+    """Safety net beside ``_assert_slice_integrity``: no group should ever hold
+    tasks of more than one recipe — the singleton isolation above is what keeps
+    this true, so a violation here means a bug in that isolation, not a plan
+    a user wrote wrong."""
+    recipe_of = {m.task_id: m.recipe for m in mappings}
+    by_group: dict[int, set[str]] = defaultdict(set)
+    for node, gid in partition.items():
+        by_group[gid].add(recipe_of.get(node, "code"))
+    for gid, recipes in sorted(by_group.items()):
+        if len(recipes) > 1:
+            raise GrouperError(
+                f"internal error: group {group_label(gid)} mixes recipes {sorted(recipes)} "
+                "— this should be unreachable"
+            )
+
+
 EDGE_PROVENANCE_VERSION = 1
 
 
@@ -603,6 +701,9 @@ def build_partition_graph(
     if not mapper_out.mappings:
         raise GrouperError("mapper produced no tasks from the plan document")
     _flag_self_modification(mapper_out)
+    _check_recipe_gate(mapper_out.mappings, config)
+    _check_no_slice_on_non_code(mapper_out.mappings)
+    _check_run_outputs(mapper_out.mappings, config)
 
     _emit(progress, "stage: graph")
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
@@ -701,13 +802,19 @@ def compute_partition(
     def node_work_fn(node: str) -> float:
         return node_work(graph.metadata.get(node, {}), config.estimator)
 
+    # Plan U4: every non-code node is pulled out of the graph the hub-role,
+    # slice-reentry and clustering stages ever see, so a run unit never shifts
+    # a code task's hub role or joins a slice's must-link contraction.
+    non_code_nodes = frozenset(m.task_id for m in mapper_out.mappings if m.recipe != "code")
+    code_graph = subgraph_excluding(graph, non_code_nodes)
+
     # Computed once, ahead of partitioning, so the slice-reentry check (R10/C5)
     # can run on the pre-partition graph — `DefaultPartitionStrategy.partition`
     # recomputes its own roles/atoms internally for contraction, which is fine:
     # neither call mutates the graph, and this one only ever feeds checks.
-    roles = detect_hub_roles(graph, threshold=config.partition.hub_threshold)
-    atoms = slice_atoms(graph, roles)
-    _check_slice_reentry(graph, atoms)
+    roles = detect_hub_roles(code_graph, threshold=config.partition.hub_threshold)
+    atoms = slice_atoms(code_graph, roles)
+    _check_slice_reentry(code_graph, atoms)
 
     # The mapper's own depends_on pairs (plan U10) — repair_cycles never withdraws
     # these, even when they also carry an inferred contribution on the same edge.
@@ -727,12 +834,17 @@ def compute_partition(
         merge_ceiling_ratio=config.partition.merge_ceiling_ratio,
         recorder=recorder,
         declared=declared_edges,
+        fixed_singletons=non_code_nodes,
     )
     _emit(progress, "stage: partition")
     # strategy.partition may withdraw inferred precedence edges from graph.dependencies
     # in place (plan U10's cycle repair) — everything above this line has already read
     # what it needs from `graph`, so the mutation is safe.
-    partition = strategy.partition(graph)
+    try:
+        partition = strategy.partition(graph)
+    except UnsplittableSingletonCycleError as exc:
+        raise GrouperError(str(exc)) from exc
+    _assert_single_recipe(mapper_out.mappings, partition)
     # Before _check_slice_overflow appends to the same list: at this point
     # strategy.flags carries only the repair-overshoot messages, which is exactly
     # what the degeneracy gate judges.
@@ -869,55 +981,91 @@ def run_grouping(
 
     roles = outcome.hub_roles
     flags = list(mapper_out.flags) + list(outcome.flags) + [ASSEMBLED_FLAG]
+    recipe_of = {m.task_id: m.recipe for m in mapper_out.mappings}
+    recipe_args_of = {m.task_id: m.recipe_args for m in mapper_out.mappings}
+    exports_by_gid = _interface_exports(mapper_out.mappings, partition)
     groups: list[Group] = []
     for gid, members in sorted(members_by_gid.items()):
         gid_str = group_label(gid)
         spec = specs[gid_str]
         files = _union_files(graph, members)
         metas = [graph.metadata.get(node, {}) for node in sorted(members)]
-        # Size the group from its union of files: a file shared by several member
-        # tasks (the usual reason they clustered) must count once, not once per task.
-        estimated = estimate_group_tokens(
-            source_bytes=source_bytes_of(client.repo_root, files),
-            file_count=len(files),
-            spec_tokens=int(len(spec.spec) / config.estimator.bytes_per_token),
-            base_tokens=base_tokens,
-            config=config.estimator,
-        )
-        if is_over_budget(estimated, config.estimator):
-            flags.append(
-                f"estimator: group {gid_str} estimate {estimated} exceeds budget "
-                f"{config.estimator.token_budget} and cannot be split further"
+        # _assert_single_recipe already guarantees every member of this group
+        # shares one recipe — a non-code recipe's units are always singletons.
+        group_recipe = recipe_of.get(members[0], "code")
+
+        if group_recipe == "code":
+            # Size the group from its union of files: a file shared by several
+            # member tasks (the usual reason they clustered) must count once,
+            # not once per task.
+            estimated = estimate_group_tokens(
+                source_bytes=source_bytes_of(client.repo_root, files),
+                file_count=len(files),
+                spec_tokens=int(len(spec.spec) / config.estimator.bytes_per_token),
+                base_tokens=base_tokens,
+                config=config.estimator,
             )
-        member_set = set(members)
-        signals = DifficultySignals(
-            files_touched=len(files),
-            max_fan_in=max((int(m.get("max_symbol_fan_in", 0) or 0) for m in metas), default=0),
-            max_fan_out=max((int(m.get("max_symbol_fan_out", 0) or 0) for m in metas), default=0),
-            hub_touches=sum(1 for node in members if roles.get(node) != "core"),
-            cross_group_edges=sum(
-                1 for up, down in graph.dependencies if (up in member_set) != (down in member_set)
-            ),
-            verification_items=len(spec.verification),
-        )
-        difficulty = difficulty_score(signals, config.difficulty)
-        intensity = intensity_for(difficulty, config.difficulty)
-        if recorder is not None:
-            recorder.record_group_difficulty(
-                GroupDifficultyEntry(
-                    group_id=gid_str,
-                    files_touched=signals.files_touched,
-                    max_fan_in=signals.max_fan_in,
-                    max_fan_out=signals.max_fan_out,
-                    hub_touches=signals.hub_touches,
-                    cross_group_edges=signals.cross_group_edges,
-                    verification_items=signals.verification_items,
-                    difficulty=difficulty,
-                    intensity=intensity.value,
-                    d_review=config.difficulty.d_review,
-                    d_hard=config.difficulty.d_hard,
+            if is_over_budget(estimated, config.estimator):
+                flags.append(
+                    f"estimator: group {gid_str} estimate {estimated} exceeds budget "
+                    f"{config.estimator.token_budget} and cannot be split further"
                 )
+            member_set = set(members)
+            signals = DifficultySignals(
+                files_touched=len(files),
+                max_fan_in=max((int(m.get("max_symbol_fan_in", 0) or 0) for m in metas), default=0),
+                max_fan_out=max(
+                    (int(m.get("max_symbol_fan_out", 0) or 0) for m in metas), default=0
+                ),
+                hub_touches=sum(1 for node in members if roles.get(node) != "core"),
+                cross_group_edges=sum(
+                    1
+                    for up, down in graph.dependencies
+                    if (up in member_set) != (down in member_set)
+                ),
+                verification_items=len(spec.verification),
+                interface_exports=exports_by_gid.get(gid, 0),
             )
+            difficulty = difficulty_score(signals, config.difficulty)
+            intensity = intensity_for(difficulty, config.difficulty)
+            recipe_args_payload: dict | None = None
+            estimated_wall_clock_s: int | None = None
+            if recorder is not None:
+                recorder.record_group_difficulty(
+                    GroupDifficultyEntry(
+                        group_id=gid_str,
+                        files_touched=signals.files_touched,
+                        max_fan_in=signals.max_fan_in,
+                        max_fan_out=signals.max_fan_out,
+                        hub_touches=signals.hub_touches,
+                        cross_group_edges=signals.cross_group_edges,
+                        verification_items=signals.verification_items,
+                        interface_exports=signals.interface_exports,
+                        difficulty=difficulty,
+                        intensity=intensity.value,
+                        d_review=config.difficulty.d_review,
+                        d_hard=config.difficulty.d_hard,
+                    )
+                )
+        else:
+            # A non-code recipe unit is always a fixed singleton (plan U4):
+            # exactly one task, priced and self-verified through its recipe,
+            # never reviewed.
+            args = recipe_args_of.get(members[0])
+            run_metadata = {
+                "recipe": group_recipe,
+                "recipe_args": args,
+                "triage_tokens": config.recipes.run.triage_tokens,
+            }
+            price = get_recipe(group_recipe).price(args, run_metadata, config.estimator)  # type: ignore[arg-type]
+            estimated = int(price.tokens)
+            estimated_wall_clock_s = (
+                int(price.wall_clock_s) if price.wall_clock_s is not None else None
+            )
+            difficulty = 0.0
+            intensity = ReviewIntensity.SELF_VERIFY
+            recipe_args_payload = args.model_dump() if args is not None else None
+
         groups.append(
             Group(
                 id=gid_str,
@@ -931,6 +1079,9 @@ def run_grouping(
                 tasks=sorted(members),
                 files=files,
                 estimated_tokens=estimated,
+                recipe=group_recipe,
+                recipe_args=recipe_args_payload,
+                estimated_wall_clock_s=estimated_wall_clock_s,
             )
         )
 

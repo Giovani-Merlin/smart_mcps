@@ -153,15 +153,18 @@ runs the worktree's code.
   Louvain.** The brainstorm's "contract by recipe as by slice" reads as a
   must-link, but R11 needs a *cannot-link*. Louvain/split/merge/repair operate
   on `code` units only; `merge_small_groups` and `repair_cycles` never touch a
-  fixed singleton, and a cycle that could only be repaired by absorbing one
+  fixed singleton; a code group that both feeds and consumes one singleton
+  is split at that boundary (deepen answer), and only an unsplittable cycle
   fails loudly naming the path. A non-`code` unit may not carry a `slice`
   (parse error). Rejected: partitioning per recipe and stitching (N pipeline
   passes; cross-recipe cycles surface only after stitching). Consequence: a
   future multi-unit `research` group needs this lifted.
 - **A Run Child is re-adopted, not reaped, on resume** (→ ADR 0011). Exit
   status goes to a file written by a wrapper; the child is recorded per attempt
-  under the group's directory, never in `live_pids`; the cap counts from the
-  original start. Rejected: kill-and-relaunch (re-pays an hour-long render per
+  under the group's directory, never in `live_pids`; the cap counts awake time
+  (`CLOCK_MONOTONIC` from launch, valid across restarts within one boot —
+  deepen answer), and a deliberate stop kills the child while a crash leaves
+  it for re-adoption. Rejected: kill-and-relaunch (re-pays an hour-long render per
   crash; mixes partial outputs).
 - **The Run Child runs under the worker Landlock profile, plus `data_dirs`,
   plus a per-unit `recipe_args.allow_write` list.** Chosen by the human over
@@ -172,8 +175,9 @@ runs the worktree's code.
   `~/.claude` read-write.
 - **Failure triage is a one-shot `claude -p` JSON call inside the run.** It
   reads the command, exit status and output tails and returns a validated
-  `RunTriage {verdict: work_failure | needs_decision, diagnosis}`, recorded as
-  a `SessionRole.RUNNER` call with its cost. It never relaunches. Rejected:
+  `RunTriage {verdict: work_failure | needs_decision, diagnosis}`, recorded by
+  `JsonlCallRecorder` as an `llm_calls` row (`operation: run_triage`) with its
+  cost; `runner` labels it in the Observatory snapshot (deepen answer). It never relaunches. Rejected:
   escalating the raw tail to the run driver (leaves HITL-off runs with an
   undiagnosed FAILED and nothing for the `runner` role to attribute).
 - **Both `run` and `code` groups register Artifact Manifest entries; only
@@ -283,7 +287,7 @@ runs the worktree's code.
 ### U4. single-recipe-groups — the partitioner isolates every non-`code` unit as its own group and refuses to mix recipes
 
 - **Summary**: `DefaultPartitionStrategy` removes non-`code` nodes before hub detection and re-adds each as a fixed singleton group that split/merge/repair never touch; a cycle that only merging one could break raises `GrouperError` naming the path; `run_grouping` asserts one recipe per group, sets `Group.recipe`/`recipe_args`, forces `self_verify` for non-`code` groups, and enforces the `[recipes] enabled` gate at `group` time.
-- **Goal**: A plan with no non-`code` units produces the same partition, group ids, intensities and estimates as today (golden partitions unchanged). With `run` units: each is its own group whose DAG edges come from its `depends_on`; `merge_small_groups` and `repair_cycles` skip fixed singletons; if a group-level cycle passes through a fixed singleton, grouping fails naming the singleton and the `code` tasks on the path. `_assert_single_recipe` (beside `_assert_slice_integrity`) is the final guard. The gate: non-`code` units whose recipe is not in `config.recipes.enabled` fail `group` naming each unit, its recipe, and the key `[recipes] enabled`. `group --dry-run` prints each `run` group's commands verbatim.
+- **Goal**: A plan with no non-`code` units produces the same partition, group ids, intensities and estimates as today (golden partitions unchanged). With `run` units: they are removed before `detect_hub_roles`, so every `code` unit's hub role is computed on the code subgraph alone and does not move when a plan adds a `run` unit; each `run` unit is its own group whose DAG edges come from its `depends_on`; `merge_small_groups` and `repair_cycles` skip fixed singletons. When a code group both feeds and consumes the same non-`code` singleton (build → run → tune, co-grouped by shared files), `DefaultPartitionStrategy` shall split that code group at the boundary — members the singleton transitively depends on first, the rest after — and record the split in `flags[]` and the grouping trace; grouping fails loudly, naming the singleton and the `code` tasks on the path, only when the split still leaves a cycle (for example a declared `slice` straddling the boundary). `_assert_single_recipe` (beside `_assert_slice_integrity`) is the final guard. The gate: non-`code` units whose recipe is not in `config.recipes.enabled` fail `group` naming each unit, its recipe, and the key `[recipes] enabled`. `run_grouping` also rejects a `run` unit whose `outputs` entry lies outside every `[workspace] data_dirs` entry, naming the unit and the path (the parser checks only path shape — U1). For `group --dry-run`, each `run` group exposes its commands verbatim with their wall clocks, its `outputs`, `commit_paths` and `allow_write` extras; U5 prints them (`cli.py` owns the dry-run output).
 - **Files**: `orchestrator/grouping/partition.py`, `orchestrator/grouping/pipeline.py`, `tests/test_recipe_partition.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U2, U3
@@ -292,15 +296,21 @@ runs the worktree's code.
 - **Verification**:
   - `uv run pytest tests/test_golden_partitions.py` passes with no golden file regenerated (the recorded real-plan partitions are the oracle).
   - A v2 fixture: code units a→b, a→c, run unit r depending on b, code unit d depending on r. Grouping yields r alone in its group, `recipe == "run"`, `intensity == self_verify`, and the group DAG orders b's group → r's group → d's group.
-  - The same fixture with d also a dependency of b's group-mates such that b's group → r → d's group → b's group forms a cycle raises `GrouperError` naming r and the `code` tasks on the cycle.
+  - A build → run → tune fixture — code u1 and code u3 both listing the same existing file, run r depending on u1, u3 depending on r — groups u1 and u3 into different groups ordered u1's group → r's group → u3's group, with a `flags[]` entry naming the split.
+  - The same fixture with u1 and u3 declared in one `slice` raises `GrouperError` naming r, u1 and u3.
   - With `[recipes] enabled = []`, `uv run smart-mcps-orchestrate group <fixture> --no-spec` exits non-zero and its stderr names the `run` unit and `[recipes] enabled`.
-- **Edge cases**: —
+  - A v2 fixture whose code units are identical to a v1 fixture's, plus one `run` unit depending on all of them, gives every code unit the same hub role (recorded in the grouping trace) as the v1 fixture.
+- **Edge cases**:
+  - A `run` unit's `outputs` entry outside every `data_dirs` entry fails `group`, naming the unit and the path.
+  - A code group that both feeds and consumes the same `run` unit is split at the boundary, not failed; failure is reserved for the unsplittable case.
 - **Non-goals / must-not**: —
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ### U5. executor-dispatch — `make_executor` dispatches on the group's recipe, and the `code` path is byte-for-byte today's
 
 - **Summary**: New `execution/dispatch.py` exports `make_executor(deps)` that returns an executor reading `ctx.group.recipe` and delegating to the registry-named executor (`code` → `review.make_executor`); `cli.py` builds through it, supplies the triage LLM seam on `ReviewDeps`, and re-checks the `[recipes] enabled` gate before a run or resume starts.
-- **Goal**: `dispatch.make_executor(deps)` resolves each recipe's executor factory once (lazy import of the registry's dotted path) and returns one `Executor`; the scheduler, `Executor` and `GroupContext` are unchanged. `ReviewDeps` gains optional fields the `run` executor needs — `triage: Callable | None` (a `call_llm_json`-backed one-shot built in `cli.py` with the usage-limit retry and `JsonlCallRecorder`, model `[recipes.run] triage_model`), `workspace_config`, `recipes_config` — all defaulting to `None` so every existing test constructor keeps working. `cli.py` imports `make_executor` from `execution.dispatch`. `run` and `resume` refuse a `groups.json` holding a recipe not in `[recipes] enabled`, naming groups and the key, before any worktree is created.
+- **Goal**: `dispatch.make_executor(deps, groups)` resolves, eagerly at run start, the executor factory of every recipe present in the run's groups (import of the registry's dotted path) — an unknown or unimportable recipe refuses the run before any worktree exists — and returns one `Executor`; the scheduler, `Executor` and `GroupContext` are unchanged. `ReviewDeps` gains optional fields the `run` executor needs — `triage: Callable | None` (a `call_llm_json`-backed one-shot built in `cli.py` with the usage-limit retry and `JsonlCallRecorder`, model `[recipes.run] triage_model`), `workspace_config`, `recipes_config` — all defaulting to `None` so every existing test constructor keeps working. `cli.py` imports `make_executor` from `execution.dispatch`. `run` and `resume` refuse to start when a non-terminal group (PENDING, READY, RUNNING, INTERRUPTED or quarantined) has a recipe not in `[recipes] enabled`, naming those groups and the key, before any worktree is created; groups already COMPLETED, FAILED or RESOLVED never block a resume. `cli.py` also prints what U3 and U4 compute: `group --price` shows each task's recipe and wall clock plus the plan's summed `run` wall clock, and `group --dry-run` shows each `run` group's commands verbatim with wall clocks, `outputs`, `commit_paths` and `allow_write`.
 - **Files**: `orchestrator/execution/dispatch.py` *(new, small)*, `orchestrator/execution/review.py`, `orchestrator/cli.py`, `tests/test_executor_dispatch.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U1, U3
@@ -311,13 +321,19 @@ runs the worktree's code.
   - A dispatch test with a group of recipe `code` observes the same sequence of `SessionRunner` calls (prompts byte-compared) as `review.make_executor` does for the same group.
   - `run` against a `groups.json` holding a `run` group, with `[recipes] enabled = []`, exits non-zero naming the group and `[recipes] enabled`, and no worktree directory is created under `.orchestrator/`.
   - Run (driver): `uv run pytest -m llm tests/test_e2e_live.py` — Pass: the live code-only run terminates, commits and is confined exactly as before (the real `claude` CLI is the oracle).
-- **Edge cases**: —
+  - A resume whose `groups.json` has a COMPLETED `run` group and only `code` groups left, under `[recipes] enabled = []`, starts normally.
+  - A `groups.json` naming recipe `research` (not registered) refuses `run` with an error naming the group and listing the registered recipes, before any worktree directory exists.
+  - `uv run smart-mcps-orchestrate group <v2 fixture> --dry-run` prints each `run` command verbatim with its wall clock and the `allow_write` extras.
+- **Edge cases**:
+  - Operator edits `[recipes] enabled` between launch and `resume`: only non-terminal groups are gated; finished `run` groups never block.
 - **Non-goals / must-not**: —
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ### U6. artifact-manifest — a run-level index records every group's output, and `run` entries reach downstream prompts
 
 - **Summary**: New `execution/artifacts.py` holds `ArtifactEntry`/`ArtifactManifest` and an atomic, lock-guarded store at `RunPaths.artifact_manifest_path` (`<run_dir>/artifacts.json`); `code` groups register an entry on merge and a `partial` one on Resolve; a coder whose direct upstream groups are non-`code` gets their entries (never file bodies) folded into its first prompt.
-- **Goal**: `ArtifactEntry` carries `artifact_id`, `group_id`, `tasks`, `recipe`, `paths`, `sha256` (per file, for files that exist), `commit` (merge commit or `None`), `schema` (the contract model's name), `summary` (≤ 2,000 chars, required), `status` (`complete` | `partial`), `measurements` (`dict[str, scalar]`, empty for `code`), `recorded_at`. `register(entry)` is idempotent per `artifact_id` (a re-merge replaces, never duplicates). `MergeLadder._merge` registers a `complete` `code` entry after a successful `merge_group` (summary = the final `CoderReport.summary`, paths = the group's changed files); the scheduler registers a `partial` entry when a group lands `RESOLVED`. A new `_apply_artifact_inputs` (declared in `host.py`, called where the first coder prompt is built in `generation.py`) appends one bounded block listing each non-`code` direct-upstream entry; with none, the prompt is unchanged byte-for-byte.
+- **Goal**: `ArtifactEntry` carries `artifact_id`, `group_id`, `tasks`, `recipe`, `paths`, `sha256` (per file, for files that exist), `commit` (merge commit or `None`), `schema` (the contract model's name), `summary` (≤ 2,000 chars, required), `status` (`complete` | `partial`), `measurements` (`dict[str, scalar]`, empty for `code`), `recorded_at`. `register(entry)` is idempotent per `artifact_id` (a re-merge replaces, never duplicates). `MergeLadder._merge` registers a `complete` `code` entry after a successful `merge_group` (summary = the final `CoderReport.summary`; `paths` = `git diff --name-only` between the group's base and its merge commit — what actually changed, not the declared `Group.files`; `commit` = the merge sha, and the per-file `sha256` map stays empty for `code`, since git already content-addresses every file at that commit); the scheduler registers a `partial` entry when a group lands `RESOLVED`. A new `_apply_artifact_inputs` (declared in `host.py`, called where the first coder prompt is built in `generation.py`) appends one block listing each non-`code` direct-upstream entry, in dependency order, capped at 8,000 characters in total — measurements are truncated first, with a `+N more — see artifacts.json` line; the block is appended to the first coder prompt **and** to every fresh generation's handoff prompt (the `self.handoff_prompt or render_coder_prompt(...)` site, `generation.py:225`), because a retired generation has lost all context. With no such upstream, every prompt is unchanged byte-for-byte.
 - **Files**: `orchestrator/execution/artifacts.py` *(new, medium)*, `orchestrator/execution/manifest.py`, `orchestrator/execution/merge_ladder.py`, `orchestrator/execution/generation.py`, `orchestrator/execution/host.py`, `orchestrator/execution/scheduler.py`, `tests/test_artifact_manifest.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U3
@@ -328,29 +344,38 @@ runs the worktree's code.
   - A group resolved from Stranded Work produces an entry with `status == "partial"`.
   - A code group downstream of a `run` group gets a first prompt containing the run entry's `artifact_id`, summary and measurements and none of the output files' bytes; a code group downstream only of code groups gets a first prompt byte-identical to one built before this change.
   - An entry with a 2,001-char summary is rejected at `register` naming `summary`.
-- **Edge cases**: —
+  - A code group downstream of a `run` entry with 300 measurement keys gets an injected block ≤ 8,000 characters ending in a `+N more — see artifacts.json` line.
+  - A downstream coder retired by the breaker and relaunched as generation 2 gets the same upstream-entries block in its handoff prompt.
+- **Edge cases**:
+  - Breaker retirement and relaunch: the upstream-entries block rides every fresh generation's prompt, not only generation 1.
+  - A group that touched files outside its declared `files` is indexed by what it actually changed (diff at merge).
 - **Non-goals / must-not**: —
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ### U7. bundle-additive — the Run Bundle exports the Artifact Manifest and the `runner` role without a version bump
 
-- **Summary**: `export` writes the Artifact Manifest as a new optional top-level key and exports `runner` sessions like any other; `schema_version` stays 2; the contract doc and the Observatory's `SessionRole` type learn the new value.
-- **Goal**: `ExportBundle` (the `ingest.json` model in `export.py`) gains `artifacts: list[ExportArtifact] | None`, absent when the run has no `artifacts.json`. `runner` triage calls appear as sessions with `role == "runner"`, their cost in `cost_usd`. `docs/run-bundle-contract.md` documents the key, the entry fields, and the new role value under the additive-change rule. `ui/src/types.ts` `SessionRole` adds `"runner"`, and the UI's role-dependent code (`attempts.ts`, `cost.ts`) treats an unknown or `runner` role without throwing.
+- **Summary**: `export` writes the Artifact Manifest as a new optional top-level `artifact_manifest` key (index only, never output bytes) and exports `run` triage calls as `llm_calls` rows with `operation: "run_triage"`; `schema_version` stays 2; the contract doc and the Observatory's `SessionRole` type learn the `runner` label.
+- **Goal**: `ExportBundle` (the `ingest.json` model in `export.py`) gains `artifact_manifest: list[ExportManifestEntry] | None`, absent when the run has no `artifacts.json` — a new model name, because `ExportArtifact` (`export.py:100`) already means a group's coder-report/reviewer-verdict files and keeps that meaning. The bundle carries the index only (paths, sha256, commit, measurements, summary, status), never copies of output files. A `run` triage call is recorded by `JsonlCallRecorder` like the rewrite speccer, so it exports through the existing `llm_calls` path (`ExportLlmCall`, `_llm_calls` at `export.py:529`) with `operation == "run_triage"` and `group_ids == [gid]`, carrying its tokens and transcript events; `runner` is the role label of the Observatory snapshot's synthetic per-group row for it, as rewrites appear as `orchestrator` rows today. Nothing is double-counted: no `SessionEntry` is created for a triage call. `docs/run-bundle-contract.md` documents the key, the entry fields, and the new role value under the additive-change rule. `ui/src/types.ts` `SessionRole` adds `"runner"`, and the UI's role-dependent code (`attempts.ts`, `cost.ts`) treats an unknown or `runner` role without throwing.
 - **Files**: `orchestrator/execution/export.py`, `docs/run-bundle-contract.md`, `ui/src/types.ts`, `ui/src/attempts.ts`, `tests/test_export.py`
 - **Symbols**: —
 - **Depends-on**: U6
 - **Slice**: —
 - **Implements / Consumes**: consumes `ArtifactManifest`
 - **Verification**:
-  - Run (driver): from the main checkout (`.orchestrator/runs/` is gitignored and absent in a worktree), `uv run smart-mcps-orchestrate export r20260923-163956 --out <scratch dir>` — Pass: it succeeds, and `ingest.json` has `schema_version == 2` and no `artifacts` key (additive: old runs export unchanged).
-  - A run directory with an `artifacts.json` and a `runner` session exports both, and the exported bundle validates against the models in `export.py`.
-  - `npm --prefix ui run build` (which runs `tsc`) and `npm --prefix ui test` pass, including a test rendering a group whose sessions include a `runner` session.
+  - Run (driver): from the main checkout (`.orchestrator/runs/` is gitignored and absent in a worktree), `uv run smart-mcps-orchestrate export r20260923-163956 --out <scratch dir>` — Pass: it succeeds, and `ingest.json` has `schema_version == 2` and no `artifact_manifest` key (additive: old runs export unchanged).
+  - A run directory with an `artifacts.json` and an `llm/calls.json` holding a `run_triage` call exports both — the entries under `artifact_manifest`, the call under `llm_calls` with `operation == "run_triage"` and its group id — and the bundle validates against the models in `export.py`; the existing per-group `artifacts` (report/verdict) list is unchanged.
+  - `npm --prefix ui run build` (which runs `tsc`) and `npm --prefix ui test` pass, including a test rendering a group whose snapshot carries a synthetic `runner` row.
 - **Edge cases**: —
-- **Non-goals / must-not**: —
+- **Non-goals / must-not**:
+  - Copying `run` outputs into `ingest/` — the bundle indexes them; consumers open the files where they live.
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ### U8. run-recipe — the `run` executor runs declared commands as confined, re-adoptable Run Children and records what happened
 
 - **Summary**: New `execution/run_child.py` (launch wrapper, per-attempt state, re-adoption, wall-clock cap) and `execution/run_executor.py` (the `run` recipe's executor: worktree, commands in order, measurements, porcelain check against `commit_paths`, commit + `merge_group`, `RunRecord` validation, Artifact Manifest entry, one-shot triage on failure); `confinement.build_policy` gains an `extra_write` parameter.
-- **Goal**: For each command in order, the executor launches `sh -c '<cmd>; echo $? > <attempt>/<n>.exit'` with `cwd` = the group worktree (or the declared `cwd` inside it), `start_new_session=True`, stdout/stderr to `<attempt>/<n>.out`/`.err`, and `preexec_fn` from `landlock_preexec(build_policy(worktree, …, extra_write=data_layer_write_paths + allow_write))`. It records `{n, pid, starttime, cmdline_head, started_at}` in `groups/<gid>/run/attempt-<k>/state.json` — never in `live_pids`. It polls; the RoundHeartbeat phase reads `command n/N · elapsed/cap · +bytes`. On exceeding `wall_clock_min` it kills the process group and treats the command as timed out. On start, if the latest attempt's state names a pid that `_is_same_process` confirms, it re-adopts that child (cap from the original `started_at`); if the pid is gone with no exit file, the command counts as "died with the orchestrator". A fresh `retry` starts attempt k+1. After all commands exit 0, it reads the `measurements` file (top-level scalars), runs `git status --porcelain`: paths outside `commit_paths` fail the unit naming them; matches are committed and merged via `deps.merge_group`. It builds a `RunRecord`, validates it (a validation error names the field), registers a `complete` `run` entry (summary generated from exit codes, durations, measurements) and returns COMPLETED. Any non-zero exit, timeout, porcelain violation, `PreflightFailure` or `MergeConflict` goes to `deps.triage` once: `work_failure` → FAILED with the diagnosis in the group failure and `run.log`; `needs_decision` → an escalation via the broker (or FAILED when HITL is off). It never relaunches itself; no reviewer session ever runs.
+- **Goal**: For each command in order, the executor launches a wrapper that runs the command and records its exit status in `<attempt>/<n>.exit` — by default `sh -c 'sh -c "$1"; rc=$?; echo "$rc" > "$2.tmp" && mv "$2.tmp" "$2"' sh <cmd> <exit file>`, the command passed as a positional argument and never interpolated into the wrapper text, the exit file written atomically, a signal-killed command recording `128+n` — with `cwd` = the group worktree (or the declared `cwd` inside it), `start_new_session=True`, stdout/stderr to `<attempt>/<n>.out`/`.err`, and `preexec_fn` from `landlock_preexec(build_policy(worktree, …, extra_write=data_layer_write_paths + allow_write))`. It records `{n, pid, starttime, cmdline_head, started_at, started_monotonic, boot_id}` in `groups/<gid>/run/attempt-<k>/state.json` — never in `live_pids`. It polls (exit detected by default via `os.pidfd_open` + `poll`, which works for a process this orchestrator did not fork; the exit status always comes from the exit file); the RoundHeartbeat phase reads `command n/N · elapsed/cap · +bytes`. The cap measures **awake** time: elapsed = `time.monotonic() − started_monotonic` (Linux `CLOCK_MONOTONIC` excludes suspend and is system-wide within one boot, so it stays valid across an orchestrator restart); `/proc` `starttime` and `/proc/uptime` are boot-time clocks that include suspend and are not used for the cap. On exceeding `wall_clock_min` it sends SIGTERM to the process group, then SIGKILL after a grace period, and treats the command as timed out. On start, if the latest attempt's state names a pid that `_is_same_process` confirms **and** whose `/proc/<pid>/stat` state is not `Z` (an exited-but-unreaped process still matches on start time) **and** the `boot_id` is unchanged, it re-adopts that child; if the pid is gone (or a zombie) with no exit file, the command counts as "died with the orchestrator". A deliberate stop — Ctrl-C, Observatory Stop, `RunAbort`, i.e. the executor's task being cancelled — kills the Run Child's process group before the orchestrator exits; only an unclean death (kill -9, OOM, power loss) leaves it running for `resume` to re-adopt. A `retry` starts attempt k+1 from the first command that did not exit 0 in attempt k; a retry note containing `--from-start` reruns every command. After all commands exit 0, every declared `outputs` path must exist — a missing one goes to triage; it then reads the `measurements` file (top-level scalars) — a missing or unparsable measurements file never fails the unit (P2): the entry completes with a `measurements_missing` note; then it runs `git status --porcelain`: paths outside `commit_paths` fail the unit naming them; matches are committed and merged via `deps.merge_group`. It builds a `RunRecord`, validates it (a validation error names the field), registers a `complete` `run` entry (summary generated from exit codes, durations, measurements) and returns COMPLETED. Any non-zero exit, timeout, porcelain violation, `PreflightFailure` or `MergeConflict` goes to `deps.triage` once: `work_failure` → FAILED with the diagnosis in the group failure and `run.log`; `needs_decision` → an escalation via the broker (or FAILED when HITL is off). It never relaunches itself; no reviewer session ever runs.
 - **Files**: `orchestrator/execution/run_child.py` *(new, medium)*, `orchestrator/execution/run_executor.py` *(new, large)*, `orchestrator/execution/confinement.py`, `orchestrator/prompts/run_triage.md` *(new, small)*, `tests/test_run_child.py` *(new, medium)*, `tests/test_run_executor.py` *(new, large)*
 - **Symbols**: —
 - **Depends-on**: U1, U5, U6
@@ -360,16 +385,30 @@ runs the worktree's code.
   - A real `run` group whose command is `python -c` writing `{"score": 0.9}` to a `data_dirs` path completes: `artifacts.json` has a `run` entry with `measurements == {"score": 0.9}`, the output file's sha256, and exit status 0; no `SessionEntry` of role `coder` or `reviewer` exists for the group.
   - A command `sleep 30` with `wall_clock_min` set to 0.05 is killed (its process group no longer exists per `/proc`) and triage is called once with a timed-out status.
   - Re-adoption: start a `sleep 20` Run Child, drop the executor (simulated crash), construct a new executor for the same group; it re-adopts the same pid (no second `sleep` process appears in `/proc`) and completes when the child exits.
-  - Confinement, real kernel: on a host where `landlock_abi_version() > 0`, a command writing to `$HOME/.claude/projects/<other-slug>/probe` fails while a write into the declared `data_dirs` output succeeds; a declared `allow_write` path becomes writable.
+  - Confinement, real kernel, worker-runnable: with `build_policy(..., system_paths=[])` over three fresh `tmp_path` directories — worktree, data dir, and an `allow_write` extra — plus a fourth undeclared one, a Run Child on a host where `landlock_abi_version() > 0` writes into the first three and fails to write into the fourth (a narrower profile than the worker's own, so the test proves the child's rules even inside a confined worker).
+  - Run (driver): the same probe against the real home directory — Pass: a Run Child writing `$HOME/.claude/projects/<another project's slug>/probe` fails, and a declared `allow_write` path outside the worker profile (for example `~/.cache/run-recipe-probe/`) becomes writable. Driver-only: a confined worker can neither observe that denial as the child's (it is already denied itself) nor grant a path it cannot write.
   - A command that edits a tracked file outside `commit_paths` fails the unit, and the failure names that path.
   - Run (driver): kill -9 the `run` process mid-command on a real run of a fixture plan with a 2-minute `sleep` command, then `uv run smart-mcps-orchestrate resume <run_id>` — Pass: `run.log` shows the child re-adopted (same pid), the group completes, and exactly one `sleep` process ever existed.
-- **Edge cases**: —
-- **Non-goals / must-not**: —
+  - Awake-time cap: with the monotonic clock patched to exclude a simulated 8-hour gap in wall time, a command with a 60-minute cap that has run 20 awake minutes is not killed; a changed `boot_id` in the attempt state makes a recorded pid unadoptable.
+  - Stop kills, crash keeps: cancelling the executor's task mid-command leaves no process of the Run Child's group in `/proc`; dropping the executor without cancellation (simulated crash) leaves the child running.
+  - Retry resumes: after an attempt where command 2 of 3 exits 1, `retry` runs only commands 2 and 3 (command 1 is never relaunched); the same retry with a note containing `--from-start` runs all three.
+  - A command containing single quotes, a pipe and an env prefix (`FOO='a b' sh -c 'echo "$FOO"' | tr a-z A-Z > out`) runs exactly as written, and its exit file holds `0`.
+  - A command that exits 0 but never writes a declared `outputs` path goes to triage; one whose declared measurements file is absent completes with `measurements_missing` in its entry.
+- **Edge cases**:
+  - Laptop suspend during a command: the cap counts awake time only; an overnight suspend does not kill a half-done render on wake.
+  - A Run Child that exited while no orchestrator was alive is a zombie until PID 1 reaps it; state `Z` counts as exited, never as re-adoptable.
+  - Retry after partial success skips commands that already exited 0 unless the retry note says `--from-start`.
+  - Ctrl-C or Observatory Stop kills the Run Child's process group; only an unclean orchestrator death leaves it for re-adoption.
+  - A command that itself calls `setsid` or `setpgid` escapes the process-group kill; the timeout kill cannot reach it, and the triage diagnosis says so when a timed-out command's output shows it.
+- **Non-goals / must-not**:
+  - The launch/re-adopt mechanics named above (positional-argument wrapper, tmp+mv exit file, `pidfd_open`+`poll`, zombie check) are defaults, not mandates: a worker that hits a surprise may substitute a different mechanism, provided the verification outcomes above still hold and the substitution is reported as a surprise with its reason.
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ### U9. recipe-docs — planners, deepeners and run drivers know how to declare and drive `run` units, proven by one live run
 
 - **Summary**: The plan, deepen and run skills document `recipe`/`recipe_args` and the `[recipes] enabled` gate; `CONTEXT.md` gains the `run` recipe's terms; a live-tier test drives a real two-group run (a `run` unit feeding a `code` unit) end to end.
-- **Goal**: `skills/orchestrator-plan/SKILL.md`: the unit template gains a `- **Recipe**:` line (`—` for `code`, or `run` with its args), the task map is written as v2 when any unit declares a recipe, and a unit whose real work is running a command is written as `run`, not as a coder unit with a `Run:` item. `skills/orchestrator-deepen/SKILL.md`: the sandbox sweep treats `run` units' commands against the Run Child profile (`allow_write`), and asks for wall-clock and cost figures (P5). `skills/orchestrator-run/SKILL.md`: preflight checks `[recipes] enabled`, triage of `runner` diagnoses, and what re-adoption looks like in `run.log`. `CONTEXT.md`: the Unit Recipe entry notes v1 ships `code` and `run`. `tests/test_run_recipe_live.py` builds a scratch repo, plans a `run` unit that writes a metrics JSON into a data dir and a downstream `code` unit, runs it with the real CLI, and asserts both groups complete, the code group's first prompt carried the run entry, and the bundle exports both entries.
+- **Goal**: `skills/orchestrator-plan/SKILL.md`: the unit template gains a `- **Recipe**:` line (`—` for `code`, or `run` with its args), the task map is written as v2 when any unit declares a recipe, and the rule for choosing: a unit is `run` when its deliverable is what a command produces (renders, judge passes, reports, measured artifacts) or the command runs longer than 10 minutes; a coder unit keeps a `Run (driver):` item when the command only proves code the unit itself writes. Both the plan and deepen skills state that a coder's `Run:` line calls tools through `PATH` (`uv run …`), never by absolute path, because the worker Bash allowlist is anchored to `PATH_PREFIXES` (commit `3d93936`) and denies anything else — a command needing an unusual path or binary belongs in a `run` unit, whose Run Child has no Bash allowlist. `skills/orchestrator-deepen/SKILL.md`: the sandbox sweep treats `run` units' commands against the Run Child profile (`allow_write`), and asks for wall-clock and cost figures (P5). `skills/orchestrator-run/SKILL.md`: preflight checks `[recipes] enabled`, triage of `runner` diagnoses, and what re-adoption looks like in `run.log`. `CONTEXT.md`: the Unit Recipe entry notes v1 ships `code` and `run`. `tests/test_run_recipe_live.py` builds a scratch repo, plans a `run` unit that writes a metrics JSON into a data dir and a downstream `code` unit, runs it with the real CLI, and asserts both groups complete, the code group's first prompt carried the run entry, and the bundle exports both entries.
 - **Files**: `skills/orchestrator-plan/SKILL.md`, `skills/orchestrator-deepen/SKILL.md`, `skills/orchestrator-run/SKILL.md`, `CONTEXT.md`, `tests/test_run_recipe_live.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U2, U7, U8
@@ -379,8 +418,13 @@ runs the worktree's code.
   - `uv run smart-mcps-orchestrate group docs/plans/2026-09-24-001-feat-unit-recipes-run-plan.md --no-spec` still succeeds after the skill edits (the skills changed, the v1 reader did not).
   - The plan skill's template, pasted into a scratch plan with one `run` unit and marked v2, passes `plan-check` and `group --no-spec` with `[recipes] enabled = ["run"]`.
   - Run (driver): `uv run pytest -m llm tests/test_run_recipe_live.py` — Pass: both groups COMPLETED, `artifacts.json` holds one `run` and one `code` entry, and the exported `ingest.json` carries both under `artifacts`.
-- **Edge cases**: —
-- **Non-goals / must-not**: —
+  - Run (driver), optional — run it when the triage path changed or looks hard: `uv run pytest -m llm tests/test_run_recipe_live.py -k triage`, a scratch plan whose `run` unit's command exits 3 — Pass: exactly one `llm/calls.json` row with `operation == "run_triage"` for that group, whose parsed response validates as `RunTriage`, and the group ends FAILED (HITL off) with the diagnosis in its failure text. Structural checks only — never an assertion on the diagnosis wording.
+- **Edge cases**:
+  - An absolute-path tool call in a coder `Run:` line is denied by the anchored Bash allowlist; the deepen sandbox sweep flags it and suggests `uv run …` or a `run` unit.
+- **Non-goals / must-not**:
+  - The forced-failure triage live case is optional per run, not a gate on U9 — it exists for when the triage path is at stake.
+
+<!-- deepened from plan sha256:e607a693d938 -->
 
 ## Requirement coverage
 
@@ -418,12 +462,6 @@ tasks:
       - orchestrator/recipes/code.py
       - orchestrator/recipes/run.py
       - tests/test_recipe_registry.py
-    size_hints:
-      orchestrator/recipes/__init__.py: small
-      orchestrator/recipes/registry.py: medium
-      orchestrator/recipes/code.py: small
-      orchestrator/recipes/run.py: medium
-      tests/test_recipe_registry.py: medium
     symbols: []
     depends_on: []
     implements: ["UnitRecipe"]
@@ -460,8 +498,6 @@ tasks:
       - orchestrator/grouping/partition.py
       - orchestrator/grouping/pipeline.py
       - tests/test_recipe_partition.py
-    size_hints:
-      tests/test_recipe_partition.py: medium
     symbols: []
     depends_on: [u2-recipe-field, u3-recipe-pricing]
     implements: []
@@ -474,9 +510,6 @@ tasks:
       - orchestrator/execution/review.py
       - orchestrator/cli.py
       - tests/test_executor_dispatch.py
-    size_hints:
-      orchestrator/execution/dispatch.py: small
-      tests/test_executor_dispatch.py: medium
     symbols: []
     depends_on: [u1-recipe-registry, u3-recipe-pricing]
     implements: ["executor-dispatch"]
@@ -492,9 +525,6 @@ tasks:
       - orchestrator/execution/host.py
       - orchestrator/execution/scheduler.py
       - tests/test_artifact_manifest.py
-    size_hints:
-      orchestrator/execution/artifacts.py: medium
-      tests/test_artifact_manifest.py: medium
     symbols: []
     depends_on: [u3-recipe-pricing]
     implements: ["ArtifactManifest"]
@@ -522,12 +552,6 @@ tasks:
       - orchestrator/prompts/run_triage.md
       - tests/test_run_child.py
       - tests/test_run_executor.py
-    size_hints:
-      orchestrator/execution/run_child.py: medium
-      orchestrator/execution/run_executor.py: large
-      orchestrator/prompts/run_triage.md: small
-      tests/test_run_child.py: medium
-      tests/test_run_executor.py: large
     symbols: []
     depends_on: [u1-recipe-registry, u5-executor-dispatch, u6-artifact-manifest]
     implements: []
@@ -541,8 +565,6 @@ tasks:
       - skills/orchestrator-run/SKILL.md
       - CONTEXT.md
       - tests/test_run_recipe_live.py
-    size_hints:
-      tests/test_run_recipe_live.py: medium
     symbols: []
     depends_on: [u2-recipe-field, u7-bundle-additive, u8-run-recipe]
     implements: []

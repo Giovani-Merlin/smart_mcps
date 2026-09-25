@@ -34,11 +34,13 @@ Tolerance rules for old runs, deliberate and load-bearing:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from orchestrator.execution.artifacts import ArtifactManifestStore, Measurement
 from orchestrator.execution.denial import classify_denial
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.execution.transcript_events import parse_transcript, write_events_gz
@@ -123,6 +125,28 @@ class ExportArtifact(BaseModel):
     #: Non-null when the file was unreadable/half-written; the artifact is
     #: still listed so the consumer knows a round happened.
     error: str | None = None
+
+
+class ExportManifestEntry(BaseModel):
+    """One Artifact Manifest entry (plan U6/U7) — the index of what a group
+    produced, never the output file's own bytes. Its own model, kept separate
+    from ``execution.artifacts.ArtifactEntry`` so the bundle contract does not
+    move just because the internal store's shape does."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    artifact_id: str
+    group_id: str
+    tasks: list[str] = Field(default_factory=list)
+    recipe: str
+    paths: list[str] = Field(default_factory=list)
+    sha256: dict[str, str] = Field(default_factory=dict)
+    commit: str | None = None
+    schema_name: str = Field(alias="schema")
+    summary: str
+    status: str
+    measurements: dict[str, Measurement] = Field(default_factory=dict)
+    recorded_at: str
 
 
 class ExportEscalation(BaseModel):
@@ -255,6 +279,12 @@ class RunExport(BaseModel):
     #: The orchestrator's own LLM calls, in recorded order. Empty for a run
     #: with no ``llm/`` directory (every run before the recorder shipped).
     llm_calls: list[ExportLlmCall] = Field(default_factory=list)
+    #: The run-level Artifact Manifest (plan U6), index only — never the
+    #: bytes of what a group produced. ``None`` for a run with no
+    #: ``artifacts.json`` at all; a bundle built for such a run omits this
+    #: key entirely (see ``_dump_export_json``), so an old run's export stays
+    #: byte-for-byte unchanged (additive, ``schema_version`` stays 2).
+    artifact_manifest: list[ExportManifestEntry] | None = None
 
 
 class ExportError(Exception):
@@ -495,7 +525,6 @@ def _llm_subject(entry: dict, llm_dir: Path) -> tuple[list[str], list[str]]:
     future template change) yields empty lists, never a guess and never an
     error. It exists so already-recorded runs are not permanently unattributed.
     """
-    import json
 
     subject = entry.get("subject")
     if isinstance(subject, dict):
@@ -793,7 +822,52 @@ def build_export(
         base_context=base_context,
         groups=groups,
         llm_calls=_llm_calls(paths, events_dir=events_dir, transcript_root=root),
+        artifact_manifest=_artifact_manifest(paths),
     )
+
+
+def _artifact_manifest(paths: RunPaths) -> list[ExportManifestEntry] | None:
+    """The run's Artifact Manifest, index only. ``None`` when the run has no
+    ``artifacts.json`` at all (every run before plan U6) — an unreadable or
+    malformed file degrades the same way, on the same "the audit trail is
+    inert by contract" rule ``_llm_calls`` follows, rather than failing an
+    otherwise-whole bundle."""
+    if not paths.artifact_manifest_path.is_file():
+        return None
+    try:
+        manifest = ArtifactManifestStore(paths).load()
+    except (OSError, ValueError):
+        return None
+    entries = sorted(manifest.entries.values(), key=lambda entry: entry.artifact_id)
+    return [
+        ExportManifestEntry(
+            artifact_id=entry.artifact_id,
+            group_id=entry.group_id,
+            tasks=list(entry.tasks),
+            recipe=entry.recipe,
+            paths=list(entry.paths),
+            sha256=dict(entry.sha256),
+            commit=entry.commit,
+            schema=entry.schema_name,
+            summary=entry.summary,
+            status=entry.status,
+            measurements=dict(entry.measurements),
+            recorded_at=entry.recorded_at,
+        )
+        for entry in entries
+    ]
+
+
+def _dump_export_json(export: RunExport) -> str:
+    """``ingest.json``'s text. ``artifact_manifest`` is the one field this
+    contract omits entirely rather than emitting as ``null`` when absent: a
+    run predating plan U6 must export byte-for-byte what it did before this
+    key existed (additive rule, see the module docstring). Every other
+    optional field keeps emitting ``null`` as it always has."""
+    payload = export.model_dump(mode="json", by_alias=True)
+    if payload.get("artifact_manifest") is None:
+        del payload["artifact_manifest"]
+    return json.dumps(payload, indent=2) + "\n"
 
 
 def export_run(
@@ -816,5 +890,5 @@ def export_run(
         events_dir=events_dir,
         transcript_root=transcript_root,
     )
-    atomic_write_text(package_dir / "ingest.json", export.model_dump_json(indent=2) + "\n")
+    atomic_write_text(package_dir / "ingest.json", _dump_export_json(export))
     return package_dir

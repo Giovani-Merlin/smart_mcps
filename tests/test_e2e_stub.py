@@ -726,6 +726,53 @@ def test_run_snapshots_the_named_grouping_and_records_it_in_the_manifest(repo, f
     assert isinstance(baseline["command"], list)
 
 
+def test_preflight_baseline_is_captured_in_the_provisioned_integration_worktree(repo, fake_home):
+    """F1 (r20260924): every group gate runs in a provisioned worktree, so the
+    baseline must too — captured against the operator's checkout, a stale
+    `node_modules` there made it incomparable (606 vs 649 UI tests)."""
+    from orchestrator.execution.worktrees import worktree_path
+
+    run_id = "r-baseline-wt"
+    write_run_artifacts(
+        repo, [make_group("g1", intensity=ReviewIntensity.SELF_VERIFY)], name="alpha"
+    )
+    cwds = repo / ".orchestrator" / "check-cwds.txt"
+    script = (
+        "import os, pathlib; "
+        f'pathlib.Path("{cwds}").open("a").write(os.path.realpath(os.getcwd()) + chr(10))'
+    )
+    write_config(
+        repo,
+        fake_home,
+        extra=f"\n[preflight]\ncheck_command = ['python3', '-c', '{script}']\n",
+    )
+    script_session(
+        fake_home,
+        name_of(run_id, "g1", "coder"),
+        coder_entry(files={"g1.out": "x\n"}, commit="g1: work"),
+    )
+    exit_code = main(
+        ["run", "--repo", str(repo), "--run-id", run_id, "--grouping", "alpha"],
+        llm_runner=StubLlm(),
+    )
+    assert exit_code == 0
+
+    integration = worktree_path(repo, run_id, "integration", "integration").resolve()
+    recorded = cwds.read_text().splitlines()
+    assert recorded, "the check command never ran"
+    # The first check run is the baseline capture, before any group gate.
+    assert Path(recorded[0]) == integration
+    assert Path(recorded[0]) != repo.resolve()
+
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    baseline = json.loads((run_dir / "preflight-baseline.json").read_text())
+    assert baseline["captured"] is True
+    assert baseline["commit_sha"] == git(repo, "rev-parse", "HEAD").strip()
+    log = (run_dir / "logs" / "run.log").read_text()
+    assert f"preflight baseline: captured 1 step(s) at {baseline['commit_sha']} in " in log
+    assert str(worktree_path(repo, run_id, "integration", "integration")) in log
+
+
 def test_resume_after_regroup_uses_the_run_snapshot_not_the_live_grouping(repo, fake_home):
     """Plan U10 (ADR 0002): re-running `group --name alpha` against a different
     plan must not be able to rewrite a run that already started from it —

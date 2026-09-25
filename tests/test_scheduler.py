@@ -131,9 +131,12 @@ async def test_pending_group_ids_names_groups_not_yet_started(tmp_path):
     run = asyncio.create_task(scheduler.run())
     await wait_until(lambda: scheduler.state.groups["g1"].state == GroupState.RUNNING)
     assert scheduler.pending_group_ids() == ["g2", "g3"]
+    assert not scheduler.is_settled("g1") and not scheduler.is_settled("g2")
     gate.set()
     await run
     assert scheduler.pending_group_ids() == []
+    assert scheduler.is_settled("g1") and scheduler.is_settled("g3")
+    assert not scheduler.is_settled("g99")  # unknown group is never settled
 
 
 @pytest.mark.asyncio
@@ -1117,6 +1120,28 @@ async def test_failed_group_with_nothing_lost_stays_failed_and_settles(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_failed_run_group_is_never_resolved_from_stranded_work(tmp_path):
+    # A `run` group commits only its `commit_paths` (R15); resolve would commit
+    # and merge its leftover outputs — found by the driver's live g8-v6 triage
+    # test on r20260924-134934, which ended RESOLVED instead of FAILED.
+    resolve = StubResolve(commits_ahead=1)
+    group = make_group("g1").model_copy(update={"recipe": "run"})
+    scheduler = Scheduler(
+        groups=[group],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=failing_executor(GroupFailure("command 1/1 exited 3")),
+        resolve=resolve.deps(),
+    )
+    states = await scheduler.run()
+    assert states["g1"] == GroupState.FAILED
+    assert resolve.committed == []
+    assert resolve.merged == []
+    persisted = RunState.model_validate_json(scheduler.paths.state_path.read_text())
+    assert persisted.groups["g1"].state == GroupState.FAILED
+    assert persisted.groups["g1"].resolve_settled is True
+
+
+@pytest.mark.asyncio
 async def test_resolve_conflict_stops_the_run(tmp_path):
     resolve = StubResolve(commits_ahead=1, conflict=True)
     scheduler = Scheduler(
@@ -1770,3 +1795,23 @@ def test_a_broken_state_write_never_replaces_the_interrupt_with_a_traceback(tmp_
     scheduler = Scheduler(groups=[make_group("g1")], paths=paths, executor=completing_executor())
     monkeypatch.setattr(scheduler, "_persist", lambda: (_ for _ in ()).throw(OSError("disk gone")))
     scheduler.mark_interrupted()  # must not raise
+
+
+def test_is_settled_true_only_for_completed_or_resolved(tmp_path):
+    scheduler = Scheduler(
+        groups=[make_group(f"g{i}") for i in range(1, 7)],
+        paths=RunPaths(tmp_path, "r1"),
+        executor=lambda ctx: None,
+        config=ExecutionConfig(concurrency=1),
+    )
+    states = {
+        "g1": GroupState.COMPLETED,
+        "g2": GroupState.RESOLVED,
+        "g3": GroupState.PENDING,
+        "g4": GroupState.RUNNING,
+        "g5": GroupState.FAILED,
+        "g6": GroupState.MERGING,
+    }
+    for gid, state in states.items():
+        scheduler.state.groups[gid].state = state
+    assert [gid for gid in states if scheduler.is_settled(gid)] == ["g1", "g2"]

@@ -41,6 +41,7 @@ from orchestrator.config import (
     WorkspaceConfig,
     load_config,
 )
+from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.auth import AuthLadder
 from orchestrator.execution.confinement import (
     default_cache_root,
@@ -83,7 +84,12 @@ from orchestrator.execution.manifest import (
     validate_grouping_name,
 )
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
-from orchestrator.execution.finish import FinishError, finish_run, run_is_finishable
+from orchestrator.execution.finish import (
+    FinishError,
+    finish_run,
+    pending_driver_run_items,
+    run_is_finishable,
+)
 from orchestrator.execution.merge import IntegrationMerger, MergeError, commits_ahead
 from orchestrator.execution.preflight import (
     PreflightFailure,
@@ -97,7 +103,6 @@ from orchestrator.execution.ratelimit import UsageLimitGate, UsageLimitState
 from orchestrator.execution.merge import MergeConflict
 from orchestrator.execution.review import (
     ReviewDeps,
-    make_executor,
 )
 from orchestrator.execution.surprises import (
     SurpriseBoard,
@@ -144,6 +149,13 @@ from orchestrator.grouping.advisory import (
     finding_task_groups,
     serialize_advisory_report,
 )
+from orchestrator.execution.dispatch import (
+    RecipeDispatchError,
+    make_executor,
+    recipe_gate_violations,
+    unknown_recipe_groups,
+)
+from orchestrator.recipes import registered_names
 from orchestrator.grouping.estimator import PRICE_CAP_APPROXIMATION_NOTE, PriceReport, price_plan
 from orchestrator.grouping.graphing import CodegraphClient, GraphBuildError
 from orchestrator.grouping.llm import (
@@ -1171,10 +1183,14 @@ def _print_price_report(report: PriceReport, plan_path: Path) -> None:
     print("\nper-task work:")
     for task in report.tasks:
         slice_note = f" (slice: {task.slice})" if task.slice else ""
+        wall_note = f", wall clock {task.wall_clock_s:.0f}s" if task.wall_clock_s else ""
         print(
             f"  {task.task_id}: {task.node_work:.0f} node work / "
-            f"{task.coder_work:.0f} coder work{slice_note}"
+            f"{task.coder_work:.0f} coder work{slice_note} [recipe: {task.recipe}{wall_note}]"
         )
+
+    if report.run_wall_clock_s:
+        print(f"\nrun wall clock (summed): {report.run_wall_clock_s:.0f}s")
 
     print("\nper-slice work vs. cap:")
     for slice_price in report.slices:
@@ -1270,6 +1286,18 @@ def _print_partition_report(trace: GroupingTrace) -> None:
             print(f"  - {flag}")
 
 
+def _print_run_group(group: Group) -> None:
+    """`group --dry-run`: a non-`code` group's declared work, verbatim."""
+    args = group.recipe_args or {}
+    wall = f"{group.estimated_wall_clock_s:.0f}s" if group.estimated_wall_clock_s else "default"
+    print(f"  recipe: {group.recipe} (wall clock {wall})")
+    for command in args.get("commands", []):
+        print(f"    $ {command['cmd']}  [{command['wall_clock_min']:g} min]")
+    for key in ("outputs", "commit_paths", "allow_write"):
+        if args.get(key):
+            print(f"    {key}: {', '.join(args[key])}")
+
+
 def _print_report(result: GroupingResult) -> None:
     print(f"plan: {result.plan_path}")
     print(f"groups: {len(result.groups)}")
@@ -1283,6 +1311,8 @@ def _print_report(result: GroupingResult) -> None:
         print(f"  difficulty: {group.difficulty:.2f} → {group.intensity.value}")
         print(f"  depends on: {deps}")
         print(f"  verification: {len(group.verification)} item(s)")
+        if group.recipe != "code":
+            _print_run_group(group)
     if result.flags:
         print("\nflags:")
         for flag in result.flags:
@@ -1888,6 +1918,31 @@ def _cmd_run(
     # against a branch already checked out under it. Fresh runs are a no-op
     # (no spec-gen files exist yet).
     groups = [effective_group(paths, group) for group in grouping.groups]
+    # Recipe gate (before any worktree, provisioning or session exists): unknown
+    # recipes always refuse; a non-`code` recipe must be in `[recipes] enabled`
+    # for every group that has yet to finish. Finished groups never block.
+    unknown = unknown_recipe_groups(groups)
+    if unknown:
+        print(
+            "error: group(s) "
+            + ", ".join(f"{g.id} (recipe {g.recipe!r})" for g in unknown)
+            + f" name an unregistered recipe; registered recipes: {list(registered_names())}",
+            file=sys.stderr,
+        )
+        return 1
+    gate_states: dict = {}
+    if resume:
+        gate_states = RunState.model_validate_json(paths.state_path.read_text()).groups
+    blocked = recipe_gate_violations(groups, gate_states, config.recipes.enabled)
+    if blocked:
+        print(
+            "error: group(s) "
+            + ", ".join(f"{g.id} (recipe {g.recipe!r})" for g in blocked)
+            + " use a recipe not in `[recipes] enabled` "
+            f"(currently {config.recipes.enabled}) — enable it in the config or re-plan",
+            file=sys.stderr,
+        )
+        return 1
     intensity_override_line: str | None = None
     if getattr(args, "review_intensity", None):
         intensity = ReviewIntensity(args.review_intensity)
@@ -2024,19 +2079,6 @@ def _cmd_run(
                 )
                 return 1
             snapshot_grouping(source_grouping_dir, paths.run_dir)
-            # Plan U2: what was already red on the launch branch, captured once
-            # before any group worktree exists — a resumed run reuses it rather
-            # than recapturing against a launch branch it no longer sits on.
-            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
-            baseline = capture_preflight_baseline(
-                repo_root,
-                config=config.preflight,
-                output_dir=paths.run_dir,
-                commit_sha=launch_commit_sha,
-                log=lambda message: log_event(paths, message),
-                uv_run_args=config.session.provision_args,
-            )
-            save_baseline(paths.preflight_baseline_path, baseline)
         # Plan U3/R41: the resolved admission policy, recorded once — an operator
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.
@@ -2057,9 +2099,10 @@ def _cmd_run(
             repo_root,
             run_id,
             preflight_config=config.preflight,
-            # Read back rather than reusing the local `baseline`: a resumed run
-            # never recaptures one, but the file from the original launch is
-            # still the right reference for the merge gate.
+            # A resumed run never recaptures a baseline: the file from the
+            # original launch is still the right reference for the merge gate.
+            # A fresh run has none yet — it is captured below, in the
+            # provisioned integration worktree, and set on the merger then.
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
             preflight_output_dir=paths.group_dir,
             log=lambda message: log_event(paths, message),
@@ -2073,13 +2116,35 @@ def _cmd_run(
             workspace=config.workspace,
         )
         try:
-            merger.ensure()
+            integration_path = merger.ensure()
         except WorktreeError as exc:
             # ProvisioningError lands here too: with provision_on_failure="fail"
             # a dependency spec that cannot build stops the run before any
             # group starts, with uv's actual error in the message.
             print(f"error: cannot create integration worktree: {exc}", file=sys.stderr)
             return 1
+        if not resume:
+            # Plan U2: what was already red on the launch branch, captured once
+            # before any group worktree exists — a resumed run reuses it rather
+            # than recapturing against a launch branch it no longer sits on.
+            # F1 (r20260924): captured in the *provisioned integration
+            # worktree*, not the operator's checkout — every group gate runs
+            # in a worktree `_provision_once` provisioned the same way, so a
+            # stale `node_modules` in the main checkout made the baseline
+            # incomparable (606 UI tests at launch vs 649 at the gate). The
+            # integration branch is cut from HEAD, so the sha is the launch
+            # commit either way.
+            launch_commit_sha = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
+            baseline = capture_preflight_baseline(
+                integration_path,
+                config=config.preflight,
+                output_dir=paths.run_dir,
+                commit_sha=launch_commit_sha,
+                log=lambda message: log_event(paths, message),
+                uv_run_args=config.session.provision_args,
+            )
+            save_baseline(paths.preflight_baseline_path, baseline)
+            merger.set_preflight_baseline(load_baseline(paths.preflight_baseline_path))
 
         # The lifecycle log is always on (R10): the run-start line lands in every
         # mode; only the escalation channel itself is HITL-gated. Built before the
@@ -2111,6 +2176,7 @@ def _cmd_run(
             paths=paths,
             workspace=config.workspace,
         )
+        artifact_store = ArtifactManifestStore(paths)
 
         # Construction is circular on paper (scheduler → executor → deps → runner →
         # scheduler.tracker); the executor closes over a slot assigned once deps exist —
@@ -2131,6 +2197,7 @@ def _cmd_run(
                 broker=broker,
                 policy=policy,
                 resolve=resolve_deps,
+                artifacts=artifact_store,
             )
         except (SchedulerError, RunStateVersionError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2262,9 +2329,11 @@ def _cmd_run(
             # id against the run's real group and task ids at mark time, instead
             # of silently accumulating dead buckets under ids nothing will ever
             # read.
-            board=SurpriseBoard(paths, groups=grouping.groups),
+            board=SurpriseBoard(paths, groups=grouping.groups, is_settled=scheduler.is_settled),
             workspace_for=workspace_for,
             merge_group=merger.merge_group,
+            artifacts=artifact_store,
+            groups_by_id={g.id: g for g in grouping.groups},
             # The rewrite path is the run's other claude call, and it is a one-shot
             # `claude -p` rather than a session — so it needs the same gate, applied
             # at its own boundary.
@@ -2284,8 +2353,24 @@ def _cmd_run(
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
             activity=activity,
             liveness=config.liveness,
+            triage=_triage_provider(
+                with_usage_limit_retry(
+                    llm_runner
+                    or functools.partial(claude_json_runner, model=config.recipes.run.triage_model),
+                    gate,
+                ),
+                orch_dir / "failures",
+                JsonlCallRecorder(paths.run_dir, grouping_run_id=run_id),
+                config.recipes.run.triage_model,
+            ),
+            workspace_config=config.workspace,
+            recipes_config=config.recipes,
         )
-        executor_slot.append(make_executor(deps))
+        try:
+            executor_slot.append(make_executor(deps, groups, gate_states))
+        except RecipeDispatchError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
         try:
             with _interruptible_pause(gate):
@@ -2328,6 +2413,18 @@ def _maybe_auto_finish(repo_root: Path, run_id: str, paths: RunPaths) -> None:
     ok, _ = run_is_finishable(repo_root, run_id)
     if not ok:
         print(f"finish when ready with: {finish_cmd}")
+        return
+    pending = pending_driver_run_items(repo_root, run_id)
+    if pending:
+        count = sum(len(ids) for ids in pending.values())
+        listed = "; ".join(f"{gid}: {', '.join(ids)}" for gid, ids in pending.items())
+        line = (
+            f"run {run_id}: not auto-finishing — {count} driver-run verification "
+            f"item(s) wait for the run driver ({listed})"
+        )
+        log_event(paths, line)
+        print(line)
+        print(f"run them, then finish with: {finish_cmd}")
         return
     try:
         finish_run(repo_root, run_id, log=lambda m: log_event(paths, m))
@@ -2582,13 +2679,12 @@ def _resolve_deps(
             return False
         return True
 
-    def merge_for_resolve(group: Group) -> None:
+    def merge_for_resolve(group: Group) -> str:
         worktree = worktree_for(group)
         attempts_left = execution.max_conflict_resolve_attempts
         while True:
             try:
-                merger.merge_group(group, worktree)
-                return
+                return merger.merge_group(group, worktree)
             except MergeConflict as exc:
                 session_id = latest_coder_session_id(group.id) if attempts_left > 0 else None
                 if session_id is None:
@@ -2611,7 +2707,7 @@ def _resolve_deps(
                 )
                 raise ResolvePreflightFailed(str(exc)) from exc
             except MergeError:
-                return  # commits_ahead already gated this — defensive no-op
+                return ""  # commits_ahead already gated this — defensive no-op
 
     return ResolveDeps(
         commit_stranded=commit_stranded,
@@ -2698,6 +2794,43 @@ def _rewrite_group_spec(
         recorder=recorder,
         subject=subject,
     )
+
+
+def _triage_provider(
+    llm_runner: JsonRunner,
+    failure_dir: Path,
+    recorder: JsonlCallRecorder,
+    model: str | None,
+):
+    """`ReviewDeps.triage` seam: one `claude -p` JSON call, recorded as an
+    `llm_calls` row with ``operation: run_triage``. Never relaunches anything."""
+    schema = {
+        "title": "run_triage",
+        "type": "object",
+        "properties": {
+            "verdict": {"enum": ["work_failure", "needs_decision"]},
+            "diagnosis": {"type": "string"},
+        },
+        "required": ["verdict", "diagnosis"],
+    }
+
+    def triage(prompt: str) -> dict:
+        def validate(payload: dict) -> dict:
+            if payload["verdict"] not in ("work_failure", "needs_decision"):
+                raise ValueError("verdict must be work_failure or needs_decision")
+            return {"verdict": payload["verdict"], "diagnosis": str(payload["diagnosis"])}
+
+        return call_llm_json(
+            llm_runner,
+            prompt,
+            schema,
+            validate,
+            failure_dir=failure_dir,
+            recorder=recorder,
+            subject={"operation": "run_triage", "model": model},
+        )
+
+    return triage
 
 
 def _rewrite_provider(

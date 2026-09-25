@@ -170,10 +170,7 @@ read it once before the first group. For each question:
   unit, verbatim**, one per line
   (`- U14. rerender-acceptance — six chapters once into artifacts-0911, three EPUBs, acceptance report with the judges' measures`).
   Each stem then **repeats that full heading** before the stakes clause the
-  explorer scored (`U14. rerender-acceptance — six chapters once into
-  artifacts-0911, three EPUBs, acceptance report with the judges' measures ·
-  if wrong: the acceptance report scores stale renders. …`). `U14`, `U14
-  rerender-acceptance`, and any paraphrase of the goal are all forbidden —
+  explorer scored (`U14. rerender-acceptance — six chapters once into artifacts-0911, three EPUBs, acceptance report with the judges' measures · if wrong: the acceptance report scores stale renders. …`). `U14`, `U14 rerender-acceptance`, and any paraphrase of the goal are all forbidden —
   the explorer's `Handle` field is the heading copied from the plan, so
   quote it, never re-summarize it. Only the header chip abbreviates
   (`U14 rerend`), because the tool caps it at 12 chars; it is never the
@@ -272,15 +269,18 @@ usually reports it as a mysterious environment defect.
 
 For each `Run:` command, ask what it *writes* and where:
 
-| the command writes…                                             | verdict                                                                    |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| inside the worktree (build output, `.coder-scratch/`, test tmp) | fine — nothing to do                                                       |
-| a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted)     |
-| a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit             |
-| a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                              |
+| the command writes…                                             | verdict                                                                |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| inside the worktree (build output, `.coder-scratch/`, test tmp) | fine — nothing to do                                                   |
+| a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted) |
+| a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit         |
+| a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                          |
+| `/tmp`, or kills/resumes a child process                        | fine — `Run:`; process control is not a write                          |
 
-**The standing case for `Run (driver):` is the live tier** — any `-m llm`
-test, or anything else spawning a nested `claude`. Its transcript goes to
+**The default is `Run:`; `Run (driver):` only when the command spawns a nested
+`claude` or writes to a path outside the allowlist that cannot be declared in
+advance.** The standing case is the live tier — any `-m llm` test, or
+anything else spawning a nested `claude`. Its transcript goes to
 `~/.claude/projects/<slug-of-its-own-cwd>`, a directory named after a fixture
 path that does not exist when the config is written, and the only blanket
 allowlist that would cover it is `~/.claude/projects` wholesale — which is
@@ -297,14 +297,48 @@ Write the decision into the plan:
   run-driver's preflight is supposed to catch.
 - Driver-run → rewrite the item's command line as `Run (driver): <command>`.
   `smart-mcps-orchestrate group` sets `driver_run` on that item, the coder
-  prompt tells the coder not to run it and to report it `skipped` with notes
-  `driver-run`, the verification gate stops holding the group on it, and the
-  run log names the pending items at merge for the driver to run.
+  prompt tells the coder it may attempt it only if it spawns no nested
+  `claude` and writes nowhere outside the sandbox (report `pass`/`fail` with
+  evidence, otherwise `skipped` with notes `driver-run`), the verification
+  gate never holds the group on it, and the run log names at merge the items
+  the coder did not pass, for the driver to run.
 
 Report the sweep as one short block: how many `Run:` lines, how many now
 driver-run, and which config lines the human must add. An item that needs a
 path nobody can name is not verifiable — say so rather than marking it
 driver-run.
+
+### `run` units in the sweep
+
+A `run` unit (`recipe: run`) has no coder `Run:` lines to check — sweep its
+`recipe_args.commands[].cmd` entries the same way, but against the **Run
+Child profile**, not the worker profile: the worker's Landlock grants plus
+`[workspace] data_dirs` plus that unit's own `recipe_args.allow_write` list
+(`orchestrator/execution/run_executor.py::_confinement_preexec`). A command
+writing somewhere the worker profile already covers needs nothing added; a
+fixed path outside it goes in `allow_write` (never a bare `[session] extra_write_paths` entry — that config path is the worker's own, unrelated
+list); a path not knowable until the run is the same "not verifiable" case as
+above — say so rather than inventing an `allow_write` entry to guess it.
+`allow_write` rejects (at parse time) any entry equal to or containing
+`~/.claude` or `~/.claude/projects` — never propose routing around that.
+
+For every `run` unit, also ask for two figures and write them into the unit
+if missing: each command's `wall_clock_min` cap (a real estimate for the
+work, not padding — a command that exceeds it is killed and the group fails)
+and, if the human has a rough one, an expected cost/duration note for the
+whole unit, since a `run` group prices as its declared wall clock plus a
+fixed triage-token allowance rather than file arithmetic (see
+`docs/orchestrator-task-map.md`'s v2 section). A command with no
+`wall_clock_min` deserves a question, not a guessed default.
+
+### The `PATH`-not-absolute-path rule, again
+
+The same rule from `/orchestrator-plan` applies to every command this sweep
+touches, coder or `run`: reference a tool by name on `PATH` (`uv run …`),
+never by an absolute path baked in from this planning session's own
+checkout — the worktree a command actually runs in is a different path on
+disk. A command hardcoding a path is a defect to fix here, not a
+sandbox-sweep table entry.
 
 ## Phase 5 — Hand off
 

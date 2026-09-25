@@ -27,6 +27,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
+from orchestrator.execution.artifacts import ArtifactEntry, ArtifactManifestStore
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError
@@ -110,7 +111,7 @@ class ResolveDeps:
 
     commit_stranded: Callable[[Group], bool]
     commits_ahead: Callable[[Group], int]
-    merge_group: Callable[[Group], None]  # raises ResolveConflict on a real conflict
+    merge_group: Callable[[Group], str]  # raises ResolveConflict; returns the merge commit sha
 
 
 class GroupState(StrEnum):
@@ -296,6 +297,7 @@ class Scheduler:
         broker: EscalationBroker | None = None,
         policy: EscalationPolicy | None = None,
         resolve: ResolveDeps | None = None,
+        artifacts: ArtifactManifestStore | None = None,
     ):
         self.groups = {group.id: group for group in groups}
         for group in groups:
@@ -314,6 +316,10 @@ class Scheduler:
         self._broker = broker
         self._policy = policy
         self._resolve = resolve
+        # Artifact Manifest (plan U6): None keeps every construction site that
+        # predates it byte-identical — a Resolve settling a group RESOLVED
+        # registers no entry.
+        self._artifacts = artifacts
         self._lock = threading.Lock()
         self._dependents: dict[str, list[str]] = {gid: [] for gid in self.groups}
         for group in groups:
@@ -399,6 +405,17 @@ class Scheduler:
                 gid
                 for gid, entry in self.state.groups.items()
                 if entry.state in (GroupState.PENDING, GroupState.READY)
+            )
+
+    def is_settled(self, gid: str) -> bool:
+        """True once a group's work is in the integration branch (COMPLETED or
+        RESOLVED) — the point past which a surprise naming it has no consumer
+        (the SurpriseBoard's late-surprise anchor line)."""
+        with self._lock:
+            entry = self.state.groups.get(gid)
+            return entry is not None and entry.state in (
+                GroupState.COMPLETED,
+                GroupState.RESOLVED,
             )
 
     def _record_pid(self, pid: int, context: str) -> None:
@@ -746,7 +763,18 @@ class Scheduler:
         """
         if self._resolve is None:
             return GroupState.FAILED
-        if self._broker is not None and self._policy is not None:
+        recipe = self.groups[gid].recipe
+        if recipe != "code":
+            # A non-`code` group may commit only its declared `commit_paths`
+            # (plan R15); committing its leftovers here would bypass that gate
+            # and merge a failed run's partial outputs. `retry` is its recovery.
+            log_event(
+                self.paths,
+                f"group {gid}: {recipe} group — stranded-work resolve skipped "
+                f"(retry is its recovery)",
+            )
+            final = GroupState.FAILED
+        elif self._broker is not None and self._policy is not None:
             final = await self._resolve_via_escalation(gid)
         else:
             final = await self._resolve_autonomously(gid)
@@ -778,12 +806,32 @@ class Scheduler:
         try:
             # raises ResolveConflict on a real conflict (stops the run) or
             # ResolvePreflightFailed when Preflight declined the merge (does not).
-            await asyncio.to_thread(self._resolve.merge_group, group)
+            merge_sha = await asyncio.to_thread(self._resolve.merge_group, group)
         except ResolvePreflightFailed as exc:
             log_event(self.paths, f"group {gid}: {exc}")
             return GroupState.FAILED
         log_event(self.paths, f"group {gid}: resolved (stranded work merged)")
+        self._register_partial_artifact(group, merge_sha)
         return GroupState.RESOLVED
+
+    def _register_partial_artifact(self, group: Group, commit: str) -> None:
+        """A FAILED group's stranded work landed on the integration branch
+        (plan U6 Goal): its entry is `partial`, since it never claimed a
+        review verdict. A no-op when no Artifact Manifest is wired."""
+        if self._artifacts is None:
+            return
+        self._artifacts.register(
+            ArtifactEntry(
+                artifact_id=group.id,
+                group_id=group.id,
+                tasks=list(group.tasks),
+                recipe=group.recipe,
+                commit=commit,
+                schema="CoderReport",
+                summary=f"resolved from stranded work: {group.summary}",
+                status="partial",
+            )
+        )
 
     async def _resolve_via_escalation(self, gid: str) -> GroupState:
         assert self._broker is not None and self._policy is not None

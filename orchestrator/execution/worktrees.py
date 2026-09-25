@@ -928,6 +928,18 @@ def diff_stat(worktree: Path, base_ref: str) -> str:
     return committed.stdout.strip() or "(no changes yet)"
 
 
+def changed_paths(worktree: Path, base_ref: str) -> list[str]:
+    """Files this branch actually changed relative to ``base_ref`` (plan U6 of
+    the Artifact Manifest): what a code group's Artifact Manifest entry is
+    indexed by, not the group's declared ``files`` — a group may touch files
+    outside what it declared. Best-effort: an unreadable diff returns an empty
+    list rather than raising, mirroring ``diff_stat``."""
+    result = _git(worktree, "diff", "--name-only", base_ref)
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line]
+
+
 def remove_worktree(repo_root: Path, path: Path, *, force: bool = False) -> None:
     """Remove a worktree. Idempotent on a missing path; refuses a dirty worktree
     unless ``force`` is explicit (plan U5 test scenario)."""

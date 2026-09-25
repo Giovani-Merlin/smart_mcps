@@ -69,5 +69,24 @@ def test_the_coder_prompt_tells_the_coder_not_to_run_it():
 
     assert "[g4-1] unit tests pass" in prompt
     driver_line = next(line for line in prompt.splitlines() if "[g4-5]" in line)
-    assert "DRIVER-RUN: do NOT run this one" in driver_line
+    # r20260924: the coder *may* attempt a sandbox-safe driver item; only a
+    # nested `claude` (or a write outside the sandbox) is off limits.
+    assert "DRIVER-RUN" in driver_line
+    assert "nested `claude`" in driver_line
+    assert "`pass`" in driver_line
+    assert "`skipped`" in driver_line
     assert "`driver-run`" in driver_line
+    assert "do NOT run" not in driver_line
+
+
+def test_marker_with_a_comma_is_recognised():
+    # The plan wrote "Run (driver), optional — …"; the colon-only regex missed it.
+    assert is_driver_run("Run (driver), optional — run when the triage path changed")
+
+
+def test_an_item_built_without_the_flag_derives_it_from_its_description():
+    # The mid-run speccer rewrite builds VerificationItems from JSON with no
+    # driver_run key (r20260924-134934, g8).
+    item = VerificationItem.model_validate({"id": "g8-v5", "description": LIVE_ITEM})
+    assert item.driver_run is True
+    assert VerificationItem(id="g8-v1", description="unit tests pass").driver_run is False

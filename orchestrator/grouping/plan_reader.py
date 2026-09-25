@@ -15,12 +15,18 @@ from collections import defaultdict
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from orchestrator.grouping.errors import ErrorAccumulator
 from orchestrator.grouping.graphing import CodegraphClient, TaskMapping
 from orchestrator.grouping.mapper import MapperOutput
+from orchestrator.recipes import get_recipe
 
-VERSION_MARKER = "# orchestrator-task-map v1"
+# Supported marker versions. v1 is the original shape; v2 (plan U2) adds the
+# ``recipe``/``recipe_args`` keys. Both parse through the same code path below —
+# a v1 map behaves exactly as before, with ``recipe`` defaulting to "code".
+SUPPORTED_VERSIONS = (1, 2)
+VERSION_MARKER = "# orchestrator-task-map v1"  # kept for callers/tests naming v1 explicitly
 # A slice contracts to a single Louvain node: past this size the partition would
 # degenerate to pure budget-splitting (docs/orchestrator-task-map.md).
 SLICE_TASK_CAP = 5
@@ -28,8 +34,12 @@ SLICE_TASK_CAP = 5
 # (plan U7); medium is today's flat per_file_tool_allowance rate.
 SIZE_HINT_CLASSES = frozenset({"small", "medium", "large"})
 
+# One marker regex for every consumer (parse_task_map, parse_task_map_for_pricing,
+# strip_task_map, task_map_block_span) — plan_sections.py imports this instead of
+# keeping its own hardcoded v1-only copy.
+_MARKER_PATTERN = r"#[ \t]*orchestrator-task-map[ \t]+v(?P<version>[12])\b"
 _BLOCK = re.compile(
-    r"```ya?ml[ \t]*\n(?P<body>[ \t]*" + re.escape(VERSION_MARKER) + r"[ \t]*\n.*?)```",
+    r"```ya?ml[ \t]*\n(?P<body>[ \t]*" + _MARKER_PATTERN + r"[ \t]*\n.*?)```",
     re.DOTALL,
 )
 _ANY_VERSION = re.compile(r"```ya?ml[ \t]*\n[ \t]*#[ \t]*orchestrator-task-map v(\d+)")
@@ -39,11 +49,38 @@ _ANY_VERSION = re.compile(r"```ya?ml[ \t]*\n[ \t]*#[ \t]*orchestrator-task-map v
 _PRECEDING_HEADING = re.compile(r"(?:(?<=\n)|\A)[ \t]*## Task Map[ \t]*\n(?:[ \t]*\n)*\Z")
 
 _LIST_FIELDS = ("files", "symbols", "depends_on", "implements", "consumes")
-_KNOWN_KEYS = {"task_id", "description", "slice", "size_hints", *_LIST_FIELDS}
+_KNOWN_KEYS = {
+    "task_id",
+    "description",
+    "slice",
+    "size_hints",
+    "recipe",
+    "recipe_args",
+    *_LIST_FIELDS,
+}
 
 
 class TaskMapError(Exception):
     """The plan's task-map block is present but malformed (hard error, no fallback)."""
+
+
+def _locate_block(plan_text: str) -> re.Match | None:
+    """Find the plan's single marked task-map block (any supported version) and
+    return its match (``body``, ``version`` groups), or ``None`` if absent.
+    Raises on more than one block, or on a marker naming an unsupported version.
+    """
+    matches = list(_BLOCK.finditer(plan_text))
+    if not matches:
+        versions = _ANY_VERSION.findall(plan_text)
+        if versions:
+            raise TaskMapError(
+                f"unsupported task map version v{versions[0]} "
+                f"(this parser reads v{'/v'.join(str(v) for v in SUPPORTED_VERSIONS)})"
+            )
+        return None
+    if len(matches) > 1:
+        raise TaskMapError("multiple orchestrator-task-map blocks; exactly one is allowed")
+    return matches[0]
 
 
 def parse_task_map(
@@ -62,22 +99,16 @@ def parse_task_map(
     YAML, duplicate ids, bad ``depends_on``, oversized slices, unknown keys)
     always raise ``TaskMapError``.
     """
-    blocks = _BLOCK.findall(plan_text)
-    if not blocks:
-        versions = _ANY_VERSION.findall(plan_text)
-        if versions:
-            raise TaskMapError(
-                f"unsupported task map version v{versions[0]} (this parser reads v1)"
-            )
+    match = _locate_block(plan_text)
+    if match is None:
         return None
-    if len(blocks) > 1:
-        raise TaskMapError("multiple orchestrator-task-map blocks; exactly one is allowed")
 
     try:
-        payload = yaml.safe_load(blocks[0])
+        payload = yaml.safe_load(match.group("body"))
     except yaml.YAMLError as exc:
         raise TaskMapError(f"task map is not valid YAML: {exc}") from exc
-    tasks = _validate_shape(payload)
+    version = int(match.group("version"))
+    tasks = _validate_shape(payload, version)
 
     mappings: list[TaskMapping] = []
     descriptions: dict[str, str] = {}
@@ -90,10 +121,13 @@ def parse_task_map(
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (client.repo_root / file).is_file():
+                # A hint prices unwritten work only. Once the plan's own run has
+                # written the file, the hint is stale, not wrong: price the real
+                # file and say so, or a plan could never be regrouped after it ran.
                 if file in raw_size_hints:
-                    raise TaskMapError(
-                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
-                        "hints price unwritten (prospective) work only"
+                    flags.append(
+                        f"task map: task {task_id} size_hints names {file}, which now exists "
+                        "— hint ignored, priced by its real size"
                     )
                 files.append(file)
             else:
@@ -116,6 +150,7 @@ def parse_task_map(
                     f"task {task_id} mapped unknown symbol {symbol!r} — not found in the "
                     "codegraph index (pass --allow-unknown-symbols to drop it instead)"
                 )
+        recipe_name, recipe_args = _parsed_recipe(entry)
         mappings.append(
             TaskMapping(
                 task_id,
@@ -124,6 +159,8 @@ def parse_task_map(
                 prospective_files=tuple(prospective),
                 size_hints=size_hints,
                 depends_on=tuple(_dedupe(entry.get("depends_on") or [])),
+                recipe=recipe_name,
+                recipe_args=recipe_args,
                 slice=entry.get("slice"),
                 implements=tuple(_dedupe(entry.get("implements") or [])),
                 consumes=tuple(_dedupe(entry.get("consumes") or [])),
@@ -140,22 +177,16 @@ def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapp
     rather than requiring a live index. ``None`` if the plan carries no task map
     block, mirroring ``parse_task_map``.
     """
-    blocks = _BLOCK.findall(plan_text)
-    if not blocks:
-        versions = _ANY_VERSION.findall(plan_text)
-        if versions:
-            raise TaskMapError(
-                f"unsupported task map version v{versions[0]} (this parser reads v1)"
-            )
+    match = _locate_block(plan_text)
+    if match is None:
         return None
-    if len(blocks) > 1:
-        raise TaskMapError("multiple orchestrator-task-map blocks; exactly one is allowed")
 
     try:
-        payload = yaml.safe_load(blocks[0])
+        payload = yaml.safe_load(match.group("body"))
     except yaml.YAMLError as exc:
         raise TaskMapError(f"task map is not valid YAML: {exc}") from exc
-    tasks = _validate_shape(payload)
+    version = int(match.group("version"))
+    tasks = _validate_shape(payload, version)
 
     mappings: list[TaskMapping] = []
     for entry in tasks:
@@ -165,17 +196,13 @@ def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapp
         prospective: list[str] = []
         for file in _dedupe(entry.get("files") or []):
             if (repo_root / file).is_file():
-                if file in raw_size_hints:
-                    raise TaskMapError(
-                        f"task {task_id!r} size_hints names {file!r}, which already exists — "
-                        "hints price unwritten (prospective) work only"
-                    )
-                files.append(file)
+                files.append(file)  # a stale hint on an existing file is ignored
             else:
                 prospective.append(file)
         size_hints = tuple(
             sorted((f, raw_size_hints[f]) for f in prospective if f in raw_size_hints)
         )
+        recipe_name, recipe_args = _parsed_recipe(entry)
         mappings.append(
             TaskMapping(
                 task_id,
@@ -183,6 +210,8 @@ def parse_task_map_for_pricing(plan_text: str, repo_root: Path) -> list[TaskMapp
                 prospective_files=tuple(prospective),
                 size_hints=size_hints,
                 depends_on=tuple(_dedupe(entry.get("depends_on") or [])),
+                recipe=recipe_name,
+                recipe_args=recipe_args,
                 slice=entry.get("slice"),
             )
         )
@@ -220,7 +249,7 @@ def strip_task_map(plan_text: str) -> str:
     return plan_text[:start] + plan_text[match.end() :]
 
 
-def _validate_shape(payload: object) -> list[dict]:
+def _validate_shape(payload: object, version: int = 1) -> list[dict]:
     """Structural validation per docs/orchestrator-task-map.md — every miss is hard.
 
     Two accumulated phases (plan U6/C1): shape first (per-entry structural
@@ -260,6 +289,17 @@ def _validate_shape(payload: object) -> list[dict]:
             not isinstance(entry["slice"], str) or not entry["slice"]
         ):
             shape_errors.add(f"task {label!r} 'slice' must be a string or null")
+        if entry.get("recipe") is not None and (
+            not isinstance(entry["recipe"], str) or not entry["recipe"]
+        ):
+            shape_errors.add(f"task {label!r} 'recipe' must be a non-empty string")
+        if entry.get("recipe_args") is not None and not isinstance(entry["recipe_args"], dict):
+            shape_errors.add(f"task {label!r} 'recipe_args' must be a mapping")
+        if ("recipe" in entry or "recipe_args" in entry) and version < 2:
+            shape_errors.add(
+                f"task {label!r} declares 'recipe'/'recipe_args', which require the plan's "
+                "task map to be marked v2 (found v1)"
+            )
         for key in _LIST_FIELDS:
             value = entry.get(key) or []
             if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
@@ -308,6 +348,31 @@ def _validate_shape(payload: object) -> list[dict]:
                 reference_errors.add(f"task {entry['task_id']!r} depends_on unknown task {dep!r}")
                 depends_clean = False
 
+    for entry in tasks:
+        recipe_name = entry.get("recipe") or "code"
+        try:
+            recipe = get_recipe(recipe_name)
+        except KeyError as exc:
+            reference_errors.add(f"task {entry['task_id']!r}: {exc}")
+            continue
+        if recipe_name != "code" and entry.get("slice"):
+            reference_errors.add(
+                f"task {entry['task_id']!r} declares recipe {recipe_name!r} with a 'slice' — "
+                "a non-code unit may not carry a slice"
+            )
+        raw_args = entry.get("recipe_args")
+        if recipe.args_model is None:
+            if raw_args is not None:
+                reference_errors.add(
+                    f"task {entry['task_id']!r} declares 'recipe_args' for recipe "
+                    f"{recipe_name!r}, which takes no args"
+                )
+        else:
+            try:
+                recipe.args_model(**(raw_args or {}))
+            except ValidationError as exc:
+                reference_errors.add(f"task {entry['task_id']!r} recipe_args: {exc}")
+
     slice_members: dict[str, list[str]] = defaultdict(list)
     for entry in tasks:
         if entry.get("slice"):
@@ -354,3 +419,16 @@ def _check_acyclic(depends_on: dict[str, list[str]]) -> None:
 def _dedupe(values: list[str]) -> list[str]:
     """Order-preserving dedupe (a duplicated file must not double-count bytes)."""
     return list(dict.fromkeys(values))
+
+
+def _parsed_recipe(entry: dict) -> tuple[str, object | None]:
+    """``(recipe name, validated recipe_args instance | None)`` for one already
+    shape/reference-validated task entry — re-instantiates the args model
+    ``_validate_shape`` already proved would succeed, since that phase only
+    keeps the error, not the validated value."""
+    recipe_name = entry.get("recipe") or "code"
+    recipe = get_recipe(recipe_name)
+    if recipe.args_model is None:
+        return recipe_name, None
+    raw_args = entry.get("recipe_args") or {}
+    return recipe_name, recipe.args_model(**raw_args)

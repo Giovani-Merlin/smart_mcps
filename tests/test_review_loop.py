@@ -1282,6 +1282,28 @@ async def test_reentry_resumes_round_numbering_from_completed_rounds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spec_rewrite_fallback_fork_continues_round_numbering(tmp_path):
+    # The spec-rewrite fallback forks a fresh coder in the same generation; it
+    # used to restart at round 1 and overwrite the pre-interrupt round-1 report,
+    # leaving a stale higher round as "latest" (r20260924-134934, g8).
+    runner = StubRunner(
+        {"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict("approved")]}
+    )
+    harness = Harness(tmp_path, runner)
+    seed_reentry_session(harness, spec_sha256="0" * 64)
+    group_dir = harness.store.paths.group_dir("g1")
+    group_dir.mkdir(parents=True)
+    stale_report = group_dir / "report-g1-r1.json"
+    stale_report.write_text('{"round": "pre-interrupt report"}')
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert stale_report.read_text() == '{"round": "pre-interrupt report"}'
+    assert (group_dir / "report-g1-r2.json").exists()
+    lines = run_log_lines(harness)
+    assert any(line.endswith("group g1 generation 1 round 2: started") for line in lines)
+
+
+@pytest.mark.asyncio
 async def test_reentry_falls_through_to_fork_when_context_exceeds_the_breaker_limit(tmp_path):
     # R5: the persisted context pre-check trips before any resume is attempted.
     runner = StubRunner(
@@ -2139,3 +2161,53 @@ async def test_paired_group_with_a_verification_gap_never_reaches_the_reviewer(t
         if "approved | changes_required" in text
     ]
     assert len(reviewer_prompts) == 1
+
+
+# --------------------------------------------------- driver-run items at merge
+# r20260924: the coder may attempt a sandbox-safe driver-run item. The merge
+# log lists the ones it passed separately from the ones still owed, so the
+# driver runs only what nobody has run.
+
+DRIVER_LIVE = "Run (driver): `uv run pytest -m llm tests/test_x.py` — Pass: green."
+
+
+def _driver_group(intensity=ReviewIntensity.SELF_VERIFY) -> Group:
+    return make_group(
+        intensity=intensity,
+        verification=[
+            VerificationItem(id="v1", description="tests pass"),
+            VerificationItem(id="g1-5", description=DRIVER_LIVE, driver_run=True),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_log_names_a_driver_run_item_the_coder_passed(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {"item_id": "g1-5", "status": "pass", "notes": "ran it: 17 passed"},
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_driver_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any("1 driver-run verification item(s) passed by the coder — g1-5" in ln for ln in lines)
+    assert not any("not run by the coder" in ln for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_merge_log_names_a_driver_run_item_the_coder_skipped_as_pending(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {"item_id": "g1-5", "status": "skipped", "notes": "driver-run"},
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_driver_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(
+        "1 driver-run verification item(s) not run by the coder — g1-5" in ln for ln in lines
+    )
+    assert not any("passed by the coder" in ln for ln in lines)

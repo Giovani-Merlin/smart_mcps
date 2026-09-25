@@ -69,7 +69,7 @@ heading is a human convention. Exactly one marked block per plan.
 | `description` | yes      | string                                   | One sentence; feeds the speccer's group skeletons.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `slice`       | no       | string \| null                           | Vertical-slice label. Must-link is a **hard output invariant** (per CONTEXT.md's Slice entry): a slice lands whole in exactly one group, or grouping fails loudly naming it — never a silent split. Slice-mates are **contracted into one node** before Louvain, and the budget splitter computes its cut candidates between whole slices — never inside one — so the invariant holds through every later stage (split, merge, SCC repair), not only through Louvain. A slice whose own summed work exceeds the budget cap raises `GrouperError`, naming the slice, its members, each member's work, the cap, and the overshoot; `--allow-oversized-slice` (or `[partition] allow_oversized_slice` in `.orchestrator/config.toml`) accepts the overshoot instead, keeping the slice whole as one group with a `flags[]` entry recording it. Shared-infra / cross-cutting tasks carry **no** slice (they are hub material, never forced into a feature slice). |
 | `files`       | no       | list of repo-rel paths                   | Files the task will touch. **Prospective files (not existing yet) are allowed** — they are retained, flagged as info, contribute shared-file affinity, appear in `Group.files`, and count in the per-file token allowance (or a `size_hints` price, if given — see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `size_hints`  | no       | map of path → `small`\|`medium`\|`large` | Prices a **prospective** file by declared size instead of the flat per-file allowance: `small` 500, `medium` 2,000, `large` 5,000 tokens. `medium` is today's default rate (`per_file_tool_allowance`), so a prospective file left out of `size_hints` is priced exactly as before — unhinted files do not change shape. Every key must name a path already listed in that task's `files`; a path that already exists in the working tree, or a class outside the three, is a hard error (see Validation rules). Existing-file pricing (source bytes ÷ tokens-per-byte) is untouched.                                                                                                                                                                                                                                                                                                                                                                         |
+| `size_hints`  | no       | map of path → `small`\|`medium`\|`large` | Prices a **prospective** file by declared size instead of the flat per-file allowance: `small` 500, `medium` 2,000, `large` 5,000 tokens. `medium` is today's default rate (`per_file_tool_allowance`), so a prospective file left out of `size_hints` is priced exactly as before — unhinted files do not change shape. Every key must name a path already listed in that task's `files`; a class outside the three is a hard error, and a hint on a path that already exists is ignored with a flag (see Validation rules). Existing-file pricing (source bytes ÷ tokens-per-byte) is untouched.                                                                                                                                                                                                                                                                                                                                                                         |
 | `symbols`     | no       | list of symbol names                     | Must exist in the codegraph index; unknown symbols are dropped with a flag (never a hard error — mirrors the mapper's verification).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `depends_on`  | no       | list of task_ids                         | **Directed dependency edges only — never affinity.** The named task is upstream. Feeds the group DAG, hub detection (a scaffold task everything depends on becomes a `utility_hub` → own group, scheduled first), merge guards.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `implements`  | no       | list of route/tag strings                | Contract surface this task provides, e.g. `/api/users`, `UserEvent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -146,14 +146,15 @@ running the full pipeline.
   node and degenerate grouping to pure budget-splitting — split it or drop labels)
 - `size_hints` naming a path not present in that task's `files`, or naming a
   class other than `small`/`medium`/`large`
-- `size_hints` naming a file that already exists in the working tree — hints
-  price unwritten (prospective) work only
 - Unknown keys, or wrong types for any field
 
 **Info flags** (recorded in `groups.json` `flags`, run continues):
 
 - A file that does not exist in the working tree → retained as a *prospective
   file* (workers will create it)
+- `size_hints` naming a file that now exists in the working tree → the hint is
+  ignored and the file is priced by its real size (hints price unwritten work;
+  a plan must still regroup after its own run created the file)
 - A symbol not found in the codegraph index → dropped
 
 Malformed maps are **never** silently ignored — a broken block would otherwise
@@ -177,8 +178,8 @@ A split preserves, byte-for-byte, on every task id and unit that survives into
 an output document:
 
 - every field of the task-map entry (`description`, `slice`, `files`,
-  `size_hints`, `symbols`, `depends_on`, `implements`, `consumes`) — the
-  entry's bytes are copied, not re-serialized;
+  `size_hints`, `symbols`, `depends_on`, `implements`, `consumes`, and — v2 —
+  `recipe`, `recipe_args`) — the entry's bytes are copied, not re-serialized;
 - the entry's relative order within its output document;
 - the matching `### U<N>.` unit section's full text, including every bullet
   this document describes and any enrichment `/orchestrator-deepen` added.
@@ -195,4 +196,57 @@ change value between two plan documents.
 
 The marker line pins the contract version. Additive evolution bumps the minor
 semantics here and keeps the parser accepting v1 blocks; incompatible changes
-mint `orchestrator-task-map v2` (candidate already parked: `feature_tags`).
+mint a new marker version. The parser accepts `orchestrator-task-map v1` and
+`orchestrator-task-map v2` through one marker regex, shared by every
+consumer (`parse_task_map`, `parse_task_map_for_pricing`, `strip_task_map`,
+`task_map_block_span`, and `plan_sections.py`'s auxiliary task-id scan); a
+`v3` marker (or any other unsupported number) is a hard error naming the
+version found.
+
+## v2: `recipe` and `recipe_args` (Unit Recipes, plan U2)
+
+A v2 block (marker `# orchestrator-task-map v2`) adds exactly two optional
+per-task keys on top of everything v1 has:
+
+| Field         | Required | Type    | Semantics                                                                                                                                                                                                                                                                                                 |
+| ------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recipe`      | no       | string  | Names a registered Unit Recipe (`orchestrator/recipes/`). Defaults to `"code"` when omitted — a v2 task with no `recipe` key parses identically to the same task marked v1.                                                                                                                               |
+| `recipe_args` | no       | mapping | Validated by the named recipe's own pydantic args model. A `code` task (the default) must not carry this key at all — `code` takes no args. A recipe declaring an args model validates `recipe_args` (or `{}` if omitted) against it; a missing required field is a hard error naming the task and field. |
+
+A v1 block carrying either key is a hard error telling the author to mark
+the block v2. An unknown `recipe` name is a hard error naming the task and
+listing every registered recipe. A non-`code` unit may not carry `slice` — a
+non-code unit is always its own group (plan U4), so slice's must-link
+grouping semantics don't apply to it.
+
+### Example: a `run` task
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: u5-render-podcast
+    description: Render the podcast audio from the approved script
+    recipe: run
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/render_podcast.py
+          wall_clock_min: 12.0
+      outputs:
+        - data/podcast/episode-01.mp3
+      commit_paths: []
+    depends_on: [u4-script-review]
+    implements: []
+    consumes: []
+```
+
+`recipe`'s args model, pricing, completion contract, reviewer prompt, and
+merge policy are the registry entry's business (`orchestrator/recipes/`), not
+this parser's — `plan_reader.py` only validates that the args parse and that
+the `recipe`/`slice` combination is legal.
+
+### Split/plan-check byte-preservation
+
+`smart-mcps-orchestrate split` and `plan-check --against` preserve `recipe`
+and `recipe_args` exactly as they preserve every other map field (verbatim
+bytes, never re-serialized) — see "Mechanical split" below, whose field list
+now includes both.

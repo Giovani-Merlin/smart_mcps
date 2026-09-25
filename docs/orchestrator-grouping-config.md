@@ -220,12 +220,12 @@ ______________________________________________________________________
 
 ## `[difficulty]` — which groups get a reviewer
 
-[`DifficultyConfig`](../orchestrator/config.py), `config.py:78`. Affects **cost at
+[`DifficultyConfig`](../orchestrator/config.py), `config.py:328`. Affects **cost at
 `run` time**, never group boundaries.
 
 Each signal is normalized as `x / (x + scale)` — so `scale` is *the raw value at
 which that signal contributes half its weight*. The weighted sum lands in \[0, 1)
-([`difficulty_score`](../orchestrator/grouping/estimator.py), `estimator.py:99`).
+([`difficulty_score`](../orchestrator/grouping/estimator.py), `estimator.py:311`).
 
 | Signal             | Weight (default)                | Scale (default)                | Raw meaning                                      |
 | ------------------ | ------------------------------- | ------------------------------ | ------------------------------------------------ |
@@ -234,8 +234,15 @@ which that signal contributes half its weight*. The weighted sum lands in \[0, 1
 | hub touches        | `weight_hub_touches` 2.0        | `scale_hub_touches` 1.0        | member tasks whose role isn't `core`             |
 | cross-group edges  | `weight_cross_group_edges` 1.5  | `scale_cross_group_edges` 3.0  | dependency edges crossing the group boundary     |
 | verification items | `weight_verification_items` 1.0 | `scale_verification_items` 5.0 | verification bullets the speccer wrote           |
+| interface exports  | `weight_interface_exports` 3.0  | `scale_interface_exports` 0.5  | other groups consuming a tag this group implements |
 
-Tiers ([`intensity_for`](../orchestrator/grouping/estimator.py), `estimator.py:126`):
+`interface exports` joins the weighted mean **only when it is > 0** (r20260924:
+interface producers ran `self_verify` and nobody reviewed the seams). Carried in
+the denominator unconditionally it would scale every existing score by 7/10 and
+demote paired groups on the day it shipped; included conditionally, adding it
+never lowers a tier. It counts consuming *groups*, not tags.
+
+Tiers ([`intensity_for`](../orchestrator/grouping/estimator.py), `estimator.py:353`):
 
 | Field      | Default | Meaning                                                      |
 | ---------- | ------- | ------------------------------------------------------------ |

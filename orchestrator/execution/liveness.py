@@ -568,7 +568,11 @@ class LivenessProbe:
             return None
 
     def _check_phase_flip(self, child: ChildActivity) -> None:
-        if child.last_event_type != "assistant":
+        # `first_assistant_at` is sticky; `last_event_type` is only the newest
+        # event, which under partial-message streaming is nearly always a
+        # `stream_event` — keyed on it alone, a busy coder read "starting the
+        # coder" for its whole round (r20260924-134934).
+        if child.last_event_type != "assistant" and child.first_assistant_at is None:
             return
         phase = self.heartbeat.current_phase()
         if phase is None:

@@ -1,5 +1,9 @@
 """Tests for orchestrator/grouping/estimator.py — token budget and difficulty."""
 
+from dataclasses import replace
+
+import pytest
+
 from orchestrator.config import DifficultyConfig
 from orchestrator.config import EstimatorConfig as _EstimatorConfig
 from orchestrator.grouping.estimator import (
@@ -189,3 +193,63 @@ class TestDifficulty:
     def test_thresholds_come_from_config(self):
         strict = DifficultyConfig(d_review=0.01, d_hard=0.02)
         assert intensity_for(0.1, strict) is ReviewIntensity.PAIRED_PLUS
+
+    # r20260924-134934: interface producers (g1/g2/g4/g5) ran self_verify and
+    # nobody reviewed the seams other groups built on.
+
+    def test_one_consuming_group_lifts_a_producer_into_paired(self):
+        config = DifficultyConfig()
+        producer = DifficultySignals(files_touched=4, cross_group_edges=3, verification_items=7)
+        alone = difficulty_score(producer, config)
+        assert intensity_for(alone, config) is ReviewIntensity.SELF_VERIFY
+        exporting = DifficultySignals(
+            files_touched=4, cross_group_edges=3, verification_items=7, interface_exports=1
+        )
+        lifted = difficulty_score(exporting, config)
+        assert lifted >= 0.35
+        assert intensity_for(lifted, config) is ReviewIntensity.PAIRED
+
+    def test_zero_exports_reproduces_the_stored_g1_score_exactly(self):
+        """Pins the conditional denominator: with the term always present every
+        existing score would scale by 7/10 and this paired group would drop to
+        self_verify."""
+        config = DifficultyConfig()
+        g1 = DifficultySignals(
+            files_touched=9, hub_touches=1, cross_group_edges=5, verification_items=10
+        )
+        assert difficulty_score(g1, config) == pytest.approx(0.4577380952380952, abs=1e-12)
+        assert intensity_for(difficulty_score(g1, config), config) is ReviewIntensity.PAIRED
+
+    def test_adding_exports_never_lowers_a_tier(self):
+        config = DifficultyConfig()
+        order = [ReviewIntensity.SELF_VERIFY, ReviewIntensity.PAIRED, ReviewIntensity.PAIRED_PLUS]
+        for files in (0, 2, 6, 15):
+            for fan in (0, 10, 40):
+                for hubs in (0, 1, 3):
+                    for cross in (0, 3, 8):
+                        for items in (0, 5, 12):
+                            base = DifficultySignals(
+                                files_touched=files,
+                                max_fan_in=fan,
+                                hub_touches=hubs,
+                                cross_group_edges=cross,
+                                verification_items=items,
+                            )
+                            before = intensity_for(difficulty_score(base, config), config)
+                            for exports in (1, 2, 5):
+                                lifted = replace(base, interface_exports=exports)
+                                after = intensity_for(difficulty_score(lifted, config), config)
+                                assert order.index(after) >= order.index(before), (base, exports)
+
+    def test_exports_keep_the_score_in_the_unit_interval(self):
+        config = DifficultyConfig()
+        extreme = DifficultySignals(
+            files_touched=10_000,
+            max_fan_in=10_000,
+            max_fan_out=10_000,
+            hub_touches=10_000,
+            cross_group_edges=10_000,
+            verification_items=10_000,
+            interface_exports=10_000,
+        )
+        assert 0.0 <= difficulty_score(extreme, config) < 1.0

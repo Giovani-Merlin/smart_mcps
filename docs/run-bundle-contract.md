@@ -47,19 +47,20 @@ missing or empty file.
 
 Top-level (`RunExport`):
 
-| field            | type                        | null-tolerance                                                                         |
-| ---------------- | --------------------------- | -------------------------------------------------------------------------------------- |
-| `schema_version` | int                         | always `2`, always present                                                             |
-| `framework`      | string                      | always `"smart-mcps-orchestrator"`                                                     |
-| `run_id`         | string                      | always present                                                                         |
-| `repo_root`      | string                      | always present (absolute path at export time)                                          |
-| `project`        | string                      | always present                                                                         |
-| `plan`           | `ExportPlan`                | always present (an object; its own fields may be empty)                                |
-| `grouping`       | `ExportGrouping` \| null    | null when the run has no grouping metadata at all                                      |
-| `created_at`     | string (ISO 8601) \| null   | null on manifests that predate the field                                               |
-| `base_context`   | `ExportBaseContext` \| null | null when the run has no `base-context.md` (pre-ADR-0007 runs, or the file is missing) |
-| `groups`         | `ExportGroup[]`             | always present; empty only if the run truly has none                                   |
-| `llm_calls`      | `ExportLlmCall[]`           | always present; `[]` when the run has no `llm/` directory (added in v2, additively)    |
+| field               | type                              | null-tolerance                                                                                                   |
+| ------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `schema_version`    | int                               | always `2`, always present                                                                                       |
+| `framework`         | string                            | always `"smart-mcps-orchestrator"`                                                                               |
+| `run_id`            | string                            | always present                                                                                                   |
+| `repo_root`         | string                            | always present (absolute path at export time)                                                                    |
+| `project`           | string                            | always present                                                                                                   |
+| `plan`              | `ExportPlan`                      | always present (an object; its own fields may be empty)                                                          |
+| `grouping`          | `ExportGrouping` \| null          | null when the run has no grouping metadata at all                                                                |
+| `created_at`        | string (ISO 8601) \| null         | null on manifests that predate the field                                                                         |
+| `base_context`      | `ExportBaseContext` \| null       | null when the run has no `base-context.md` (pre-ADR-0007 runs, or the file is missing)                           |
+| `groups`            | `ExportGroup[]`                   | always present; empty only if the run truly has none                                                             |
+| `llm_calls`         | `ExportLlmCall[]`                 | always present; `[]` when the run has no `llm/` directory (added in v2, additively)                              |
+| `artifact_manifest` | `ExportManifestEntry[]` \| absent | **key is absent entirely**, not null, when the run has no `artifacts.json` (added in v2, additively — see below) |
 
 `ExportPlan`:
 
@@ -250,6 +251,48 @@ Two properties differ from `ExportSession` and are deliberate:
 An LLM call's events file lives in the same `events/` directory as a worker
 session's, in the same `NeutralEvent` schema, keyed by the same
 `<session_id>.jsonl.gz` name. A consumer reads both through one code path.
+
+**`run_triage`.** A `run` recipe unit's (plan U8) failure-triage call is
+recorded through the same `JsonlCallRecorder` as the mapper and speccer, so it
+exports through this same list, with `operation == "run_triage"` and
+`group_ids == [<the group's id>]`. It creates no `ExportSession` and no entry
+in any group's `sessions[]` — a triage call never opened a worker session, so
+nothing here is double-counted. A consumer that wants to show it on a
+per-group timeline synthesizes a row for it labeled with the `runner` role
+(see `ui/src/types.ts`'s `SessionRole`), the same way the Observatory already
+synthesizes an `orchestrator`-role row for a rewrite; `runner` never appears
+as an `ExportSession.role` value in the bundle itself.
+
+### `ExportManifestEntry` (the Artifact Manifest, one per registered output)
+
+The top-level `artifact_manifest` key (added in `schema_version` 2,
+additively — see [Versioning rule](#versioning-rule)) is the run-level index
+of what every group produced (plan U6/U7): the paths, hashes and a human
+summary, never the output files' own bytes — a consumer opens the files where
+they live, using `paths` as pointers. **The key is absent entirely, not set
+to `null`, on a run with no `artifacts.json`** (every run before plan U6),
+so an old run's `ingest.json` is byte-for-byte what it always was. When
+present, it is a flat list, sorted by `artifact_id`.
+
+| field          | type                                          | null-tolerance                                                                                        |
+| -------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `artifact_id`  | string                                        | always present                                                                                        |
+| `group_id`     | string                                        | always present                                                                                        |
+| `tasks`        | string[]                                      | `[]` if the entry names none                                                                          |
+| `recipe`       | string                                        | the group's recipe (`"code"` or `"run"` today)                                                        |
+| `paths`        | string[]                                      | relative to the run's repo root; `[]` for an entry with nothing on disk                               |
+| `sha256`       | `Record<string, string>`                      | one hash per path that exists; `{}` for `code` — git already content-addresses every file at `commit` |
+| `commit`       | string \| null                                | null when the entry recorded no commit                                                                |
+| `schema`       | string                                        | the contract model the entry's shape follows (`"CoderReport"` for a `code` entry)                     |
+| `summary`      | string                                        | capped at 2000 characters at write time, never truncated by the exporter                              |
+| `status`       | string                                        | `"complete"` \| `"partial"` — `"partial"` for a Resolve settling unfinished work                      |
+| `measurements` | `Record<string, number \| string \| boolean>` | `{}` if the recipe recorded none                                                                      |
+| `recorded_at`  | string (ISO 8601)                             | always present                                                                                        |
+
+A `code` group's entry is written by the orchestrator at merge time from data
+it already has; a `run` group's entry is written by that recipe's own
+executor. Both are index-only — copying an output's bytes into the bundle is
+explicitly out of scope for this key.
 
 ## `NeutralEvent` schema
 

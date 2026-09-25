@@ -13,7 +13,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 #: Baseline `--allowedTools` for a worker: the toolchains a coder has to drive to
 #: build, test and commit. File tools are listed explicitly because `acceptEdits`
@@ -339,12 +339,18 @@ class DifficultyConfig(BaseModel):
     weight_hub_touches: float = 2.0
     weight_cross_group_edges: float = 1.5
     weight_verification_items: float = 1.0
+    # Interface producers (r20260924): joins the mean only when the signal is
+    # > 0 — see `difficulty_score`. With 3.0/0.5 one consuming group lifts a
+    # typical 0.25 self_verify producer to ~0.37 (paired) and never lowers a
+    # tier.
+    weight_interface_exports: float = 3.0
 
     scale_files_touched: float = 6.0
     scale_max_fan: float = 10.0
     scale_hub_touches: float = 1.0
     scale_cross_group_edges: float = 3.0
     scale_verification_items: float = 5.0
+    scale_interface_exports: float = 0.5
 
     d_review: float = 0.35
     d_hard: float = 0.65
@@ -716,6 +722,38 @@ class LivenessConfig(BaseModel):
     max_cures_per_generation: int = 2
 
 
+class RunRecipeConfig(BaseModel):
+    """``[recipes.run]`` defaults. ``triage_model`` unset inherits
+    ``[session] model`` (resolved in ``OrchestratorConfig``)."""
+
+    triage_tokens: int = 20_000
+    triage_model: str | None = None
+    output_tail_lines: int = 200
+    poll_interval_s: float = 5.0
+
+
+class RecipesConfig(BaseModel):
+    """``[recipes]``: the allow-list of non-``code`` recipes (``code`` implicit)."""
+
+    enabled: list[str] = Field(default_factory=list)
+    run: RunRecipeConfig = Field(default_factory=RunRecipeConfig)
+
+    @field_validator("enabled")
+    @classmethod
+    def _enabled_registered(cls, value: list[str]) -> list[str]:
+        # Imported here, not at module load: the registry imports config types.
+        from orchestrator.recipes.registry import registered_names
+
+        names = registered_names()
+        for entry in value:
+            if entry not in names:
+                raise ValueError(
+                    f"unknown recipe {entry!r} in [recipes] enabled; registered recipes: "
+                    f"{list(names)}"
+                )
+        return value
+
+
 class OrchestratorConfig(BaseModel):
     edge_weights: EdgeWeightsConfig = Field(default_factory=EdgeWeightsConfig)
     partition: PartitionConfig = Field(default_factory=PartitionConfig)
@@ -729,6 +767,13 @@ class OrchestratorConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     docs: DocsConfig = Field(default_factory=DocsConfig)
     liveness: LivenessConfig = Field(default_factory=LivenessConfig)
+    recipes: RecipesConfig = Field(default_factory=RecipesConfig)
+
+    @model_validator(mode="after")
+    def _inherit_triage_model(self) -> OrchestratorConfig:
+        if self.recipes.run.triage_model is None:
+            self.recipes.run.triage_model = self.session.model
+        return self
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:

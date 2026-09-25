@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, ArtifactEntry
 from orchestrator.execution.escalating import _is_retry, _operator_surprise
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.merge import MergeConflict
@@ -29,7 +30,7 @@ from orchestrator.execution.prompting import (
 )
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
 from orchestrator.execution.sessions import SessionError, nudge_until_report
-from orchestrator.execution.worktrees import ensure_excluded, integration_branch
+from orchestrator.execution.worktrees import changed_paths, ensure_excluded, integration_branch
 from orchestrator.model import (
     CoderReport,
     EscalationKind,
@@ -56,6 +57,7 @@ class MergeLadder:
     coder_entry: SessionEntry | None
     _flake_reruns: int
     _untracked_strikes: int
+    _last_report: CoderReport | None
     _heartbeat: RoundHeartbeat
     _log: Callable[[str], None]
     _escalate: Callable[..., Awaitable[EscalationResponse | None]]
@@ -66,14 +68,28 @@ class MergeLadder:
     _make_coder_on_turn: Callable[..., object]
 
     def _log_driver_run_items(self) -> None:
-        """Name the items the coder was told not to run, once, at merge.
+        """Name the driver-run items still owed, once, at merge.
 
         A `driver_run` item passes the verification gate untouched (see
         `unmet_required_verification`), so without this line the only trace
         of an unrun check would be a `skipped` result buried in the report.
-        The driver reads this line and runs them before `finish`.
+        The driver reads this line and runs them before `finish`. Since
+        r20260924 the coder *may* attempt a sandbox-safe one, so an item its
+        latest report marks `pass` is listed as passed, not as pending.
         """
-        pending = [item.id for item in self.group.verification if item.driver_run]
+        passed_ids: set[str] = set()
+        if self._last_report is not None:
+            passed_ids = {
+                r.item_id for r in self._last_report.verification_results if r.status == "pass"
+            }
+        driver_items = [item.id for item in self.group.verification if item.driver_run]
+        passed = [i for i in driver_items if i in passed_ids]
+        pending = [i for i in driver_items if i not in passed_ids]
+        if passed:
+            self._log(
+                f"group {self.gid}: {len(passed)} driver-run verification item(s) "
+                f"passed by the coder — {', '.join(passed)}"
+            )
         if pending:
             self._log(
                 f"group {self.gid}: {len(pending)} driver-run verification item(s) "
@@ -88,8 +104,14 @@ class MergeLadder:
             self._heartbeat.mark_phase("merging into integration")  # F4
             self._log(f"group {self.gid}: merge attempt")
             self._archive_coder_scratch()
+            # Read before the merge, not after (plan U6): `merge_group` removes
+            # the group's own worktree on success, so `self.workspace` no
+            # longer exists by the time control returns here.
+            paths = changed_paths(self.workspace, self.deps.base_ref_for(self.group))
             try:
-                await asyncio.to_thread(self.deps.merge_group, self.group, self.workspace)
+                merge_sha = await asyncio.to_thread(
+                    self.deps.merge_group, self.group, self.workspace
+                )
             except MergeConflict as exc:
                 self._log(f"group {self.gid}: merge conflict ({exc})")
                 conflict = Surprise(
@@ -173,7 +195,30 @@ class MergeLadder:
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             self._log_driver_run_items()
+            self._register_code_artifact(commit=merge_sha, paths=paths)
             return True
+
+    def _register_code_artifact(self, *, commit: str, paths: list[str]) -> None:
+        """Register this group's Artifact Manifest entry on a successful
+        merge (plan U6 Goal). A no-op when no Artifact Manifest is wired —
+        every construction site that predates this unit."""
+        store = self.deps.artifacts
+        if store is None:
+            return
+        summary = self._last_report.summary if self._last_report is not None else self.group.summary
+        store.register(
+            ArtifactEntry(
+                artifact_id=self.gid,
+                group_id=self.gid,
+                tasks=list(self.group.tasks),
+                recipe=self.group.recipe,
+                paths=paths,
+                commit=commit,
+                schema="CoderReport",
+                summary=summary[:ARTIFACT_SUMMARY_MAX_CHARS],
+                status="complete",
+            )
+        )
 
     def _log_remerge(self, reason: str) -> None:
         """The cheap ``preflight_failed`` resolution: refresh + preflight + merge
@@ -305,6 +350,21 @@ class MergeLadder:
             if summary_tail:
                 diagnosis += f"\n{summary_tail}"
             return diagnosis, False
+        if comparison.verdict == "unattributed_exit":
+            # F2 (r20260924): the runner exited nonzero with no failing test to
+            # name — vitest's "Unhandled Errors", a crashed worker. Still this
+            # diff's to answer for (the launch branch's step exited 0), but
+            # "new failures" would send the coder hunting for a test that does
+            # not exist; point at the log section that carries the cause.
+            rc = exc.exit_code if exc.exit_code is not None else "nonzero"
+            where = str(exc.output_path) if exc.output_path is not None else "the step log"
+            diagnosis = (
+                f"preflight failed (regression): `{exc.step_name or 'check'}` exited {rc} "
+                f"with 0 failing tests — see the Unhandled Errors section of {where}"
+            )
+            if summary_tail:
+                diagnosis += f"\n{summary_tail}"
+            return diagnosis, True
         # Name the tests this diff actually broke. The raw summary tail lists
         # every FAILED line, pre-existing ones included, and a rewrite spec
         # built from it sends the next coder to fix tests it did not break —

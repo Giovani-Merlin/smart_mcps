@@ -72,6 +72,23 @@ git -C "$INT" cherry-pick "$FIX"
 smart-mcps-orchestrate answer $RUN $ESC --action retry --text "fixed: <what>, committed $FIX in the worktree and cherry-picked to orchestrator/run-$RUN"
 ```
 
+**Exception — `preflight_failed`: commit on the integration branch only.**
+The retry path for a gate failure re-merges `orchestrator/run-$RUN` into the
+group's branch (`merge.py: _refresh_onto_tip`) *before* the gate re-runs, so a
+fix committed on integration reaches the group's tree on its own. Committing
+it in the worktree as well is not just redundant — the same change lands
+twice, once from each side, and leaves a duplicate commit (F4, r20260924:
+a test fixture fixed in both places came back as two commits on the group
+branch). The two-place rule above stays for `coder_blocked`, where a running
+coder needs the fix *now* and no re-merge happens until it reports.
+
+```sh
+INT=.worktrees/$RUN/integration
+$EDITOR "$INT/tests/fixtures/x.json"
+git -C "$INT" add -A && git -C "$INT" commit -m "fix(test): <what> (operator, run $RUN)"
+smart-mcps-orchestrate answer $RUN $ESC --action retry   # no text: gate only
+```
+
 Never `git clean -fd`, `git checkout -- .`, or `git reset --hard` in a group's
 worktree. A crashed or blocked group's uncommitted files are its progress;
 the 2026-07-26 recovery lesson (memory: *orchestrator recovery + cleaning

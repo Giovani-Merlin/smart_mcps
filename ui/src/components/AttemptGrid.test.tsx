@@ -494,6 +494,57 @@ describe("orchestrator sessions on the board (U30)", () => {
   });
 });
 
+describe("a synthetic runner row (plan U7)", () => {
+  // A `run_triage` LLM call leaves no worker session at all — the
+  // Observatory synthesizes a "runner" row for it, the same way a rewrite
+  // renders as "orchestrator". The grid must render it without throwing,
+  // exactly like any other role it doesn't specifically recognize.
+  function runnerSnapshot(): RunSnapshot {
+    return {
+      project: "smart-mcps",
+      run_id: "r-test",
+      plan_path: "p.md",
+      groups: [
+        {
+          group_id: "g1",
+          name: "a-group",
+          summary: "",
+          state: "completed",
+          generation: 1,
+          failure: null,
+          stale_failure: false,
+          depends_on: [],
+          sessions: [
+            {
+              session_id: "triage-1",
+              role: "runner",
+              generation: 1,
+              name: "r-test-g1-runner",
+              retirement_reason: null,
+              transcript_path: null,
+              last_context_tokens: 0,
+              rounds_completed: 0,
+              total_input_tokens: 0,
+              total_output_tokens: 0,
+              total_cache_read_tokens: 0,
+              total_cache_creation_tokens: 0,
+            },
+          ],
+        },
+      ],
+      edges: [],
+      stale_dag: false,
+      live_pids: {},
+    } as unknown as RunSnapshot;
+  }
+
+  it("renders the runner session's cell without throwing", async () => {
+    renderGrid(runnerSnapshot());
+    const detail = await openCell("g1", 1);
+    expect(within(detail).getByText("runner")).toBeTruthy();
+  });
+});
+
 describe("panel contract", () => {
   it("carries exactly one PathChip, pointing at the manifest it reads", async () => {
     const { container } = renderGrid(R20260726_GROUPING);

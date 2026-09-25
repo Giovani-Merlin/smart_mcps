@@ -182,6 +182,12 @@ class RunPaths:
         return self.run_dir / "manifest.json"
 
     @property
+    def artifact_manifest_path(self) -> Path:
+        """The run-level Artifact Manifest (plan U6): what every group
+        produced, indexed once for downstream prompts and the Run Bundle."""
+        return self.run_dir / "artifacts.json"
+
+    @property
     def state_path(self) -> Path:
         return self.run_dir / "state.json"
 
@@ -417,3 +423,28 @@ def completed_round_count(paths: RunPaths, group_id: str, generation: int) -> in
         if (match := _REPORT_ROUND_RE.match(path.name))
     ]
     return max(rounds, default=0)
+
+
+def latest_report(paths: RunPaths, group_id: str) -> dict | None:
+    """The newest saved coder report for a group — max ``(generation, round)``
+    — as its raw dict, or None when the group has no report on disk (or the
+    newest one is unreadable). Shared by the report facts and by the
+    driver-run bookkeeping (merge log, auto-finish), which need to know which
+    items the coder actually passed."""
+    directory = paths.group_dir(group_id)
+    if not directory.is_dir():
+        return None
+    best: tuple[tuple[int, int], Path] | None = None
+    for path in directory.glob("report-g*-r*.json"):
+        match = _REPORT_ROUND_RE.match(path.name)
+        if not match:
+            continue
+        key = (int(match.group(1)), int(match.group(2)))
+        if best is None or key > best[0]:
+            best = (key, path)
+    if best is None:
+        return None
+    try:
+        return json.loads(best[1].read_text())
+    except (OSError, ValueError):
+        return None

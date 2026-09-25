@@ -16,12 +16,19 @@ review (origin R12, R16). Completed groups are never rewritten.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from orchestrator.config import BreakerConfig, ExecutionConfig, LivenessConfig
+from orchestrator.config import (
+    BreakerConfig,
+    ExecutionConfig,
+    LivenessConfig,
+    RecipesConfig,
+    WorkspaceConfig,
+)
+from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.liveness import (
@@ -50,6 +57,7 @@ from orchestrator.execution.records import SessionRecords
 from orchestrator.execution.reviewer import ReviewerRound
 from orchestrator.execution.surprises import SurpriseHandling
 from orchestrator.model import (
+    CoderReport,
     Group,
     RunManifest,
     SessionEntry,
@@ -80,7 +88,7 @@ class ReviewDeps:
     execution: ExecutionConfig
     board: SurpriseBoard
     workspace_for: Callable[[Group], Path]
-    merge_group: Callable[[Group, Path], None]  # raises MergeConflict
+    merge_group: Callable[[Group, Path], str]  # raises MergeConflict; returns the merge commit sha
     rewrite_spec: Callable[[Group, list[Surprise]], Group]
     base_ref_for: Callable[[Group], str]
     # HITL seam (plan Phase D): both None ⇒ no escalations are ever raised; the
@@ -102,6 +110,21 @@ class ReviewDeps:
     # probe is installed and heartbeats carry no Sign of Life facts.
     activity: ActivityRegistry | None = None
     liveness: LivenessConfig | None = None
+    # Seams for non-`code` recipe executors (the `run` recipe); all None keeps
+    # every `code` construction site unchanged. ``triage`` is a one-shot LLM
+    # call: prompt -> validated JSON payload.
+    triage: Callable[[str], dict] | None = None
+    workspace_config: WorkspaceConfig | None = None
+    recipes_config: RecipesConfig | None = None
+    # The run's Artifact Manifest (plan U6): None keeps every construction
+    # site that predates it byte-identical — no entry is ever registered and
+    # no downstream prompt is ever changed.
+    artifacts: ArtifactManifestStore | None = None
+    # Every group in the run, by id — how a downstream group's direct
+    # upstreams are checked for a non-`code` recipe before their Artifact
+    # Manifest entries are folded into its prompt. Empty for every
+    # construction site that predates it, same as `artifacts`.
+    groups_by_id: dict[str, Group] = field(default_factory=dict)
 
 
 def make_executor(deps: ReviewDeps) -> Executor:
@@ -143,6 +166,11 @@ class _GroupExecution(
         # spent as a rewrite, never sent to the speccer.
         self._operator_notes: list[str] = []
         self._env_failure: str | None = None
+        # The last CoderReport this generation produced (plan U6): set just
+        # before `_merge()` is called, read there to build the code group's
+        # Artifact Manifest entry summary. Cross-mixin (GenerationLoop writes,
+        # MergeLadder reads), so it lives on the host, not on either mixin.
+        self._last_report: CoderReport | None = None
         # The merge gate's untracked ladder: a first untracked-only failure is a
         # cheap same-spec relaunch with a note; a second, consecutive one has
         # the leftovers archived out of the tree and the merge proceeds. Counts
