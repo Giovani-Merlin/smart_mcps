@@ -26,6 +26,7 @@ import asyncio
 import fnmatch
 import hashlib
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -35,7 +36,14 @@ from pathlib import Path
 from string import Template
 
 from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, ArtifactEntry
-from orchestrator.execution.confinement import build_policy, landlock_preexec
+from orchestrator.execution.confinement import (
+    build_policy,
+    default_cache_root,
+    landlock_preexec,
+    system_write_paths,
+    worker_cache_dirs,
+    worker_cache_env,
+)
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import atomic_write_text, log_event
 from orchestrator.execution.merge import MergeConflict, commits_ahead
@@ -50,6 +58,7 @@ from orchestrator.execution.run_child import (
     proc_starttime,
     process_alive,
 )
+from orchestrator.execution.sessions import _scrub_virtualenv
 from orchestrator.execution.scheduler import (
     Executor,
     GroupContext,
@@ -154,6 +163,10 @@ class _RunExecution:
                 f"{', '.join(offenders)}"
             )
 
+        # Hashed before the merge: merging tears the worktree (and its data-dir
+        # links) down, so an output read afterwards is never a file — on
+        # r20260925-101742 g5 registered `sha256: {}` beside full measurements.
+        sha256 = self._output_sha256s()
         self._heartbeat.mark_phase("merging into integration")
         commit = await self._commit_and_merge()
 
@@ -165,7 +178,7 @@ class _RunExecution:
             summary=summary,
         )
         self._write_settled(attempt_dir, "completed", summary)
-        self._register_artifact(record, commit, measurements_missing)
+        self._register_artifact(record, commit, measurements_missing, sha256)
         log_event(self.paths, f"group {self.gid}: run recipe completed")
         return GroupState.COMPLETED
 
@@ -241,21 +254,58 @@ class _RunExecution:
 
     # --------------------------------------------------------- commands
 
-    def _confinement_preexec(self, cwd: Path):
+    def _worker_cache_root(self) -> Path:
+        """The cache root the run's coder sessions use (``SessionRunner.cache_root``),
+        so a Run Child finds the same warmed caches; ``default_cache_root()`` when
+        the deps carry no runner (tests)."""
+        runner = getattr(self.deps, "runner", None)
+        root = getattr(runner, "cache_root", None)
+        return Path(root) if root is not None else default_cache_root()
+
+    def _confinement_preexec(self, cwd: Path, attempt_dir: Path):
+        """The Run Child's Landlock profile: the worker profile a coder session
+        gets (worktree, project slug, the cache dirs every toolchain is pointed
+        at, ``[session] extra_write_paths``) plus the run's shared ``data_dirs``
+        and the unit's ``allow_write`` paths — and ``attempt_dir``, where the
+        launch wrapper writes the command's exit file.
+
+        Both the cache rule and the ``attempt_dir`` rule were missing on
+        r20260925-101742 (g5): ``uv run`` died within a second on
+        ``failed to open ~/.cache/uv/…: Permission denied``, then the wrapper's
+        ``echo $rc > <n>.exit.tmp`` was denied too, so no exit file ever
+        appeared and the command "ran" to its 20-minute cap. The unit tests
+        never saw it because a ``tmp_path`` run dir sits under ``/tmp``, which
+        the system rules already allow."""
         repo_root = self.paths.repo_root
-        extra_write = []
+        extra_write = [attempt_dir]
         if self.deps.workspace_config is not None:
             extra_write.extend(data_layer_write_paths(repo_root, self.deps.workspace_config))
         for entry in self.args.allow_write:
             extra_write.append(Path(entry).expanduser())
+        runner = getattr(self.deps, "runner", None)
+        extra_write_paths = [Path(p) for p in (getattr(runner, "extra_write_paths", None) or [])]
+        # create=True on every spawn, as the session runner does: Landlock
+        # rules address existing paths, so a cache dir removed mid-run would
+        # drop out of the ruleset silently.
+        cache_dirs = worker_cache_dirs(self._worker_cache_root(), create=True)
         policy = build_policy(
             worktree=self.workspace,
             claude_home=Path.home() / ".claude",
-            system_paths=None,
+            system_paths=[*system_write_paths(), *extra_write_paths],
+            cache_dirs=cache_dirs,
             extra_write=extra_write,
         )
         preexec_fn, _result = landlock_preexec(policy)
         return preexec_fn
+
+    def _child_env(self) -> dict[str, str]:
+        """The Run Child's environment: the orchestrator's own, with every
+        toolchain cache pointed under the worker cache root (the overlay a coder
+        session gets — the allowlist above only admits *those* dirs, so a child
+        left on ``~/.cache/uv`` fails its first ``uv run``) and the orchestrator's
+        venv scrubbed off ``PATH`` so the worktree's own wins."""
+        base = dict(os.environ)
+        return _scrub_virtualenv({**base, **worker_cache_env(self._worker_cache_root(), base=base)})
 
     async def _run_command(self, attempt_dir: Path, n: int, command, cwd: Path) -> CommandResult:
         cwd.mkdir(parents=True, exist_ok=True)
@@ -279,7 +329,7 @@ class _RunExecution:
                 raise _CommandDied("died with the orchestrator (no exit file, pid gone)")
 
         if state is None:
-            preexec_fn = self._confinement_preexec(cwd)
+            preexec_fn = self._confinement_preexec(cwd, attempt_dir)
             proc = await asyncio.to_thread(
                 launch,
                 command.cmd,
@@ -288,6 +338,7 @@ class _RunExecution:
                 out_path=out_path,
                 err_path=err_path,
                 preexec_fn=preexec_fn,
+                env=self._child_env(),
             )
             state = RunChildState(
                 n=n,
@@ -424,17 +475,25 @@ class _RunExecution:
             text += " (measurements_missing)"
         return text[:ARTIFACT_SUMMARY_MAX_CHARS]
 
+    def _output_sha256s(self) -> dict[str, str]:
+        """sha256 of every declared output that exists in the workspace right now."""
+        sha256 = {}
+        for out_path in self.args.outputs:
+            full = self.workspace / out_path if self.workspace else None
+            if full is not None and full.is_file():
+                sha256[out_path] = hashlib.sha256(full.read_bytes()).hexdigest()
+        return sha256
+
     def _register_artifact(
-        self, record: RunRecord, commit: str, measurements_missing: bool
+        self,
+        record: RunRecord,
+        commit: str,
+        measurements_missing: bool,
+        sha256: dict[str, str],
     ) -> None:
         store = self.deps.artifacts
         if store is None:
             return
-        sha256 = {}
-        for out_path in record.outputs:
-            full = self.workspace / out_path if self.workspace else None
-            if full is not None and full.is_file():
-                sha256[out_path] = hashlib.sha256(full.read_bytes()).hexdigest()
         store.register(
             ArtifactEntry(
                 artifact_id=self.gid,
@@ -463,7 +522,33 @@ class _RunExecution:
             group_name=self.group.name,
             failure_summary=failure_summary,
             commands_block=commands_block or "(none)",
+            output_block=self._output_tail(),
         )
+
+    def _output_tail(self, max_bytes: int = 4000) -> str:
+        """The last command's stdout/stderr tails for the triage prompt. Without
+        them the triage reads only the failure summary and guesses: on
+        r20260925-101742 it blamed a slow sampler for a 20-minute timeout whose
+        stderr said ``Permission denied`` in its first line."""
+        run_dir = self._run_dir()
+        attempts = self._existing_attempts(run_dir)
+        if not attempts:
+            return "(no command output recorded)"
+        attempt_dir = run_dir / f"attempt-{attempts[-1]}"
+        recorded = sorted(
+            (p for p in attempt_dir.glob("*.out") if p.stem.isdigit()), key=lambda p: int(p.stem)
+        )
+        if not recorded:
+            return "(no command output recorded)"
+        n = recorded[-1].stem
+        parts = []
+        for stream in ("out", "err"):
+            path = attempt_dir / f"{n}.{stream}"
+            text = ""
+            if path.is_file():
+                text = path.read_bytes()[-max_bytes:].decode("utf-8", "replace").strip()
+            parts.append(f"command {n} std{stream} (last {max_bytes} bytes):\n{text or '(empty)'}")
+        return "\n\n".join(parts)
 
     async def _triage_and_fail(self, failure_summary: str) -> None:
         log_event(self.paths, f"group {self.gid}: run failure — {failure_summary}")
