@@ -6,6 +6,10 @@ Failure: $failure_summary
 Commands (in order):
 $commands_block
 
+What the failing command printed (read this before guessing — a
+`Permission denied` or a traceback here is the cause, not a symptom):
+$output_block
+
 Reply with exactly one JSON object: `{"verdict": "work_failure" | "needs_decision", "diagnosis": "<one paragraph>"}`.
 
 - `work_failure`: the command, script or environment is wrong in a way the

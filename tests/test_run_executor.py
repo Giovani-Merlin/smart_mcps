@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -489,3 +490,91 @@ def test_heartbeat_label_advances_while_a_command_runs(tmp_path, repo, monkeypat
     assert all(
         label.startswith("command 1/1 · ") and label.endswith("/60s") for label in relabelled
     )
+
+
+# ---------------------------------------------------- r20260925-101742 g5
+
+
+def test_exit_file_is_writable_when_the_run_dir_is_outside_tmp(tmp_path, repo, monkeypatch):
+    """The launch wrapper writes ``<n>.exit`` under the run dir, which lives in
+    the main checkout's ``.orchestrator/`` — outside the worktree and outside
+    ``/tmp``. r20260925-101742 g5 ran a one-second failure to its 20-minute cap
+    because that write was denied. Dropping the system rules here is what makes
+    a ``tmp_path`` run dir reproduce the production layout."""
+    import orchestrator.execution.run_executor as mod
+
+    monkeypatch.setattr(mod, "system_write_paths", lambda: [])
+    run_dir = tmp_path / "run"
+    args = {"commands": [{"cmd": "true", "wall_clock_min": 0.1}]}
+    deps = make_deps(repo, run_dir, repo)
+
+    state, _ = asyncio.run(_run(deps, make_group(args)))
+
+    assert state == GroupState.COMPLETED
+    exit_file = run_dir / "groups" / "g7" / "run" / "attempt-1" / "1.exit"
+    assert exit_file.read_text().strip() == "0"
+
+
+def test_child_env_points_toolchain_caches_under_the_worker_cache_root(tmp_path, repo):
+    """A confined Run Child only gets write access to the orchestrator-owned
+    cache root, so its environment must point every toolchain there — the
+    same overlay a coder session gets. Otherwise ``uv run`` fails on its first
+    open of ``~/.cache/uv`` (r20260925-101742 g5)."""
+    from orchestrator.execution.confinement import default_cache_root
+
+    monkeypatch_env = {"VIRTUAL_ENV": "/nonexistent/venv"}
+    for key, value in monkeypatch_env.items():
+        os.environ[key] = value
+    try:
+        run_dir = tmp_path / "run"
+        args = {
+            "commands": [
+                {
+                    "cmd": 'sh -c \'echo "$UV_CACHE_DIR" > uv.txt; echo "${VIRTUAL_ENV:-unset}" > venv.txt; echo probe > "$UV_CACHE_DIR/probe.txt"\'',
+                    "wall_clock_min": 0.1,
+                }
+            ],
+            "outputs": ["uv.txt", "venv.txt"],
+            "commit_paths": ["uv.txt", "venv.txt"],
+        }
+        deps = make_deps(repo, run_dir, repo)
+
+        state, _ = asyncio.run(_run(deps, make_group(args)))
+    finally:
+        for key in monkeypatch_env:
+            os.environ.pop(key, None)
+
+    assert state == GroupState.COMPLETED
+    recorded = Path((repo / "uv.txt").read_text().strip())
+    assert recorded == default_cache_root() / "uv"
+    assert (recorded / "probe.txt").read_text().strip() == "probe"
+    assert (repo / "venv.txt").read_text().strip() == "unset"
+
+
+def test_triage_prompt_carries_the_failing_command_output(tmp_path, repo):
+    """The triage call diagnoses from the prompt alone; on r20260925-101742 it
+    blamed a slow sampler while the command's stderr said ``Permission denied``
+    in its first line. The tails go into the prompt."""
+    run_dir = tmp_path / "run"
+    args = {
+        "commands": [
+            {
+                "cmd": "sh -c 'echo partial-out; echo boom-on-stderr >&2; exit 3'",
+                "wall_clock_min": 0.1,
+            }
+        ]
+    }
+    calls = []
+
+    def fake_triage(prompt: str) -> dict:
+        calls.append(prompt)
+        return {"verdict": "work_failure", "diagnosis": "seen"}
+
+    deps = make_deps(repo, run_dir, repo, triage=fake_triage)
+
+    with pytest.raises(GroupFailure):
+        asyncio.run(_run(deps, make_group(args)))
+
+    assert len(calls) == 1
+    assert "boom-on-stderr" in calls[0]
+    assert "partial-out" in calls[0]
