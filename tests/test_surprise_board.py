@@ -295,3 +295,28 @@ def test_without_a_callable_or_state_file_no_anchor_line_is_written(tmp_path):
     board = SurpriseBoard(paths, groups=thirteen_groups())
     board.mark(surprise("late", ["g1"]), source_group="g2")
     assert "SURPRISE" not in _run_log(paths)
+
+
+def test_surprise_for_a_run_recipe_group_writes_a_no_coder_anchor_line(tmp_path):
+    # r20260925-101742: a surprise aimed at a `run` group died in the residue
+    # as "never delivered — group already completed". The board says at mark
+    # time that no coder will read it (the run executor consumes it at start).
+    paths = RunPaths(tmp_path, "r1")
+    groups = thirteen_groups()
+    groups[4] = make_group("g5").model_copy(
+        update={
+            "recipe": "run",
+            "recipe_args": {"commands": [{"cmd": "true", "wall_clock_min": 1}]},
+        }
+    )
+    board = SurpriseBoard(paths, groups=groups, is_settled=lambda gid: False)
+    board.mark(surprise("the fixture changed shape", ["g5"]), source_group="g2")
+    assert (
+        "SURPRISE [other] group g2 → g5 (run recipe, no coder): the fixture changed shape"
+        in _run_log(paths)
+    )
+    # Still appended: the executor consumes it from the bucket at group start.
+    assert board.pending_for("g5") == [surprise("the fixture changed shape", ["g5"])]
+    # A code group that is still pending writes no anchor line, as before.
+    board.mark(surprise("heads up", ["g3"]), source_group="g2")
+    assert "→ g3" not in _run_log(paths)

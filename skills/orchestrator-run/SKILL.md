@@ -2,7 +2,7 @@
 name: orchestrator-run
 description: Launch, watch, and resolve an orchestrator run as the run-driver session — preflight the repo, start `smart-mcps-orchestrate run` detached with HITL on, triage every escalation yourself (fix env/config/plan and `retry`, `answer` from the docs, ask the human only for product decisions), and write up the outcome. Use when the user wants to run, resume, drive, or babysit an orchestrator run.
 user-invocable: true
-argument-hint: "[plan path | run id to resume] [--grouping NAME] [--concurrency N]"
+argument-hint: "[plan path | run id to resume] [--plan PATH | --grouping NAME] [--concurrency N]"
 ---
 
 # orchestrator-run
@@ -66,7 +66,9 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
 3. **Grouping exists and is current.** `smart-mcps-orchestrate groupings`.
    If the plan file is newer than the grouping's `groups.json`, or the plan
    was deepened since, regenerate: `smart-mcps-orchestrate plan-check <plan>`
-   then `smart-mcps-orchestrate group <plan>`.
+   then `smart-mcps-orchestrate group <plan>`. The launch below selects the
+   grouping by `--plan "$PLAN"`; that still errors when two groupings were
+   built from the same plan — then pick one with `--grouping NAME` instead.
 4. **The environment builds on the launch branch.** Read
    `[session] provision_args` (default `["--all-extras"]`) and run
    `uv sync <those args>` yourself. This catches the `tts`-extra class of
@@ -92,17 +94,22 @@ reads back. Refuse to continue on any red item; do not "launch and see".
 
 ## Phase 1 — Launch, detached
 
-Pick the run id up front so every path is known before the process exists:
-`RUN=r$(date +%Y%m%d-%H%M%S)`.
+Pick the run id up front so every path is known before the process exists,
+and hold the plan path the grouping was built from:
+`RUN=r$(date +%Y%m%d-%H%M%S)`, `PLAN=docs/plans/<the plan>.md`.
 
 ```sh
 mkdir -p .orchestrator/runs/$RUN/logs
 setsid nohup smart-mcps-orchestrate run --repo "$(pwd)" --run-id $RUN \
   --hitl --intensity on_stuck --escalation-timeout 14400 \
-  [--grouping NAME] \
+  --plan "$PLAN" \
   > .orchestrator/runs/$RUN/logs/driver.log 2>&1 < /dev/null &
 echo $!
 ```
+
+`--plan "$PLAN"` picks the grouping built from the plan you hold; fall back
+to `--grouping NAME` (the two are mutually exclusive) when several groupings
+share that plan and the CLI says so.
 
 For a resume: the same, with `resume <run_id>` in place of `run … --run-id`.
 

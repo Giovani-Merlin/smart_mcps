@@ -84,8 +84,14 @@ class SurpriseBoard:
         # "u8-structure-fix-budget"): workers name tasks the way the plan does
         # ("U8"), not by the slugged id the grouper assigned.
         self._task_alias_owner: dict[str, str] = {}
+        # A surprise aimed at a non-`code` group has no coder to read it: the
+        # run executor consumes it at group start and notes it in the artifact
+        # summary. The anchor line says so at mark time (r20260925-101742: one
+        # died in the residue as "never delivered — group already completed").
+        self._recipe_by_group: dict[str, str] = {}
         if groups is not None:
             for group in groups:
+                self._recipe_by_group[group.id] = group.recipe
                 for task in group.tasks:
                     self._task_owner.setdefault(task, group.id)
                     self._task_alias_owner.setdefault(task.lower(), group.id)
@@ -138,6 +144,12 @@ class SurpriseBoard:
             line = f"SURPRISE [{surprise.kind}] group {src} → (no target group): {desc}"
         elif self._settled(key):
             line = f"SURPRISE [{surprise.kind}] group {src} → {key} (already merged): {desc}"
+        elif self._recipe_by_group.get(key, "code") != "code":
+            recipe = self._recipe_by_group[key]
+            line = (
+                f"SURPRISE [{surprise.kind}] group {src} → {key} "
+                f"({recipe} recipe, no coder): {desc}"
+            )
         else:
             return
         try:

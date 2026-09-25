@@ -35,6 +35,7 @@ from orchestrator.execution.liveness import (
     descendants,
     kill_tree,
     liveness_line,
+    phase_line,
     read_suspend_facts,
     should_cure,
     sign_of_life,
@@ -496,6 +497,20 @@ def test_transitions_log_exactly_once_entering_and_exactly_once_leaving_not_live
 
 
 # ------------------------------------------------------------ liveness_line
+
+
+def test_phase_line_for_a_heartbeat_with_no_liveness_facts():
+    # A `run` recipe group on a command: no child to probe, just the phase.
+    now = 1_700_000_000.0
+    updated = datetime.datetime.fromtimestamp(now - 3, tz=datetime.UTC).isoformat(
+        timespec="milliseconds"
+    )
+    hb = {"phase": "command 2/5 · 71s/1200s", "updated_at": updated}
+    assert phase_line(hb, now=now) == "phase: command 2/5 · 71s/1200s (updated 3s ago)"
+    assert phase_line({"phase": "worktree"}, now=now) == "phase: worktree"
+    assert phase_line({"phase": "worktree", "updated_at": "junk"}, now=now) == "phase: worktree"
+    assert phase_line({"updated_at": updated}, now=now) is None
+    assert phase_line({}, now=now) is None
 
 
 def test_liveness_line_four_shapes():

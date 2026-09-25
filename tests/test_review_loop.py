@@ -2211,3 +2211,60 @@ async def test_merge_log_names_a_driver_run_item_the_coder_skipped_as_pending(tm
         "1 driver-run verification item(s) not run by the coder — g1-5" in ln for ln in lines
     )
     assert not any("passed by the coder" in ln for ln in lines)
+
+
+# r20260925: a `Run (driver, sandbox-safe):` item is owed an attempt. A skip
+# with no failure named is called out at merge; one naming the failure is not.
+
+DRIVER_SANDBOX_SAFE = (
+    "Run (driver, sandbox-safe): `uv run pytest tests/test_cli.py -q` — Pass: green."
+)
+
+
+def _sandbox_safe_group() -> Group:
+    return make_group(
+        intensity=ReviewIntensity.SELF_VERIFY,
+        verification=[
+            VerificationItem(id="v1", description="tests pass"),
+            VerificationItem(id="g1-6", description=DRIVER_SANDBOX_SAFE),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_log_flags_a_bare_driver_run_skip_of_a_sandbox_safe_item(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {"item_id": "g1-6", "status": "skipped", "notes": "driver-run"},
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_sandbox_safe_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert any(
+        "1 sandbox-safe driver-run item(s) skipped by the coder with no failure recorded — g1-6"
+        in ln
+        for ln in lines
+    )
+    # Still listed as pending for the driver, as any unrun driver item is.
+    assert any("not run by the coder — g1-6" in ln for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_merge_log_accepts_a_sandbox_safe_skip_that_names_the_failure(tmp_path):
+    report = coder_report(
+        verification_results=[
+            {"item_id": "v1", "status": "pass", "notes": ""},
+            {
+                "item_id": "g1-6",
+                "status": "skipped",
+                "notes": "ran `uv run pytest tests/test_cli.py -q`: ImportError: no module pytest_x",
+            },
+        ]
+    )
+    harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    assert await harness.run(_sandbox_safe_group()) == GroupState.COMPLETED
+    lines = run_log_lines(harness)
+    assert not any("bare `driver-run` skip" in ln for ln in lines)
+    assert any("not run by the coder — g1-6" in ln for ln in lines)

@@ -194,6 +194,21 @@ ran. `/orchestrator-deepen`'s sandbox sweep is where every `Run:` line is
 checked against the allowlist; a planning session that already knows an item
 is driver-only may mark it here.
 
+`Run (driver, sandbox-safe):` is the third form: a driver item you have
+checked spawns no nested `claude` and writes only inside the worktree (the
+driver runs it after the merge too, but nothing stops the coder). The coder
+prompt then says the attempt is **owed**: `pass`/`fail` with evidence, and
+`skipped` only with the exact command and its error in notes — a bare
+`driver-run` note is flagged in the merge log. Use it whenever the reason an
+item is driver-run is *timing* (it must run after the merge) rather than the
+sandbox; `Run (driver):` alone only permits the attempt, and a coder given
+permission skipped one on r20260925-101742.
+
+Every driver item cites only commands and flags that exist: run `<cmd> --help`
+(or read the parser) before writing it. The r20260925 drummAI plan cited
+`status <run> --json`, which no CLI has — the driver could not run it, and
+the item was dead on arrival.
+
 A `Pass:` on a **real-model output** (an LLM's answer, a transcription, a
 generated summary) never uses a hard `= 0` — "0 hallucinations", "0 errors"
 is unfalsifiable in one run and a coder facing it either fakes the pass or

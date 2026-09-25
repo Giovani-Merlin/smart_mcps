@@ -65,7 +65,9 @@ follows it.
   `pass`. If you could not run an item for real, report it `skipped` with the
   reason in its notes — a `skipped` is honest and recoverable; a false `pass`
   is the single worst report you can make, because nothing downstream will
-  ever look again.
+  ever look again. A `DRIVER-RUN (sandbox-safe)` item's `skipped` must name
+  the exact command you ran and the error it produced — a bare `driver-run`
+  note is not a reason.
 - Your environment is part of your work. If `uv sync` (with the project's
   extras) fails, or a dependency the spec relies on cannot be installed or
   imported in this worktree, first try to fix it (pin, alternative build,

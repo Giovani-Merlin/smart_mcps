@@ -92,6 +92,9 @@ class TestFacts(BaseModel):
 class GroupFacts(BaseModel):
     id: str
     name: str = ""
+    #: The unit recipe (``code`` for a coder group, ``run`` for declared
+    #: commands with no coder). Decides how its verification items read.
+    recipe: str = "code"
     #: The manifest's design summary for the group (always available); not
     #: the coder's completion report, which is ``report_summary`` below.
     summary: str = ""
@@ -127,7 +130,10 @@ class GroupFacts(BaseModel):
 class VerificationFacts(BaseModel):
     item_id: str
     description: str
-    status: str = "unverified"  # pass | fail | unverified | driver-run
+    #: ``recipe``: an item of a non-``code`` group no coder ran — a `run`
+    #: group passes only the items whose ``Run:`` is one of its declared
+    #: commands; the rest are neither verified nor unverified by anyone.
+    status: str = "unverified"  # pass | fail | unverified | driver-run | recipe
     evidence: str = ""
 
 
@@ -664,6 +670,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
             GroupFacts(
                 id=export_group.id,
                 name=shown_group.name if shown_group else export_group.name,
+                recipe=source_group.recipe if source_group else "code",
                 summary=shown_group.summary if shown_group else export_group.summary,
                 report_summary=report_summary,
                 spec=shown_group.spec if shown_group else "",
@@ -700,11 +707,19 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                 results_by_item[result.get("item_id")] = result
 
         items = verification_by_task.get(task_id, [])
+        source_group = groups_by_id.get(group_id) if group_id else None
+        recipe = source_group.recipe if source_group else "code"
         verification_facts: list[VerificationFacts] = []
         gating: list[str] = []  # statuses of the items the merge gate holds on
         for item in items:
             result = results_by_item.get(item.id)
-            if item.driver_run and (result is None or result.get("status") != "pass"):
+            if recipe != "code" and (result is None or result.get("status") != "pass"):
+                # No coder ran this: a `run` group's synthetic report passes
+                # only the items naming one of its declared commands. Never
+                # gates — a completed run group lands its unit.
+                status = "recipe"
+                evidence = (result or {}).get("notes") or f"{recipe} recipe: no coder ran this item"
+            elif item.driver_run and (result is None or result.get("status") != "pass"):
                 # The coder is told not to run these; the driver runs them after
                 # the merge and records the outcome in its notes, not here.
                 status = "driver-run"
@@ -726,7 +741,7 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                     item_id=item.id, description=item.description, status=status, evidence=evidence
                 )
             )
-            if item.required and not item.driver_run:
+            if item.required and not item.driver_run and status != "recipe":
                 gating.append(status)
 
         group_landed = group_id is not None and group_state_by_id.get(group_id) in _LANDED_STATES

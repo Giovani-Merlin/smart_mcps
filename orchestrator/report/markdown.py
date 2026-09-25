@@ -21,6 +21,7 @@ from orchestrator.report.diagrams import Diagrams
 from orchestrator.report.facts import (
     GroupFacts,
     RunFacts,
+    SessionFacts,
     TimelineEvent,
     UnitFacts,
     session_tokens,
@@ -56,25 +57,55 @@ def _bullet(label: str, body: str, pointer: str) -> str:
     return f"- **{label}**: {body} ({pointer})"
 
 
+#: A `run` recipe group's session: no `claude` of its own, and whatever a
+#: nested `claude -p` inside its commands spent is not estimated by decision
+#: (memory: run-recipe-nested-llm-cost-unknown) — rendered "unknown", never 0.
+RUNNER_ROLE = "runner"
+RUNNER_COST_TEXT = "unknown (recipe child)"
+
+
+def _billed_sessions(group: GroupFacts) -> list[SessionFacts]:
+    return [session for session in group.sessions if session.role != RUNNER_ROLE]
+
+
+def _runner_sessions(group: GroupFacts) -> list[SessionFacts]:
+    return [session for session in group.sessions if session.role == RUNNER_ROLE]
+
+
 def _group_tokens_by_model(group: GroupFacts) -> dict[str, int]:
     totals: dict[str, int] = {}
-    for session in group.sessions:
+    for session in _billed_sessions(group):
         model = session.model or "unknown"
         totals[model] = totals.get(model, 0) + session_tokens(session)
     return totals
 
 
 def _group_cache_read(group: GroupFacts) -> int:
-    return sum(session.cache_read_tokens for session in group.sessions)
+    return sum(session.cache_read_tokens for session in _billed_sessions(group))
 
 
-def _cost_text(total: int, cache_read: int, n_sessions: int, breakdown: dict[str, int]) -> str:
+def _cost_text(
+    total: int,
+    cache_read: int,
+    n_sessions: int,
+    breakdown: dict[str, int],
+    *,
+    n_runners: int = 0,
+) -> str:
     """``N tokens (+M cache-read) across K session(s) (model=…)`` — cache
-    reads named apart so a warm session never inflates the headline."""
-    return (
+    reads named apart so a warm session never inflates the headline. Runner
+    sessions are counted apart: with nothing billed the whole text is
+    ``unknown (recipe child)``, else they trail as ``; +N recipe child
+    session(s), cost unknown``."""
+    if n_sessions == 0 and n_runners:
+        return f"{RUNNER_COST_TEXT} — {n_runners} recipe child session(s)"
+    text = (
         f"{total} tokens (+{cache_read} cache-read) across {n_sessions} session(s) "
         f"({_format_token_breakdown(breakdown)})"
     )
+    if n_runners:
+        text += f"; +{n_runners} recipe child session(s), cost unknown"
+    return text
 
 
 def _tokens_by_model(groups: list[GroupFacts]) -> dict[str, int]:
@@ -110,16 +141,21 @@ def _units_for_group(facts: RunFacts, group_id: str) -> list[UnitFacts]:
     return [unit for unit in facts.units if unit.group_id == group_id]
 
 
-def _verification_counts(units: list[UnitFacts]) -> tuple[int, int, int]:
-    total = passed = failed = 0
+def _verification_counts(units: list[UnitFacts]) -> tuple[int, int, int, int]:
+    """``(total, passed, failed, recipe)`` — ``recipe`` items (a `run` group's
+    items no coder ran) are counted apart and excluded from ``total``."""
+    total = passed = failed = recipe = 0
     for unit in units:
         for item in unit.verification:
+            if item.status == "recipe":
+                recipe += 1
+                continue
             total += 1
             if item.status == "pass":
                 passed += 1
             elif item.status == "fail":
                 failed += 1
-    return total, passed, failed
+    return total, passed, failed, recipe
 
 
 def _verification_table(units: list[UnitFacts]) -> str:
@@ -144,13 +180,15 @@ def render_fragments(facts: RunFacts) -> dict[str, str]:
     fragments: dict[str, str] = {}
     for group in facts.groups:
         units = _units_for_group(facts, group.id)
-        total, passed, failed = _verification_counts(units)
+        total, passed, failed, recipe = _verification_counts(units)
         lines = [f"### {group.id}: {group.name} — state: {group.state}"]
 
         summary_text = group.report_summary or group.summary or "(no summary recorded)"
         lines.append(_bullet("Summary", _trim_words(summary_text, 20), f"`{group.id}`"))
 
         verification_text = f"{passed}/{total} pass" + (f", {failed} fail" if failed else "")
+        if recipe:
+            verification_text += f", {recipe} recipe"
         lines.append(_bullet("Verification", verification_text, f"`{group.id}`"))
 
         if group.verdict_status:
@@ -192,7 +230,11 @@ def render_fragments(facts: RunFacts) -> dict[str, str]:
             _bullet(
                 "Tokens",
                 _cost_text(
-                    sum(tokens.values()), _group_cache_read(group), len(group.sessions), tokens
+                    sum(tokens.values()),
+                    _group_cache_read(group),
+                    len(_billed_sessions(group)),
+                    tokens,
+                    n_runners=len(_runner_sessions(group)),
                 ),
                 f"`{group.id}`",
             )
@@ -323,12 +365,13 @@ def changelog_header_lines(facts: RunFacts) -> list[str]:
         )
     )
     tokens = _tokens_by_model(facts.groups)
-    n_sessions = sum(len(g.sessions) for g in facts.groups)
+    n_sessions = sum(len(_billed_sessions(g)) for g in facts.groups)
+    n_runners = sum(len(_runner_sessions(g)) for g in facts.groups)
     cache_read = sum(_group_cache_read(g) for g in facts.groups)
     lines.append(
         _bullet(
             "Cost",
-            _cost_text(sum(tokens.values()), cache_read, n_sessions, tokens),
+            _cost_text(sum(tokens.values()), cache_read, n_sessions, tokens, n_runners=n_runners),
             "`manifest.json`",
         )
     )

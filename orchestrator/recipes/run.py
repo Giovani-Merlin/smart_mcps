@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orchestrator.config import EstimatorConfig
+from orchestrator.model import VerificationResult
 from orchestrator.recipes.registry import RecipePrice, UnitRecipe
 
 SUMMARY_MAX_CHARS = 2000
@@ -88,6 +91,48 @@ class RunRecord(BaseModel):
     outputs: list[str] = Field(default_factory=list)
     measurements: dict[str, object] = Field(default_factory=dict)
     summary: str = Field(max_length=SUMMARY_MAX_CHARS)
+
+
+class RunVerificationReport(BaseModel):
+    """The synthetic ``report-g<gen>-r<attempt>.json`` a completed ``run``
+    group writes in place of a coder report: one ``pass`` per verification
+    item whose ``Run:`` command is a declared command that exited 0. Read
+    through ``latest_report`` by the report facts, the merge log and the
+    driver-item auto-finish check, exactly like a coder's — so a run group is
+    no longer "5/8 units landed … unverified" (r20260925-101742). Not a
+    ``RunRecord`` field: that model is the Artifact Manifest contract folded
+    into downstream prompts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["completed"] = "completed"
+    source: Literal["run_recipe"] = "run_recipe"
+    summary: str
+    verification_results: list[VerificationResult] = Field(default_factory=list)
+
+
+#: ``Run: <cmd>`` / ``Run (…): `<cmd>` `` up to the ``Pass:`` clause or the end.
+_RUN_ITEM_RE = re.compile(
+    r"\bRun\s*(?:\([^)]*\))?\s*:\s*(?:`([^`]+)`|(.+?))(?=\s+Pass\s*:|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def run_command_for_item(description: str, commands: Iterable[RunCommand]) -> RunCommand | None:
+    """The declared command a verification item's ``Run:`` names, by
+    whitespace-normalised equality with ``cmd.cmd``; ``None`` when the item
+    has no ``Run:`` or names something else (a ``cd <cwd> && …`` rewrite is
+    a non-goal — the plan writes the command as declared)."""
+    match = _RUN_ITEM_RE.search(description)
+    if match is None:
+        return None
+    wanted = " ".join((match.group(1) or match.group(2) or "").split())
+    if not wanted:
+        return None
+    for command in commands:
+        if " ".join(command.cmd.split()) == wanted:
+            return command
+    return None
 
 
 def price_run(

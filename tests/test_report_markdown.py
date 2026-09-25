@@ -220,3 +220,59 @@ def test_runlog_never_touches_another_runs_marked_block(tmp_path: Path):
 
     assert other_entry in updated
     assert f"<!-- run:{RUN_ID} -->" in updated
+
+
+# ------------------------------------------------------------ run recipe
+# r20260925-101742: a run group rendered "0 tokens across 0 session(s)" and
+# "Elapsed: n/a". Its runner session now gives a real Elapsed, and its cost
+# reads "unknown (recipe child)" — never 0 (nested `claude -p` is not
+# estimated by decision).
+
+
+def _run_group_facts() -> RunFacts:
+    facts = _clean_facts()
+    group = facts.groups[0]
+    group.recipe = "run"
+    group.sessions = [
+        SessionFacts(
+            role="runner",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:30:00+00:00",
+        )
+    ]
+    facts.units[0].verification = [
+        VerificationFacts(item_id="g1-1", description="bench", status="pass", evidence="exit 0"),
+        VerificationFacts(
+            item_id="g1-2", description="exists", status="recipe", evidence="no coder"
+        ),
+        VerificationFacts(
+            item_id="g1-3", description="shape", status="recipe", evidence="no coder"
+        ),
+    ]
+    return facts
+
+
+def test_fragment_counts_recipe_items_apart_from_pass_fail():
+    fragment = render_fragments(_run_group_facts())["g1"]
+    assert "**Verification**: 1/1 pass, 2 recipe" in fragment
+    assert "| g1-2 | recipe | no coder |" in fragment
+
+
+def test_run_group_with_only_a_runner_session_renders_cost_unknown():
+    fragment = render_fragments(_run_group_facts())["g1"]
+    assert "**Tokens**: unknown (recipe child) — 1 recipe child session(s)" in fragment
+    assert "0 tokens" not in fragment
+    assert "**Elapsed**: 30m" in fragment
+
+
+def test_header_cost_counts_runner_sessions_apart():
+    facts = _run_group_facts()
+    # A second, ordinary group is billed as before; the runner trails it.
+    facts.groups.append(_clean_facts().groups[0].model_copy(update={"id": "g2"}))
+    cost = next(line for line in changelog_header_lines(facts) if "**Cost**" in line)
+    assert "150 tokens (+5000 cache-read) across 1 session(s)" in cost
+    assert "; +1 recipe child session(s), cost unknown" in cost
+
+    only_runner = _run_group_facts()
+    cost = next(line for line in changelog_header_lines(only_runner) if "**Cost**" in line)
+    assert "unknown (recipe child) — 1 recipe child session(s)" in cost

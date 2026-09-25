@@ -813,6 +813,7 @@ Rules for the block:
         <tbody>
           <tr><td><code>--run-id ID</code></td><td><code>run</code> only — run identifier (default: <code>r&lt;timestamp&gt;</code>).</td></tr>
           <tr><td><code>--grouping NAME</code></td><td><code>run</code> only — which named grouping to execute; auto-selects if exactly one exists.</td></tr>
+          <tr><td><code>--plan PATH</code></td><td><code>run</code> only — the grouping built from this plan (mutually exclusive with <code>--grouping</code>); errors when several groupings share the plan.</td></tr>
           <tr><td><code>--sequential</code></td><td>One group at a time — deterministic debug mode.</td></tr>
           <tr><td><code>--concurrency N</code></td><td>Max parallel groups (default <code>1</code>).</td></tr>
           <tr><td><code>--permission-mode MODE</code></td><td><code>claude</code> CLI permission mode for workers (default <code>acceptEdits</code>).</td></tr>

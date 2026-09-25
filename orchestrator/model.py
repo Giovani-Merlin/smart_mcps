@@ -37,12 +37,26 @@ class ReviewIntensity(StrEnum):
 #: `~/.claude/projects/<slug>` directory, so a nested `claude` cannot write the
 #: transcript it needs, and that confinement is exactly what keeps a worker out
 #: of every other session's `memory/` — it is not going to be loosened.
-#: `Run (driver):` and `Run (driver), optional —` both mark one.
-DRIVER_RUN_RE = re.compile(r"\bRun\s*\(driver\)\s*[:,]", re.IGNORECASE)
+#: `Run (driver):` and `Run (driver), optional —` both mark one, and so does
+#: `Run (driver, sandbox-safe):` — a driver item the plan (or the deepen
+#: sweep) has checked spawns no nested `claude` and writes only inside the
+#: worktree, so the coder MUST attempt it rather than may (r20260925-101742:
+#: a coder skipped one the plan called sandbox-safe because the prompt only
+#: permitted the attempt, and the seam it would have caught merged).
+DRIVER_RUN_RE = re.compile(
+    r"\bRun\s*\(\s*driver(?:\s*,\s*sandbox[-\s]*safe)?\s*\)\s*[:,]", re.IGNORECASE
+)
+SANDBOX_SAFE_RE = re.compile(
+    r"\bRun\s*\(\s*driver\s*,\s*sandbox[-\s]*safe\s*\)\s*[:,]", re.IGNORECASE
+)
 
 
 def is_driver_run(description: str) -> bool:
     return DRIVER_RUN_RE.search(description) is not None
+
+
+def is_sandbox_safe_driver_run(description: str) -> bool:
+    return SANDBOX_SAFE_RE.search(description) is not None
 
 
 class VerificationItem(BaseModel):
@@ -55,10 +69,17 @@ class VerificationItem(BaseModel):
     # items too, and an item that lost the flag gated a confined coder on a live
     # test it cannot run (r20260924-134934, g8).
     driver_run: bool = False
+    # ``Run (driver, sandbox-safe):`` — a driver item the coder must attempt
+    # (see ``SANDBOX_SAFE_RE``). Implies ``driver_run``.
+    sandbox_safe: bool = False
 
     @model_validator(mode="after")
     def _derive_driver_run(self) -> VerificationItem:
         if not self.driver_run and is_driver_run(self.description):
+            self.driver_run = True
+        if not self.sandbox_safe and is_sandbox_safe_driver_run(self.description):
+            self.sandbox_safe = True
+        if self.sandbox_safe:
             self.driver_run = True
         return self
 
