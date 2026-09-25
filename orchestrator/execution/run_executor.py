@@ -163,6 +163,10 @@ class _RunExecution:
                 f"{', '.join(offenders)}"
             )
 
+        # Hashed before the merge: merging tears the worktree (and its data-dir
+        # links) down, so an output read afterwards is never a file — on
+        # r20260925-101742 g5 registered `sha256: {}` beside full measurements.
+        sha256 = self._output_sha256s()
         self._heartbeat.mark_phase("merging into integration")
         commit = await self._commit_and_merge()
 
@@ -174,7 +178,7 @@ class _RunExecution:
             summary=summary,
         )
         self._write_settled(attempt_dir, "completed", summary)
-        self._register_artifact(record, commit, measurements_missing)
+        self._register_artifact(record, commit, measurements_missing, sha256)
         log_event(self.paths, f"group {self.gid}: run recipe completed")
         return GroupState.COMPLETED
 
@@ -471,17 +475,25 @@ class _RunExecution:
             text += " (measurements_missing)"
         return text[:ARTIFACT_SUMMARY_MAX_CHARS]
 
+    def _output_sha256s(self) -> dict[str, str]:
+        """sha256 of every declared output that exists in the workspace right now."""
+        sha256 = {}
+        for out_path in self.args.outputs:
+            full = self.workspace / out_path if self.workspace else None
+            if full is not None and full.is_file():
+                sha256[out_path] = hashlib.sha256(full.read_bytes()).hexdigest()
+        return sha256
+
     def _register_artifact(
-        self, record: RunRecord, commit: str, measurements_missing: bool
+        self,
+        record: RunRecord,
+        commit: str,
+        measurements_missing: bool,
+        sha256: dict[str, str],
     ) -> None:
         store = self.deps.artifacts
         if store is None:
             return
-        sha256 = {}
-        for out_path in record.outputs:
-            full = self.workspace / out_path if self.workspace else None
-            if full is not None and full.is_file():
-                sha256[out_path] = hashlib.sha256(full.read_bytes()).hexdigest()
         store.register(
             ArtifactEntry(
                 artifact_id=self.gid,

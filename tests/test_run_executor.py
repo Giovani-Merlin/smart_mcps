@@ -578,3 +578,38 @@ def test_triage_prompt_carries_the_failing_command_output(tmp_path, repo):
     assert len(calls) == 1
     assert "boom-on-stderr" in calls[0]
     assert "partial-out" in calls[0]
+
+
+def test_output_sha256_survives_the_merge_tearing_the_workspace_down(tmp_path, repo):
+    """The merge removes the group's worktree (and its data-dir links) before
+    the artifact is registered; hashing afterwards found no file, and
+    r20260925-101742 g5 recorded ``sha256: {}`` beside full measurements."""
+    run_dir = tmp_path / "run"
+    args = {
+        "commands": [
+            {
+                "cmd": (
+                    'python3 -c "import json,pathlib; '
+                    "pathlib.Path('score.json').write_text(json.dumps({'score': 0.9}))\""
+                ),
+                "wall_clock_min": 1,
+            }
+        ],
+        "outputs": ["score.json"],
+        "measurements": "score.json",
+        "commit_paths": ["score.json"],
+    }
+    expected = {}
+
+    def merge_then_teardown(group: Group, wt: Path) -> str:
+        expected["sha"] = hashlib.sha256((wt / "score.json").read_bytes()).hexdigest()
+        (wt / "score.json").unlink()
+        return git(wt, "rev-parse", "HEAD").strip()
+
+    deps = make_deps(repo, run_dir, repo, merge_group=merge_then_teardown)
+
+    state, _ = asyncio.run(_run(deps, make_group(args)))
+
+    assert state == GroupState.COMPLETED
+    entry = deps.artifacts.load().entries["g7"]
+    assert entry.sha256 == {"score.json": expected["sha"]}
