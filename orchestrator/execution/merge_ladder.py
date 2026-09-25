@@ -38,6 +38,7 @@ from orchestrator.model import (
     Group,
     SessionEntry,
     Surprise,
+    VerificationResult,
 )
 
 if TYPE_CHECKING:
@@ -78,13 +79,28 @@ class MergeLadder:
         latest report marks `pass` is listed as passed, not as pending.
         """
         passed_ids: set[str] = set()
+        results_by_id: dict[str, VerificationResult] = {}
         if self._last_report is not None:
-            passed_ids = {
-                r.item_id for r in self._last_report.verification_results if r.status == "pass"
-            }
+            results_by_id = {r.item_id: r for r in self._last_report.verification_results}
+            passed_ids = {i for i, r in results_by_id.items() if r.status == "pass"}
         driver_items = [item.id for item in self.group.verification if item.driver_run]
         passed = [i for i in driver_items if i in passed_ids]
         pending = [i for i in driver_items if i not in passed_ids]
+        # A sandbox-safe item the coder was told it MUST attempt, skipped with
+        # no failure named: the one outcome the marker exists to prevent.
+        sandbox_safe_ids = {item.id for item in self.group.verification if item.sandbox_safe}
+        bare_skips = [
+            i
+            for i in pending
+            if i in sandbox_safe_ids
+            and (
+                i not in results_by_id
+                or (
+                    results_by_id[i].status == "skipped"
+                    and results_by_id[i].notes.strip() in ("", "driver-run")
+                )
+            )
+        ]
         if passed:
             self._log(
                 f"group {self.gid}: {len(passed)} driver-run verification item(s) "
@@ -94,6 +110,12 @@ class MergeLadder:
             self._log(
                 f"group {self.gid}: {len(pending)} driver-run verification item(s) "
                 f"not run by the coder — {', '.join(pending)}"
+            )
+        if bare_skips:
+            self._log(
+                f"group {self.gid}: {len(bare_skips)} sandbox-safe driver-run item(s) skipped "
+                f"by the coder with no failure recorded — {', '.join(bare_skips)} "
+                "(bare `driver-run` skip)"
             )
 
     async def _merge(self) -> bool:

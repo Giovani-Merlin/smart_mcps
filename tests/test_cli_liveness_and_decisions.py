@@ -70,6 +70,8 @@ def _write_heartbeat(
     cures: int = 0,
     max_cures: int = 2,
     phase: str = "round 1 running",
+    liveness: bool = True,
+    updated_age_s: float = 0.0,
 ) -> None:
     hb_path = paths.group_dir(gid) / "heartbeat.json"
     hb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,16 +79,23 @@ def _write_heartbeat(
         "schema_version": 1,
         "group_id": gid,
         "phase": phase,
-        "child_pid": os.getpid(),
-        "child_spawned_at": _iso(now - age_s - 10),
-        "last_sign_of_life_at": _iso(now - age_s),
-        "sign_of_life_signal": "event",
-        "sign_of_life_evidence": "event assistant a while ago",
-        "liveness_window_s": window_s,
-        "cures": cures,
-        "max_cures_per_generation": max_cures,
-        "updated_at": _iso(now),
+        "updated_at": _iso(now - updated_age_s),
     }
+    if liveness:
+        # A `run` recipe group's heartbeat carries no worker child and no
+        # liveness facts — only the phase (``liveness=False``).
+        payload.update(
+            {
+                "child_pid": os.getpid(),
+                "child_spawned_at": _iso(now - age_s - 10),
+                "last_sign_of_life_at": _iso(now - age_s),
+                "sign_of_life_signal": "event",
+                "sign_of_life_evidence": "event assistant a while ago",
+                "liveness_window_s": window_s,
+                "cures": cures,
+                "max_cures_per_generation": max_cures,
+            }
+        )
     atomic_write_text(hb_path, json.dumps(payload))
 
 
@@ -189,6 +198,39 @@ class TestStatusLivenessAndActivity:
         assert "cures exhausted (2/2" in out
         assert "kill -INT -" in out
         assert "resume r1" in out
+
+    def test_status_prints_the_command_phase_for_a_run_group_heartbeat(self, tmp_path, capsys):
+        # r20260925-101742: `status` printed a bare `g5: running (generation 1)`
+        # for a run group's whole command phase — it has no worker child, no
+        # liveness facts and (before the runner session) no manifest entry.
+        paths = RunPaths(tmp_path, "r1")
+        _write_state(paths)
+        ManifestStore(paths).save(RunManifest(run_id="r1", plan_path="plan.md"))
+        now = 2_000_000_000.0
+        _write_heartbeat(
+            paths,
+            "g1",
+            now=now,
+            age_s=0,
+            phase="command 2/5 · 71s/1200s",
+            liveness=False,
+            updated_age_s=3,
+        )
+        _write_driver_record(paths)
+
+        import time as time_mod
+
+        original_time = time_mod.time
+        time_mod.time = lambda: now
+        try:
+            exit_code = main(["status", "r1", "--repo", str(tmp_path)])
+        finally:
+            time_mod.time = original_time
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "g1: running (generation 1)" in out
+        assert "phase: command 2/5 · 71s/1200s (updated 3s ago)" in out
+        assert "liveness:" not in out
 
 
 # --------------------------------------------------------------------- answer

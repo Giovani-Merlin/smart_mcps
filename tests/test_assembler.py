@@ -178,6 +178,21 @@ class TestAssembleGroupSpecs:
         assert "Run (driver):" in driver_items[0].description
         assert all(not item.driver_run for item in items.values() if item not in driver_items)
 
+    def test_a_sandbox_safe_driver_marker_in_the_plan_sets_both_flags(self):
+        plan = PLAN.replace(
+            "- **Verification**: `app/main.py` exists.",
+            "- **Verification**: the CLI test passes.\n"
+            "    Run (driver, sandbox-safe): `uv run pytest tests/test_cli.py -q`\n"
+            "    Pass: green.",
+        )
+        specs = assemble_group_specs(make_inputs(plan))
+        items = [item for spec in specs.values() for item in spec.verification]
+        safe = [item for item in items if item.sandbox_safe]
+        assert len(safe) == 1
+        assert safe[0].driver_run is True
+        assert "Run (driver, sandbox-safe):" in safe[0].description
+        assert all(not item.driver_run for item in items if item is not safe[0])
+
     def test_missing_unit_verification_fails_naming_the_unit(self):
         with pytest.raises(AssemblyError, match="u3"):
             assemble_group_specs(make_inputs(PLAN_NO_VERIFICATION_U3))

@@ -70,15 +70,22 @@ def make_group(gid: str = "g1", **overrides) -> Group:
     return Group(**defaults)
 
 
-def write_run_artifacts(repo: Path, groups: list[Group] | None = None, name: str = "plan") -> None:
+def write_run_artifacts(
+    repo: Path,
+    groups: list[Group] | None = None,
+    name: str = "plan",
+    plan_path: str = "plan.md",
+) -> None:
     """The named-grouping-directory artifacts `group` leaves behind (plan U10),
     which `run`/`resume` consume. ``name="plan"`` mirrors the real CLI default
     (the plan filename stem), so tests relying on auto-selection of the sole
     grouping keep working unchanged."""
     grouping_dir = repo / ".orchestrator" / "groupings" / name
     grouping_dir.mkdir(parents=True, exist_ok=True)
-    (repo / "plan.md").write_text("# toy plan\n\n- T1: do the thing\n")
-    result = GroupingResult(plan_path="plan.md", groups=groups or [make_group()])
+    plan_file = repo / plan_path
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("# toy plan\n\n- T1: do the thing\n")
+    result = GroupingResult(plan_path=plan_path, groups=groups or [make_group()])
     (grouping_dir / "groups.json").write_text(serialize_grouping(result))
     (grouping_dir / "base-context.md").write_text("shared base context\n")
 
@@ -909,6 +916,46 @@ class TestGroupingSelection:
         exit_code = main(["run", "--repo", str(tmp_path), "--grouping", "nope"])
         assert exit_code == 1
         assert "no grouping named 'nope'" in capsys.readouterr().err
+
+    # r20260925: the driver holds the plan path, not the grouping name — `run
+    # --plan <path>` picks the grouping built from it (ADR 0003 amendment).
+
+    def test_plan_flag_selects_the_grouping_built_from_that_plan(self, tmp_path):
+        from orchestrator.cli import _select_grouping
+
+        write_run_artifacts(tmp_path, name="alpha", plan_path="docs/plans/a.md")
+        write_run_artifacts(tmp_path, name="beta", plan_path="docs/plans/b.md")
+        name, source_dir = _select_grouping(tmp_path, None, plan="docs/plans/b.md")
+        assert name == "beta"
+        assert source_dir == tmp_path / ".orchestrator" / "groupings" / "beta"
+        # An absolute path to the same plan resolves the same way.
+        name, _ = _select_grouping(tmp_path, None, plan=str(tmp_path / "docs/plans/a.md"))
+        assert name == "alpha"
+
+    def test_plan_flag_is_ambiguous_when_two_groupings_share_the_plan(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha", plan_path="docs/plans/a.md")
+        write_run_artifacts(tmp_path, name="alpha-v2", plan_path="docs/plans/a.md")
+        exit_code = main(["run", "--repo", str(tmp_path), "--plan", "docs/plans/a.md"])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "2 groupings were built from docs/plans/a.md" in err
+        assert "--grouping" in err
+        assert "alpha" in err and "alpha-v2" in err
+
+    def test_plan_flag_with_no_matching_grouping_is_actionable(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha", plan_path="docs/plans/a.md")
+        exit_code = main(["run", "--repo", str(tmp_path), "--plan", "docs/plans/other.md"])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "no grouping was built from docs/plans/other.md" in err
+        assert "group docs/plans/other.md" in err
+        assert "alpha" in err
+
+    def test_plan_and_grouping_flags_are_mutually_exclusive(self, tmp_path, capsys):
+        write_run_artifacts(tmp_path, name="alpha")
+        with pytest.raises(SystemExit):
+            main(["run", "--repo", str(tmp_path), "--plan", "plan.md", "--grouping", "alpha"])
+        assert "not allowed with" in capsys.readouterr().err
 
     def test_legacy_top_level_artifact_is_reported_not_consumed(self, tmp_path, capsys):
         (tmp_path / ".orchestrator").mkdir(parents=True)
@@ -2342,3 +2389,52 @@ class TestReportFormatsCli:
         updated = runlog.read_text()
         assert "untouched" in updated
         assert f"<!-- run:{self.FIXTURE_RUN_ID} -->" in updated
+
+
+class TestRunCostLineRunners:
+    def test_run_cost_line_names_runner_sessions_as_cost_unknown(self, tmp_path):
+        # r20260925: a `run` recipe's runner is never billed and its nested
+        # `claude -p` spend is not estimated by decision — "unknown", never 0.
+        from orchestrator.cli import _run_cost_line
+        from orchestrator.execution.manifest import ManifestStore, RunPaths
+        from orchestrator.model import (
+            GroupManifestEntry,
+            RunManifest,
+            SessionEntry,
+            SessionRole,
+        )
+
+        paths = RunPaths(tmp_path, "r14")
+        store = ManifestStore(paths)
+        runner = SessionEntry(session_id="g5-run-a1", role=SessionRole.RUNNER)
+        store.save(
+            RunManifest(
+                run_id="r14",
+                plan_path="p.md",
+                groups={
+                    "g5": GroupManifestEntry(
+                        group_id="g5", group_name="g5", summary="", sessions=[runner]
+                    )
+                },
+            )
+        )
+        assert _run_cost_line(paths) == "run cost: unknown (recipe child) — 1 runner session(s)"
+
+        coder = SessionEntry(session_id="a", role=SessionRole.CODER, total_cost_usd=1.5)
+        store.save(
+            RunManifest(
+                run_id="r14",
+                plan_path="p.md",
+                groups={
+                    "g1": GroupManifestEntry(
+                        group_id="g1", group_name="g1", summary="", sessions=[coder]
+                    ),
+                    "g5": GroupManifestEntry(
+                        group_id="g5", group_name="g5", summary="", sessions=[runner]
+                    ),
+                },
+            )
+        )
+        assert _run_cost_line(paths) == (
+            "run cost: $1.50 across 1 sessions; +1 runner session(s), cost unknown"
+        )

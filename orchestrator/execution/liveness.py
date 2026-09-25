@@ -713,6 +713,22 @@ def liveness_line(heartbeat: dict, *, now: float) -> str:
     return f"live: {signal} {_humanize_age(live_age)} ago"
 
 
+def phase_line(heartbeat: dict, *, now: float) -> str | None:
+    """The `status` line for a group whose heartbeat carries no liveness
+    facts — a `run` recipe group on one of its commands, which has no
+    worker child to probe: ``phase: command 2/5 · 71s/1200s (updated 3s
+    ago)``. ``None`` when the heartbeat names no phase. Until this `status`
+    printed a bare ``g5: running`` for a run group's whole command phase
+    (r20260925-101742)."""
+    phase = heartbeat.get("phase")
+    if not phase:
+        return None
+    updated = _parse_ts(heartbeat.get("updated_at"))
+    if updated is None:
+        return f"phase: {phase}"
+    return f"phase: {phase} (updated {_humanize_age(now - updated)} ago)"
+
+
 def cures_exhausted_line(heartbeat: dict, run_id: str, driver_pid: int) -> str | None:
     """The manual-intervention line once a generation has used up its Suspend
     Cures, or ``None`` below the cap. ``<pgid>`` is read from the *driver's*

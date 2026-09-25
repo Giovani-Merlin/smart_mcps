@@ -45,7 +45,12 @@ from orchestrator.execution.confinement import (
     worker_cache_env,
 )
 from orchestrator.execution.heartbeat import RoundHeartbeat
-from orchestrator.execution.manifest import atomic_write_text, log_event
+from orchestrator.execution.manifest import (
+    artifact_name,
+    atomic_write_text,
+    log_event,
+    record_session,
+)
 from orchestrator.execution.merge import MergeConflict, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
 from orchestrator.execution.run_child import (
@@ -58,7 +63,7 @@ from orchestrator.execution.run_child import (
     proc_starttime,
     process_alive,
 )
-from orchestrator.execution.sessions import _scrub_virtualenv
+from orchestrator.execution.sessions import _scrub_virtualenv, session_display_name
 from orchestrator.execution.scheduler import (
     Executor,
     GroupContext,
@@ -72,9 +77,28 @@ from orchestrator.execution.worktrees import (
     data_layer_write_paths,
     integration_branch,
 )
-from orchestrator.model import EscalationContext, EscalationKind, EscalationRequest, HumanAction
+from orchestrator.model import (
+    EscalationContext,
+    EscalationKind,
+    EscalationRequest,
+    HumanAction,
+    SessionEntry,
+    SessionRole,
+    Surprise,
+    VerificationResult,
+)
 from orchestrator.prompts import load_template
-from orchestrator.recipes.run import CommandResult, RunArgs, RunRecord
+from orchestrator.recipes.run import (
+    CommandResult,
+    RunArgs,
+    RunRecord,
+    RunVerificationReport,
+    run_command_for_item,
+)
+
+#: A consumed surprise's description is cut to this many characters in the
+#: artifact summary (the full text stays in run.log).
+SURPRISE_SUMMARY_MAX_CHARS = 120
 
 DEFAULT_POLL_INTERVAL_S = 1.0
 
@@ -102,6 +126,12 @@ class _RunExecution:
         self._heartbeat = RoundHeartbeat(
             self.paths, self.gid, log=lambda text: log_event(self.paths, text)
         )
+        # The manifest entry for this attempt's runner (plan: a run group is a
+        # real ``SessionRole.RUNNER`` session, so `status`, the report and the
+        # observatory see it with no reader change) and the surprises consumed
+        # at start, folded into the artifact summary.
+        self._runner_entry: SessionEntry | None = None
+        self._surprises: list[Surprise] = []
 
     # ------------------------------------------------------------- entry
 
@@ -112,13 +142,18 @@ class _RunExecution:
             return await self._run()
         finally:
             self._heartbeat.stop()
+            # Every exit — COMPLETED, GroupFailure, RunAbort, cancellation —
+            # closes the runner session so Elapsed reads real.
+            self._close_runner_session()
 
     async def _run(self) -> GroupState:
+        run_dir = self._run_dir()
+        attempt_no, start_idx, results = self._start_attempt(run_dir)
+        self._runner_entry = self._record_runner_session(attempt_no)
+        self._consume_surprises()
         self._heartbeat.mark_phase("worktree")
         self.workspace = await asyncio.to_thread(self.deps.workspace_for, self.group)
         log_event(self.paths, f"group {self.gid}: run recipe worktree ready at {self.workspace}")
-        run_dir = self._run_dir()
-        attempt_no, start_idx, results = self._start_attempt(run_dir)
         attempt_dir = run_dir / f"attempt-{attempt_no}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,10 +212,66 @@ class _RunExecution:
             measurements=measurements,
             summary=summary,
         )
+        self._write_verification_report(results, attempt_no, summary)
         self._write_settled(attempt_dir, "completed", summary)
         self._register_artifact(record, commit, measurements_missing, sha256)
         log_event(self.paths, f"group {self.gid}: run recipe completed")
         return GroupState.COMPLETED
+
+    # ---------------------------------------------------- runner session
+
+    def _runner_session_id(self, attempt_no: int) -> str:
+        return f"{self.gid}-run-a{attempt_no}"
+
+    def _record_runner_session(self, attempt_no: int) -> SessionEntry:
+        """The manifest entry for this attempt. A crash re-entry continues the
+        same attempt and reuses its entry (its ``started_at`` stands); a new
+        attempt gets a new one."""
+        session_id = self._runner_session_id(attempt_no)
+        group_entry = self.deps.manifest.groups.get(self.gid)
+        if group_entry is not None:
+            for entry in group_entry.sessions:
+                if entry.session_id == session_id:
+                    return entry
+        generation = self.ctx.generation
+        entry = SessionEntry(
+            session_id=session_id,
+            role=SessionRole.RUNNER,
+            generation=generation,
+            name=session_display_name(self.deps.run_id, self.gid, "runner", generation),
+            started_at=datetime.now(UTC).isoformat(),
+        )
+        record_session(
+            self.deps.manifest,
+            group_id=self.gid,
+            group_name=self.group.name,
+            summary=self.group.summary,
+            entry=entry,
+        )
+        self.deps.store.save(self.deps.manifest)
+        return entry
+
+    def _close_runner_session(self) -> None:
+        entry = self._runner_entry
+        if entry is None or entry.ended_at is not None:
+            return
+        entry.ended_at = datetime.now(UTC).isoformat()
+        self.deps.store.save(self.deps.manifest)
+
+    def _consume_surprises(self) -> None:
+        """A run group has no coder to read a surprise: take the pending ones
+        off the board at start, log each, and note them in the artifact
+        summary (see ``_build_summary``) so a downstream group's prompt
+        carries them. Until this one aimed at a run group died in the residue
+        as "never delivered" (r20260925-101742)."""
+        self._surprises = list(self.deps.board.consume(self.gid))
+        for surprise in self._surprises:
+            desc = " ".join(surprise.description.split())
+            log_event(
+                self.paths,
+                f"group {self.gid}: consumed surprise [{surprise.kind}] "
+                f"(run recipe, no coder; noted in the artifact summary): {desc}",
+            )
 
     # --------------------------------------------------------- attempts
 
@@ -473,7 +564,47 @@ class _RunExecution:
         text = f"run recipe: {len(results)} command(s) — " + "; ".join(parts)
         if measurements_missing:
             text += " (measurements_missing)"
+        if self._surprises:
+            noted = []
+            for surprise in self._surprises:
+                desc = " ".join(surprise.description.split())
+                if len(desc) > SURPRISE_SUMMARY_MAX_CHARS:
+                    desc = desc[: SURPRISE_SUMMARY_MAX_CHARS - 1] + "…"
+                noted.append(f"[{surprise.kind}] {desc}")
+            text += "; surprises consumed: " + "; ".join(noted)
         return text[:ARTIFACT_SUMMARY_MAX_CHARS]
+
+    def _write_verification_report(
+        self, results: list[CommandResult], attempt_no: int, summary: str
+    ) -> None:
+        """The synthetic coder-shaped report (``RunVerificationReport``): one
+        ``pass`` per verification item whose ``Run:`` is a declared command
+        that exited 0 on this attempt. Every other item is left out — the
+        report layer reads those as ``recipe``, never ``unverified``."""
+        passed_cmds = {" ".join(r.cmd.split()): r for r in results if r.exit_status == 0}
+        verification_results = []
+        for item in self.group.verification:
+            command = run_command_for_item(item.description, self.args.commands)
+            if command is None:
+                continue
+            result = passed_cmds.get(" ".join(command.cmd.split()))
+            if result is None:
+                continue
+            verification_results.append(
+                VerificationResult(
+                    item_id=item.id,
+                    status="pass",
+                    notes=(
+                        f"run recipe attempt {attempt_no}: `{command.cmd}` exit 0 "
+                        f"in {result.duration_s:.1f}s"
+                    ),
+                )
+            )
+        self.deps.store.save_group_artifact(
+            self.gid,
+            artifact_name("report", self.ctx.generation, attempt_no),
+            RunVerificationReport(summary=summary, verification_results=verification_results),
+        )
 
     def _output_sha256s(self) -> dict[str, str]:
         """sha256 of every declared output that exists in the workspace right now."""

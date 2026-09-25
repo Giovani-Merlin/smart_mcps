@@ -16,11 +16,19 @@ import pytest
 
 from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.confinement import build_policy, landlock_abi_version, landlock_preexec
-from orchestrator.execution.manifest import RunPaths
+from orchestrator.execution.manifest import ManifestStore, RunPaths, latest_report
 from orchestrator.execution.run_child import boot_id, launch, process_alive
 from orchestrator.execution.run_executor import make_executor
 from orchestrator.execution.scheduler import GroupFailure, GroupState
-from orchestrator.model import Group, ReviewIntensity
+from orchestrator.execution.surprises import SurpriseBoard
+from orchestrator.model import (
+    Group,
+    ReviewIntensity,
+    RunManifest,
+    SessionRole,
+    Surprise,
+    VerificationItem,
+)
 
 pytestmark = pytest.mark.skipif(landlock_abi_version() <= 0, reason="Landlock unavailable")
 
@@ -55,7 +63,9 @@ def repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_group(recipe_args: dict, gid: str = "g7") -> Group:
+def make_group(
+    recipe_args: dict, gid: str = "g7", verification: list[VerificationItem] | None = None
+) -> Group:
     return Group(
         id=gid,
         name="run recipe test",
@@ -65,6 +75,7 @@ def make_group(recipe_args: dict, gid: str = "g7") -> Group:
         intensity=ReviewIntensity.SELF_VERIFY,
         recipe="run",
         recipe_args=recipe_args,
+        verification=verification or [],
     )
 
 
@@ -95,7 +106,7 @@ def make_deps(
     merge_group=None,
 ):
     paths = RunPaths(repo_root, "rtest", run_dir=run_dir)
-    store = SimpleNamespace(paths=paths)
+    store = ManifestStore(paths)
 
     def default_merge(group: Group, wt: Path) -> str:
         return git(wt, "rev-parse", "HEAD").strip()
@@ -103,6 +114,8 @@ def make_deps(
     return SimpleNamespace(
         run_id="rtest",
         store=store,
+        manifest=RunManifest(run_id="rtest", plan_path="plan.md"),
+        board=SurpriseBoard(),
         workspace_for=lambda group: workspace,
         merge_group=merge_group or default_merge,
         triage=triage,
@@ -613,3 +626,89 @@ def test_output_sha256_survives_the_merge_tearing_the_workspace_down(tmp_path, r
     assert state == GroupState.COMPLETED
     entry = deps.artifacts.load().entries["g7"]
     assert entry.sha256 == {"score.json": expected["sha"]}
+
+
+# ------------------------------------------ runner session, report, surprises
+# r20260925-101742: a run group was invisible around the executor — no session
+# in the manifest ("0 tokens across 0 session(s)", "Elapsed: n/a"), no report
+# for the facts (items `unverified`, unit not landed), and a surprise aimed at
+# it died undelivered.
+
+TRUE_CMD = {"cmd": "true", "wall_clock_min": 1}
+
+
+def _runner_sessions(deps):
+    manifest = deps.store.load()
+    entry = manifest.groups.get("g7")
+    return [] if entry is None else [s for s in entry.sessions if s.role == SessionRole.RUNNER]
+
+
+def test_completed_run_group_records_a_runner_session_with_start_and_end(tmp_path, repo):
+    deps = make_deps(repo, tmp_path / "run", repo)
+    state, _ = asyncio.run(_run(deps, make_group({"commands": [TRUE_CMD]}), generation=2))
+    assert state == GroupState.COMPLETED
+    sessions = _runner_sessions(deps)
+    assert len(sessions) == 1
+    (session,) = sessions
+    assert session.session_id == "g7-run-a1"
+    assert session.name == "rtest-g7-runner-g2"
+    assert session.generation == 2
+    assert session.started_at is not None and session.ended_at is not None
+    assert session.ended_at >= session.started_at
+    # The in-memory manifest the deps carry is the one persisted.
+    assert deps.manifest.groups["g7"].sessions[0].ended_at == session.ended_at
+
+
+def test_failed_run_group_still_closes_the_runner_session(tmp_path, repo):
+    deps = make_deps(repo, tmp_path / "run", repo)
+    with pytest.raises(GroupFailure):
+        asyncio.run(_run(deps, make_group({"commands": [{"cmd": "false", "wall_clock_min": 1}]})))
+    (session,) = _runner_sessions(deps)
+    assert session.ended_at is not None
+
+
+def test_completed_run_group_writes_a_synthetic_report_for_its_declared_commands(tmp_path, repo):
+    verification = [
+        VerificationItem(id="g7-1", description="The smoke passes. Run: `true` Pass: exit 0."),
+        VerificationItem(
+            id="g7-2", description="The sampler is fast. Run: `python3 bench.py` Pass: < 1s."
+        ),
+        VerificationItem(id="g7-3", description="The output exists."),
+    ]
+    deps = make_deps(repo, tmp_path / "run", repo)
+    group = make_group({"commands": [TRUE_CMD]}, verification=verification)
+    state, _ = asyncio.run(_run(deps, group))
+    assert state == GroupState.COMPLETED
+    assert (deps.store.paths.group_dir("g7") / "report-g0-r1.json").is_file()
+    report = latest_report(deps.store.paths, "g7")
+    assert report is not None
+    assert report["status"] == "completed" and report["source"] == "run_recipe"
+    assert report["summary"].startswith("run recipe: 1 command(s)")
+    assert [r["item_id"] for r in report["verification_results"]] == ["g7-1"]
+    (result,) = report["verification_results"]
+    assert result["status"] == "pass"
+    assert "run recipe attempt 1: `true` exit 0" in result["notes"]
+
+
+def test_pending_surprises_are_consumed_at_start_logged_and_folded_into_the_summary(tmp_path, repo):
+    deps = make_deps(repo, tmp_path / "run", repo)
+    deps.board.mark(
+        Surprise(kind="other", description="the fixture  changed\nshape", affected_groups=["g7"]),
+        source_group="g2",
+    )
+    deps.board.mark(
+        Surprise(kind="other", description="x" * 300, affected_groups=["g7"]), source_group="g3"
+    )
+    state, _ = asyncio.run(_run(deps, make_group({"commands": [TRUE_CMD]})))
+    assert state == GroupState.COMPLETED
+    assert deps.board.pending_for("g7") == []
+    log = (deps.store.paths.run_dir / "logs" / "run.log").read_text()
+    assert (
+        "group g7: consumed surprise [other] (run recipe, no coder; noted in the artifact "
+        "summary): the fixture changed shape"
+    ) in log
+    summary = deps.artifacts.load().entries["g7"].summary
+    assert "; surprises consumed: [other] the fixture changed shape; [other] xxx" in summary
+    assert "x" * 300 not in summary and "…" in summary
+    report = latest_report(deps.store.paths, "g7")
+    assert "surprises consumed" in report["summary"]

@@ -302,6 +302,13 @@ Write the decision into the plan:
   evidence, otherwise `skipped` with notes `driver-run`), the verification
   gate never holds the group on it, and the run log names at merge the items
   the coder did not pass, for the driver to run.
+- Driver-run **and the sweep found it sandbox-safe** (it must run after the
+  merge, but it spawns no nested `claude` and writes only inside the
+  worktree) → write `Run (driver, sandbox-safe): <command>` instead. The
+  coder prompt then makes the attempt owed, not permitted: `pass`/`fail`
+  with evidence, `skipped` only with the exact command and its error, and a
+  bare `driver-run` skip is flagged in the merge log. Check the command and
+  every flag exist (`<cmd> --help`) before writing either form.
 
 Report the sweep as one short block: how many `Run:` lines, how many now
 driver-run, and which config lines the human must add. An item that needs a

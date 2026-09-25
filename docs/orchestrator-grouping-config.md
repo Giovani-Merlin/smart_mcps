@@ -491,6 +491,7 @@ Grouping-time behaviour reachable only from the command line:
 | `--repo <path>`             | all     | target repo root (default: cwd)                                                             |
 | `--config <path>`           | all     | config TOML path (default: `<repo>/.orchestrator/config.toml`)                              |
 | `--grouping <tag>`          | `run`   | which named grouping to execute                                                             |
+| `--plan <path>`             | `run`   | the grouping built from this plan (exclusive with `--grouping`; errors when several share it) |
 | `--run-id <id>`             | `run`   | run identifier (default: `r<timestamp>`)                                                    |
 | `--review-intensity <tier>` | `run`   | override the computed review tier for **every** group                                       |
 

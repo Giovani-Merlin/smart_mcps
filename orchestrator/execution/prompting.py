@@ -50,7 +50,20 @@ def _verification_lines(items: list[VerificationItem]) -> str:
     lines = []
     for item in items:
         suffix = "" if item.required else " (optional)"
-        if item.driver_run:
+        if item.sandbox_safe:
+            # The plan (or the deepen sweep) already checked this one spawns
+            # no nested `claude` and writes only inside the sandbox — so the
+            # attempt is owed, not permitted (r20260925-101742: a coder skipped
+            # one with a bare `driver-run` note and its seam merged unchecked).
+            suffix = (
+                " — DRIVER-RUN (sandbox-safe): you MUST attempt it — it spawns "
+                "no nested `claude` and writes only inside your sandbox. Report "
+                "`pass`/`fail` with the evidence in notes; `skipped` is "
+                "acceptable only with the concrete failure in notes (the exact "
+                "command and the error) — a bare `driver-run` note is not. It "
+                "never holds your report back."
+            )
+        elif item.driver_run:
             # Spelled out rather than tagged: the one thing that must not
             # happen is a coder spending rounds trying to run it anyway, which
             # is what cost r20260916-113121's g4 a retirement and a question.

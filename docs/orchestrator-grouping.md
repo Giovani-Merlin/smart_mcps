@@ -447,7 +447,9 @@ ______________________________________________________________________
 
 A grouping is a **named, self-contained directory**, not an overwritable slot
 (ADR 0003). `group --name <tag>` writes it; `run --grouping <tag>` selects one
-(auto-selecting only when exactly one exists); `groupings` lists them all.
+(auto-selecting only when exactly one exists), or `run --plan <path>` selects
+the one built from that plan (erroring when several were); `groupings` lists
+them all.
 
 - **`groups.json`** — the canonical `GroupingResult`: each `Group` with id, name,
   summary, spec, difficulty, intensity, dependencies, verification, tasks, files,

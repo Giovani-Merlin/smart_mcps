@@ -266,3 +266,78 @@ def test_real_fixture_carries_merge_sha_spec_section_text_and_base_context() -> 
     u1 = next(u for u in facts.units if u.unit_id == "u1")
     assert u1.section_text.startswith("### U1.")
     assert facts.base_context_path == "base-context.md"
+
+
+# ------------------------------------------------------------ run recipe
+# r20260925-101742: a `run` group's items read `unverified` and its unit
+# never landed, because no coder report existed. Its items now read `recipe`
+# (or `pass` from the executor's synthetic report) and never gate.
+
+
+def _run_group(group_id: str = "g1") -> Group:
+    group = _base_group(group_id)
+    return group.model_copy(
+        update={
+            "recipe": "run",
+            "recipe_args": {"commands": [{"cmd": "uv run bench.py", "wall_clock_min": 5}]},
+        }
+    )
+
+
+def _build_run_recipe_run(tmp_path: Path, *, state: str) -> RunPaths:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _write_plan(repo_root, "docs/plans/fixture.md")
+    paths = RunPaths(repo_root, RUN_ID, run_dir=tmp_path / "run")
+    _write_groups_json(paths, group=_run_group())
+    _write_manifest(paths, group_id="g1", group_name="Widget", summary="A run unit.")
+    _write_state(paths, group_id="g1", state=state)
+    return paths
+
+
+def test_run_recipe_group_items_read_recipe_and_a_completed_run_lands_the_unit(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.report.facts import build_facts
+
+    paths = _build_run_recipe_run(tmp_path, state="completed")
+    # No synthetic report at all (a run recorded before the executor wrote one).
+    facts = build_facts(paths.repo_root, RUN_ID, run_dir=paths.run_dir)
+    assert facts.groups[0].recipe == "run"
+    (unit,) = facts.units
+    assert unit.landed is True
+    assert {v.item_id: v.status for v in unit.verification} == {"g1-1": "recipe", "g1-2": "recipe"}
+    assert all(v.evidence == "run recipe: no coder ran this item" for v in unit.verification)
+    assert facts.trouble is False
+
+    # With the executor's synthetic report: the matched item passes, the rest
+    # stay `recipe`, the unit still lands.
+    _write_artifact(
+        paths,
+        "g1",
+        "report-g1-r1.json",
+        {
+            "status": "completed",
+            "source": "run_recipe",
+            "summary": "run recipe: 1 command(s)",
+            "verification_results": [
+                {"item_id": "g1-1", "status": "pass", "notes": "run recipe attempt 1: exit 0"}
+            ],
+        },
+    )
+    facts = build_facts(paths.repo_root, RUN_ID, run_dir=paths.run_dir)
+    (unit,) = facts.units
+    assert unit.landed is True
+    statuses = {v.item_id: v.status for v in unit.verification}
+    assert statuses == {"g1-1": "pass", "g1-2": "recipe"}
+    assert facts.groups[0].report_summary == "run recipe: 1 command(s)"
+
+
+def test_run_recipe_group_that_failed_is_not_landed(tmp_path: Path) -> None:
+    from orchestrator.report.facts import build_facts
+
+    paths = _build_run_recipe_run(tmp_path, state="failed")
+    facts = build_facts(paths.repo_root, RUN_ID, run_dir=paths.run_dir)
+    (unit,) = facts.units
+    assert unit.landed is False
+    assert {v.status for v in unit.verification} == {"recipe"}

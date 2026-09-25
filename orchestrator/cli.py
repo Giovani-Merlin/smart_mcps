@@ -68,6 +68,7 @@ from orchestrator.execution.liveness import (
     ActivityRegistry,
     cures_exhausted_line,
     liveness_line,
+    phase_line,
 )
 from orchestrator.execution.transcript_events import activity_tail, format_activity_tail
 from orchestrator.execution.manifest import (
@@ -345,10 +346,19 @@ def main(
 
     run_cmd = subparsers.add_parser("run", help="execute the groups computed by `group`")
     run_cmd.add_argument("--run-id", default=None, help="run identifier (default: r<timestamp>)")
-    run_cmd.add_argument(
+    run_selector = run_cmd.add_mutually_exclusive_group()
+    run_selector.add_argument(
         "--grouping",
         default=None,
         help="named grouping to run (default: auto-select if exactly one exists)",
+    )
+    run_selector.add_argument(
+        "--plan",
+        default=None,
+        help=(
+            "run the grouping built from this plan (errors when several were; "
+            "pick one with --grouping)"
+        ),
     )
     _add_execution_args(run_cmd)
     _add_common_args(run_cmd)
@@ -1322,11 +1332,15 @@ def _print_report(result: GroupingResult) -> None:
 # ------------------------------------------------------------------ groupings
 
 
-def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
+def _select_grouping(
+    repo_root: Path, name: str | None, plan: str | None = None
+) -> tuple[str, Path]:
     """`run`'s grouping selection (plan U10): an explicit ``--grouping`` wins;
-    with none, auto-select only when exactly one grouping exists. Ambiguity and
-    legacy top-level state are reported by name, never guessed — that
-    implicitness is the failure ADR 0002 records."""
+    ``--plan <path>`` picks the grouping built from that plan (ADR 0003
+    amendment, 2026-09-25 — the driver holds the plan path, not the grouping
+    name); with neither, auto-select only when exactly one grouping exists.
+    Ambiguity and legacy top-level state are reported by name, never
+    guessed — that implicitness is the failure ADR 0002 records."""
     if name:
         source_dir = grouping_dir(repo_root, name)
         if not (source_dir / "groups.json").is_file():
@@ -1337,6 +1351,26 @@ def _select_grouping(repo_root: Path, name: str | None) -> tuple[str, Path]:
         return name, source_dir
 
     infos = describe_groupings(repo_root)
+    if plan:
+        wanted = _anchor_plan_path(Path(plan), repo_root).resolve()
+        matches = [
+            info
+            for info in infos
+            if _anchor_plan_path(Path(info.plan_path), repo_root).resolve() == wanted
+        ]
+        if len(matches) == 1:
+            return matches[0].name, grouping_dir(repo_root, matches[0].name)
+        if matches:
+            names = ", ".join(info.name for info in matches)
+            raise GroupingSelectionError(
+                f"{len(matches)} groupings were built from {plan} — pick one with "
+                f"--grouping <name>: {names}"
+            )
+        raise GroupingSelectionError(
+            f"no grouping was built from {plan} — run "
+            f"`smart-mcps-orchestrate group {plan}` first"
+            + (f" (present: {', '.join(info.name for info in infos)})" if infos else "")
+        )
     if len(infos) == 1:
         info = infos[0]
         return info.name, grouping_dir(repo_root, info.name)
@@ -1844,7 +1878,7 @@ def _cmd_run(
             return 1
         try:
             grouping_name, source_grouping_dir = _select_grouping(
-                repo_root, getattr(args, "grouping", None)
+                repo_root, getattr(args, "grouping", None), plan=getattr(args, "plan", None)
             )
         except (GroupingNameError, GroupingSelectionError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -3018,25 +3052,42 @@ def _run_cost_line(paths: RunPaths) -> str | None:
         manifest = ManifestStore(paths).load()
     except (OSError, ValueError):
         return None
-    sessions = [session for group in manifest.groups.values() for session in group.sessions]
+    all_sessions = [session for group in manifest.groups.values() for session in group.sessions]
+    # A `run` recipe's runner session is never billed here, and whatever a
+    # nested `claude -p` inside its commands spent is not estimated by
+    # decision — named as unknown, never folded in as 0.
+    runners = [s for s in all_sessions if s.role == SessionRole.RUNNER]
+    sessions = [s for s in all_sessions if s.role != SessionRole.RUNNER]
     total = sum(session.total_cost_usd for session in sessions)
     if not sessions or total <= 0:
+        if runners:
+            return f"run cost: unknown (recipe child) — {len(runners)} runner session(s)"
         return None
-    return f"run cost: ${total:.2f} across {len(sessions)} sessions"
+    line = f"run cost: ${total:.2f} across {len(sessions)} sessions"
+    if runners:
+        line += f"; +{len(runners)} runner session(s), cost unknown"
+    return line
 
 
 # --------------------------------------------------------------------- status
 
 
-def _print_liveness(paths: RunPaths, gid: str, group_entry: GroupManifestEntry) -> None:
+def _print_liveness(paths: RunPaths, gid: str, group_entry: GroupManifestEntry | None) -> None:
     """Plan U12: the liveness line, cures-exhausted line and activity tail for
     one active group, printed after its session lines. A group without a
     heartbeat yet (nothing has ticked, or this run predates the liveness
     facts) prints nothing extra."""
     heartbeat = read_heartbeat(paths, gid)
-    if heartbeat is None or heartbeat.get("liveness_window_s") is None:
+    if heartbeat is None:
         return
     now = time.time()
+    if heartbeat.get("liveness_window_s") is None:
+        # No worker child to probe (a `run` recipe group on a command): the
+        # heartbeat's phase is the whole story.
+        phase = phase_line(heartbeat, now=now)
+        if phase is not None:
+            print(f"  {phase}")
+        return
     print(f"  liveness: {liveness_line(heartbeat, now=now)}")
     record = read_driver_record(paths)
     driver_pid = record.get("pid") if record else None
@@ -3045,7 +3096,7 @@ def _print_liveness(paths: RunPaths, gid: str, group_entry: GroupManifestEntry) 
         if exhausted is not None:
             print(f"  {exhausted}")
     newest_session = None
-    for session in group_entry.sessions:
+    for session in group_entry.sessions if group_entry is not None else []:
         if session.transcript_path:
             newest_session = session
     print("  activity:")
@@ -3117,16 +3168,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
             shared = f" on {', '.join(hold.files)}" if hold.files else ""
             line += f"\n  held ({hold.reason.value}) by {hold.group_id}{shared}"
         print(line)
-        if manifest is not None and gid in manifest.groups:
-            group_entry = manifest.groups[gid]
+        group_entry = manifest.groups.get(gid) if manifest is not None else None
+        if group_entry is not None:
             print(f"  {group_entry.group_name}: {group_entry.summary}")
             for session in group_entry.sessions:
                 retired = (
                     f" (retired: {session.retirement_reason})" if session.retirement_reason else ""
                 )
                 print(f"  session {session.name} [{session.role.value}]{retired}")
-            if entry.state in (GroupState.RUNNING, GroupState.REVIEWING, GroupState.MERGING):
-                _print_liveness(paths, gid, group_entry)
+        # Every active group, manifest entry or not: a `run` group that has no
+        # session entry yet still has a heartbeat phase worth printing.
+        if entry.state in (GroupState.RUNNING, GroupState.REVIEWING, GroupState.MERGING):
+            _print_liveness(paths, gid, group_entry)
 
     pending = pending_escalations(paths)
     if pending:
