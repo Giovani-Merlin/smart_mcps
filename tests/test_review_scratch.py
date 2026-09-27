@@ -158,7 +158,16 @@ class ScratchWritingRunner:
         self._roles: dict[str, str] = {}
 
     def start_worker(
-        self, *, base_context, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        self,
+        *,
+        base_context,
+        prompt,
+        name,
+        cwd,
+        session_id=None,
+        json_schema=None,
+        extra_allowed_tools=(),
+        on_turn=None,
     ) -> RoundResult:
         self._counter += 1
         sid = session_id or f"sess-{self._counter}"
@@ -173,7 +182,9 @@ class ScratchWritingRunner:
             text = coder_report("completed")
         return RoundResult(session_id=sid, text=text, usage=RoundUsage(), envelope={})
 
-    def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None) -> RoundResult:
+    def resume(
+        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+    ) -> RoundResult:
         raise AssertionError("not used in this scenario")
 
     def effective_disallowed_tools(self) -> list[str]:

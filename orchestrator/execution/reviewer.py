@@ -57,6 +57,7 @@ class ReviewerRound:
                 session_id=sid,
                 prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
             )
 
         if self.reviewer_sid is None:
@@ -76,6 +77,7 @@ class ReviewerRound:
                         self.deps.run_id, self.gid, "reviewer", self.generation
                     ),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )
@@ -91,6 +93,7 @@ class ReviewerRound:
                         str(report_path), decisions=self._decisions_text()
                     ),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )
@@ -126,6 +129,7 @@ class ReviewerRound:
                     session_id=self.reviewer_sid,
                     prompt=render_extra_pass_prompt(),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )

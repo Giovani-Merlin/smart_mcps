@@ -507,6 +507,7 @@ class SessionRunner:
         cwd: Path,
         session_id: str | None = None,
         json_schema: dict | None = None,
+        extra_allowed_tools: Sequence[str] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """Start a fresh worker session and run its first round in one call.
@@ -539,6 +540,7 @@ class SessionRunner:
             cwd=cwd,
             extra=["--session-id", session_id, "--name", name],
             json_schema=json_schema,
+            extra_allowed=extra_allowed_tools,
             on_turn=on_turn,
         )
 
@@ -551,6 +553,7 @@ class SessionRunner:
         cwd: Path,
         session_id: str | None = None,
         json_schema: dict | None = None,
+        extra_allowed_tools: Sequence[str] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """LEGACY — reached only under ``session.fork_base_session`` (default
@@ -599,6 +602,7 @@ class SessionRunner:
                 cwd=cwd,
                 extra=extra,
                 json_schema=json_schema,
+                extra_allowed=extra_allowed_tools,
                 on_turn=on_turn,
             )
 
@@ -609,6 +613,7 @@ class SessionRunner:
         prompt: str,
         cwd: Path,
         json_schema: dict | None = None,
+        extra_allowed_tools: Sequence[str] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """One warm round against an existing session. ``on_turn`` — see
@@ -618,6 +623,7 @@ class SessionRunner:
             cwd=cwd,
             extra=["--resume", session_id],
             json_schema=json_schema,
+            extra_allowed=extra_allowed_tools,
             on_turn=on_turn,
         )
 
@@ -673,6 +679,7 @@ class SessionRunner:
         cwd: Path,
         extra: list[str],
         json_schema: dict | None = None,
+        extra_allowed: Sequence[str] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         model: str | None = None,
     ) -> RoundResult:
@@ -697,8 +704,13 @@ class SessionRunner:
         ]
         if self.permission_mode:
             argv += ["--permission-mode", self.permission_mode]
+        allowed = list(self.allowed_tools or [])
+        for tool in extra_allowed:
+            if tool not in allowed:
+                allowed.append(tool)
         if self.allowed_tools:
-            allowed = [*self.allowed_tools, *worktree_path_rules(self.allowed_tools, cwd)]
+            allowed += worktree_path_rules(self.allowed_tools, cwd)
+        if allowed:
             argv += ["--allowedTools", ",".join(allowed)]
         denied = self.effective_disallowed_tools()
         if denied:

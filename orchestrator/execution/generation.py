@@ -332,12 +332,14 @@ class GenerationLoop:
                     name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                     cwd=self.workspace,
                     session_id=self.coder_sid,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=coder_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=coder_on_turn,
                 ),
             )
@@ -382,6 +384,7 @@ class GenerationLoop:
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=self._make_coder_on_turn(self.coder_entry),
                 )
                 return _coder_nudge(resumed)
@@ -512,6 +515,7 @@ class GenerationLoop:
         resume the coder with the revision prompt pointing at `verdict_path`."""
         assert verdict is not None
         assert verdict_path is not None
+        recipe = self._worker_recipe()
         self.ctx.set_state(GroupState.RUNNING)
         self._log(f"{self._round_tag(rounds + 1)}: started")
         self._heartbeat.mark_round(self.generation, rounds + 1)
@@ -522,12 +526,14 @@ class GenerationLoop:
                 session_id=self.coder_sid,
                 prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
                 cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
                 on_turn=revision_on_turn,
             ),
             recover=lambda sid: self.deps.runner.resume(
                 session_id=sid,
                 prompt=render_reentry_prompt(self.group),
                 cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
                 on_turn=revision_on_turn,
             ),
         )
@@ -573,6 +579,7 @@ class GenerationLoop:
         the window `round 0` / `resuming the interrupted coder` for its entire
         duration hid twenty minutes of real progress from the operator."""
         assert self.workspace is not None
+        recipe = self._worker_recipe()
         limit = self.deps.breaker.context_token_limit
         if entry.last_context_tokens > limit:
             self._reentry_fallback(
@@ -603,12 +610,14 @@ class GenerationLoop:
                     session_id=entry.session_id,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=reentry_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=reentry_on_turn,
                 ),
             )
