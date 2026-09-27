@@ -250,6 +250,38 @@ def render_fragments(facts: RunFacts) -> dict[str, str]:
     return fragments
 
 
+# ----------------------------------------------------------- optimization
+
+
+def _render_optimization_block(group: GroupFacts) -> str:
+    """One ``## Optimization`` block for an ``optimize`` group: every kept
+    candidate with its delta when the champion moved at least once, else the
+    zero-hit reading — "no improvement found (N ruled out)", never "not
+    landed" (plan U12)."""
+    ledger_pointer = f"`{group.id}/ledger.json`"
+    lines = [f"## Optimization ({group.id})", ""]
+    if group.keeps:
+        lines.append("| round | candidate | delta |")
+        lines.append("| --- | --- | --- |")
+        for keep in group.keeps:
+            delta = keep.get("delta")
+            delta_text = f"{delta:+g}" if isinstance(delta, (int, float)) else "—"
+            commit = str(keep.get("candidate_commit") or "")[:8] or "unknown"
+            lines.append(f"| {keep.get('round')} | {commit} | {delta_text} |")
+        lines.append("")
+        lines.append(_bullet("Ledger", f"{group.ledger_rows} attempt(s) recorded", ledger_pointer))
+    else:
+        ruled_out = group.ledger_rows
+        lines.append(
+            _bullet(
+                "Optimization result",
+                f"no improvement found ({ruled_out} ruled out)",
+                ledger_pointer,
+            )
+        )
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------- postmortem
 
 
@@ -398,6 +430,9 @@ def render_changelog_entry(facts: RunFacts, diagrams: Diagrams) -> str:
     for group in facts.groups:
         lines.append(fragments[group.id])
         lines.append("")
+        if group.recipe == "optimize":
+            lines.append(_render_optimization_block(group))
+            lines.append("")
 
     # The run timeline is HTML (report v2 U1) and lives in report.html only;
     # a GitHub-rendered markdown entry keeps just the mermaid flowchart.

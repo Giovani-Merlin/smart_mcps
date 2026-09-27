@@ -109,6 +109,21 @@ def _valid_pointers(facts: RunFacts) -> set[str]:
 # --------------------------------------------------------------- scaffold
 
 
+def _keep_next_step_lines(facts: RunFacts) -> list[str]:
+    """One templated ``Next steps`` bullet per kept optimize candidate (R21):
+    the driver names what to do with a promoted candidate instead of the
+    generic placeholder, one line per ``(group, keep)`` pair, oldest first."""
+    lines: list[str] = []
+    for group in facts.groups:
+        for keep in group.keeps:
+            lines.append(
+                f"- <action>: follow up on the round {keep.get('round')} candidate kept in "
+                f'`{group.id}`, delta {keep.get("delta")} — what "done" looks like '
+                f"({group.id})"
+            )
+    return lines
+
+
 def scaffold(facts: RunFacts) -> str:
     """The fixed skeleton the run-driver session fills in: four sections,
     placeholder bullets, and an HTML comment enumerating every pointer that
@@ -117,6 +132,10 @@ def scaffold(facts: RunFacts) -> str:
     scaffold always fails validation."""
     title = facts.plan_title or facts.run_id
     pointers = ", ".join(sorted(_valid_pointers(facts))) or "(none available for this run)"
+    next_steps_bullets = _keep_next_step_lines(facts) or [
+        '- <action>: <why it matters and what "done" looks like> (POINTER)',
+        "  - how: optional sub-bullet with the concrete first move",
+    ]
     lines = [
         f"# {title} — {facts.run_id}",
         "",
@@ -146,8 +165,7 @@ def scaffold(facts: RunFacts) -> str:
         "",
         "one short paragraph of context, optional",
         "",
-        '- <action>: <why it matters and what "done" looks like> (POINTER)',
-        "  - how: optional sub-bullet with the concrete first move",
+        *next_steps_bullets,
         "",
         f"<!-- valid pointers: {pointers} -->",
         "",
