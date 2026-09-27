@@ -27,7 +27,7 @@ PROMPTS_DIR = REPO_ROOT / "orchestrator/prompts"
 
 class TestRegistry:
     def test_registered_names(self):
-        assert registered_names() == ("code", "run")
+        assert registered_names() == ("code", "run", "evaluate")
 
     def test_unknown_recipe_names_it_and_lists_known(self):
         with pytest.raises(KeyError) as excinfo:

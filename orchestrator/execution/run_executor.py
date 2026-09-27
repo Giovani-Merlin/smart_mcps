@@ -99,13 +99,17 @@ def make_executor(deps) -> Executor:
 
 
 class _RunExecution:
+    #: overridden by ``EvaluateExecution`` (plan U8) so args parse with the
+    #: KPI Contract instead of rejecting it as an unknown field.
+    _args_model: type[RunArgs] = RunArgs
+
     def __init__(self, deps, ctx: GroupContext):
         self.deps = deps
         self.ctx = ctx
         self.group = ctx.group
         self.gid = ctx.group.id
         self.paths = deps.store.paths
-        self.args = RunArgs.model_validate(self.group.recipe_args or {})
+        self.args = self._args_model.model_validate(self.group.recipe_args or {})
         self.workspace: Path | None = None
         self._heartbeat = RoundHeartbeat(
             self.paths, self.gid, log=lambda text: log_event(self.paths, text)
@@ -141,6 +145,7 @@ class _RunExecution:
         log_event(self.paths, f"group {self.gid}: run recipe worktree ready at {self.workspace}")
         attempt_dir = run_dir / f"attempt-{attempt_no}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
+        await self._before_commands(attempt_dir)
 
         for idx in range(start_idx, len(self.args.commands)):
             n = idx + 1
@@ -175,6 +180,7 @@ class _RunExecution:
             )
 
         measurements, measurements_missing = self._read_measurements()
+        await self._after_measurements(measurements, measurements_missing)
 
         offenders = self._porcelain_offenders()
         if offenders:
@@ -191,12 +197,7 @@ class _RunExecution:
         commit = await self._commit_and_merge()
 
         summary = self._build_summary(results, measurements_missing)
-        record = RunRecord(
-            commands=results,
-            outputs=list(self.args.outputs),
-            measurements=measurements,
-            summary=summary,
-        )
+        record = self._build_record(results, measurements, summary)
         self._write_verification_report(results, attempt_no, summary)
         self._commands.write_settled(attempt_dir, "completed", summary)
         self._register_artifact(record, commit, measurements_missing, sha256)
@@ -409,6 +410,33 @@ class _RunExecution:
             poll_interval=DEFAULT_POLL_INTERVAL_S,
         )
 
+    # -------------------------------------------------- overridable hooks
+
+    async def _before_commands(self, attempt_dir: Path) -> None:
+        """Called once per attempt, right after ``attempt_dir`` exists and
+        before the first declared command runs. A no-op for ``run``;
+        ``evaluate`` (plan U8) uses it for the harness hash check and the
+        optional smoke command."""
+
+    async def _after_measurements(self, measurements: dict, measurements_missing: bool) -> None:
+        """Called once, right after ``_read_measurements``. A no-op for
+        ``run``; ``evaluate`` (plan U8) extracts the KPI and guard values
+        here, failing (via ``_triage_and_fail``) when a declared key is
+        missing."""
+
+    def _build_record(
+        self, results: list[CommandResult], measurements: dict, summary: str
+    ) -> RunRecord:
+        """The completion contract for this attempt. Overridden by
+        ``evaluate`` (plan U8) to return an ``EvaluationRecord`` carrying the
+        KPI, guards and harness hash extracted in ``_after_measurements``."""
+        return RunRecord(
+            commands=results,
+            outputs=list(self.args.outputs),
+            measurements=measurements,
+            summary=summary,
+        )
+
     # ------------------------------------------------------------ output
 
     def _read_measurements(self) -> tuple[dict, bool]:
@@ -534,7 +562,7 @@ class _RunExecution:
                 paths=list(record.outputs),
                 sha256=sha256,
                 commit=commit,
-                schema="RunRecord",
+                schema=type(record).__name__,
                 summary=record.summary,
                 status="complete",
                 measurements=dict(record.measurements),

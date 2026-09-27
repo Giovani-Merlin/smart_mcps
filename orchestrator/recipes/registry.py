@@ -63,9 +63,10 @@ def _entries() -> dict[str, UnitRecipe]:
     # Imported lazily, not at module load: both point back into this package,
     # and code.py's price_code lazily imports grouping.estimator in turn.
     from orchestrator.recipes.code import CODE_RECIPE
+    from orchestrator.recipes.evaluate import EVALUATE_RECIPE
     from orchestrator.recipes.run import RUN_RECIPE
 
-    return {r.name: r for r in (CODE_RECIPE, RUN_RECIPE)}
+    return {r.name: r for r in (CODE_RECIPE, RUN_RECIPE, EVALUATE_RECIPE)}
 
 
 def registered_names() -> tuple[str, ...]:
