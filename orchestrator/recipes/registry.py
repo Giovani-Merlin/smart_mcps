@@ -65,9 +65,13 @@ def _entries() -> dict[str, UnitRecipe]:
     from orchestrator.recipes.code import CODE_RECIPE
     from orchestrator.recipes.evaluate import EVALUATE_RECIPE
     from orchestrator.recipes.optimize import OPTIMIZE_RECIPE
+    from orchestrator.recipes.research import RESEARCH_RECIPE
     from orchestrator.recipes.run import RUN_RECIPE
 
-    return {r.name: r for r in (CODE_RECIPE, RUN_RECIPE, EVALUATE_RECIPE, OPTIMIZE_RECIPE)}
+    return {
+        r.name: r
+        for r in (CODE_RECIPE, RUN_RECIPE, EVALUATE_RECIPE, OPTIMIZE_RECIPE, RESEARCH_RECIPE)
+    }
 
 
 def registered_names() -> tuple[str, ...]:

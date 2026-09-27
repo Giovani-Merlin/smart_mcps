@@ -497,12 +497,12 @@ class TestTaskMapV2:
             parse_task_map(plan_with(text), make_client(tmp_path))
 
     def test_unknown_recipe_raises_naming_task_and_registered_names(self, tmp_path):
-        text = self.RUN_TASK.replace("recipe: run", "recipe: research")
+        text = self.RUN_TASK.replace("recipe: run", "recipe: quantum")
         with pytest.raises(TaskMapError) as excinfo:
             parse_task_map(plan_with(text), make_client(tmp_path))
         message = str(excinfo.value)
         assert "t1-render" in message
-        assert "research" in message
+        assert "quantum" in message
         assert "code" in message and "run" in message
 
     def test_recipe_args_on_code_task_raises(self, tmp_path):
