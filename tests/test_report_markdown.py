@@ -276,3 +276,48 @@ def test_header_cost_counts_runner_sessions_apart():
     only_runner = _run_group_facts()
     cost = next(line for line in changelog_header_lines(only_runner) if "**Cost**" in line)
     assert "unknown (recipe child) — 1 recipe child session(s)" in cost
+
+
+# ---------------------------------------------------------------- optimize
+
+
+def _optimize_group_facts(keeps: list[dict], ledger_rows: int) -> RunFacts:
+    facts = _clean_facts()
+    group = facts.groups[0]
+    group.recipe = "optimize"
+    group.keeps = keeps
+    group.ledger_rows = ledger_rows
+    group.champion_moved = bool(keeps)
+    return facts
+
+
+def test_optimize_block_lists_kept_candidate_delta_and_links_the_ledger():
+    facts = _optimize_group_facts(
+        keeps=[{"round": 3, "delta": 0.5, "candidate_commit": "a" * 40}], ledger_rows=4
+    )
+    entry = render_changelog_entry(facts, _diagrams())
+    assert "## Optimization" in entry
+    assert "+0.5" in entry
+    assert "g1/ledger.json" in entry
+
+
+def test_optimize_zero_hit_reads_ruled_out_never_not_landed():
+    facts = _optimize_group_facts(keeps=[], ledger_rows=3)
+    entry = render_changelog_entry(facts, _diagrams())
+    assert "no improvement found (3 ruled out)" in entry
+    assert "not landed" not in entry
+
+
+def test_researcher_session_appears_in_the_cost_line():
+    facts = _clean_facts()
+    facts.groups[0].sessions.append(
+        SessionFacts(
+            role="researcher",
+            model="model-b",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:10:00+00:00",
+            tokens={"input": 10, "output": 5},
+        )
+    )
+    cost = next(line for line in changelog_header_lines(facts) if "**Cost**" in line)
+    assert "model-b=15" in cost

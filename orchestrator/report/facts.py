@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 from pydantic import BaseModel, Field
 
 from orchestrator.execution.export import build_export
+from orchestrator.execution.kpi import Ledger
 from orchestrator.execution.manifest import RunPaths, effective_group, latest_report
 from orchestrator.execution.worktrees import integration_branch
 from orchestrator.grouping.plan_sections import UnitSection, parse_plan_sections, unit_key_for_task
@@ -125,6 +126,14 @@ class GroupFacts(BaseModel):
     #: run dir) each entry was read from, so a consumer can cite the source.
     required_change_paths: list[str] = Field(default_factory=list)
     tests: TestFacts = Field(default_factory=TestFacts)
+    #: The following three are populated only for an ``optimize`` group, from
+    #: its ``<group_dir>/ledger.json`` (plan U12) — empty/zero for every
+    #: other recipe.
+    ledger_rows: int = 0
+    #: One entry per kept candidate, oldest first: ``{round, delta, candidate_commit}``.
+    keeps: list[dict] = Field(default_factory=list)
+    #: Whether any candidate was ever kept — a zero-hit loop never moves it.
+    champion_moved: bool = False
 
 
 class VerificationFacts(BaseModel):
@@ -379,6 +388,26 @@ def _group_tests(paths: RunPaths, group_id: str) -> TestFacts:
         errors=errors,
         junit_path=str(xml_path.relative_to(paths.run_dir)),
     )
+
+
+# ----------------------------------------------------------------- ledger
+
+
+def _ledger_facts(paths: RunPaths, group_id: str) -> tuple[int, list[dict], bool]:
+    """``(ledger_rows, keeps, champion_moved)`` off an ``optimize`` group's
+    ``ledger.json`` — ``(0, [], False)`` when the file doesn't exist (the
+    loop never got past its first evaluation, or this isn't an optimize
+    group at all)."""
+    ledger_path = paths.group_dir(group_id) / "ledger.json"
+    if not ledger_path.is_file():
+        return 0, [], False
+    ledger = Ledger.load(ledger_path)
+    keeps = [
+        {"round": a.round_no, "delta": a.delta, "candidate_commit": a.candidate_commit}
+        for a in ledger.attempts
+        if a.outcome == "keep"
+    ]
+    return len(ledger.attempts), keeps, bool(keeps)
 
 
 # --------------------------------------------------------------- plan text
@@ -666,11 +695,16 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
         ):
             trouble = True
 
+        recipe = source_group.recipe if source_group else "code"
+        ledger_rows, keeps, champion_moved = (
+            _ledger_facts(paths, export_group.id) if recipe == "optimize" else (0, [], False)
+        )
+
         group_facts.append(
             GroupFacts(
                 id=export_group.id,
                 name=shown_group.name if shown_group else export_group.name,
-                recipe=source_group.recipe if source_group else "code",
+                recipe=recipe,
                 summary=shown_group.summary if shown_group else export_group.summary,
                 report_summary=report_summary,
                 spec=shown_group.spec if shown_group else "",
@@ -690,6 +724,9 @@ def build_facts(repo_root: Path, run_id: str, *, run_dir: Path | None = None) ->
                 required_changes=required_changes,
                 required_change_paths=required_change_paths,
                 tests=tests,
+                ledger_rows=ledger_rows,
+                keeps=keeps,
+                champion_moved=champion_moved,
             )
         )
 
