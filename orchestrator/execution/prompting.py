@@ -148,14 +148,22 @@ def render_reviewer_nudge_skeleton() -> str:
     )
 
 
-def render_coder_prompt(run_id: str, group: Group, *, decisions: str = "") -> str:
-    return Template(load_template("coder")).substitute(
+def render_worker_prompt(template: str, run_id: str, group: Group, *, decisions: str = "") -> str:
+    """First-round prompt for any recipe's worker session (plan U5): the same
+    ``identity``/``verification``/``report_contract``/``decisions`` fields
+    `render_coder_prompt` always filled in, against a caller-named template
+    rather than the hard-coded ``"coder"`` one."""
+    return Template(load_template(template)).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
         report_contract=load_template("report_contract"),
         decisions=decisions,
     )
+
+
+def render_coder_prompt(run_id: str, group: Group, *, decisions: str = "") -> str:
+    return render_worker_prompt("coder", run_id, group, decisions=decisions)
 
 
 def render_reviewer_prompt(
@@ -166,8 +174,9 @@ def render_reviewer_prompt(
     base_ref: str,
     scratch_dir: str,
     decisions: str = "",
+    template: str = "reviewer",
 ) -> str:
-    return Template(load_template("reviewer")).substitute(
+    return Template(load_template(template)).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
@@ -248,9 +257,13 @@ def render_handoff_prompt(
     outstanding: str,
     diff_summary: str,
     decisions: str = "",
+    template: str = "handoff",
 ) -> str:
-    """First prompt of a generation-respawn coder session (plan U7 breaker path)."""
-    return Template(load_template("handoff")).substitute(
+    """First prompt of a generation-respawn coder session (plan U7 breaker
+    path). ``template`` names the recipe's handoff template (plan U5); the
+    default keeps every existing call site — all of them ``code`` groups —
+    byte-identical."""
+    return Template(load_template(template)).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         generation=str(generation),

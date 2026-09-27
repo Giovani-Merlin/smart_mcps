@@ -123,3 +123,27 @@ class ExecutionHost(Protocol):
     async def _approve_gate(self, kind: object, prompt: str) -> None: ...
 
     async def _merge(self) -> bool: ...
+
+    # The round loop's four overridable steps (plan U1): declared here even
+    # though only `GenerationLoop` itself calls them today, so a later
+    # executor that overrides `_settle_round` (the `optimize` recipe's
+    # settle-a-candidate step) type-checks against this Protocol the same way
+    # every other cross-mixin call does.
+    async def _first_round(self) -> object: ...
+
+    async def _collect_report(
+        self, result: object, rounds: int, verification_ids: object
+    ) -> object: ...
+
+    async def _settle_round(
+        self, report: object, report_path: object, rounds: int, result: object
+    ) -> object: ...
+
+    async def _next_round_prompt(
+        self, verdict: object, verdict_path: object, rounds: int
+    ) -> object: ...
+
+    # Plan U5: the group's registry entry (worker prompt, contract, reviewer/
+    # handoff templates, worker role) — `GenerationLoop` defines it,
+    # `ReviewerRound` reads it cross-mixin.
+    def _worker_recipe(self) -> object: ...
