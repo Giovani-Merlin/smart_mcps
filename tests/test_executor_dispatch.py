@@ -87,7 +87,7 @@ async def test_code_group_matches_review_make_executor_call_sequence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_unresolvable_recipe_refuses_before_any_session(tmp_path):
-    group = make_group(gid="g9").model_copy(update={"recipe": "research"})
+    group = make_group(gid="g9").model_copy(update={"recipe": "synthesize"})
     runner = StubRunner({})
     deps = build_deps(tmp_path, runner)
     with pytest.raises(RecipeDispatchError, match="g9"):
@@ -96,7 +96,7 @@ async def test_unresolvable_recipe_refuses_before_any_session(tmp_path):
 
 
 def test_unknown_recipe_groups_reports_by_group():
-    group = make_group(gid="g9").model_copy(update={"recipe": "research"})
+    group = make_group(gid="g9").model_copy(update={"recipe": "synthesize"})
     unknown = unknown_recipe_groups([group, make_group(gid="g1")])
     assert [g.id for g in unknown] == ["g9"]
 

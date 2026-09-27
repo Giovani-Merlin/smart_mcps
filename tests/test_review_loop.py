@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
+from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.escalation import EscalationPolicy
 from orchestrator.execution.manifest import ManifestStore, RunPaths
 from orchestrator.execution.merge import MergeConflict
@@ -279,6 +281,7 @@ class Harness:
         broker: StubBroker | None = None,
         policy: EscalationPolicy | None = None,
         fork_base_session: bool = False,
+        artifacts: ArtifactManifestStore | None = None,
     ):
         self.runner = runner
         self.store = ManifestStore(RunPaths(tmp_path, "r1"))
@@ -322,6 +325,7 @@ class Harness:
             base_ref_for=lambda group: "main",
             broker=broker,
             policy=policy,
+            artifacts=artifacts,
         )
 
     def context(self, group: Group) -> GroupContext:
@@ -1347,7 +1351,9 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     # R5/R6: an envelope failure on the warm attempt itself falls through to a
     # fresh fork, logging the reason instead of the resumed-session line.
     class FailOnResume(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
+        def resume(
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        ):
             if session_id == "sess-warm":
                 raise SessionError("claude exited 1")
             return super().resume(
@@ -1387,7 +1393,9 @@ async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
     """
 
     class LimitOnResume(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
+        def resume(
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        ):
             if session_id == "sess-warm":
                 raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
             return super().resume(
@@ -1422,7 +1430,9 @@ async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
     # the envelope, the SessionError propagates so the scheduler lands the group
     # `interrupted` again (classification asserted by g1's scheduler tests).
     class AlwaysDown(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
+        def resume(
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        ):
             raise SessionError("warm resume down")
 
         def start_worker(self, **kwargs):
@@ -1446,7 +1456,9 @@ async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypa
     # R5: the manifest reflects the latest round's usage as it happens, not only
     # once at generation end — the re-entry pre-check needs the freshest number.
     class GrowingContext(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
+        def resume(
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        ):
             self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
             return super().resume(
                 session_id=session_id,
@@ -1633,7 +1645,16 @@ class TestRoundHeartbeat:
         in_flight: list[dict] = []
 
         class SnapshottingRunner(StubRunner):
-            def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
+            def resume(
+                self,
+                *,
+                session_id,
+                prompt,
+                cwd,
+                json_schema=None,
+                extra_allowed_tools=(),
+                on_turn=None,
+            ):
                 if session_id == "sess-warm" and not in_flight:
                     in_flight.append(json.loads(hb_path.read_text()))
                 return super().resume(
@@ -2287,3 +2308,106 @@ async def test_merge_log_accepts_a_sandbox_safe_skip_that_names_the_failure(tmp_
     lines = run_log_lines(harness)
     assert not any("bare `driver-run` skip" in ln for ln in lines)
     assert any("not run by the coder — g1-6" in ln for ln in lines)
+
+
+# ------------------------------------------------------------ research recipe (U6)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    assert result.returncode == 0, f"git {' '.join(args)}: {result.stderr}"
+    return result.stdout
+
+
+def _prepare_research_workspace(workspace: Path, output: str) -> None:
+    """A real git worktree diverged from ``main`` with only the declared
+    output committed — the merge policy check touches real git, so the
+    research group's workspace (unlike every other Harness scenario in this
+    file) must be one."""
+    _git(workspace, "init", "-q", "-b", "main")
+    _git(workspace, "config", "user.email", "t@t")
+    _git(workspace, "config", "user.name", "t")
+    (workspace / "README.md").write_text("base\n")
+    _git(workspace, "add", ".")
+    _git(workspace, "commit", "-q", "-m", "init")
+    _git(workspace, "checkout", "-q", "-b", "work")
+    output_path = workspace / output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("# finding\n")
+    _git(workspace, "add", ".")
+    _git(workspace, "commit", "-q", "-m", "feat: finding")
+
+
+def findings_report(*, provider_fallback: bool = False, spec_refinement: dict | None = None) -> str:
+    body: dict = {
+        "status": "completed",
+        "summary": "answered the question",
+        "verification_results": [{"item_id": "v1", "status": "pass", "notes": ""}],
+        "surprises": [],
+        "findings": [
+            {
+                "claim": "Landlock is a Linux LSM for unprivileged sandboxing",
+                "sources": ["https://docs.kernel.org/userspace-api/landlock.html"],
+                "confidence": "high",
+            }
+        ],
+        "provider_fallback": provider_fallback,
+    }
+    if spec_refinement is not None:
+        body["spec_refinement"] = spec_refinement
+    return f'<run-report status="completed">\n{json.dumps(body)}\n</run-report>'
+
+
+@pytest.mark.asyncio
+async def test_research_group_first_prompt_names_the_question_and_perplexity(tmp_path):
+    output = "docs/research/landlock.md"
+    runner = StubRunner({"r1-g1-coder-g1": [findings_report()]})
+    artifact_store = ArtifactManifestStore(RunPaths(tmp_path, "r1"))
+    harness = Harness(tmp_path, runner, artifacts=artifact_store)
+    _prepare_research_workspace(harness.workspace, output)
+    group = make_group(
+        "g1",
+        intensity=ReviewIntensity.SELF_VERIFY,
+        recipe="research",
+        recipe_args={"question": "what is Landlock LSM?", "output": output},
+        spec=f"Answer: what is Landlock LSM? Commit the finding at {output}.",
+    )
+
+    state = await harness.run(group)
+    assert state == GroupState.COMPLETED
+
+    first_prompt = runner.prompts[runner.session_ids["r1-g1-coder-g1"]][0]
+    assert "what is Landlock LSM?" in first_prompt
+    assert "smart-mcps-perplexity" in first_prompt
+
+    roles = [s.role.value for s in harness.manifest.groups["g1"].sessions]
+    assert roles == ["researcher"]
+
+    assert harness.merged == ["g1"]
+    entry = artifact_store.load().entries["g1"]
+    assert entry.schema_name == "FindingsReport"
+    assert entry.paths == [output]
+
+
+@pytest.mark.asyncio
+async def test_research_provider_fallback_logs_and_prefixes_the_summary(tmp_path):
+    output = "docs/research/landlock.md"
+    runner = StubRunner({"r1-g1-coder-g1": [findings_report(provider_fallback=True)]})
+    artifact_store = ArtifactManifestStore(RunPaths(tmp_path, "r1"))
+    harness = Harness(tmp_path, runner, artifacts=artifact_store)
+    _prepare_research_workspace(harness.workspace, output)
+    group = make_group(
+        "g1",
+        intensity=ReviewIntensity.SELF_VERIFY,
+        recipe="research",
+        recipe_args={"question": "what is Landlock LSM?", "output": output},
+        spec=f"Answer: what is Landlock LSM? Commit the finding at {output}.",
+    )
+
+    state = await harness.run(group)
+    assert state == GroupState.COMPLETED
+
+    lines = run_log_lines(harness)
+    assert any("research provider fallback (WebSearch/WebFetch)" in ln for ln in lines)
+    entry = artifact_store.load().entries["g1"]
+    assert entry.summary.startswith("[fallback]")

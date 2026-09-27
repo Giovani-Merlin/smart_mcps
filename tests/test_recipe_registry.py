@@ -27,13 +27,13 @@ PROMPTS_DIR = REPO_ROOT / "orchestrator/prompts"
 
 class TestRegistry:
     def test_registered_names(self):
-        assert registered_names() == ("code", "run", "evaluate", "optimize")
+        assert registered_names() == ("code", "run", "evaluate", "optimize", "research")
 
     def test_unknown_recipe_names_it_and_lists_known(self):
         with pytest.raises(KeyError) as excinfo:
-            get_recipe("research")
+            get_recipe("synthesize")
         message = str(excinfo.value)
-        assert "research" in message
+        assert "synthesize" in message
         assert "code" in message
         assert "run" in message
 
@@ -44,13 +44,13 @@ class TestRegistry:
         assert run.name == "run"
         assert run.args_model is RunArgs
 
-    @pytest.mark.parametrize("name", ["code", "run"])
+    @pytest.mark.parametrize("name", ["code", "run", "research"])
     def test_every_entry_has_a_worker_prompt_template(self, name):
         entry = get_recipe(name)
         template_path = PROMPTS_DIR / f"{entry.worker_prompt}.md"
         assert template_path.is_file(), f"{name}: missing template {template_path}"
 
-    @pytest.mark.parametrize("name", ["code", "run"])
+    @pytest.mark.parametrize("name", ["code", "run", "research"])
     def test_every_entry_has_a_valid_worker_role(self, name):
         entry = get_recipe(name)
         assert isinstance(entry.worker_role, SessionRole)

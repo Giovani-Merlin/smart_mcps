@@ -492,6 +492,9 @@ class GenerationLoop:
             await self._approve_gate(
                 EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
             )
+            if getattr(report, "provider_fallback", False):
+                self._log(f"group {self.gid}: research provider fallback (WebSearch/WebFetch)")
+                report.summary = f"[fallback] {report.summary}"
             self._last_report = report
             return await self._merge(), None, None
         if verdict.status in ("too_hard", "structural"):
