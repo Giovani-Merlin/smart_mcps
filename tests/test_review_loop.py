@@ -120,6 +120,10 @@ class StubRunner:
         # and (legacy path) name -> the base session it forked from.
         self.base_contexts: dict[str, str] = {}
         self.fork_parents: dict[str, str] = {}
+        # name/session_id -> the `extra_allowed_tools` a launch or resume call
+        # carried (plan U4) — empty by default, so every scenario that never
+        # cares about it sees exactly what it saw before.
+        self.extra_allowed_tools: dict[str, tuple] = {}
 
     def start_worker(
         self,
@@ -130,11 +134,13 @@ class StubRunner:
         cwd,
         session_id=None,
         json_schema=None,
+        extra_allowed_tools=(),
         on_turn=None,
     ) -> RoundResult:
         """The default launch path (ADR 0007): a fresh session whose first
         prompt already carries the base context."""
         self.base_contexts[name] = base_context
+        self.extra_allowed_tools[name] = tuple(extra_allowed_tools)
         return self._launch(
             f"{base_context}\n\n{prompt}" if base_context else prompt,
             name,
@@ -143,10 +149,20 @@ class StubRunner:
         )
 
     def start_fork(
-        self, *, base_id, prompt, name, cwd, session_id=None, json_schema=None, on_turn=None
+        self,
+        *,
+        base_id,
+        prompt,
+        name,
+        cwd,
+        session_id=None,
+        json_schema=None,
+        extra_allowed_tools=(),
+        on_turn=None,
     ) -> RoundResult:
         """The legacy launch path, reached only under fork_base_session."""
         self.fork_parents[name] = base_id
+        self.extra_allowed_tools[name] = tuple(extra_allowed_tools)
         return self._launch(prompt, name, session_id, on_turn)
 
     def _launch(self, prompt, name, session_id, on_turn) -> RoundResult:
@@ -161,8 +177,11 @@ class StubRunner:
         self._play_turns(session_id, on_turn)
         return self._round(session_id)
 
-    def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None) -> RoundResult:
+    def resume(
+        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+    ) -> RoundResult:
         self.prompts[session_id].append(prompt)
+        self.extra_allowed_tools[session_id] = tuple(extra_allowed_tools)
         self._play_turns(session_id, on_turn)
         return self._round(session_id)
 
@@ -1328,7 +1347,7 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     # R5/R6: an envelope failure on the warm attempt itself falls through to a
     # fresh fork, logging the reason instead of the resumed-session line.
     class FailOnResume(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
             if session_id == "sess-warm":
                 raise SessionError("claude exited 1")
             return super().resume(
@@ -1368,7 +1387,7 @@ async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
     """
 
     class LimitOnResume(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
             if session_id == "sess-warm":
                 raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
             return super().resume(
@@ -1403,7 +1422,7 @@ async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
     # the envelope, the SessionError propagates so the scheduler lands the group
     # `interrupted` again (classification asserted by g1's scheduler tests).
     class AlwaysDown(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
             raise SessionError("warm resume down")
 
         def start_worker(self, **kwargs):
@@ -1427,7 +1446,7 @@ async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypa
     # R5: the manifest reflects the latest round's usage as it happens, not only
     # once at generation end — the re-entry pre-check needs the freshest number.
     class GrowingContext(StubRunner):
-        def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+        def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
             self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
             return super().resume(
                 session_id=session_id,
@@ -1614,7 +1633,7 @@ class TestRoundHeartbeat:
         in_flight: list[dict] = []
 
         class SnapshottingRunner(StubRunner):
-            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+            def resume(self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None):
                 if session_id == "sess-warm" and not in_flight:
                     in_flight.append(json.loads(hb_path.read_text()))
                 return super().resume(
