@@ -14,12 +14,15 @@ from orchestrator.config import EstimatorConfig
 from orchestrator.grouping import plan_reader
 from orchestrator.grouping.estimator import node_work
 from orchestrator.grouping.graphing import source_bytes_of
+from orchestrator.model import SessionRole
 from orchestrator.recipes import get_recipe, registered_names
 from orchestrator.recipes.code import price_code
+from orchestrator.recipes.registry import MergePolicy
 from orchestrator.recipes.run import RunArgs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_PLAN = REPO_ROOT / "docs/plans/2026-09-23-001-refactor-review-loop-split-plan.md"
+PROMPTS_DIR = REPO_ROOT / "orchestrator/prompts"
 
 
 class TestRegistry:
@@ -40,6 +43,31 @@ class TestRegistry:
         assert code.name == "code"
         assert run.name == "run"
         assert run.args_model is RunArgs
+
+    @pytest.mark.parametrize("name", ["code", "run"])
+    def test_every_entry_has_a_worker_prompt_template(self, name):
+        entry = get_recipe(name)
+        template_path = PROMPTS_DIR / f"{entry.worker_prompt}.md"
+        assert template_path.is_file(), f"{name}: missing template {template_path}"
+
+    @pytest.mark.parametrize("name", ["code", "run"])
+    def test_every_entry_has_a_valid_worker_role(self, name):
+        entry = get_recipe(name)
+        assert isinstance(entry.worker_role, SessionRole)
+
+    def test_code_merge_is_unrestricted(self):
+        policy = get_recipe("code").merge(None)
+        assert isinstance(policy, MergePolicy)
+        assert policy.commit_globs is None
+
+    def test_run_merge_returns_its_commit_paths(self):
+        args = RunArgs(
+            commands=[{"cmd": "echo hi", "wall_clock_min": 1.0}],
+            commit_paths=["docs/research/*.md"],
+        )
+        policy = get_recipe("run").merge(args)
+        assert isinstance(policy, MergePolicy)
+        assert policy.commit_globs == ("docs/research/*.md",)
 
 
 class TestRunArgsValidation:

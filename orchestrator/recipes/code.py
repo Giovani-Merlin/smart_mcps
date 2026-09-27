@@ -7,8 +7,8 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from orchestrator.config import EstimatorConfig
-from orchestrator.model import CoderReport
-from orchestrator.recipes.registry import RecipePrice, UnitRecipe
+from orchestrator.model import CoderReport, SessionRole
+from orchestrator.recipes.registry import MergePolicy, RecipePrice, UnitRecipe
 
 
 def price_code(
@@ -21,13 +21,19 @@ def price_code(
     return RecipePrice(tokens=code_node_work(metadata, config))
 
 
+def merge_code(args: BaseModel | None) -> MergePolicy:
+    return MergePolicy(commit_globs=None)
+
+
 CODE_RECIPE = UnitRecipe(
     name="code",
     args_model=None,
     price=price_code,
     contract=CoderReport,
+    worker_prompt="coder",
+    worker_role=SessionRole.CODER,
+    merge=merge_code,
     reviewer_prompt="reviewer",
     handoff_prompt="handoff",
-    merge="code_ladder",
     executor="orchestrator.execution.review:make_executor",
 )
