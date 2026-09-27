@@ -189,10 +189,17 @@ def price_task_mappings(
     """
     task_prices: dict[str, TaskPrice] = {}
     for mapping in mappings:
+        metadata = {
+            "source_bytes": source_bytes_of(repo_root, mapping.files),
+            "files": mapping.files,
+            "prospective_files": mapping.prospective_files,
+            "size_hints": dict(mapping.size_hints),
+        }
         if mapping.recipe != "code":
             from orchestrator.recipes.registry import get_recipe
 
             run_metadata = {
+                **metadata,
                 "recipe": mapping.recipe,
                 "recipe_args": mapping.recipe_args,
                 "triage_tokens": triage_tokens,
@@ -209,12 +216,6 @@ def price_task_mappings(
                 priced_by_default=price.defaulted,
             )
             continue
-        metadata = {
-            "source_bytes": source_bytes_of(repo_root, mapping.files),
-            "files": mapping.files,
-            "prospective_files": mapping.prospective_files,
-            "size_hints": dict(mapping.size_hints),
-        }
         coder_work = node_work(metadata, config)
         task_prices[mapping.task_id] = TaskPrice(
             task_id=mapping.task_id,

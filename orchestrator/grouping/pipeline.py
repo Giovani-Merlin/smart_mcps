@@ -1052,7 +1052,11 @@ def run_grouping(
             # exactly one task, priced and self-verified through its recipe,
             # never reviewed.
             args = recipe_args_of.get(members[0])
+            # A non-code recipe unit is always a fixed singleton, so metas[0]
+            # is this unit's own file metadata (files, prospective_files,
+            # size_hints, source_bytes) exactly as graphing.py built it.
             run_metadata = {
+                **metas[0],
                 "recipe": group_recipe,
                 "recipe_args": args,
                 "triage_tokens": config.recipes.run.triage_tokens,

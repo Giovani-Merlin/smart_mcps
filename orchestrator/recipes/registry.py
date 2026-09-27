@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal
 
 from pydantic import BaseModel
 
 from orchestrator.config import EstimatorConfig
+from orchestrator.model import SessionRole
 
 
 @dataclass(frozen=True)
@@ -25,20 +25,37 @@ PriceFn = Callable[[BaseModel | None, Mapping[str, object], EstimatorConfig], Re
 
 
 @dataclass(frozen=True)
+class MergePolicy:
+    """What paths a recipe's merge may touch. ``commit_globs is None`` is the
+    unrestricted case (the code ladder); a non-``None`` tuple is enforced by
+    ``MergeLadder._merge`` the same way the run executor enforces its own
+    ``commit_paths`` today."""
+
+    commit_globs: tuple[str, ...] | None
+
+
+MergeFn = Callable[[BaseModel | None], MergePolicy]
+
+
+@dataclass(frozen=True)
 class UnitRecipe:
     """One entry in the registry. Owns everything specific to its kind of work:
-    args schema, pricing, completion contract, reviewer/handoff prompts, merge
-    policy, and the dotted path to its executor. ``custom`` is a free mapping the
-    core never reads — a recipe's own escape hatch."""
+    args schema, pricing, completion contract, worker prompt/tools/role,
+    reviewer/handoff prompts, merge policy, and the dotted path to its
+    executor. ``custom`` is a free mapping the core never reads — a recipe's
+    own escape hatch."""
 
     name: str
     args_model: type[BaseModel] | None
     price: PriceFn
     contract: type[BaseModel]
+    worker_prompt: str  # template name, resolved via prompts/<name>.md
+    worker_role: SessionRole
+    merge: MergeFn
     reviewer_prompt: str | None
     handoff_prompt: str | None
-    merge: Literal["code_ladder", "run_commit_paths"]
     executor: str  # dotted path, resolved lazily by the dispatcher
+    extra_allowed_tools: tuple[str, ...] = ()
     custom: Mapping[str, object] = field(default_factory=dict)
 
 

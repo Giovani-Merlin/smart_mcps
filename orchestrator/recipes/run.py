@@ -10,8 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orchestrator.config import EstimatorConfig
-from orchestrator.model import VerificationResult
-from orchestrator.recipes.registry import RecipePrice, UnitRecipe
+from orchestrator.model import SessionRole, VerificationResult
+from orchestrator.recipes.registry import MergePolicy, RecipePrice, UnitRecipe
 
 SUMMARY_MAX_CHARS = 2000
 # Fixed token allowance for the one-shot failure triage, and the wall clock a
@@ -154,13 +154,20 @@ def price_run(
     )
 
 
+def merge_run(args: BaseModel | None) -> MergePolicy:
+    commit_paths = list(getattr(args, "commit_paths", None) or [])
+    return MergePolicy(commit_globs=tuple(commit_paths))
+
+
 RUN_RECIPE = UnitRecipe(
     name="run",
     args_model=RunArgs,
     price=price_run,
     contract=RunRecord,
+    worker_prompt="run_triage",
+    worker_role=SessionRole.RUNNER,
+    merge=merge_run,
     reviewer_prompt=None,
     handoff_prompt=None,
-    merge="run_commit_paths",
     executor="orchestrator.execution.run_executor:make_executor",
 )
