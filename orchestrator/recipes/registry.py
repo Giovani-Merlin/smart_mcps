@@ -64,9 +64,10 @@ def _entries() -> dict[str, UnitRecipe]:
     # and code.py's price_code lazily imports grouping.estimator in turn.
     from orchestrator.recipes.code import CODE_RECIPE
     from orchestrator.recipes.evaluate import EVALUATE_RECIPE
+    from orchestrator.recipes.optimize import OPTIMIZE_RECIPE
     from orchestrator.recipes.run import RUN_RECIPE
 
-    return {r.name: r for r in (CODE_RECIPE, RUN_RECIPE, EVALUATE_RECIPE)}
+    return {r.name: r for r in (CODE_RECIPE, RUN_RECIPE, EVALUATE_RECIPE, OPTIMIZE_RECIPE)}
 
 
 def registered_names() -> tuple[str, ...]:
