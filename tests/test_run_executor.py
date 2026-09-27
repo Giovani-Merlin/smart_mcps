@@ -16,7 +16,7 @@ import pytest
 
 from orchestrator.execution.artifacts import ArtifactManifestStore
 from orchestrator.execution.confinement import build_policy, landlock_abi_version, landlock_preexec
-from orchestrator.execution.manifest import ManifestStore, RunPaths, latest_report
+from orchestrator.execution.manifest import ManifestStore, RunPaths, latest_report, record_session
 from orchestrator.execution.run_child import boot_id, launch, process_alive
 from orchestrator.execution.run_executor import make_executor
 from orchestrator.execution.scheduler import GroupFailure, GroupState
@@ -25,6 +25,7 @@ from orchestrator.model import (
     Group,
     ReviewIntensity,
     RunManifest,
+    SessionEntry,
     SessionRole,
     Surprise,
     VerificationItem,
@@ -651,12 +652,40 @@ def test_completed_run_group_records_a_runner_session_with_start_and_end(tmp_pat
     assert len(sessions) == 1
     (session,) = sessions
     assert session.session_id == "g7-run-a1"
-    assert session.name == "rtest-g7-runner-g2"
+    assert session.name == "rtest-g7-runner-g2-a1"
     assert session.generation == 2
     assert session.started_at is not None and session.ended_at is not None
     assert session.ended_at >= session.started_at
     # The in-memory manifest the deps carry is the one persisted.
     assert deps.manifest.groups["g7"].sessions[0].ended_at == session.ended_at
+
+
+def test_crash_reentry_reopens_the_attempts_runner_session_and_closes_it_again(tmp_path, repo):
+    # An unsettled attempt-1 on disk = the previous process died (or was
+    # stopped) mid-attempt after closing the entry; the re-entry continues
+    # attempt 1 on the same entry and its close must record the real end.
+    run_dir = tmp_path / "run"
+    deps = make_deps(repo, run_dir, repo)
+    (run_dir / "groups" / "g7" / "run" / "attempt-1").mkdir(parents=True)
+    stale = SessionEntry(
+        session_id="g7-run-a1",
+        role=SessionRole.RUNNER,
+        name="rtest-g7-runner-g0-a1",
+        started_at="2026-01-01T00:00:00+00:00",
+        ended_at="2026-01-01T00:05:00+00:00",
+    )
+    record_session(
+        deps.manifest,
+        group_id="g7",
+        group_name="run recipe test",
+        summary="a run group",
+        entry=stale,
+    )
+    state, _ = asyncio.run(_run(deps, make_group({"commands": [TRUE_CMD]})))
+    assert state == GroupState.COMPLETED
+    (session,) = _runner_sessions(deps)
+    assert session.started_at == "2026-01-01T00:00:00+00:00"
+    assert session.ended_at is not None and session.ended_at > "2026-01-01T00:05:00+00:00"
 
 
 def test_failed_run_group_still_closes_the_runner_session(tmp_path, repo):
@@ -712,3 +741,108 @@ def test_pending_surprises_are_consumed_at_start_logged_and_folded_into_the_summ
     assert "x" * 300 not in summary and "…" in summary
     report = latest_report(deps.store.paths, "g7")
     assert "surprises consumed" in report["summary"]
+
+
+def test_a_surprise_consumed_by_a_failed_attempt_is_still_noted_by_the_retry(tmp_path, repo):
+    deps = make_deps(repo, tmp_path / "run", repo)
+    deps.board.mark(
+        Surprise(kind="other", description="baseline moved", affected_groups=["g7"]),
+        source_group="g2",
+    )
+    with pytest.raises(GroupFailure):
+        asyncio.run(_run(deps, make_group({"commands": [{"cmd": "false", "wall_clock_min": 1}]})))
+    assert deps.board.pending_for("g7") == []
+    # Operator `retry`: attempt 2 on a fixed command, the board now empty.
+    state, _ = asyncio.run(_run(deps, make_group({"commands": [TRUE_CMD]})))
+    assert state == GroupState.COMPLETED
+    summary = deps.artifacts.load().entries["g7"].summary
+    assert "surprises consumed: [other] baseline moved" in summary
+    log = (deps.store.paths.run_dir / "logs" / "run.log").read_text()
+    assert log.count("consumed surprise [other]") == 1
+
+
+# ------------------------------------------------- smoke r20260926 SIGINT
+
+
+def test_cancelled_command_is_relaunched_on_resume_without_triage(tmp_path, repo, monkeypatch):
+    """Ctrl-c kills the Run Child by design; the re-entry then reported it as
+    "died with the orchestrator", spent a triage call and failed the group,
+    so recovery took a `retry` on top of the `resume`. A deliberate stop
+    leaves a marker; the re-entry relaunches the command instead."""
+    from orchestrator.execution import run_executor as mod
+
+    monkeypatch.setattr(mod, "DEFAULT_POLL_INTERVAL_S", 0.05)
+    run_dir = tmp_path / "run"
+    flag = tmp_path / "ran-once"
+    # First launch: sleep long enough to be cancelled. Relaunch: exit 0 at once.
+    cmd = f"if [ -e {flag} ]; then exit 0; else touch {flag}; sleep 30; fi"
+    args = {"commands": [{"cmd": cmd, "wall_clock_min": 5}], "commit_paths": []}
+    triage_calls: list[str] = []
+
+    def fake_triage(prompt: str) -> dict:
+        triage_calls.append(prompt)
+        return {"verdict": "work_failure", "diagnosis": "should never be asked"}
+
+    deps = make_deps(repo, run_dir, repo, triage=fake_triage)
+    executor = make_executor(deps)
+
+    async def interrupted():
+        task = asyncio.ensure_future(executor(FakeContext(make_group(args))))
+        await asyncio.sleep(1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(interrupted())
+
+    attempt_dir = run_dir / "groups" / "g7" / "run" / "attempt-1"
+    marker = attempt_dir / "1.cancelled"
+    assert marker.is_file(), sorted(p.name for p in attempt_dir.iterdir())
+    assert flag.is_file(), "the first launch must have started"
+    from orchestrator.execution.run_child import RunChildState
+
+    first = RunChildState.model_validate_json((attempt_dir / "1.state.json").read_text())
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and process_alive(first.pid):
+        time.sleep(0.1)
+    assert not process_alive(first.pid)
+
+    # `resume`: same attempt, same command; no triage, no failure.
+    state, _ctx = asyncio.run(_run(deps, make_group(args)))
+
+    assert state == GroupState.COMPLETED
+    assert triage_calls == []
+    assert not marker.exists()
+    second = RunChildState.model_validate_json((attempt_dir / "1.state.json").read_text())
+    assert second.pid != first.pid, "the command must have been relaunched, not re-adopted"
+    log = deps.store.paths.event_log_path.read_text()
+    assert "stopped deliberately last time; relaunching" in log
+    assert "died with the orchestrator" not in log
+
+
+def test_heartbeat_file_carries_the_moving_label_between_ticks(tmp_path, repo, monkeypatch):
+    """The label was refreshed in memory every poll but only reached disk on
+    the heartbeat's 15 s tick, so `status` read `0s/60s` for the first
+    seconds of every command. Every poll now writes it."""
+    from orchestrator.execution import run_executor as mod
+    from orchestrator.execution.heartbeat import heartbeat_path
+
+    monkeypatch.setattr(mod, "DEFAULT_POLL_INTERVAL_S", 0.05)
+    args = {"commands": [{"cmd": "sleep 1.5", "wall_clock_min": 1}], "commit_paths": []}
+    deps = make_deps(repo, tmp_path / "run", repo)
+    executor = make_executor(deps)
+    seen: list[str] = []
+
+    async def go():
+        task = asyncio.ensure_future(executor(FakeContext(make_group(args))))
+        await asyncio.sleep(0.9)
+        import json
+
+        seen.append(json.loads(heartbeat_path(deps.store.paths, "g7").read_text())["phase"])
+        return await task
+
+    state = asyncio.run(go())
+
+    assert state == GroupState.COMPLETED
+    assert seen and seen[0].startswith("command 1/1 · "), seen
+    assert seen[0] != "command 1/1 · 0s/60s", seen

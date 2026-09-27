@@ -111,9 +111,13 @@ class RunVerificationReport(BaseModel):
     verification_results: list[VerificationResult] = Field(default_factory=list)
 
 
-#: ``Run: <cmd>`` / ``Run (…): `<cmd>` `` up to the ``Pass:`` clause or the end.
+#: ``Run: `<cmd>` `` (self-delimited — whatever follows the closing backtick,
+#: a period or ``×3 in web/``, is prose) or bare ``Run: <cmd>`` up to the
+#: ``Pass:`` clause or the end. Smoke r20260926-010154: the plan writes
+#: ``Run: `cmd`. Pass:`` and a lookahead demanded right after the backtick
+#: matched nothing, so every run-group item read ``recipe``.
 _RUN_ITEM_RE = re.compile(
-    r"\bRun\s*(?:\([^)]*\))?\s*:\s*(?:`([^`]+)`|(.+?))(?=\s+Pass\s*:|$)",
+    r"\bRun\s*(?:\([^)]*\))?\s*:\s*(?:`([^`]+)`|(.+?)(?=\s+Pass\s*:|$))",
     re.IGNORECASE | re.DOTALL,
 )
 

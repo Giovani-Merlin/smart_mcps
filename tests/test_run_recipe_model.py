@@ -26,6 +26,26 @@ def test_run_command_for_item_matches_backticked_and_bare_run_text():
     assert run_command_for_item("Run: uv run pytest tests/ -q", COMMANDS) is COMMANDS[1]
 
 
+def test_run_command_for_item_accepts_prose_after_a_backticked_command():
+    # The drummAI plan's real shapes (smoke r20260926-010154, g8-1 and g8-3).
+    assert (
+        run_command_for_item(
+            "The calibration table matches. Run: `uv run python bench.py --n 5`. "
+            "Pass: `up to date:`, exit 0.",
+            COMMANDS,
+        )
+        is COMMANDS[0]
+    )
+    assert (
+        run_command_for_item(
+            "The web suite is green three times. Run: `uv run pytest tests/ -q` ×3 in `web/`. "
+            "Pass: exit 0 each time.",
+            COMMANDS,
+        )
+        is COMMANDS[1]
+    )
+
+
 def test_run_command_for_item_normalises_whitespace_and_ignores_the_marker_parenthetical():
     assert (
         run_command_for_item("Run (driver):   `uv   run python bench.py  --n 5`", COMMANDS)

@@ -232,13 +232,23 @@ class _RunExecution:
         if group_entry is not None:
             for entry in group_entry.sessions:
                 if entry.session_id == session_id:
+                    # The previous process closed it on its way out (SIGINT,
+                    # crash); reopen so this re-entry's close records the
+                    # real end (smoke r20260926-010154: the reused entry kept
+                    # the interruption time as its end).
+                    entry.ended_at = None
+                    self.deps.store.save(self.deps.manifest)
                     return entry
         generation = self.ctx.generation
+        # ``-a<attempt>`` on top of the display convention: a `retry` starts a
+        # new attempt in the same generation, and `status` listed two runner
+        # sessions under one indistinguishable name.
+        name = f"{session_display_name(self.deps.run_id, self.gid, 'runner', generation)}-a{attempt_no}"
         entry = SessionEntry(
             session_id=session_id,
             role=SessionRole.RUNNER,
             generation=generation,
-            name=session_display_name(self.deps.run_id, self.gid, "runner", generation),
+            name=name,
             started_at=datetime.now(UTC).isoformat(),
         )
         record_session(
@@ -264,13 +274,32 @@ class _RunExecution:
         summary (see ``_build_summary``) so a downstream group's prompt
         carries them. Until this one aimed at a run group died in the residue
         as "never delivered" (r20260925-101742)."""
-        self._surprises = list(self.deps.board.consume(self.gid))
-        for surprise in self._surprises:
+        # Consumed once, remembered for every later attempt: the board hands
+        # a surprise out only once, and on smoke r20260926-010154 the attempt
+        # that consumed it failed — the retry that completed knew nothing.
+        consumed_path = self._run_dir() / "surprises-consumed.json"
+        previous: list[Surprise] = []
+        if consumed_path.is_file():
+            try:
+                previous = [
+                    Surprise.model_validate(x) for x in json.loads(consumed_path.read_text())
+                ]
+            except (OSError, ValueError):
+                previous = []
+        fresh = list(self.deps.board.consume(self.gid))
+        for surprise in fresh:
             desc = " ".join(surprise.description.split())
             log_event(
                 self.paths,
                 f"group {self.gid}: consumed surprise [{surprise.kind}] "
                 f"(run recipe, no coder; noted in the artifact summary): {desc}",
+            )
+        self._surprises = previous + fresh
+        if fresh:
+            consumed_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                consumed_path,
+                json.dumps([s.model_dump() for s in self._surprises], indent=2) + "\n",
             )
 
     # --------------------------------------------------------- attempts
@@ -404,11 +433,20 @@ class _RunExecution:
         exit_path = attempt_dir / f"{n}.exit"
         out_path = attempt_dir / f"{n}.out"
         err_path = attempt_dir / f"{n}.err"
+        cancelled_path = attempt_dir / f"{n}.cancelled"
         cap_seconds = command.wall_clock_min * 60.0
 
         state: RunChildState | None = None
         proc: subprocess.Popen | None = None
-        if state_path.is_file() and not exit_path.is_file():
+        if cancelled_path.is_file():
+            # A deliberate stop (ctrl-c, Observatory Stop, an abort cancelling
+            # in-flight groups) killed this child on purpose — see the
+            # CancelledError handler below. It did not "die with the
+            # orchestrator": relaunch it instead of spending a triage call
+            # and failing the group (smoke r20260926: SIGINT + resume cost a
+            # triage call and a `retry` for a command that was never broken).
+            self._discard_cancelled_child(n, state_path, exit_path, cancelled_path)
+        elif state_path.is_file() and not exit_path.is_file():
             candidate = RunChildState.model_validate_json(state_path.read_text())
             if is_adoptable(candidate, current_boot_id=boot_id()):
                 state = candidate
@@ -450,11 +488,24 @@ class _RunExecution:
                 exit_path,
                 state.started_monotonic,
                 cap_seconds,
-                relabel=lambda elapsed: self._heartbeat.relabel_phase(
-                    self._phase_label(n, total, elapsed, cap_seconds)
-                ),
+                relabel=lambda elapsed: self._relabel_heartbeat(n, total, elapsed, cap_seconds),
             )
         except asyncio.CancelledError:
+            # Marker first, kill second: the marker is what tells the
+            # re-entry this was deliberate, so it must be on disk even if
+            # the process is torn down before the grace period ends.
+            atomic_write_text(
+                cancelled_path,
+                json.dumps(
+                    {"pid": state.pid, "cancelled_at": datetime.now(UTC).isoformat()}, indent=2
+                )
+                + "\n",
+            )
+            log_event(
+                self.paths,
+                f"group {self.gid}: command {n}/{total} stopped with the orchestrator "
+                f"(pid {state.pid} killed); `resume` relaunches it",
+            )
             kill_process_group(state.pid)
             raise
         finally:
@@ -502,6 +553,39 @@ class _RunExecution:
     @staticmethod
     def _phase_label(n: int, total: int, elapsed: float, cap_seconds: float) -> str:
         return f"command {n}/{total} · {elapsed:.0f}s/{cap_seconds:.0f}s"
+
+    def _relabel_heartbeat(self, n: int, total: int, elapsed: float, cap_seconds: float) -> None:
+        """Refresh the moving ``Ns/caps`` label *and* carry it to disk now.
+
+        ``relabel_phase`` alone leaves the write to the heartbeat's regular
+        tick (15 s), so a ``status`` a few seconds into a command read the
+        ``0s`` label ``mark_phase`` wrote at launch until the next tick came
+        round. One small atomic write per poll is what keeps the label honest.
+        """
+        self._heartbeat.relabel_phase(self._phase_label(n, total, elapsed, cap_seconds))
+        self._heartbeat.write_once()
+
+    def _discard_cancelled_child(
+        self, n: int, state_path: Path, exit_path: Path, cancelled_path: Path
+    ) -> None:
+        """Clear a deliberately-stopped command's remains so it relaunches
+        fresh. If the kill never landed (the process was torn down mid-grace)
+        and the same child is still there, finish the job first; a stale exit
+        file (a child that caught SIGTERM and let the wrapper record ``143``)
+        would otherwise be read as this relaunch's exit status."""
+        if state_path.is_file():
+            try:
+                previous = RunChildState.model_validate_json(state_path.read_text())
+            except ValueError:
+                previous = None
+            if previous is not None and is_adoptable(previous, current_boot_id=boot_id()):
+                kill_process_group(previous.pid)
+        log_event(
+            self.paths,
+            f"group {self.gid}: command {n} was stopped deliberately last time; relaunching",
+        )
+        for path in (cancelled_path, state_path, exit_path):
+            path.unlink(missing_ok=True)
 
     def _heartbeat_phase(
         self, n: int, total: int, state: RunChildState, cap_seconds: float
