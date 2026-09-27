@@ -106,6 +106,7 @@ class OptimizeExecution(_GroupExecution):
         self._harness_hash = ""
         self._evaluations_used = 0
         self._consecutive_non_keep = 0
+        self._consecutive_reverts = 0
         self._pending_round_notes = ""
 
     # ------------------------------------------------------------ overrides
@@ -288,6 +289,12 @@ class OptimizeExecution(_GroupExecution):
     async def _after_candidate(self, rounds: int, outcome: str, report, why: str):
         kpi = self.args.kpi
         self._consecutive_non_keep = 0 if outcome == "keep" else self._consecutive_non_keep + 1
+        # A revert streak counts only discard/crash — a run of candidates
+        # actively ruled out — not `inconclusive`, which is a weaker, noisier
+        # signal and resets the streak without being a "keep".
+        self._consecutive_reverts = (
+            self._consecutive_reverts + 1 if outcome in ("discard", "crash") else 0
+        )
 
         good_enough_cleared = False
         if kpi.good_enough is not None and self._champion_kpi_value is not None:
@@ -300,17 +307,24 @@ class OptimizeExecution(_GroupExecution):
             return await self._finish_loop()
 
         cfg = self._optimize_config()
-        if outcome != "keep" and self._consecutive_non_keep > cfg.patience:
+        patience_exhausted = outcome != "keep" and self._consecutive_non_keep > cfg.patience
+        reverts_exhausted = self._consecutive_reverts > cfg.consecutive_reverts
+        if patience_exhausted or reverts_exhausted:
+            if reverts_exhausted:
+                cap_label = f"consecutive reverts ({cfg.consecutive_reverts})"
+            else:
+                cap_label = f"patience ({cfg.patience})"
             response = await self._escalate(
                 EscalationKind.CAPS_EXHAUSTED,
                 prompt=(
-                    f"group {self.gid}: optimize patience ({cfg.patience}) exhausted with no "
+                    f"group {self.gid}: optimize {cap_label} exhausted with no "
                     f"improvement\n\n{render_ledger_table(self._ledger)}"
                 ),
             )
             if response is None:
                 return await self._finish_loop()
             self._consecutive_non_keep = 0
+            self._consecutive_reverts = 0
 
         reason = self._breaker_reason(rounds)
         if reason:

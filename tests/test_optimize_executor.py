@@ -425,6 +425,48 @@ def test_patience_exhausted_raises_escalation_with_ledger_and_none_ends_complete
     assert entry.schema_name == "Ledger"
 
 
+def test_consecutive_reverts_exhausted_raises_escalation_before_patience(tmp_path, repo, fake_home):
+    """`consecutive_reverts` counts only discard/crash — a run of candidates
+    that are actively ruled out, never `inconclusive`. Set below `patience`
+    it fires first on a straight run of discards."""
+    run_dir = tmp_path / "run"
+    runner = make_runner(fake_home)
+    broker = StubBroker(response=None)
+    policy = CapsExhaustedOnlyPolicy()
+    deps = make_deps(
+        repo,
+        run_dir,
+        repo,
+        runner,
+        broker=broker,
+        policy=policy,
+        recipes_config=RecipesConfig(
+            enabled=["optimize"], optimize=OptimizeRecipeConfig(patience=4, consecutive_reverts=2)
+        ),
+    )
+    group = make_group(base_optimize_args(evaluations=100))
+    script_session(
+        fake_home,
+        coder_name(group.id),
+        candidate_round("3", "round1"),
+        candidate_round("2", "round2"),
+        candidate_round("1", "round3"),
+    )
+
+    state, _ctx = asyncio.run(_run(deps, group))
+
+    assert state == GroupState.COMPLETED
+    assert len(broker.raised) == 1
+    prompt = broker.raised[0].prompt
+    assert "reverts" in prompt
+    assert "| round |" in prompt  # the ledger table
+    ledger = Ledger.load(run_dir / "groups" / group.id / "ledger.json")
+    outcomes = [a.outcome for a in ledger.attempts]
+    assert outcomes == ["discard", "discard", "discard"]
+    entry = deps.artifacts.load().entries[group.id]
+    assert entry.schema_name == "Ledger"
+
+
 # --------------------------------------------------------------------- promising
 
 
