@@ -142,3 +142,8 @@ class ExecutionHost(Protocol):
     async def _next_round_prompt(
         self, verdict: object, verdict_path: object, rounds: int
     ) -> object: ...
+
+    # Plan U5: the group's registry entry (worker prompt, contract, reviewer/
+    # handoff templates, worker role) — `GenerationLoop` defines it,
+    # `ReviewerRound` reads it cross-mixin.
+    def _worker_recipe(self) -> object: ...

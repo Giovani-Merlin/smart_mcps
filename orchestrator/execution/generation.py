@@ -21,10 +21,10 @@ from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import artifact_name, completed_round_count
 from orchestrator.execution.prompting import (
-    render_coder_prompt,
     render_handoff_prompt,
     render_reentry_prompt,
     render_revision_prompt,
+    render_worker_prompt,
 )
 from orchestrator.execution.records import _spec_hash
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
@@ -46,11 +46,13 @@ from orchestrator.model import (
     ReviewerVerdict,
     SessionEntry,
     SessionRole,
+    WorkerReport,
     unmet_required_verification,
 )
 
 if TYPE_CHECKING:
     from orchestrator.execution.review import ReviewDeps
+    from orchestrator.recipes.registry import UnitRecipe
 
 _logger = logging.getLogger(__name__)
 
@@ -277,11 +279,12 @@ class GenerationLoop:
         # continues this generation, and a genuinely fresh generation has no
         # artifacts yet, so it reads 0.
         rounds = completed_round_count(self.deps.store.paths, self.gid, self.generation)
+        recipe = self._worker_recipe()
         if reentry is not None:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
-            prompt = self.handoff_prompt or render_coder_prompt(
-                self.deps.run_id, self.group, decisions=self._decisions_text()
+            prompt = self.handoff_prompt or render_worker_prompt(
+                recipe.worker_prompt, self.deps.run_id, self.group, decisions=self._decisions_text()
             )
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
@@ -295,7 +298,7 @@ class GenerationLoop:
             # the one already under way.
             self.coder_sid = str(uuid.uuid4())
             self.reviewer_sid = None
-            self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
+            self.coder_entry = self._record(recipe.worker_role, self.coder_sid)
             self.coder_entry.spec_sha256 = _spec_hash(self.group)
             self.deps.store.save(self.deps.manifest)
             # Logged *before* the fork, not after. `start_fork` blocks for as long
@@ -349,13 +352,15 @@ class GenerationLoop:
 
     async def _collect_report(
         self, result: RoundResult, rounds: int, verification_ids: list[str]
-    ) -> tuple[CoderReport, Path, int, RoundResult] | None:
+    ) -> tuple[WorkerReport, Path, int, RoundResult] | None:
         """Nudge the coder to a report, resolving any `needs_input` question
         along the way (each resolution re-enters this same loop rather than
         counting a round). Returns the report, the path it was saved to, the
         updated round count, and the `RoundResult` it arrived on — or `None`
         when a `needs_input` resolved into a rewrite/retirement that already
-        ended the generation."""
+        ended the generation. Parses against the group's recipe's own
+        contract (plan U5) — `CoderReport` for `code`, unchanged."""
+        recipe = self._worker_recipe()
         while True:
             # F4: nothing used to supersede "forking the base session" once the
             # fork returned, so a finished round still read as mid-fork minutes
@@ -363,16 +368,16 @@ class GenerationLoop:
             # being nudged toward) its report.
             self._heartbeat.mark_phase("coder working toward a report")
 
-            def _coder_nudge(round_result: RoundResult) -> tuple[CoderReport, RoundResult]:
+            def _coder_nudge(round_result: RoundResult) -> tuple[WorkerReport, RoundResult]:
                 return nudge_until_report(
                     self.deps.runner,
                     round_result,
-                    CoderReport,
+                    recipe.contract,
                     cwd=self.workspace,
                     verification_ids=verification_ids,
                 )
 
-            def _coder_nudge_recover(sid: str) -> tuple[CoderReport, RoundResult]:
+            def _coder_nudge_recover(sid: str) -> tuple[WorkerReport, RoundResult]:
                 resumed = self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
@@ -404,7 +409,7 @@ class GenerationLoop:
             return report, report_path, rounds, result
 
     async def _settle_round(
-        self, report: CoderReport, report_path: Path, rounds: int, result: RoundResult
+        self, report: WorkerReport, report_path: Path, rounds: int, result: RoundResult
     ) -> tuple[bool | None, ReviewerVerdict | None, Path | None]:
         """Everything that can happen to a coder's report once it exists:
         denial, a non-completed status, the verification gate, review, and
@@ -651,6 +656,16 @@ class GenerationLoop:
         entry.retirement_reason = f"re-entry fallback: {reason}"
         self._log(f"group {self.gid} re-entry: forked generation {self.generation} ({reason})")
 
+    def _worker_recipe(self) -> UnitRecipe:
+        """The group's registry entry (plan U5): worker prompt, report
+        contract, reviewer/handoff templates, session role and merge policy.
+        Imported lazily — `orchestrator.recipes` is a leaf package the loop
+        need not pay to import at module load, and `ReviewerRound` reads this
+        same method cross-mixin."""
+        from orchestrator.recipes import get_recipe
+
+        return get_recipe(self.group.recipe)
+
     # ------------------------------------------------------------ outcomes
 
     def _breaker_reason(self, rounds: int) -> str | None:
@@ -694,8 +709,9 @@ class GenerationLoop:
             )
         self._advance_generation()
 
-    def _prepare_handoff(self, report: CoderReport, verdict: ReviewerVerdict) -> None:
+    def _prepare_handoff(self, report: WorkerReport, verdict: ReviewerVerdict) -> None:
         assert self.workspace is not None
+        recipe = self._worker_recipe()
         items = [f"- {change}" for change in verdict.required_changes]
         items += [f"- {note}" for note in self._grant_notes]  # operator guidance, if any
         self._grant_notes = []
@@ -709,4 +725,5 @@ class GenerationLoop:
             outstanding=outstanding,
             diff_summary=diff_stat(self.workspace, self.deps.base_ref_for(self.group)),
             decisions=self._decisions_text(),
+            template=recipe.handoff_prompt or "handoff",
         )
