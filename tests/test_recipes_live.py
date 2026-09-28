@@ -172,9 +172,9 @@ def test_research_group_produces_sourced_findings_and_feeds_a_code_group(tmp_pat
     assert state["groups"]["g1"]["state"] == "completed", output
     assert state["groups"]["g2"]["state"] == "completed", output
 
-    findings_path = repo / "docs" / "research" / "live-probe.md"
-    assert findings_path.is_file(), output
-    findings_text = findings_path.read_text()
+    # The artifact lands on the run's integration branch — the main checkout
+    # is never written by a run (finish pushes the branch; it merges nothing).
+    findings_text = _git(repo, "show", f"orchestrator/run-{run_id}:docs/research/live-probe.md")
     assert "http" in findings_text, findings_text[:2000]
 
     manifest = json.loads(RunPaths(repo, run_id).artifact_manifest_path.read_text())

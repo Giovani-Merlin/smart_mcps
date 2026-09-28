@@ -50,10 +50,12 @@ reason — the CLI failing is the only trigger.
 
 ## Step 4 — Write the Findings Artifact
 
-Commit the artifact at the spec's declared `output` path (`docs/research/*.md`)
-— nothing else. Every finding needs at least one source (a URL or a
-repo-relative path) and a confidence level; do not assert a claim you cannot
-source. If, and only if, one specific finding changes what the group(s)
+Commit the artifact at the `output` path declared in <recipe-args>
+(`docs/research/*.md`) — nothing else. Every finding needs at least one source
+(a URL or a repo-relative path) and a confidence level; do not assert a claim
+you cannot source. The artifact is what downstream units read, so write each
+finding's sources into it verbatim — the same URLs or paths your report's
+`sources` lists, never a prose description such as "the man page". If, and only if, one specific finding changes what the group(s)
 depending on this one should build, include a single `spec_refinement`
 naming the target task and the refinement in your report — do not use it to
 report anything else.
