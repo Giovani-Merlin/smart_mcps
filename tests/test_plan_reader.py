@@ -511,6 +511,60 @@ class TestTaskMapV2:
             parse_task_map(plan_with(text), make_client(tmp_path))
 
 
+class TestTaskMapDocExamplesParse:
+    """docs/orchestrator-task-map.md v2 section names four example blocks (a
+    ``run``, a ``research``, an ``evaluate`` and an ``optimize`` task) — each
+    must parse through ``parse_task_map`` on its own, using each recipe's own
+    ``args_model`` for real, not a hand-copied stand-in."""
+
+    @staticmethod
+    def _yaml_blocks():
+        import re
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        text = (repo_root / "docs" / "orchestrator-task-map.md").read_text()
+        return re.findall(
+            r"```yaml\n(# orchestrator-task-map v2\n.*?)```",
+            text,
+            re.S,
+        )
+
+    def test_doc_has_at_least_four_v2_examples(self):
+        assert len(self._yaml_blocks()) >= 4
+
+    @pytest.mark.parametrize("index", range(4))
+    def test_each_doc_example_parses(self, tmp_path, index):
+        import re
+
+        blocks = self._yaml_blocks()
+        # Each example is a single-task block; strip its depends_on since the
+        # named upstream task lives in a sibling block, not this isolated one.
+        block = re.sub(r"depends_on: \[[^\]]*\]", "depends_on: []", blocks[index])
+        output = parse_task_map(plan_with(block), make_client(tmp_path), allow_unknown_symbols=True)
+        assert output is not None
+        assert len(output.mappings) == 1
+        mapping = output.mappings[0]
+        assert mapping.recipe in {"run", "research", "evaluate", "optimize"}
+        assert mapping.recipe_args is not None
+
+    def test_doc_examples_cover_all_three_new_recipes(self, tmp_path):
+        # Each example block is parsed on its own (per test_each_doc_example_parses
+        # above); cross-block depends_on references are stripped since the
+        # referenced task lives in a sibling block, not this one.
+        import re
+
+        recipes = set()
+        for block in self._yaml_blocks():
+            isolated = re.sub(r"depends_on: \[[^\]]*\]", "depends_on: []", block)
+            output = parse_task_map(
+                plan_with(isolated), make_client(tmp_path), allow_unknown_symbols=True
+            )
+            assert output is not None
+            recipes.update(m.recipe for m in output.mappings)
+        assert {"research", "evaluate", "optimize"} <= recipes
+
+
 class TestRealPlansStillParse:
     """g1-6: every committed plan under docs/plans/ carrying a v1 task map
     parses to the same MapperOutput before and after v2 support exists.

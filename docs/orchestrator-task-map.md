@@ -69,7 +69,7 @@ heading is a human convention. Exactly one marked block per plan.
 | `description` | yes      | string                                   | One sentence; feeds the speccer's group skeletons.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `slice`       | no       | string \| null                           | Vertical-slice label. Must-link is a **hard output invariant** (per CONTEXT.md's Slice entry): a slice lands whole in exactly one group, or grouping fails loudly naming it — never a silent split. Slice-mates are **contracted into one node** before Louvain, and the budget splitter computes its cut candidates between whole slices — never inside one — so the invariant holds through every later stage (split, merge, SCC repair), not only through Louvain. A slice whose own summed work exceeds the budget cap raises `GrouperError`, naming the slice, its members, each member's work, the cap, and the overshoot; `--allow-oversized-slice` (or `[partition] allow_oversized_slice` in `.orchestrator/config.toml`) accepts the overshoot instead, keeping the slice whole as one group with a `flags[]` entry recording it. Shared-infra / cross-cutting tasks carry **no** slice (they are hub material, never forced into a feature slice). |
 | `files`       | no       | list of repo-rel paths                   | Files the task will touch. **Prospective files (not existing yet) are allowed** — they are retained, flagged as info, contribute shared-file affinity, appear in `Group.files`, and count in the per-file token allowance (or a `size_hints` price, if given — see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `size_hints`  | no       | map of path → `small`\|`medium`\|`large` | Prices a **prospective** file by declared size instead of the flat per-file allowance: `small` 500, `medium` 2,000, `large` 5,000 tokens. `medium` is today's default rate (`per_file_tool_allowance`), so a prospective file left out of `size_hints` is priced exactly as before — unhinted files do not change shape. Every key must name a path already listed in that task's `files`; a class outside the three is a hard error, and a hint on a path that already exists is ignored with a flag (see Validation rules). Existing-file pricing (source bytes ÷ tokens-per-byte) is untouched.                                                                                                                                                                                                                                                                                                                                                                         |
+| `size_hints`  | no       | map of path → `small`\|`medium`\|`large` | Prices a **prospective** file by declared size instead of the flat per-file allowance: `small` 500, `medium` 2,000, `large` 5,000 tokens. `medium` is today's default rate (`per_file_tool_allowance`), so a prospective file left out of `size_hints` is priced exactly as before — unhinted files do not change shape. Every key must name a path already listed in that task's `files`; a class outside the three is a hard error, and a hint on a path that already exists is ignored with a flag (see Validation rules). Existing-file pricing (source bytes ÷ tokens-per-byte) is untouched.                                                                                                                                                                                                                                                                                                                                                            |
 | `symbols`     | no       | list of symbol names                     | Must exist in the codegraph index; unknown symbols are dropped with a flag (never a hard error — mirrors the mapper's verification).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `depends_on`  | no       | list of task_ids                         | **Directed dependency edges only — never affinity.** The named task is upstream. Feeds the group DAG, hub detection (a scaffold task everything depends on becomes a `utility_hub` → own group, scheduled first), merge guards.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `implements`  | no       | list of route/tag strings                | Contract surface this task provides, e.g. `/api/users`, `UserEvent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -243,6 +243,99 @@ tasks:
 merge policy are the registry entry's business (`orchestrator/recipes/`), not
 this parser's — `plan_reader.py` only validates that the args parse and that
 the `recipe`/`slice` combination is legal.
+
+### Example: a `research` task
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: u6-research-recipe
+    description: Ground the podcast script's claims before recording
+    recipe: research
+    recipe_args:
+      question: What does the codebase already assume about episode length?
+      output: docs/research/episode-length-findings.md
+      focus_paths: [orchestrator/recipes/run.py]
+      size: medium
+    depends_on: []
+    implements: []
+    consumes: []
+```
+
+`output` must start with `docs/research/` and end in `.md` — a parse-time
+hard error naming the task otherwise. `focus_paths` and `size` are optional
+(`size` defaults to `medium`, the same token allowance a task that omits the
+key gets). A `research` task may declare a downstream `spec_refinement` in
+its worker report, but that is a runtime concern (plan U7) the map never
+carries — there is no map field for it.
+
+### Example: an `evaluate` task
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: u8-evaluate-recipe
+    description: Score the tuned summary prompt against the judge harness
+    recipe: evaluate
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/score_summary_prompt.py
+          wall_clock_min: 8.0
+      measurements: .coder-scratch/measurements.json
+      kpi:
+        key: judge_score
+        direction: max
+        min_effect: 0.02
+        harness_paths: [scripts/judge_harness.py]
+        smoke: uv run scripts/judge_harness.py --smoke
+      commit_paths: []
+    depends_on: [u6-research-recipe]
+    implements: []
+    consumes: []
+```
+
+`measurements` is **required** for `evaluate` (unlike plain `run`, where it
+is optional) and `kpi.harness_paths` must be non-empty — both are hard
+parse-time errors on the task naming the missing field. The harness listed
+under `harness_paths` is content-hashed on the evaluate child's first run in
+this worktree and every later scoring run is checked against that hash; a
+mismatch fails the unit naming the path, it never silently rescales the
+score.
+
+### Example: an `optimize` task
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: u10-optimize-recipe
+    description: Tune the summary prompt against the judge harness
+    recipe: optimize
+    recipe_args:
+      commands:
+        - cmd: uv run scripts/score_summary_prompt.py
+          wall_clock_min: 8.0
+      measurements: .coder-scratch/measurements.json
+      kpi:
+        key: judge_score
+        direction: max
+        min_effect: 0.02
+        harness_paths: [scripts/judge_harness.py]
+      evaluations: 8
+      allow_write: []
+    files:
+      - orchestrator/prompts/summary.md
+    depends_on: [u8-evaluate-recipe]
+    implements: []
+    consumes: []
+```
+
+`files:` (the ordinary task-map field every recipe carries) names the
+mutable region the loop is allowed to change; it **may not overlap** any
+glob in `recipe_args.kpi.harness_paths` — `group` fails at parse time naming
+both the file and the harness glob it matches, because a candidate that
+touches its own harness can never land (the loop's mutable-region check
+discards it every round). `evaluations` bounds the round count instead of
+`max_rounds_per_generation`.
 
 ### Split/plan-check byte-preservation
 
