@@ -21,6 +21,7 @@ from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import artifact_name, completed_round_count
 from orchestrator.execution.prompting import (
+    render_coder_nudge_contract,
     render_handoff_prompt,
     render_reentry_prompt,
     render_revision_prompt,
@@ -46,6 +47,7 @@ from orchestrator.model import (
     ReviewerVerdict,
     SessionEntry,
     SessionRole,
+    Surprise,
     WorkerReport,
     unmet_required_verification,
 )
@@ -481,6 +483,12 @@ class GenerationLoop:
         else:
             verdict, verdict_path = await self._review_round(report_path, rounds)
         if verdict is None or verdict.status == "approved":
+            invalid = self._invalid_spec_refinement(report)
+            if invalid is not None:
+                error, allowed = invalid
+                self._log(f"{self._round_tag(rounds)}: ended (spec_refinement contract violation)")
+                return await self._nudge_spec_refinement(error, allowed, rounds)
+            self._mark_spec_refinement(report)
             outcome = "self-verified" if verdict is None else "approved"
             self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
             # A surprise named this group while it was in review: a
@@ -510,6 +518,99 @@ class GenerationLoop:
             self._prepare_handoff(report, verdict)
             return False, None, None
         return None, verdict, verdict_path
+
+    def _downstream_tasks(self) -> list[str]:
+        """Every task owned by a group transitively downstream of this one
+        (plan U7): a group whose ``dependencies`` names this group, or names a
+        group already found this way, via ``deps.groups_by_id``. The only
+        surface a ``spec_refinement.target_task`` is validated against."""
+        groups_by_id = self.deps.groups_by_id
+        downstream_ids: set[str] = set()
+        frontier = {self.gid}
+        while frontier:
+            found = {
+                group.id
+                for group in groups_by_id.values()
+                if group.id not in downstream_ids and frontier & set(group.dependencies)
+            }
+            if not found:
+                break
+            downstream_ids |= found
+            frontier = found
+        tasks: list[str] = []
+        for gid in sorted(downstream_ids):
+            tasks.extend(groups_by_id[gid].tasks)
+        return tasks
+
+    def _invalid_spec_refinement(self, report: WorkerReport) -> tuple[str, list[str]] | None:
+        """A recipe whose contract carries ``spec_refinement`` (plan U7) may
+        name a ``target_task`` that is not a task of any group downstream of
+        this one — the surprise board has no way to reject a bad target once
+        marked, so it is caught here, before the report is ever accepted.
+        Returns ``None`` when the report carries no refinement or a valid
+        one; otherwise the nudge error and the allowed task ids."""
+        refinement = getattr(report, "spec_refinement", None)
+        if refinement is None:
+            return None
+        allowed = self._downstream_tasks()
+        if refinement.target_task in allowed:
+            return None
+        error = (
+            f"spec_refinement.target_task {refinement.target_task!r} is not a task of any "
+            f"group downstream of {self.gid}. Allowed target tasks: "
+            f"{', '.join(allowed) if allowed else '(none — no group depends on this one)'}."
+        )
+        return error, allowed
+
+    def _mark_spec_refinement(self, report: WorkerReport) -> None:
+        """A valid ``spec_refinement`` (plan U7) becomes a surprise for its
+        declared consumer, spread the same way any other surprise is — the
+        consumer's next pre-launch checkpoint folds it into a rewrite (see
+        ``SurpriseHandling._handle_pending_surprises``'s ``counted`` split)."""
+        refinement = getattr(report, "spec_refinement", None)
+        if refinement is None:
+            return
+        surprise = Surprise(
+            kind="spec_refinement",
+            description=f"[from {self.gid} artifact {self.gid}] {refinement.refinement}",
+            affected_groups=[refinement.target_task],
+        )
+        self._spread([surprise])
+        self._log(f"group {self.gid}: spec_refinement marked for {refinement.target_task}")
+
+    async def _nudge_spec_refinement(
+        self, error: str, allowed: list[str], rounds: int
+    ) -> tuple[bool | None, ReviewerVerdict | None, Path | None]:
+        """Warm-resume the coder with the contract nudge (plan U7 Goal) and
+        re-collect a report through the ordinary path — this round never
+        settles (no merge, no changes_required breaker check); the fresh
+        report goes through ``_settle_round`` again from scratch."""
+        recipe = self._worker_recipe()
+        coder_on_turn = self._make_coder_on_turn(self.coder_entry)
+        nudge_prompt = render_coder_nudge_contract(error, allowed)
+        resumed = await self._worker_call(
+            partial(
+                self.deps.runner.resume,
+                session_id=self.coder_sid,
+                prompt=nudge_prompt,
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=coder_on_turn,
+            ),
+            recover=lambda sid: self.deps.runner.resume(
+                session_id=sid,
+                prompt=render_reentry_prompt(self.group),
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=coder_on_turn,
+            ),
+        )
+        verification_ids = [item.id for item in self.group.verification]
+        collected = await self._collect_report(resumed, rounds, verification_ids)
+        if collected is None:
+            return False, None, None
+        report, report_path, rounds, result = collected
+        return await self._settle_round(report, report_path, rounds, result)
 
     async def _next_round_prompt(
         self, verdict: ReviewerVerdict | None, verdict_path: Path | None, rounds: int
