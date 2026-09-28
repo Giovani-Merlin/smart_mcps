@@ -130,6 +130,10 @@ def _build_research_repo(tmp_path_factory) -> Path:
     _git(repo, "config", "user.email", "live@test")
     _git(repo, "config", "user.name", "live")
     (repo / "README.md").write_text("# live research-recipe fixture\n")
+    # What a real repo already ignores: the codegraph plugin's hooks create
+    # these in any repo a session opens, and a scratch repo that does not
+    # ignore them trips the research merge policy on tool noise.
+    (repo / ".gitignore").write_text(".codegraph/\n.cursor/\n")
     (repo / "notes.py").write_text("# notes\n")
     (repo / "plan.md").write_text(
         "# live research-recipe plan\n\n## Tasks\n\n"
@@ -253,6 +257,7 @@ def _build_optimize_repo(tmp_path_factory, *, tamper: bool) -> Path:
     (repo / "scripts" / "score.sh").write_text(_SCORE_SH)
     (repo / "scripts" / "score.sh").chmod(0o755)
     (repo / "value.txt").write_text("5\n")
+    (repo / ".gitignore").write_text(".codegraph/\n.cursor/\n")  # tool noise, as above
     (repo / "plan.md").write_text(
         "# live optimize-recipe plan\n\n## Tasks\n\n"
         "- u1-raise-the-score (recipe: optimize): raise the number in value.txt\n"

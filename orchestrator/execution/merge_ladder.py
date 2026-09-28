@@ -141,6 +141,7 @@ class MergeLadder:
             # Read before the merge, not after (plan U6): `merge_group` removes
             # the group's own worktree on success, so `self.workspace` no
             # longer exists by the time control returns here.
+            self._commit_declared_outputs(recipe)
             paths = changed_paths(self.workspace, self.deps.base_ref_for(self.group))
             offenders = self._merge_policy_offenders(recipe, paths)
             if offenders:
@@ -247,6 +248,40 @@ class MergeLadder:
             return None
         return recipe.args_model.model_validate(self.group.recipe_args or {})
 
+    def _commit_declared_outputs(self, recipe: UnitRecipe) -> None:
+        """Commit uncommitted files that match the recipe's declared commit
+        globs — what the run executor already does for ``commit_paths``. A
+        research worker that wrote its Findings Artifact but skipped the commit
+        (r20260927 g3-4, second live attempt) otherwise dies at merge on
+        "no commits ahead". Only the declared globs are staged, so nothing the
+        recipe did not declare can ride along; a no-op for ``commit_globs is
+        None`` (the code and optimize ladders) and a clean tree."""
+        policy = recipe.merge(self._recipe_args(recipe))
+        if not policy.commit_globs:
+            return
+        assert self.workspace is not None
+        pending = _porcelain_paths(
+            _git_ok(self.workspace, "status", "--porcelain", "--untracked-files=all")
+        )
+        matching = [
+            path
+            for path in pending
+            if any(fnmatch.fnmatch(path, glob) for glob in policy.commit_globs)
+        ]
+        if not matching:
+            return
+        _git_ok(self.workspace, "add", "-A", "--", *matching)
+        _git_ok(
+            self.workspace,
+            "commit",
+            "-m",
+            f"{self.group.recipe}({self.gid}): commit declared output left uncommitted",
+        )
+        self._log(
+            f"group {self.gid}: committed {len(matching)} declared output(s) the worker "
+            f"left uncommitted — {', '.join(matching)}"
+        )
+
     def _merge_policy_offenders(self, recipe: UnitRecipe, paths: list[str]) -> list[str]:
         """Paths outside the recipe's declared commit globs — the union of
         ``paths`` (``changed_paths``, plan U6) and ``git status --porcelain``
@@ -259,7 +294,12 @@ class MergeLadder:
         if policy.commit_globs is None:
             return []
         assert self.workspace is not None
-        porcelain = _porcelain_paths(_git_ok(self.workspace, "status", "--porcelain"))
+        # `--untracked-files=all`: the default collapses an untracked directory
+        # to `docs/`, which no file glob (`docs/research/x.md`) can ever match
+        # — r20260927 g3-4 refused a research merge naming `docs/`.
+        porcelain = _porcelain_paths(
+            _git_ok(self.workspace, "status", "--porcelain", "--untracked-files=all")
+        )
         all_paths = list(dict.fromkeys([*paths, *porcelain]))
         return [
             path
