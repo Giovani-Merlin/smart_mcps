@@ -41,6 +41,10 @@ class OptimizeReport(CoderReport):
 
     candidate: str = ""
 
+    @classmethod
+    def extra_fields_example(cls) -> dict[str, object]:
+        return {"candidate": "one line: what this candidate changes"}
+
 
 def price_optimize(
     args: BaseModel | None, metadata: Mapping[str, object], config: EstimatorConfig

@@ -60,7 +60,7 @@ from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.liveness import ActivityRegistry
 from orchestrator.execution.ratelimit import UsageLimitGate
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
-from orchestrator.model import CoderReport
+from orchestrator.model import WorkerReport
 
 REQUIRED_CLI_FLAGS = (
     "--print",
@@ -1140,13 +1140,17 @@ def _nudge_prompt(
     back a filled-in skeleton so only the values need completing. All the
     recovery cost sits on this bad path — a round that reports cleanly the
     first time pays none of it."""
-    is_coder = model_cls is CoderReport
+    # Any worker contract (CoderReport, FindingsReport, OptimizeReport, …) gets
+    # the worker nudges plus its own extra keys; only a ReviewerVerdict gets the
+    # verdict shape. `is CoderReport` sent every recipe report down the reviewer
+    # branch, and the worker obeyed it (r20260927 g3-4).
+    if isinstance(model_cls, type) and issubclass(model_cls, WorkerReport):
+        extra = model_cls.extra_fields_example()
+        if attempt == 0:
+            return render_coder_nudge_contract(str(exc), verification_ids, extra)
+        return render_coder_nudge_skeleton(verification_ids, extra)
     if attempt == 0:
-        if is_coder:
-            return render_coder_nudge_contract(str(exc), verification_ids)
         return render_reviewer_nudge_contract(str(exc))
-    if is_coder:
-        return render_coder_nudge_skeleton(verification_ids)
     return render_reviewer_nudge_skeleton()
 
 

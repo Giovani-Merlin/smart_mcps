@@ -329,6 +329,15 @@ class WorkerReport(BaseModel):
     verification_results: list[VerificationResult] = Field(default_factory=list)
     surprises: list[Surprise] = Field(default_factory=list)
 
+    @classmethod
+    def extra_fields_example(cls) -> dict[str, object]:
+        """The keys this contract adds over the base report, with example
+        values, for the re-nudge skeleton. Empty for ``CoderReport``, so its
+        nudges stay byte-identical; a recipe report overrides it (r20260927 g3-4:
+        a ``research`` worker was re-nudged toward a reviewer verdict, since
+        the nudge only knew the coder and reviewer shapes)."""
+        return {}
+
     @model_validator(mode="after")
     def _needs_input_requires_question(self) -> WorkerReport:
         if self.status == "needs_input" and not self.question.strip():

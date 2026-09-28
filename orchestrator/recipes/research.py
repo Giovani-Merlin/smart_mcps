@@ -82,6 +82,21 @@ class FindingsReport(WorkerReport):
     provider_fallback: bool = False
     spec_refinement: SpecRefinement | None = None
 
+    @classmethod
+    def extra_fields_example(cls) -> dict[str, object]:
+        return {
+            "findings": [
+                {
+                    "claim": "...",
+                    "sources": ["https://... or a repo-relative path"],
+                    "confidence": "medium",
+                    "freshness": None,
+                }
+            ],
+            "provider_fallback": False,
+            "spec_refinement": None,
+        }
+
     @model_validator(mode="after")
     def _completed_requires_findings(self) -> "FindingsReport":
         if self.status == "completed" and not self.findings:
