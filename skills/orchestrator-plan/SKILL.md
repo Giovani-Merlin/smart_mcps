@@ -263,6 +263,52 @@ cover is exactly the case for the deepen skill's sandbox sweep (or, if the
 whole unit's job is running that command, a `run` unit's `allow_write`) —
 never a route around it by hardcoding a path that happens to work today.
 
+### `research` / `evaluate` / `optimize`
+
+Three more non-`code` recipes beside `run`, all registered in
+`orchestrator/recipes/` and all validated at `group` time exactly as `run`
+is — none may carry `slice`, and each must be in `[recipes] enabled`.
+
+- **`research`** grounds a declared question in codegraph, queries
+  Perplexity with the web tools as a recorded fallback, and commits a
+  Findings Artifact at its declared `output` (must live under
+  `docs/research/` and end in `.md`) whose every finding carries a source.
+  Reach for it when a downstream unit's spec depends on something only
+  outside knowledge or a codebase-wide grep can answer — never for a
+  question the plan author can just decide. A `research` unit may refine
+  the spec of the *one* downstream unit it names in `spec_refinement`
+  through the surprise board (plan U7) — that costs no rewrite budget, but
+  it is a one-shot, one-consumer mechanism, not a way to redesign the plan
+  from inside a run.
+- **`evaluate`** is `run` plus a KPI Contract (`recipe_args.kpi`): it runs
+  declared commands exactly as `run` does, then reads a KPI, its guards,
+  and a hash of its own harness off the required `measurements` JSON. Reach
+  for it when a unit's whole job is scoring something against a harness
+  someone else already wrote — the harness unit itself is a plain `run` or
+  `code` unit and must land in an **earlier** group (`depends_on` it), never
+  the same group.
+- **`optimize`** is the code loop with a KPI-scored settle step: every round
+  is one candidate, one evaluation against the harness, and one keep-or-
+  revert decision recorded in an Attempt Ledger. Reach for it when the unit
+  *is* a tuning loop over a bounded, machine-scorable target (a prompt, a
+  config, a scoring function) — never for a single one-shot change, and
+  never when the metric itself needs human judgment per round (that is a
+  reviewer's job, not a KPI's).
+
+**Plan the harness unit first.** Both `evaluate` and `optimize` need a KPI
+Contract naming `harness_paths` that already exist by the time either
+group runs — write the harness as its own `code` (or `run`) unit, upstream
+of every `evaluate`/`optimize` unit that depends on it, following
+[`docs/orchestrator-kpi-harness.md`](../../docs/orchestrator-kpi-harness.md)
+for the measurements JSON shape, held-out inputs, and judge-script
+patterns. **One KPI per `optimize` unit** — a loop scores one contract per
+round; a task that wants two independent metrics is two `optimize` units,
+each with its own harness dependency and its own Champion, not one unit
+with two KPIs threaded through a single decision. `evaluations` (the round
+cap) and each command's `wall_clock_min` are plan-declared, the same way a
+`run` unit's wall clock is — the planning session estimates them from the
+harness's own expected cost, not a guess left for the group to discover.
+
 ## Task Map
 
 <The fenced YAML block per docs/orchestrator-task-map.md, generated **1:1 from

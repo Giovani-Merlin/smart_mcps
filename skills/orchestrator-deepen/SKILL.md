@@ -338,6 +338,26 @@ fixed triage-token allowance rather than file arithmetic (see
 `docs/orchestrator-task-map.md`'s v2 section). A command with no
 `wall_clock_min` deserves a question, not a guessed default.
 
+### `research`, `evaluate` and `optimize` units in the sweep
+
+A `research` unit needs no sandbox-sweep entry of its own — its worker
+session already carries three extra allowed-tools rules from the registry
+(`Bash(smart-mcps-perplexity *)`, `WebSearch`, `WebFetch`), added on every
+call the same way the code loop's own rules are, so a Perplexity query or a
+web fetch inside a `research` group's worker is already inside the
+allowlist, not a gap to sweep. Landlock confines writes only — reads and
+network are unconfined for every worker — so nothing about `research`
+widens what it can write.
+
+`evaluate` sweeps exactly like a `run` unit above: its `recipe_args.commands`
+run against the Run Child profile, and its `harness_paths` files must be
+readable (not writable) from the harness unit's own commit — sweep for a
+missing read grant, not a missing write one. `optimize` sweeps like a coder
+unit for its own `commands` (worker profile) plus, for the evaluate step it
+runs internally each round, the same Run Child check `evaluate` gets;
+`allow_write` on an `optimize` unit is the coder's own extra Landlock grants,
+subject to the same `~/.claude` rejection as `run`'s.
+
 ### The `PATH`-not-absolute-path rule, again
 
 The same rule from `/orchestrator-plan` applies to every command this sweep
