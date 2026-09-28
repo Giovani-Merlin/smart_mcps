@@ -234,10 +234,16 @@ class EscalationHandlers:
             extra.append(_operator_surprise(self.gid, response.answer))
         await self._rewrite(f"reviewer verdict: {verdict.status}", extra=extra)
 
-    async def _rewrite(self, why: str, extra: list[Surprise] | None = None) -> None:
+    async def _rewrite(
+        self, why: str, extra: list[Surprise] | None = None, *, counted: bool = True
+    ) -> None:
+        """``counted=False`` (plan U7): a rewrite whose only consumed surprises
+        are ``spec_refinement`` spends none of ``max_rewrites`` — the pre-launch
+        checkpoint (``SurpriseHandling._handle_pending_surprises``) is the only
+        caller that ever passes it; every other call site keeps the default."""
         self.ctx.set_state(GroupState.REWRITING)
         extra = list(extra or [])
-        if self.rewrites >= self.deps.execution.max_rewrites:
+        if counted and self.rewrites >= self.deps.execution.max_rewrites:
             # Terminal give-up: escalate before failing. An answer grants one more
             # (guided) rewrite; None (unescalated / autonomous timeout) fails as before.
             response = await self._escalate(
@@ -255,13 +261,16 @@ class EscalationHandlers:
             # `answer` and `retry` alike grant the one extra rewrite.
             extra.append(_operator_surprise(self.gid, response.answer))
         surprises = self.deps.board.consume(self.gid) + extra
+        not_counted_note = "" if counted else " (spec refinement, not counted)"
         self._log(
             f"group {self.gid} generation {self.generation}: rewriting spec ({why}); "
             f"surprises consumed: {len(surprises)} "
             f"[{', '.join(surprise.kind for surprise in surprises) or 'none'}]"
+            f"{not_counted_note}"
         )
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
-        self.rewrites += 1
+        if counted:
+            self.rewrites += 1
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
         if self.sessions_spawned:
             self._advance_generation()

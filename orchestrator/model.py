@@ -230,10 +230,21 @@ class Surprise(BaseModel):
     a pre-existing red suite — that briefs the next generation but is not
     evidence a spec needs rewriting: it is folded into the next prompt without
     spending a rewrite or calling the speccer, unlike every other kind.
+
+    ``spec_refinement`` (plan U7) is a research group's one-shot refinement of
+    its declared downstream consumer's spec: it still triggers the consumer's
+    pre-launch rewrite like any other non-informational kind, but that rewrite
+    never spends the group's ``max_rewrites`` budget (see
+    ``EscalationHandlers._rewrite``'s ``counted`` parameter).
     """
 
     kind: Literal[
-        "interface_mismatch", "missing_dependency", "merge_conflict", "other", "informational"
+        "interface_mismatch",
+        "missing_dependency",
+        "merge_conflict",
+        "other",
+        "informational",
+        "spec_refinement",
     ]
     description: str
     affected_groups: list[str] = Field(default_factory=list)

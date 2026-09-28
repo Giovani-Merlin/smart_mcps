@@ -333,8 +333,16 @@ class SurpriseHandling:
         pending = self.deps.board.pending_for(self.gid)
         if not pending:
             return False
-        if any(surprise.kind != "informational" for surprise in pending):
-            await self._rewrite(reason)
+        non_informational = [surprise for surprise in pending if surprise.kind != "informational"]
+        if non_informational:
+            # A rewrite whose every non-informational surprise is a
+            # `spec_refinement` (plan U7) costs no rewrite budget — it is the
+            # declared, one-shot mechanism a research group uses to steer its
+            # consumer, not a finding that invalidates the spec. Any other kind
+            # mixed in (even alongside a spec_refinement) still counts, exactly
+            # as before.
+            counted = any(surprise.kind != "spec_refinement" for surprise in non_informational)
+            await self._rewrite(reason, counted=counted)
             return True
         informational = self.deps.board.consume(self.gid)
         self._briefing_notes.extend(surprise.description for surprise in informational)
