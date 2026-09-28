@@ -87,43 +87,44 @@ directory):
 
 ### `ExportGroup` (one per group)
 
-| field           | type                 | null-tolerance                                                                                                                                                            |
-| --------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | string               | always present                                                                                                                                                            |
-| `name`          | string               | `""` if unnamed                                                                                                                                                           |
-| `summary`       | string               | `""` if none                                                                                                                                                              |
-| `final_state`   | string               | `"pending"` if the group never ran                                                                                                                                        |
-| `failure`       | string \| null       | null when there is no failure, **and** null when a recorded failure string is stale (see `stale_failure`) — never a failure exported alongside a successful `final_state` |
-| `stale_failure` | bool                 | true when a failure string was on disk but `final_state` is not a failure state; the flag exists precisely so a stale failure is never silently dropped without a trace   |
-| `depends_on`    | string[]             | `[]` if none                                                                                                                                                              |
-| `spec`          | object \| null       | the assembled spec from the run's `groups.json`; null only if the group id is absent from that snapshot (not observed in practice)                                        |
-| `rewrites`      | `ExportRewrite[]`    | `[]` if the group was never rewritten                                                                                                                                     |
-| `sessions`      | `ExportSession[]`    | `[]` if the group never launched a worker                                                                                                                                 |
-| `artifacts`     | `ExportArtifact[]`   | `[]` if none                                                                                                                                                              |
-| `escalations`   | `ExportEscalation[]` | `[]` if none                                                                                                                                                              |
+| field           | type                 | null-tolerance                                                                                                                                                                                  |
+| --------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | string               | always present                                                                                                                                                                                  |
+| `name`          | string               | `""` if unnamed                                                                                                                                                                                 |
+| `summary`       | string               | `""` if none                                                                                                                                                                                    |
+| `final_state`   | string               | `"pending"` if the group never ran                                                                                                                                                              |
+| `failure`       | string \| null       | null when there is no failure, **and** null when a recorded failure string is stale (see `stale_failure`) — never a failure exported alongside a successful `final_state`                       |
+| `stale_failure` | bool                 | true when a failure string was on disk but `final_state` is not a failure state; the flag exists precisely so a stale failure is never silently dropped without a trace                         |
+| `depends_on`    | string[]             | `[]` if none                                                                                                                                                                                    |
+| `spec`          | object \| null       | the assembled spec from the run's `groups.json`; null only if the group id is absent from that snapshot (not observed in practice)                                                              |
+| `rewrites`      | `ExportRewrite[]`    | `[]` if the group was never rewritten                                                                                                                                                           |
+| `sessions`      | `ExportSession[]`    | `[]` if the group never launched a worker                                                                                                                                                       |
+| `artifacts`     | `ExportArtifact[]`   | `[]` if none                                                                                                                                                                                    |
+| `escalations`   | `ExportEscalation[]` | `[]` if none                                                                                                                                                                                    |
+| `ledger`        | `object[]` \| absent | **key is absent entirely**, not null, for every group with no `ledger.json` (added in v2, additively — see [`ExportGroup.ledger`](#exportgroupledger-an-optimize-groups-attempt-history) below) |
 
 Synthetic `role: "orchestrator"` session rows the live snapshot injects for
 board display (rewrite/base rows) are **not** exported as sessions — their
 content is already carried by `rewrites`.
 
-### `ExportSession` (one per real coder/reviewer session)
+### `ExportSession` (one per real coder/reviewer/researcher session)
 
-| field                     | type                      | null-tolerance                                                                                                                                                                       |
-| ------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `session_id`              | string                    | always present                                                                                                                                                                       |
-| `role`                    | string                    | `"coder"` \| `"reviewer"`                                                                                                                                                            |
-| `generation`              | int                       | defaults to `1`                                                                                                                                                                      |
-| `name`                    | string                    | `""` if unnamed                                                                                                                                                                      |
-| `transcript_missing`      | bool                      | true when no transcript file could be resolved (recorded path stale/absent, and no `*/<session_id>.jsonl` glob match under the transcript root)                                      |
-| `events_path`             | string \| null            | relative to the package directory (`events/<session_id>.jsonl.gz`); null exactly when `transcript_missing` is true, or when the export ran without `events_dir` (a facts-only build) |
-| `events_count`            | int                       | `0` when `events_path` is null                                                                                                                                                       |
-| `base_context_stripped`   | bool                      | see [Strip semantics](#strip-semantics) below                                                                                                                                        |
-| `started_at` / `ended_at` | string (ISO 8601) \| null | null if not recorded                                                                                                                                                                 |
-| `rounds_completed`        | int                       | `0` if none                                                                                                                                                                          |
-| `retirement_reason`       | string \| null            | null if the session never retired                                                                                                                                                    |
-| `model`                   | string \| null            | null if not recorded                                                                                                                                                                 |
-| `tokens`                  | `ExportTokens`            | all-zero means "not recorded", not "zero spent" — see below                                                                                                                          |
-| `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it      |
+| field                     | type                      | null-tolerance                                                                                                                                                                                                                                                                                          |
+| ------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_id`              | string                    | always present                                                                                                                                                                                                                                                                                          |
+| `role`                    | string                    | `"coder"` \| `"reviewer"` \| `"researcher"` — a `research` recipe worker session exports with `role == "researcher"`, passed through the same as any other session (`evaluate` and `optimize` sessions keep `"runner"` and `"coder"`/`"reviewer"` respectively; see `SessionRole` in `ui/src/types.ts`) |
+| `generation`              | int                       | defaults to `1`                                                                                                                                                                                                                                                                                         |
+| `name`                    | string                    | `""` if unnamed                                                                                                                                                                                                                                                                                         |
+| `transcript_missing`      | bool                      | true when no transcript file could be resolved (recorded path stale/absent, and no `*/<session_id>.jsonl` glob match under the transcript root)                                                                                                                                                         |
+| `events_path`             | string \| null            | relative to the package directory (`events/<session_id>.jsonl.gz`); null exactly when `transcript_missing` is true, or when the export ran without `events_dir` (a facts-only build)                                                                                                                    |
+| `events_count`            | int                       | `0` when `events_path` is null                                                                                                                                                                                                                                                                          |
+| `base_context_stripped`   | bool                      | see [Strip semantics](#strip-semantics) below                                                                                                                                                                                                                                                           |
+| `started_at` / `ended_at` | string (ISO 8601) \| null | null if not recorded                                                                                                                                                                                                                                                                                    |
+| `rounds_completed`        | int                       | `0` if none                                                                                                                                                                                                                                                                                             |
+| `retirement_reason`       | string \| null            | null if the session never retired                                                                                                                                                                                                                                                                       |
+| `model`                   | string \| null            | null if not recorded                                                                                                                                                                                                                                                                                    |
+| `tokens`                  | `ExportTokens`            | all-zero means "not recorded", not "zero spent" — see below                                                                                                                                                                                                                                             |
+| `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it                                                                                                                         |
 
 `ExportTokens` (`input`, `output`, `cache_read`, `cache_creation`, all int):
 this is the one place the contract deliberately uses `0` instead of `null`
@@ -274,25 +275,53 @@ to `null`, on a run with no `artifacts.json`** (every run before plan U6),
 so an old run's `ingest.json` is byte-for-byte what it always was. When
 present, it is a flat list, sorted by `artifact_id`.
 
-| field          | type                                          | null-tolerance                                                                                        |
-| -------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `artifact_id`  | string                                        | always present                                                                                        |
-| `group_id`     | string                                        | always present                                                                                        |
-| `tasks`        | string[]                                      | `[]` if the entry names none                                                                          |
-| `recipe`       | string                                        | the group's recipe (`"code"` or `"run"` today)                                                        |
-| `paths`        | string[]                                      | relative to the run's repo root; `[]` for an entry with nothing on disk                               |
-| `sha256`       | `Record<string, string>`                      | one hash per path that exists; `{}` for `code` — git already content-addresses every file at `commit` |
-| `commit`       | string \| null                                | null when the entry recorded no commit                                                                |
-| `schema`       | string                                        | the contract model the entry's shape follows (`"CoderReport"` for a `code` entry)                     |
-| `summary`      | string                                        | capped at 2000 characters at write time, never truncated by the exporter                              |
-| `status`       | string                                        | `"complete"` \| `"partial"` — `"partial"` for a Resolve settling unfinished work                      |
-| `measurements` | `Record<string, number \| string \| boolean>` | `{}` if the recipe recorded none                                                                      |
-| `recorded_at`  | string (ISO 8601)                             | always present                                                                                        |
+| field          | type                                          | null-tolerance                                                                                                                                                                                                                                                                |
+| -------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `artifact_id`  | string                                        | always present                                                                                                                                                                                                                                                                |
+| `group_id`     | string                                        | always present                                                                                                                                                                                                                                                                |
+| `tasks`        | string[]                                      | `[]` if the entry names none                                                                                                                                                                                                                                                  |
+| `recipe`       | string                                        | the group's recipe: `"code"`, `"run"`, `"research"`, `"evaluate"`, or `"optimize"`                                                                                                                                                                                            |
+| `paths`        | string[]                                      | relative to the run's repo root; `[]` for an entry with nothing on disk                                                                                                                                                                                                       |
+| `sha256`       | `Record<string, string>`                      | one hash per path that exists; `{}` for `code` — git already content-addresses every file at `commit`                                                                                                                                                                         |
+| `commit`       | string \| null                                | null when the entry recorded no commit                                                                                                                                                                                                                                        |
+| `schema`       | string                                        | the contract model the entry's shape follows — `"CoderReport"` for `code`, `"RunRecord"` for `run`, `"FindingsReport"` for `research`, `"EvaluationRecord"` for `evaluate`, `"Ledger"` for a zero-hit `optimize` group that registers its ledger instead of a champion commit |
+| `summary`      | string                                        | capped at 2000 characters at write time, never truncated by the exporter                                                                                                                                                                                                      |
+| `status`       | string                                        | `"complete"` \| `"partial"` — `"partial"` for a Resolve settling unfinished work                                                                                                                                                                                              |
+| `measurements` | `Record<string, number \| string \| boolean>` | `{}` if the recipe recorded none                                                                                                                                                                                                                                              |
+| `recorded_at`  | string (ISO 8601)                             | always present                                                                                                                                                                                                                                                                |
 
 A `code` group's entry is written by the orchestrator at merge time from data
-it already has; a `run` group's entry is written by that recipe's own
-executor. Both are index-only — copying an output's bytes into the bundle is
-explicitly out of scope for this key.
+it already has; a `run`, `research`, or `evaluate` group's entry is written by
+that recipe's own executor. An `optimize` group registers a `"CoderReport"`
+entry the same way `code` does when it merges a Champion, or a `"Ledger"`
+entry when the loop ends with no kept candidate. Every entry here is
+index-only — copying an output's bytes into the bundle is explicitly out of
+scope for this key.
+
+### `ExportGroup.ledger` (an `optimize` group's Attempt History)
+
+`ExportGroup.ledger` (added in `schema_version` 2, additively) is the flat
+list of an `optimize` group's ledger rows, read verbatim from
+`<group_dir>/ledger.json` (plan U9/U10) — one object per row of
+`orchestrator.execution.kpi.Attempt`, in the order they were appended. **The
+key is absent entirely, not set to `null`, on any group with no
+`ledger.json`** — every group before this plan, and every non-`optimize`
+group after it — so a bundle from before `optimize` existed, or a `code`/
+`run`/`research`/`evaluate` group's entry in a newer bundle, is byte-for-byte
+what it always was.
+
+| field              | type                     | meaning                                                                                          |
+| ------------------ | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `round_no`         | int                      | the round this attempt was scored in                                                             |
+| `candidate_commit` | string                   | the commit the evaluate command scored                                                           |
+| `kpi_value`        | number \| null           | null on a crashed attempt                                                                        |
+| `guard_values`     | `Record<string, number>` | `{}` if the contract named no guards                                                             |
+| `delta`            | number \| null           | signed so positive always means "better", regardless of the KPI's own direction; null on a crash |
+| `noise_floor`      | number                   | the MAD over the last five deltas at the time of this attempt; `0.0` with fewer than two         |
+| `outcome`          | string                   | `"keep"` \| `"promising"` \| `"inconclusive"` \| `"discard"` \| `"crash"`                        |
+| `harness_hash`     | string                   | the KPI Contract's harness paths' hash this attempt was scored against                           |
+| `why`              | string                   | the decision's rationale, e.g. a guard regression or harness-tamper detection                    |
+| `at`               | string (ISO 8601)        | when this row was appended                                                                       |
 
 ## `NeutralEvent` schema
 

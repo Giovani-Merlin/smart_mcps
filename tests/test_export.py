@@ -20,6 +20,7 @@ from orchestrator.execution.export import (
     build_export,
     export_run,
 )
+from orchestrator.execution.kpi import Attempt, Ledger
 from orchestrator.execution.manifest import ManifestStore, RunPaths, atomic_write_text
 from orchestrator.execution.transcript_events import read_events_gz
 from orchestrator.model import (
@@ -920,3 +921,87 @@ def test_unreadable_artifacts_json_degrades_to_null(tmp_path: Path) -> None:
     export = _export(paths, root)
     assert export.artifact_manifest is None
     assert export.groups[0].sessions[0].events_count > 0
+
+
+# ------------------------------------------------------------------- ledger
+
+
+def test_group_with_ledger_exports_rows_and_group_without_omits_the_key(
+    tmp_path: Path,
+) -> None:
+    """An `optimize` group's `ledger.json` surfaces as `groups[0].ledger`; a
+    group with no such file carries no `ledger` key at all (same additive
+    treatment as the top-level `artifact_manifest`)."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+
+    ledger = Ledger(
+        attempts=[
+            Attempt(
+                round_no=1,
+                candidate_commit="abc123",
+                kpi_value=1.5,
+                guard_values={},
+                delta=0.5,
+                noise_floor=0.0,
+                outcome="keep",
+                harness_hash="deadbeef",
+                why="raised the score",
+                at="2026-01-01T00:10:00+00:00",
+            )
+        ]
+    )
+    ledger.save(paths.group_dir("g1") / "ledger.json")
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+
+    [group] = payload["groups"]
+    assert group["ledger"] == [
+        {
+            "round_no": 1,
+            "candidate_commit": "abc123",
+            "kpi_value": 1.5,
+            "guard_values": {},
+            "delta": 0.5,
+            "noise_floor": 0.0,
+            "outcome": "keep",
+            "harness_hash": "deadbeef",
+            "why": "raised the score",
+            "at": "2026-01-01T00:10:00+00:00",
+        }
+    ]
+    assert payload["schema_version"] == SCHEMA_VERSION
+
+
+def test_group_without_ledger_json_omits_the_key(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    assert not (paths.group_dir("g1") / "ledger.json").exists()
+
+    export = _export(paths, root)
+    assert export.groups[0].ledger is None
+
+    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    payload = json.loads((destination / "ingest.json").read_text())
+    [group] = payload["groups"]
+    assert "ledger" not in group
+
+
+def test_malformed_ledger_json_degrades_to_omitted(tmp_path: Path) -> None:
+    """The Attempt Ledger is inert by contract on the read side, same as
+    `artifacts.json` — a malformed file must never fail an otherwise-whole
+    bundle."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="do the g1 task")
+    paths = _run_with_one_group(tmp_path)
+    group_dir = paths.group_dir("g1")
+    group_dir.mkdir(parents=True, exist_ok=True)
+    (group_dir / "ledger.json").write_text("{not json")
+
+    export = _export(paths, root)
+    assert export.groups[0].ledger is None
+    # ledger.json must never be picked up as a stray "other" artifact.
+    assert all(a.path != "groups/g1/ledger.json" for a in export.groups[0].artifacts)
