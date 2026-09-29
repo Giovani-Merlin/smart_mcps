@@ -13,6 +13,8 @@ Verification outputs, logs, and temporary scripts go in `.coder-scratch/` at the
 root of your worktree (it is git-ignored for you and archived with the group's
 artifacts). Anything else left untracked in the worktree fails the merge gate:
 commit it, move it into `.coder-scratch/`, or delete it before you report.
+Never write to `/tmp` — it is wiped on restart and outside the run's record;
+`.coder-scratch/` is your temporary space.
 
 If an `## Operator decisions (binding)` section appears below, it is binding: it
 overrides the spec above wherever they differ.

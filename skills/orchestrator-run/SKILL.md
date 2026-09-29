@@ -47,7 +47,11 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
 1. **Commits exist, tree is clean.** `git rev-parse --verify HEAD`;
    `git status --porcelain`. A dirty tree is allowed only if the human
    accepts it explicitly — workers fork from the launch commit, so anything
-   uncommitted is invisible to them.
+   uncommitted is invisible to them. `run` and `resume` also refuse to launch
+   when the installed `smart-mcps-orchestrate` (a non-editable `uv tool`
+   copy) differs from the source it was installed from, naming the
+   `uv tool install --reinstall <repo>` command — reinstall rather than
+   passing `--allow-stale-install`, unless running old code is the point.
 2. **Config exists and names the data.** `.orchestrator/config.toml` must
    exist — print the absolute path you actually read
    (`realpath .orchestrator/config.toml`; F6, r20260924: a driver launched
@@ -66,7 +70,10 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
 3. **Grouping exists and is current.** `smart-mcps-orchestrate groupings`.
    If the plan file is newer than the grouping's `groups.json`, or the plan
    was deepened since, regenerate: `smart-mcps-orchestrate plan-check <plan>`
-   then `smart-mcps-orchestrate group <plan>`. The launch below selects the
+   then `smart-mcps-orchestrate group <plan>`. Resolve every `plan-check`
+   warning before launch: a program off the worker allowlist interrupts its
+   group on a `permission_denied` unless your own settings grant it — mark
+   the item `Run (driver):` in the plan and regroup, or confirm the grant. The launch below selects the
    grouping by `--plan "$PLAN"`; that still errors when two groupings were
    built from the same plan — then pick one with `--grouping NAME` instead.
 4. **The environment builds on the launch branch.** Read
@@ -401,7 +408,7 @@ When the process exits (signal **(b)**):
       it before launching the *next* run (`finish` reads it fresh, so this
       run only gets a report if it was already set before launch).
    2. Preview the computed formats now, so you write the one-pager from real
-      facts: `smart-mcps-orchestrate report $RUN --format all --out /tmp/rr-$RUN`.
+      facts: `smart-mcps-orchestrate report $RUN --format all --out .orchestrator/runs/$RUN/report-preview`.
       This writes `facts.json`, `report.html`, and `CHANGELOG-entry.md`
       there and nothing else — it never touches `docs/RUNLOG.md` unless you
       add `--update-runlog`, and never writes into a worktree. `finish`
@@ -420,7 +427,7 @@ When the process exits (signal **(b)**):
       - **Extract.** Build one prompt from two XML-delimited sources and
         nothing else — never a transcript:
         ```
-        <facts>…contents of /tmp/rr-$RUN/CHANGELOG-entry.md…</facts>
+        <facts>…contents of .orchestrator/runs/$RUN/report-preview/CHANGELOG-entry.md…</facts>
         <driver_notes>…contents of .orchestrator/notes-$RUN.md…</driver_notes>
         ```
         From them list `{pointer, fact quote}` items, one per thing worth
@@ -455,7 +462,10 @@ When the process exits (signal **(b)**):
       transcript from inside a confined worktree, so those it always leaves
       to you). A `passed by the coder` line needs nothing. Run each from the group's
       worktree, or from the integration worktree once merged, and paste the
-      result into the one-pager's Run notes. A live-tier item costs real
+      result into the one-pager's Run notes. Run a live-tier pytest item with
+      `--basetemp=.orchestrator/runs/$RUN/live-<item>` and its output to a log
+      beside it: pytest's default temp dir is under `/tmp`, and a reboot
+      mid-item wiped r20260927-100604's scratch repos with the evidence. A live-tier item costs real
       tokens (`-m llm`, ~$0.20 and a few minutes here) — that is the price of
       the evidence, not a reason to skip it. A failure here is a finding: fix
       it and re-verify, or say plainly in the report that the item is unproven.

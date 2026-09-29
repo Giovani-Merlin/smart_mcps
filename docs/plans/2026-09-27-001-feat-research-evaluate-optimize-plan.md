@@ -439,7 +439,7 @@ every command below is `uv run smart-mcps-orchestrate …`. The plugin is at
   - Run: `uv run pytest tests/test_optimize_executor.py -q -k promising` Pass: with a noisy scripted harness (floor > 0), a clearing candidate triggers the reviewer session with the `optimize_reviewer` prompt, then a second evaluation, and is `keep` only when both clear; a reviewer `changes_required` makes it `discard` with the notes in `why`.
   - Run: `uv run pytest tests/test_recipe_partition.py -q -k optimize_files` Pass: a task map whose `optimize` unit lists `scripts/score.sh` in `files` and in `kpi.harness_paths` fails `group` with a `GrouperError` naming the task, `scripts/score.sh` and the glob; the same map with `files: [value.txt]` groups.
   - Run: `uv run pytest tests/test_executor_dispatch.py tests/test_recipe_registry.py tests/test_review_loop.py -q` Pass: green.
-  - Run: `bash -c 'echo 5 > /tmp/v && printf "{\"score\": %s}\n" "$(cat /tmp/v)"'` Pass: prints `{"score": 5}` — the shape of the harness the unit's tests script, run for real.
+  - Run (driver): `bash -c 'echo 5 > .coder-scratch/v && printf "{\"score\": %s}\n" "$(cat .coder-scratch/v)"'` Pass: prints `{"score": 5}` — the shape of the harness the unit's tests script, run for real.
 
 ### U11. bundle-additive — the Run Bundle carries the ledger and the new roles as optional, additive fields
 
@@ -453,7 +453,7 @@ every command below is `uv run smart-mcps-orchestrate …`. The plugin is at
 - **Implements / Consumes**: — / `recipe-entry-v2`, `kpi-ledger`
 - **Verification**:
   - Run: `uv run pytest tests/test_export.py -q` Pass: a run dir with `groups/g1/ledger.json` exports `groups[0].ledger` as its rows; one without has no `ledger` key; `schema_version == 2`.
-  - Run (driver): `uv run smart-mcps-orchestrate export r20260924-134934 && python -c "import json; d=json.load(open('.orchestrator/runs/r20260924-134934/ingest.json')); print(d['schema_version'], 'ledger' in d['groups'][0])"` Pass: prints `2 False`.
+  - Run (driver): `uv run smart-mcps-orchestrate export r20260924-134934 && python -c "import json; d=json.load(open('.orchestrator/runs/r20260924-134934/ingest/ingest.json')); print(d['schema_version'], 'ledger' in d['groups'][0])"` Pass: prints `2 False`.
   - Run: `grep -c "researcher" docs/run-bundle-contract.md` Pass: ≥ 2 (the role tables).
 
 ### U12. report-recipes — the run report renders research, evaluate and optimize groups honestly

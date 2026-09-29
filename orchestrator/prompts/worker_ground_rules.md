@@ -21,6 +21,13 @@ follows it.
   the group's artifacts. Anything else left untracked in the worktree fails
   the merge gate: commit it, move it into `.coder-scratch/`, or delete it
   before you report.
+- **Never write to `/tmp`** (or `/var/tmp`, or `mktemp` with no directory) —
+  not for scratch files, not for a quick check, not when a spec or a habit
+  suggests it. `/tmp` is wiped on restart and lies outside the run's record,
+  so whatever lands there is lost evidence. Your worktree already is the
+  temporary space: `.coder-scratch/` for throwaway files, `mktemp -p
+  .coder-scratch` when a tool needs a unique path, and a `data_dirs` path for
+  large outputs that must outlive the group.
 - Run long or real verification (a full suite, a pipeline over real data, a
   render) in the **foreground** and wait for it. A background task is killed
   when your session ends its turn, so a verification you backgrounded never

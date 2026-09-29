@@ -262,8 +262,10 @@ carries, deepened or not. A worker is Landlock-confined (see
 `orchestrator/execution/confinement.py`) to: its own worktree, its own
 `~/.claude/projects/<slug-of-that-worktree>`, the worktree's git dirs, the
 probed `~/.claude` runtime dirs, `~/.claude/.credentials.json`, the
-orchestrator cache root, `system_write_paths()` (`/tmp` among them), and
-whatever `[session] extra_write_paths` adds. Reads are never restricted;
+orchestrator cache root, `system_write_paths()` (`/tmp` among them — writable,
+but no plan item may use it: a restart wipes it and it has lost run data more
+than once, so `plan-check` fails a `Run:` line naming it), and whatever
+`[session] extra_write_paths` adds. Reads are never restricted;
 **writes outside that list fail with `PermissionError`**, and the worker
 usually reports it as a mysterious environment defect.
 
@@ -275,7 +277,8 @@ For each `Run:` command, ask what it *writes* and where:
 | a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted) |
 | a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit         |
 | a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                          |
-| `/tmp`, or kills/resumes a child process                        | fine — `Run:`; process control is not a write                          |
+| `/tmp` or `/var/tmp`                                            | rewrite to `.coder-scratch/` — never `/tmp`: a restart wipes it        |
+| kills/resumes a child process                                   | fine — `Run:`; process control is not a write                          |
 
 **The default is `Run:`; `Run (driver):` only when the command spawns a nested
 `claude` or writes to a path outside the allowlist that cannot be declared in

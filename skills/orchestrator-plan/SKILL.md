@@ -187,12 +187,30 @@ run-driver runs it and reports the evidence. The worker is Landlock-confined
 to its own worktree and its own `~/.claude/projects/<slug>`, so a nested
 session cannot write its transcript, and the rule that denies it is what keeps
 a worker out of other sessions' `memory/`. Process control (killing or
-resuming a child), `/tmp` writes and in-worktree writes are all ordinary
-`Run:` items. A coder may still *attempt* a sandbox-safe driver item and
+resuming a child) and in-worktree writes are ordinary `Run:` items. **No
+item ever writes to `/tmp`** — not a coder item, not a driver item: `/tmp` is
+wiped on restart (this has lost run data more than once) and a model reaches
+for it out of habit. Scratch output goes to the worktree's `.coder-scratch/`,
+anything that must outlive the group to a `[workspace] data_dirs` path;
+`plan-check` fails a `Run:` line that names `/tmp`. A coder may still *attempt* a sandbox-safe driver item and
 report it `pass` with evidence; the merge log then lists only the items nobody
 ran. `/orchestrator-deepen`'s sandbox sweep is where every `Run:` line is
 checked against the allowlist; a planning session that already knows an item
 is driver-only may mark it here.
+
+Two rules `smart-mcps-orchestrate plan-check` now enforces on every `Run:`
+line (r20260927-100604 lost a group and a driver correction to one of each):
+
+- **Every program must be on the worker allowlist.** `plan-check` warns on a
+  segment whose program the default allowlist does not grant — `bash -c …`,
+  `wc`, `printf`, a project CLI. Rewrite it with an allowed program, or mark
+  the item `Run (driver):`; a warning left in place becomes a
+  `permission_denied` that interrupts the group.
+- **Every path a command reads must come from the code, not from memory.** A
+  path passed as an argument or opened by inline Python must exist, or be in
+  some unit's `files`; `plan-check` fails the plan otherwise. Read the writer
+  of an artifact before naming where it lands (`export` writes
+  `ingest/ingest.json`, not `ingest.json`).
 
 `Run (driver, sandbox-safe):` is the third form: a driver item you have
 checked spawns no nested `claude` and writes only inside the worktree (the
