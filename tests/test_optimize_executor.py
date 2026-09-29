@@ -124,6 +124,10 @@ def candidate_round(value: str, msg: str = "candidate", extra_files: dict | None
         "result": optimize_report(candidate=f"set value to {value}"),
         "files": files,
         "commit": msg,
+        # A value equal to the champion's is an empty commit now that the loop
+        # archives measurements.json instead of leaving it for `git add -A` to
+        # sweep into every candidate (r20260927 g3-5).
+        "allow_empty": True,
     }
 
 

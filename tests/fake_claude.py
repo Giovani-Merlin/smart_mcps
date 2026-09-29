@@ -411,8 +411,14 @@ def main() -> int:
             target.write_text(content)
         if scripted.get("commit"):
             subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
+            # `allow_empty`: a scripted candidate identical to its parent (an
+            # optimize round re-submitting the champion's value) is still a
+            # commit, as it is for a real worker that commits unconditionally.
+            empty = ["--allow-empty"] if scripted.get("allow_empty") else []
             done = subprocess.run(
-                ["git", "commit", "-m", str(scripted["commit"])], capture_output=True, text=True
+                ["git", "commit", *empty, "-m", str(scripted["commit"])],
+                capture_output=True,
+                text=True,
             )
             if done.returncode != 0:
                 print(f"scripted commit failed: {done.stderr}", file=sys.stderr)

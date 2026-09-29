@@ -344,10 +344,18 @@ class OptimizeExecution(_GroupExecution):
         ruled_out = sum(1 for a in self._ledger.attempts if a.outcome != "keep")
         if self._champion != self._launch_commit:
             merged = await self._merge()
-            self._log(
-                f"group {self.gid}: optimize loop merged champion "
-                f"{(self._champion or '')[:8]} ({ruled_out} candidate(s) ruled out)"
-            )
+            if merged:
+                self._log(
+                    f"group {self.gid}: optimize loop merged champion "
+                    f"{(self._champion or '')[:8]} ({ruled_out} candidate(s) ruled out)"
+                )
+            else:
+                # r20260927 g3-5 logged "merged champion" right after a failed
+                # gate had relaunched the group — the line must mean it landed.
+                self._log(
+                    f"group {self.gid}: optimize loop champion "
+                    f"{(self._champion or '')[:8]} did not merge this attempt"
+                )
             return merged, None, None
         self._register_ledger_artifact(ruled_out)
         self._log(f"group {self.gid}: no improvement found — {ruled_out} candidate(s) ruled out")
@@ -557,6 +565,7 @@ class OptimizeExecution(_GroupExecution):
                 raise _EvalCrash(f"command {n} ({command.cmd!r}) exited {result.exit_status}")
 
         raw = self._read_measurements_raw()
+        self._archive_measurements(attempt_dir)
         value = raw.get(kpi.key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise _EvalCrash(f"measurements missing KPI key {kpi.key!r}")
@@ -567,6 +576,22 @@ class OptimizeExecution(_GroupExecution):
                 raise _EvalCrash(f"measurements missing guard key {guard.key!r}")
             values[guard.key] = float(guard_value)
         return values
+
+    def _archive_measurements(self, attempt_dir: Path) -> None:
+        """Move an untracked measurements file out of the worktree into the
+        attempt's eval dir once read. Left in place it is an untracked file at
+        merge, which the gate refuses — r20260927 g3-5: every live optimize
+        run relaunched a second generation and merged only after the untracked
+        ladder archived `measurements.json`. A tracked measurements file is
+        left alone (the harness owns it)."""
+        assert self.workspace is not None
+        path = self.workspace / self.args.measurements
+        if not path.is_file():
+            return
+        if _git_ok(self.workspace, "ls-files", "--", self.args.measurements).strip():
+            return
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        path.replace(attempt_dir / Path(self.args.measurements).name)
 
     def _read_measurements_raw(self) -> dict:
         assert self.workspace is not None

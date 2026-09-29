@@ -293,10 +293,14 @@ def test_optimize_loop_keeps_a_champion_over_three_evaluations(tmp_path_factory)
     state = json.loads(RunPaths(repo, run_id).state_path.read_text())
     assert state["groups"]["g1"]["state"] == "completed", output
 
-    assert output.count("round 1:") >= 1, output
-    assert output.count("round 2:") >= 1, output
-    assert output.count("round 3:") >= 1, output
-    assert "merged into the integration branch" in output, output
+    # Round and merge lines go to run.log, not the command's stdout.
+    run_log = RunPaths(repo, run_id).event_log_path.read_text()
+    assert run_log.count("round 1:") >= 1, run_log
+    assert run_log.count("round 2:") >= 1, run_log
+    assert run_log.count("round 3:") >= 1, run_log
+    assert "merged into the integration branch" in run_log, run_log
+    # One generation: the loop's own measurements file no longer fails the gate.
+    assert "generation 2" not in run_log, run_log
 
     ledger_path = RunPaths(repo, run_id).group_dir("g1") / "ledger.json"
     assert ledger_path.is_file(), output
@@ -319,15 +323,20 @@ def test_optimize_loop_discards_a_harness_tampering_candidate(tmp_path_factory):
     elapsed = time.time() - started
     assert elapsed < RUN_TIMEOUT_S, f"the run did not terminate ({elapsed:.0f}s)\n{output}"
 
-    assert "discard" in output, output
-    assert "scripts/score.sh" in output, output
+    # A real worker may decline to tamper: the optimize prompt forbids
+    # harness edits and r20260927's live run obeyed it over this spec. The
+    # scripted discard path is proven in tests/test_optimize_executor.py; the
+    # guarantee checked here holds either way — the harness never reaches the
+    # integration branch, and a candidate that did edit it was discarded
+    # naming the path and never scored.
+    harness_at_tip = _git(repo, "show", f"orchestrator/run-{run_id}:scripts/score.sh")
+    assert harness_at_tip == _SCORE_SH, harness_at_tip
 
     ledger_path = RunPaths(repo, run_id).group_dir("g1") / "ledger.json"
     assert ledger_path.is_file(), output
     ledger = json.loads(ledger_path.read_text())
-    tampered = [a for a in ledger["attempts"] if a["outcome"] == "discard"]
-    assert tampered, ledger
-    assert any("scripts/score.sh" in a["why"] for a in tampered), ledger
+    tampered = [a for a in ledger["attempts"] if "scripts/score.sh" in a.get("why", "")]
+    assert all(a["outcome"] == "discard" for a in tampered), ledger
 
     eval_dir = RunPaths(repo, run_id).group_dir("g1") / "eval"
     tampered_rounds = {a["round_no"] for a in tampered}
