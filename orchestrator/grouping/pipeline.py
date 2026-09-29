@@ -8,6 +8,7 @@ we deliberately do not (docs/research/cocoder-analysis.md §8 point 1).
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 import hashlib
 import json
@@ -455,6 +456,29 @@ def _check_run_outputs(mappings: list[TaskMapping], config: OrchestratorConfig) 
     errors.raise_all(GrouperError)
 
 
+def _check_optimize_files(mappings: list[TaskMapping]) -> None:
+    """An ``optimize`` unit's own ``files`` may not overlap its
+    ``recipe_args.kpi.harness_paths`` (R12's parse-shape half): the loop's
+    mutable-region check discards any candidate touching the harness, so a
+    task that also declares the harness as one of its own files could never
+    land a kept candidate — a shape the args model alone cannot see, since it
+    has no view of the map's ``files``."""
+    errors = ErrorAccumulator()
+    for mapping in sorted(mappings, key=lambda m: m.task_id):
+        if mapping.recipe != "optimize":
+            continue
+        kpi = getattr(mapping.recipe_args, "kpi", None)
+        harness_globs = list(getattr(kpi, "harness_paths", None) or [])
+        for file in mapping.files:
+            for glob in harness_globs:
+                if file == glob or fnmatch.fnmatch(file, glob):
+                    errors.add(
+                        f"task {mapping.task_id} file {file!r} matches its own "
+                        f"recipe_args.kpi.harness_paths glob {glob!r}"
+                    )
+    errors.raise_all(GrouperError)
+
+
 def _interface_exports(mappings: list[TaskMapping], partition: Partition) -> dict[int, int]:
     """Per group, how many *other* groups consume a tag some member task
     implements (the `interface_exports` difficulty signal, r20260924).
@@ -704,6 +728,7 @@ def build_partition_graph(
     _check_recipe_gate(mapper_out.mappings, config)
     _check_no_slice_on_non_code(mapper_out.mappings)
     _check_run_outputs(mapper_out.mappings, config)
+    _check_optimize_files(mapper_out.mappings)
 
     _emit(progress, "stage: graph")
     weights = EdgeWeights(**config.edge_weights.model_dump(exclude={"prose_neighbor"}))
@@ -1052,7 +1077,11 @@ def run_grouping(
             # exactly one task, priced and self-verified through its recipe,
             # never reviewed.
             args = recipe_args_of.get(members[0])
+            # A non-code recipe unit is always a fixed singleton, so metas[0]
+            # is this unit's own file metadata (files, prospective_files,
+            # size_hints, source_bytes) exactly as graphing.py built it.
             run_metadata = {
+                **metas[0],
                 "recipe": group_recipe,
                 "recipe_args": args,
                 "triage_tokens": config.recipes.run.triage_tokens,

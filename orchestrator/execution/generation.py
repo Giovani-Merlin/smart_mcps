@@ -21,10 +21,11 @@ from orchestrator.execution.denial import classify_denial, denial_remedy
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import artifact_name, completed_round_count
 from orchestrator.execution.prompting import (
-    render_coder_prompt,
+    render_coder_nudge_contract,
     render_handoff_prompt,
     render_reentry_prompt,
     render_revision_prompt,
+    render_worker_prompt,
 )
 from orchestrator.execution.records import _spec_hash
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
@@ -46,11 +47,14 @@ from orchestrator.model import (
     ReviewerVerdict,
     SessionEntry,
     SessionRole,
+    Surprise,
+    WorkerReport,
     unmet_required_verification,
 )
 
 if TYPE_CHECKING:
     from orchestrator.execution.review import ReviewDeps
+    from orchestrator.recipes.registry import UnitRecipe
 
 _logger = logging.getLogger(__name__)
 
@@ -229,8 +233,35 @@ class GenerationLoop:
             return False
 
     async def _run_generation_body(self) -> bool:
+        """The round loop, driven through four overridable steps (plan U1):
+        ``_first_round`` (launch or re-entry), ``_collect_report`` (nudge to a
+        report, needs_input handled), ``_settle_round`` (denial, verification
+        gate, review, approve→merge, or changes_required) and
+        ``_next_round_prompt`` (the revision resume). A subclass overriding
+        what happens after a completed report (plan U10's ``OptimizeLoop`)
+        changes only ``_settle_round`` — everything else, including the exact
+        log lines and heartbeat phases, is unaffected."""
         assert self.workspace is not None
         self.ctx.set_state(GroupState.RUNNING)
+        rounds, result = await self._first_round()
+        verification_ids = [item.id for item in self.group.verification]
+        while True:
+            collected = await self._collect_report(result, rounds, verification_ids)
+            if collected is None:
+                return False  # needs_input resolved into a rewrite/retirement
+            report, report_path, rounds, result = collected
+            outcome, verdict, verdict_path = await self._settle_round(
+                report, report_path, rounds, result
+            )
+            if outcome is not None:
+                return outcome
+            result = await self._next_round_prompt(verdict, verdict_path, rounds)
+
+    async def _first_round(self) -> tuple[int, RoundResult]:
+        """The generation's first round: warm re-entry when one is pending,
+        otherwise a fresh prompt on a fresh (or forked) session. Returns the
+        round count already on disk for this generation and the first
+        ``RoundResult``."""
         first: RoundResult | None = None
         reentry, self._reentry_entry = self._reentry_entry, None  # one-shot
         self._flake_reruns = 0
@@ -250,11 +281,12 @@ class GenerationLoop:
         # continues this generation, and a genuinely fresh generation has no
         # artifacts yet, so it reads 0.
         rounds = completed_round_count(self.deps.store.paths, self.gid, self.generation)
+        recipe = self._worker_recipe()
         if reentry is not None:
             first = await self._reenter(reentry, round_no=rounds + 1)
         if first is None:
-            prompt = self.handoff_prompt or render_coder_prompt(
-                self.deps.run_id, self.group, decisions=self._decisions_text()
+            prompt = self.handoff_prompt or render_worker_prompt(
+                recipe.worker_prompt, self.deps.run_id, self.group, decisions=self._decisions_text()
             )
             prompt = self._apply_briefing(prompt)
             prompt = self._apply_env_notice(prompt)
@@ -268,7 +300,7 @@ class GenerationLoop:
             # the one already under way.
             self.coder_sid = str(uuid.uuid4())
             self.reviewer_sid = None
-            self.coder_entry = self._record(SessionRole.CODER, self.coder_sid)
+            self.coder_entry = self._record(recipe.worker_role, self.coder_sid)
             self.coder_entry.spec_sha256 = _spec_hash(self.group)
             self.deps.store.save(self.deps.manifest)
             # Logged *before* the fork, not after. `start_fork` blocks for as long
@@ -302,25 +334,37 @@ class GenerationLoop:
                     name=session_display_name(self.deps.run_id, self.gid, "coder", self.generation),
                     cwd=self.workspace,
                     session_id=self.coder_sid,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=coder_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=coder_on_turn,
                 ),
             )
             self._adopt_actual_session_id(first)
             self._refresh_transcript(self.coder_entry)
             self._log(f"group {self.gid} generation {self.generation}: coder launched")
-        result = first
         # A fallback fork *is* round N of the same generation, and `_reenter`
         # already announced N before it blocked. The fresh-fork branch above
         # announces its own round before `start_fork` too, so nothing further is
         # needed here in either case.
+        return rounds, first
 
-        verification_ids = [item.id for item in self.group.verification]
+    async def _collect_report(
+        self, result: RoundResult, rounds: int, verification_ids: list[str]
+    ) -> tuple[WorkerReport, Path, int, RoundResult] | None:
+        """Nudge the coder to a report, resolving any `needs_input` question
+        along the way (each resolution re-enters this same loop rather than
+        counting a round). Returns the report, the path it was saved to, the
+        updated round count, and the `RoundResult` it arrived on — or `None`
+        when a `needs_input` resolved into a rewrite/retirement that already
+        ended the generation. Parses against the group's recipe's own
+        contract (plan U5) — `CoderReport` for `code`, unchanged."""
+        recipe = self._worker_recipe()
         while True:
             # F4: nothing used to supersede "forking the base session" once the
             # fork returned, so a finished round still read as mid-fork minutes
@@ -328,20 +372,21 @@ class GenerationLoop:
             # being nudged toward) its report.
             self._heartbeat.mark_phase("coder working toward a report")
 
-            def _coder_nudge(round_result: RoundResult) -> tuple[CoderReport, RoundResult]:
+            def _coder_nudge(round_result: RoundResult) -> tuple[WorkerReport, RoundResult]:
                 return nudge_until_report(
                     self.deps.runner,
                     round_result,
-                    CoderReport,
+                    recipe.contract,
                     cwd=self.workspace,
                     verification_ids=verification_ids,
                 )
 
-            def _coder_nudge_recover(sid: str) -> tuple[CoderReport, RoundResult]:
+            def _coder_nudge_recover(sid: str) -> tuple[WorkerReport, RoundResult]:
                 resumed = self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=self._make_coder_on_turn(self.coder_entry),
                 )
                 return _coder_nudge(resumed)
@@ -357,7 +402,7 @@ class GenerationLoop:
                 # never trip the breaker; token usage still accumulates).
                 resumed = await self._resolve_needs_input(report)
                 if resumed is None:
-                    return False  # downgraded / unescalated → a rewrite already happened
+                    return None  # downgraded / unescalated → a rewrite already happened
                 result = resumed
                 continue
 
@@ -366,111 +411,236 @@ class GenerationLoop:
                 self.gid, artifact_name("report", self.generation, rounds), report
             )
             self._spread(report.surprises)
-            if report.status == "permission_denied":
-                # Typed denial (plan U3): interrupted, not failed, and no rewrite
-                # spent — bypasses _on_coder_stuck/_rewrite entirely.
-                #
-                # Attributed (plan P2), because one status covered three unrelated
-                # causes with three different remedies and the last validation
-                # misdiagnosed one of them. The kind rides in the exception message
-                # as well as on the instance: the scheduler already writes
-                # `f"{type(exc).__name__}: {exc}"` into `state.json`, so `status`
-                # and the Observatory gain it with no schema change anywhere.
-                kind = classify_denial(
-                    denied_command=report.denied_command,
-                    denial_error=report.denial_error,
-                    denial_source=report.denial_source,
-                    deny_rules=self.deps.runner.effective_disallowed_tools(),
-                    observed=result.deny_signals,
-                )
-                self._log(f"{self._round_tag(rounds)}: ended (permission_denied: {kind})")
-                self._log(f"group {self.gid} denial: {denial_remedy(kind)}")
-                raise PermissionDenied(
-                    f"group {self.gid} denied command ({kind}): {report.denied_command}",
-                    kind=str(kind),
-                    denied_command=report.denied_command,
-                    denial_error=report.denial_error,
-                    denial_source=report.denial_source,
-                )
-            if report.status != "completed":
-                self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
-                await self._on_coder_stuck(report, report_path)
-                return False
+            return report, report_path, rounds, result
 
-            # The verification gate (run r20260829-162627 P1): a `completed`
-            # report that does not carry a passing result for every *required*
-            # item never reaches a reviewer, and never reaches the merge. It
-            # becomes an ordinary `changes_required` round instead — same
-            # breaker, same handoff, same revision prompt — so the coder gets
-            # told exactly which items it left unmet. This is the only thing
-            # standing between a self_verify group and an unchecked merge:
-            # `_review_round` creates no reviewer for that tier, so without it
-            # the coder's own `status` field is the entire gate.
-            gaps = unmet_required_verification(self.group.verification, report.verification_results)
-            if gaps:
-                verdict = ReviewerVerdict(
-                    status="changes_required",
-                    required_changes=gaps,
-                    notes=(
-                        "verification gate: the report claims completed but does not "
-                        "report a passing result for every required verification item"
-                    ),
-                )
-                verdict_path = self.deps.store.save_group_artifact(
-                    self.gid, artifact_name("verdict", self.generation, rounds), verdict
-                )
-                self._log(
-                    f"{self._round_tag(rounds)}: verification gate held "
-                    f"({len(gaps)} required item(s) unmet)"
-                )
-            else:
-                verdict, verdict_path = await self._review_round(report_path, rounds)
-            if verdict is None or verdict.status == "approved":
-                outcome = "self-verified" if verdict is None else "approved"
-                self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
-                # A surprise named this group while it was in review: a
-                # rewrite-worthy one means its pending approval is not accepted
-                # (plan U7 scenario); an informational-only one is noted and the
-                # approval proceeds (plan U13).
-                if await self._handle_pending_surprises("surprise named this group during review"):
-                    return False
-                await self._approve_gate(
-                    EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
-                )
-                self._last_report = report
-                return await self._merge()
-            if verdict.status in ("too_hard", "structural"):
-                self._log(f"{self._round_tag(rounds)}: ended ({verdict.status})")
-                await self._on_reviewer_hard(verdict, verdict_path)
-                return False
+    async def _settle_round(
+        self, report: WorkerReport, report_path: Path, rounds: int, result: RoundResult
+    ) -> tuple[bool | None, ReviewerVerdict | None, Path | None]:
+        """Everything that can happen to a coder's report once it exists:
+        denial, a non-completed status, the verification gate, review, and
+        either a merge, a hard stop, or a changes_required breaker check.
+        Returns `(outcome, verdict, verdict_path)`: `outcome` is `True`
+        (merged), `False` (generation ended without merging), or `None` (a
+        changes_required round survived the breaker — `verdict`/`verdict_path`
+        are then set, for `_next_round_prompt` to build the revision on)."""
+        if report.status == "permission_denied":
+            # Typed denial (plan U3): interrupted, not failed, and no rewrite
+            # spent — bypasses _on_coder_stuck/_rewrite entirely.
+            #
+            # Attributed (plan P2), because one status covered three unrelated
+            # causes with three different remedies and the last validation
+            # misdiagnosed one of them. The kind rides in the exception message
+            # as well as on the instance: the scheduler already writes
+            # `f"{type(exc).__name__}: {exc}"` into `state.json`, so `status`
+            # and the Observatory gain it with no schema change anywhere.
+            kind = classify_denial(
+                denied_command=report.denied_command,
+                denial_error=report.denial_error,
+                denial_source=report.denial_source,
+                deny_rules=self.deps.runner.effective_disallowed_tools(),
+                observed=result.deny_signals,
+            )
+            self._log(f"{self._round_tag(rounds)}: ended (permission_denied: {kind})")
+            self._log(f"group {self.gid} denial: {denial_remedy(kind)}")
+            raise PermissionDenied(
+                f"group {self.gid} denied command ({kind}): {report.denied_command}",
+                kind=str(kind),
+                denied_command=report.denied_command,
+                denial_error=report.denial_error,
+                denial_source=report.denial_source,
+            )
+        if report.status != "completed":
+            self._log(f"{self._round_tag(rounds)}: ended (coder {report.status})")
+            await self._on_coder_stuck(report, report_path)
+            return False, None, None
 
-            # changes_required — breaker gate before the next warm round
-            self._log(f"{self._round_tag(rounds)}: ended (changes_required)")
-            reason = self._breaker_reason(rounds)
-            if reason:
-                await self._retire(reason)
-                self._prepare_handoff(report, verdict)
-                return False
-            assert verdict_path is not None
-            self.ctx.set_state(GroupState.RUNNING)
-            self._log(f"{self._round_tag(rounds + 1)}: started")
-            self._heartbeat.mark_round(self.generation, rounds + 1)
-            revision_on_turn = self._make_coder_on_turn(self.coder_entry)
-            result = await self._worker_call(
-                partial(
-                    self.deps.runner.resume,
-                    session_id=self.coder_sid,
-                    prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
-                    cwd=self.workspace,
-                    on_turn=revision_on_turn,
-                ),
-                recover=lambda sid: self.deps.runner.resume(
-                    session_id=sid,
-                    prompt=render_reentry_prompt(self.group),
-                    cwd=self.workspace,
-                    on_turn=revision_on_turn,
+        # The verification gate (run r20260829-162627 P1): a `completed`
+        # report that does not carry a passing result for every *required*
+        # item never reaches a reviewer, and never reaches the merge. It
+        # becomes an ordinary `changes_required` round instead — same
+        # breaker, same handoff, same revision prompt — so the coder gets
+        # told exactly which items it left unmet. This is the only thing
+        # standing between a self_verify group and an unchecked merge:
+        # `_review_round` creates no reviewer for that tier, so without it
+        # the coder's own `status` field is the entire gate.
+        gaps = unmet_required_verification(self.group.verification, report.verification_results)
+        if gaps:
+            verdict: ReviewerVerdict | None = ReviewerVerdict(
+                status="changes_required",
+                required_changes=gaps,
+                notes=(
+                    "verification gate: the report claims completed but does not "
+                    "report a passing result for every required verification item"
                 ),
             )
+            verdict_path: Path | None = self.deps.store.save_group_artifact(
+                self.gid, artifact_name("verdict", self.generation, rounds), verdict
+            )
+            self._log(
+                f"{self._round_tag(rounds)}: verification gate held "
+                f"({len(gaps)} required item(s) unmet)"
+            )
+        else:
+            verdict, verdict_path = await self._review_round(report_path, rounds)
+        if verdict is None or verdict.status == "approved":
+            invalid = self._invalid_spec_refinement(report)
+            if invalid is not None:
+                error, allowed = invalid
+                self._log(f"{self._round_tag(rounds)}: ended (spec_refinement contract violation)")
+                return await self._nudge_spec_refinement(error, allowed, rounds)
+            self._mark_spec_refinement(report)
+            outcome = "self-verified" if verdict is None else "approved"
+            self._log(f"{self._round_tag(rounds)}: ended ({outcome})")
+            # A surprise named this group while it was in review: a
+            # rewrite-worthy one means its pending approval is not accepted
+            # (plan U7 scenario); an informational-only one is noted and the
+            # approval proceeds (plan U13).
+            if await self._handle_pending_surprises("surprise named this group during review"):
+                return False, None, None
+            await self._approve_gate(
+                EscalationKind.MERGE_APPROVE, f"merge group {self.gid} ({self.group.name})?"
+            )
+            if getattr(report, "provider_fallback", False):
+                self._log(f"group {self.gid}: research provider fallback (WebSearch/WebFetch)")
+                report.summary = f"[fallback] {report.summary}"
+            self._last_report = report
+            return await self._merge(), None, None
+        if verdict.status in ("too_hard", "structural"):
+            self._log(f"{self._round_tag(rounds)}: ended ({verdict.status})")
+            await self._on_reviewer_hard(verdict, verdict_path)
+            return False, None, None
+
+        # changes_required — breaker gate before the next warm round
+        self._log(f"{self._round_tag(rounds)}: ended (changes_required)")
+        reason = self._breaker_reason(rounds)
+        if reason:
+            await self._retire(reason)
+            self._prepare_handoff(report, verdict)
+            return False, None, None
+        return None, verdict, verdict_path
+
+    def _downstream_tasks(self) -> list[str]:
+        """Every task owned by a group transitively downstream of this one
+        (plan U7): a group whose ``dependencies`` names this group, or names a
+        group already found this way, via ``deps.groups_by_id``. The only
+        surface a ``spec_refinement.target_task`` is validated against."""
+        groups_by_id = self.deps.groups_by_id
+        downstream_ids: set[str] = set()
+        frontier = {self.gid}
+        while frontier:
+            found = {
+                group.id
+                for group in groups_by_id.values()
+                if group.id not in downstream_ids and frontier & set(group.dependencies)
+            }
+            if not found:
+                break
+            downstream_ids |= found
+            frontier = found
+        tasks: list[str] = []
+        for gid in sorted(downstream_ids):
+            tasks.extend(groups_by_id[gid].tasks)
+        return tasks
+
+    def _invalid_spec_refinement(self, report: WorkerReport) -> tuple[str, list[str]] | None:
+        """A recipe whose contract carries ``spec_refinement`` (plan U7) may
+        name a ``target_task`` that is not a task of any group downstream of
+        this one — the surprise board has no way to reject a bad target once
+        marked, so it is caught here, before the report is ever accepted.
+        Returns ``None`` when the report carries no refinement or a valid
+        one; otherwise the nudge error and the allowed task ids."""
+        refinement = getattr(report, "spec_refinement", None)
+        if refinement is None:
+            return None
+        allowed = self._downstream_tasks()
+        if refinement.target_task in allowed:
+            return None
+        error = (
+            f"spec_refinement.target_task {refinement.target_task!r} is not a task of any "
+            f"group downstream of {self.gid}. Allowed target tasks: "
+            f"{', '.join(allowed) if allowed else '(none — no group depends on this one)'}."
+        )
+        return error, allowed
+
+    def _mark_spec_refinement(self, report: WorkerReport) -> None:
+        """A valid ``spec_refinement`` (plan U7) becomes a surprise for its
+        declared consumer, spread the same way any other surprise is — the
+        consumer's next pre-launch checkpoint folds it into a rewrite (see
+        ``SurpriseHandling._handle_pending_surprises``'s ``counted`` split)."""
+        refinement = getattr(report, "spec_refinement", None)
+        if refinement is None:
+            return
+        surprise = Surprise(
+            kind="spec_refinement",
+            description=f"[from {self.gid} artifact {self.gid}] {refinement.refinement}",
+            affected_groups=[refinement.target_task],
+        )
+        self._spread([surprise])
+        self._log(f"group {self.gid}: spec_refinement marked for {refinement.target_task}")
+
+    async def _nudge_spec_refinement(
+        self, error: str, allowed: list[str], rounds: int
+    ) -> tuple[bool | None, ReviewerVerdict | None, Path | None]:
+        """Warm-resume the coder with the contract nudge (plan U7 Goal) and
+        re-collect a report through the ordinary path — this round never
+        settles (no merge, no changes_required breaker check); the fresh
+        report goes through ``_settle_round`` again from scratch."""
+        recipe = self._worker_recipe()
+        coder_on_turn = self._make_coder_on_turn(self.coder_entry)
+        nudge_prompt = render_coder_nudge_contract(error, allowed)
+        resumed = await self._worker_call(
+            partial(
+                self.deps.runner.resume,
+                session_id=self.coder_sid,
+                prompt=nudge_prompt,
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=coder_on_turn,
+            ),
+            recover=lambda sid: self.deps.runner.resume(
+                session_id=sid,
+                prompt=render_reentry_prompt(self.group),
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=coder_on_turn,
+            ),
+        )
+        verification_ids = [item.id for item in self.group.verification]
+        collected = await self._collect_report(resumed, rounds, verification_ids)
+        if collected is None:
+            return False, None, None
+        report, report_path, rounds, result = collected
+        return await self._settle_round(report, report_path, rounds, result)
+
+    async def _next_round_prompt(
+        self, verdict: ReviewerVerdict | None, verdict_path: Path | None, rounds: int
+    ) -> RoundResult:
+        """The changes_required resume: announce round `rounds + 1` and warm-
+        resume the coder with the revision prompt pointing at `verdict_path`."""
+        assert verdict is not None
+        assert verdict_path is not None
+        recipe = self._worker_recipe()
+        self.ctx.set_state(GroupState.RUNNING)
+        self._log(f"{self._round_tag(rounds + 1)}: started")
+        self._heartbeat.mark_round(self.generation, rounds + 1)
+        revision_on_turn = self._make_coder_on_turn(self.coder_entry)
+        return await self._worker_call(
+            partial(
+                self.deps.runner.resume,
+                session_id=self.coder_sid,
+                prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=revision_on_turn,
+            ),
+            recover=lambda sid: self.deps.runner.resume(
+                session_id=sid,
+                prompt=render_reentry_prompt(self.group),
+                cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
+                on_turn=revision_on_turn,
+            ),
+        )
 
     # ------------------------------------------------------------ re-entry (R4–R6)
 
@@ -513,6 +683,7 @@ class GenerationLoop:
         the window `round 0` / `resuming the interrupted coder` for its entire
         duration hid twenty minutes of real progress from the operator."""
         assert self.workspace is not None
+        recipe = self._worker_recipe()
         limit = self.deps.breaker.context_token_limit
         if entry.last_context_tokens > limit:
             self._reentry_fallback(
@@ -543,12 +714,14 @@ class GenerationLoop:
                     session_id=entry.session_id,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=reentry_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
                     session_id=sid,
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                     on_turn=reentry_on_turn,
                 ),
             )
@@ -596,6 +769,16 @@ class GenerationLoop:
         entry.retirement_reason = f"re-entry fallback: {reason}"
         self._log(f"group {self.gid} re-entry: forked generation {self.generation} ({reason})")
 
+    def _worker_recipe(self) -> UnitRecipe:
+        """The group's registry entry (plan U5): worker prompt, report
+        contract, reviewer/handoff templates, session role and merge policy.
+        Imported lazily — `orchestrator.recipes` is a leaf package the loop
+        need not pay to import at module load, and `ReviewerRound` reads this
+        same method cross-mixin."""
+        from orchestrator.recipes import get_recipe
+
+        return get_recipe(self.group.recipe)
+
     # ------------------------------------------------------------ outcomes
 
     def _breaker_reason(self, rounds: int) -> str | None:
@@ -639,8 +822,9 @@ class GenerationLoop:
             )
         self._advance_generation()
 
-    def _prepare_handoff(self, report: CoderReport, verdict: ReviewerVerdict) -> None:
+    def _prepare_handoff(self, report: WorkerReport, verdict: ReviewerVerdict) -> None:
         assert self.workspace is not None
+        recipe = self._worker_recipe()
         items = [f"- {change}" for change in verdict.required_changes]
         items += [f"- {note}" for note in self._grant_notes]  # operator guidance, if any
         self._grant_notes = []
@@ -654,4 +838,5 @@ class GenerationLoop:
             outstanding=outstanding,
             diff_summary=diff_stat(self.workspace, self.deps.base_ref_for(self.group)),
             decisions=self._decisions_text(),
+            template=recipe.handoff_prompt or "handoff",
         )

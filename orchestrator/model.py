@@ -129,6 +129,7 @@ class SessionRole(StrEnum):
     CODER = "coder"
     REVIEWER = "reviewer"
     RUNNER = "runner"
+    RESEARCHER = "researcher"
 
 
 class SessionEntry(BaseModel):
@@ -229,10 +230,21 @@ class Surprise(BaseModel):
     a pre-existing red suite — that briefs the next generation but is not
     evidence a spec needs rewriting: it is folded into the next prompt without
     spending a rewrite or calling the speccer, unlike every other kind.
+
+    ``spec_refinement`` (plan U7) is a research group's one-shot refinement of
+    its declared downstream consumer's spec: it still triggers the consumer's
+    pre-launch rewrite like any other non-informational kind, but that rewrite
+    never spends the group's ``max_rewrites`` budget (see
+    ``EscalationHandlers._rewrite``'s ``counted`` parameter).
     """
 
     kind: Literal[
-        "interface_mismatch", "missing_dependency", "merge_conflict", "other", "informational"
+        "interface_mismatch",
+        "missing_dependency",
+        "merge_conflict",
+        "other",
+        "informational",
+        "spec_refinement",
     ]
     description: str
     affected_groups: list[str] = Field(default_factory=list)
@@ -296,7 +308,65 @@ def unmet_required_verification(
 DENIAL_ERROR_MAX_CHARS = 2000
 
 
-class CoderReport(BaseModel):
+class WorkerReport(BaseModel):
+    """Fields the loop reads off any worker's final report, regardless of
+    recipe (plan U3): status, question/denial channels, verification and
+    surprises. ``CoderReport`` extends this with nothing new — its schema is
+    unchanged — so a future recipe's report (``FindingsReport``, …) can share
+    the same validators without duplicating them."""
+
+    status: Literal["completed", "blocked", "failed", "needs_input", "permission_denied"]
+    summary: str = ""
+    question: str = ""  # required when status == "needs_input"
+    denied_command: str = ""  # required when status == "permission_denied"
+    # The observed error, verbatim. Optional and *truncating*, never raising: a
+    # raising validator here would cost a re-nudge round (`nudge_until_report`)
+    # precisely when the worker is already blocked, and `denied_command`'s existing
+    # validator is left untouched so every `report-g*-r*.json` already on disk
+    # stays parseable.
+    denial_error: str = ""
+    denial_source: Literal["", "tool_refused", "command_error"] = ""
+    verification_results: list[VerificationResult] = Field(default_factory=list)
+    surprises: list[Surprise] = Field(default_factory=list)
+
+    @classmethod
+    def extra_fields_example(cls) -> dict[str, object]:
+        """The keys this contract adds over the base report, with example
+        values, for the re-nudge skeleton. Empty for ``CoderReport``, so its
+        nudges stay byte-identical; a recipe report overrides it (r20260927 g3-4:
+        a ``research`` worker was re-nudged toward a reviewer verdict, since
+        the nudge only knew the coder and reviewer shapes)."""
+        return {}
+
+    @model_validator(mode="after")
+    def _needs_input_requires_question(self) -> WorkerReport:
+        if self.status == "needs_input" and not self.question.strip():
+            raise ValueError("status 'needs_input' requires a non-empty 'question'")
+        return self
+
+    @model_validator(mode="after")
+    def _permission_denied_requires_command(self) -> WorkerReport:
+        if self.status == "permission_denied" and not self.denied_command.strip():
+            raise ValueError("status 'permission_denied' requires a non-empty 'denied_command'")
+        return self
+
+    @model_validator(mode="after")
+    def _truncate_denial_error(self) -> WorkerReport:
+        """Truncate, never reject.
+
+        A model quoting a build log verbatim can produce a very long field, and the
+        remedy for that is not to fail its report: rejecting costs a re-nudge round
+        exactly when the worker is already blocked, and the classifier only needs
+        the first lines. The head is where errno signatures and refusal wording
+        appear.
+        """
+        if len(self.denial_error) > DENIAL_ERROR_MAX_CHARS:
+            head = self.denial_error[:DENIAL_ERROR_MAX_CHARS].rstrip()
+            object.__setattr__(self, "denial_error", f"{head}… [truncated]")
+        return self
+
+
+class CoderReport(WorkerReport):
     """Structured final message of every coder round (origin R11, R19).
 
     ``needs_input`` is the coder-question channel (plan Phase D): a coder that
@@ -323,47 +393,6 @@ class CoderReport(BaseModel):
     one thing the model knows for free and the orchestrator cannot recover: whether
     the *harness refused the call* or the *command ran and hit EACCES*.
     """
-
-    status: Literal["completed", "blocked", "failed", "needs_input", "permission_denied"]
-    summary: str = ""
-    question: str = ""  # required when status == "needs_input"
-    denied_command: str = ""  # required when status == "permission_denied"
-    # The observed error, verbatim. Optional and *truncating*, never raising: a
-    # raising validator here would cost a re-nudge round (`nudge_until_report`)
-    # precisely when the worker is already blocked, and `denied_command`'s existing
-    # validator is left untouched so every `report-g*-r*.json` already on disk
-    # stays parseable.
-    denial_error: str = ""
-    denial_source: Literal["", "tool_refused", "command_error"] = ""
-    verification_results: list[VerificationResult] = Field(default_factory=list)
-    surprises: list[Surprise] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _needs_input_requires_question(self) -> CoderReport:
-        if self.status == "needs_input" and not self.question.strip():
-            raise ValueError("status 'needs_input' requires a non-empty 'question'")
-        return self
-
-    @model_validator(mode="after")
-    def _permission_denied_requires_command(self) -> CoderReport:
-        if self.status == "permission_denied" and not self.denied_command.strip():
-            raise ValueError("status 'permission_denied' requires a non-empty 'denied_command'")
-        return self
-
-    @model_validator(mode="after")
-    def _truncate_denial_error(self) -> CoderReport:
-        """Truncate, never reject.
-
-        A model quoting a build log verbatim can produce a very long field, and the
-        remedy for that is not to fail its report: rejecting costs a re-nudge round
-        exactly when the worker is already blocked, and the classifier only needs
-        the first lines. The head is where errno signatures and refusal wording
-        appear.
-        """
-        if len(self.denial_error) > DENIAL_ERROR_MAX_CHARS:
-            head = self.denial_error[:DENIAL_ERROR_MAX_CHARS].rstrip()
-            object.__setattr__(self, "denial_error", f"{head}… [truncated]")
-        return self
 
 
 class ReviewerVerdict(BaseModel):

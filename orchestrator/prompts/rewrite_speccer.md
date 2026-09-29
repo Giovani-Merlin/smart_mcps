@@ -18,6 +18,12 @@ A group's entry in GROUPS_JSON may carry `operator_decisions`: binding human
 decisions already given to a coder in this group. Incorporate them verbatim into
 the rewritten `spec` and never contradict them.
 
+A `rewrite_context` entry prefixed `[spec_refinement]` is binding: it is a
+declared refinement of this group's spec from an upstream research group's
+Findings Artifact, not a mere hint like the other context kinds. Incorporate
+it into the rewritten `spec` and say so there — state plainly that the spec
+was refined by that finding.
+
 Return ONLY JSON matching the schema — no prose, no fences.
 
 Plan document:

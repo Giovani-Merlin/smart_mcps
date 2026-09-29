@@ -23,6 +23,10 @@ def run_enabled_config() -> OrchestratorConfig:
     return OrchestratorConfig(recipes={"enabled": ["run"]})
 
 
+def optimize_enabled_config() -> OrchestratorConfig:
+    return OrchestratorConfig(recipes={"enabled": ["optimize"]})
+
+
 def codegraph_response(args):
     """Every fixture below declares no ``symbols:``, so the pipeline never
     calls callers/callees/impact for a real symbol — ``query`` (including the
@@ -268,6 +272,82 @@ class TestRecipeGate:
         err = capsys.readouterr().err
         assert "r" in err
         assert "[recipes] enabled" in err
+
+
+OPTIMIZE_ARGS = """      commands:
+        - cmd: "sh scripts/score.sh"
+          wall_clock_min: 1
+      measurements: measurements.json
+      kpi:
+        key: score
+        direction: max
+        harness_paths: [scripts/score.sh]
+      evaluations: 3
+"""
+
+
+def _optimize_plan(*, files: str) -> str:
+    return f"""# feat: optimize files vs harness
+
+## Task Map
+
+```yaml
+# orchestrator-task-map v2
+tasks:
+  - task_id: o
+    description: optimize something
+    recipe: optimize
+    recipe_args:
+{OPTIMIZE_ARGS}    files: [{files}]
+```
+"""
+
+
+def _make_optimize_repo(tmp_path, plan_text: str, name: str = "repo") -> tuple:
+    """Like ``make_repo``, but with the harness and candidate files the
+    optimize fixtures reference actually present — a `files:` entry naming a
+    path that doesn't exist on disk is classified as *prospective*, not
+    tracked, by ``parse_task_map``, and this check reads tracked ``files``."""
+    repo, plan = make_repo(tmp_path, plan_text, name=name)
+    (repo / "scripts").mkdir(exist_ok=True)
+    (repo / "scripts" / "score.sh").write_text("#!/bin/sh\necho '{\"score\": 1}'\n")
+    (repo / "value.txt").write_text("1\n")
+    return repo, plan
+
+
+class TestOptimizeFilesVsHarness:
+    """g2-5: an optimize unit's own files may not overlap its declared
+    kpi.harness_paths glob — the mutable-region check could never keep a
+    candidate that touches its own harness."""
+
+    def test_optimize_files_matching_harness_glob_fails_naming_task_file_and_glob(self, tmp_path):
+        repo, plan = _make_optimize_repo(tmp_path, _optimize_plan(files="scripts/score.sh"))
+        try:
+            run_grouping(
+                plan_path=plan,
+                repo_root=repo,
+                config=optimize_enabled_config(),
+                llm_runner=_llm_must_not_be_called,
+                client=make_client(repo),
+            )
+        except GrouperError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected GrouperError")
+        assert "o" in message
+        assert "scripts/score.sh" in message
+
+    def test_optimize_files_disjoint_from_harness_groups_cleanly(self, tmp_path):
+        repo, plan = _make_optimize_repo(tmp_path, _optimize_plan(files="value.txt"))
+        result, _ = run_grouping(
+            plan_path=plan,
+            repo_root=repo,
+            config=optimize_enabled_config(),
+            llm_runner=_llm_must_not_be_called,
+            client=make_client(repo),
+        )
+        by_task = {task: group for group in result.groups for task in group.tasks}
+        assert by_task["o"].recipe == "optimize"
 
 
 class TestHubRolesUnaffectedByRunUnit:

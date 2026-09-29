@@ -10,7 +10,8 @@ the prompt is silently dropped as harness noise instead of kept as the goal.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from string import Template
 
 from orchestrator.model import Group, VerificationItem
@@ -82,10 +83,27 @@ def _verification_lines(items: list[VerificationItem]) -> str:
     return "\n".join(lines)
 
 
-def render_coder_nudge_contract(error: str, verification_ids: Sequence[str]) -> str:
+def _extra_fields_note(extra: Mapping[str, object]) -> str:
+    """A recipe contract's added keys, spelled out as belonging *inside* the
+    one report body — r20260927 g3-4's researcher put them in a second JSON
+    block after the report, which parsed as a findings-less report."""
+    if not extra:
+        return ""
+    body = json.dumps(dict(extra), indent=2)
+    return (
+        "\nThis recipe's report also carries these keys, in the SAME JSON body "
+        "inside the <run-report> block (never in a separate block):\n\n"
+        f"```json\n{body}\n```\n"
+    )
+
+
+def render_coder_nudge_contract(
+    error: str, verification_ids: Sequence[str], extra: Mapping[str, object] | None = None
+) -> str:
     """Nudge 1 (plan U16): the verbatim contract plus the ids the report must
     carry plus the parse error — everything needed to recover, in one message,
-    since the worker cannot re-read the 200 KB of context that preceded it."""
+    since the worker cannot re-read the 200 KB of context that preceded it.
+    ``extra`` is a recipe contract's added keys (empty for a coder)."""
     ids = "\n".join(f"- {vid}" for vid in verification_ids) or "- none specified"
     return (
         f"Your previous message did not end with a valid report block ({error}).\n\n"
@@ -93,12 +111,19 @@ def render_coder_nudge_contract(error: str, verification_ids: Sequence[str]) -> 
         f"{load_template('report_contract')}\n"
         'Your "verification_results" must include one entry for each of these '
         f"verification item ids:\n{ids}\n"
+        f"{_extra_fields_note(extra or {})}"
     )
 
 
-def render_coder_nudge_skeleton(verification_ids: Sequence[str]) -> str:
+def render_coder_nudge_skeleton(
+    verification_ids: Sequence[str], extra: Mapping[str, object] | None = None
+) -> str:
     """Nudge 2 (plan U16): strips the task away and hands back a filled-in
-    skeleton — only the values need completing, not the schema."""
+    skeleton — only the values need completing, not the schema. ``extra`` keys
+    (a recipe contract's additions) are spliced into the same body."""
+    extra_lines = "".join(
+        f'  "{key}": {json.dumps(value)},\n' for key, value in (extra or {}).items()
+    )
     entries = (
         ",\n".join(
             f'    {{"item_id": "{vid}", "status": "pass", "notes": ""}}' for vid in verification_ids
@@ -112,6 +137,7 @@ def render_coder_nudge_skeleton(verification_ids: Sequence[str]) -> str:
         "{\n"
         '  "status": "completed",\n'
         '  "summary": "...",\n'
+        f"{extra_lines}"
         '  "verification_results": [\n'
         f"{entries}\n"
         "  ],\n"
@@ -148,14 +174,34 @@ def render_reviewer_nudge_skeleton() -> str:
     )
 
 
-def render_coder_prompt(run_id: str, group: Group, *, decisions: str = "") -> str:
-    return Template(load_template("coder")).substitute(
-        identity_block=render_identity(run_id, group),
+def _recipe_args_block(group: Group) -> str:
+    """The unit's declared ``recipe_args`` (a research question and output path,
+    an optimize KPI contract) as a tagged block after the identity. Empty for a
+    ``code`` group, whose prompt stays byte-identical. Before this, a research
+    worker was told "the <spec> block declares the question" while the question
+    lived only in ``recipe_args`` (r20260927 g3-4)."""
+    if not group.recipe_args:
+        return ""
+    body = json.dumps(group.recipe_args, indent=2, sort_keys=True)
+    return f"\n<recipe-args>\n{body}\n</recipe-args>\n"
+
+
+def render_worker_prompt(template: str, run_id: str, group: Group, *, decisions: str = "") -> str:
+    """First-round prompt for any recipe's worker session (plan U5): the same
+    ``identity``/``verification``/``report_contract``/``decisions`` fields
+    `render_coder_prompt` always filled in, against a caller-named template
+    rather than the hard-coded ``"coder"`` one."""
+    return Template(load_template(template)).substitute(
+        identity_block=render_identity(run_id, group) + _recipe_args_block(group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
         report_contract=load_template("report_contract"),
         decisions=decisions,
     )
+
+
+def render_coder_prompt(run_id: str, group: Group, *, decisions: str = "") -> str:
+    return render_worker_prompt("coder", run_id, group, decisions=decisions)
 
 
 def render_reviewer_prompt(
@@ -166,8 +212,9 @@ def render_reviewer_prompt(
     base_ref: str,
     scratch_dir: str,
     decisions: str = "",
+    template: str = "reviewer",
 ) -> str:
-    return Template(load_template("reviewer")).substitute(
+    return Template(load_template(template)).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         verification=_verification_lines(group.verification),
@@ -248,9 +295,13 @@ def render_handoff_prompt(
     outstanding: str,
     diff_summary: str,
     decisions: str = "",
+    template: str = "handoff",
 ) -> str:
-    """First prompt of a generation-respawn coder session (plan U7 breaker path)."""
-    return Template(load_template("handoff")).substitute(
+    """First prompt of a generation-respawn coder session (plan U7 breaker
+    path). ``template`` names the recipe's handoff template (plan U5); the
+    default keeps every existing call site — all of them ``code`` groups —
+    byte-identical."""
+    return Template(load_template(template)).substitute(
         identity_block=render_identity(run_id, group),
         group_name=group.name,
         generation=str(generation),

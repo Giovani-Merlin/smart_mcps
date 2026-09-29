@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orchestrator.execution.artifacts import ArtifactManifestStore, Measurement
 from orchestrator.execution.denial import classify_denial
+from orchestrator.execution.kpi import Ledger
 from orchestrator.execution.manifest import RunPaths, atomic_write_text
 from orchestrator.execution.transcript_events import parse_transcript, write_events_gz
 from orchestrator.grouping.llm_record import INDEX_NAME as LLM_INDEX_NAME
@@ -54,7 +55,7 @@ _ARTIFACT_RE = re.compile(r"^(report|verdict)-g(\d+)-r(\d+)\.json$")
 _SPEC_GEN_RE = re.compile(r"^spec-gen(\d+)\.json$")
 
 #: Artifact filenames that are per-group bookkeeping, not round artifacts.
-_ARTIFACT_SKIP = {"heartbeat.json"}
+_ARTIFACT_SKIP = {"heartbeat.json", "ledger.json"}
 
 
 class ExportTokens(BaseModel):
@@ -196,6 +197,12 @@ class ExportGroup(BaseModel):
     sessions: list[ExportSession] = Field(default_factory=list)
     artifacts: list[ExportArtifact] = Field(default_factory=list)
     escalations: list[ExportEscalation] = Field(default_factory=list)
+    #: An `optimize` group's Attempt Ledger rows (plan U9/U10), read from
+    #: `<group_dir>/ledger.json`. `None` — and omitted from the JSON entirely,
+    #: same treatment as the top-level `artifact_manifest` — for every group
+    #: that never wrote one, which is every group before this plan and every
+    #: non-`optimize` group after it.
+    ledger: list[dict] | None = None
 
 
 class ExportLlmCall(BaseModel):
@@ -398,6 +405,22 @@ def _group_artifacts(paths: RunPaths, group_id: str) -> list[ExportArtifact]:
     # authoritative sequence — an "other" file's mtime says nothing about rounds.
     artifacts.sort(key=lambda a: (a.generation is None, a.generation or 0, a.round or 0, a.path))
     return artifacts
+
+
+def _group_ledger(paths: RunPaths, group_id: str) -> list[dict] | None:
+    """An `optimize` group's Attempt Ledger rows, or `None` when the group
+    never wrote `ledger.json` — every group before this plan, and every
+    non-`optimize` group after it. Degrades to `None` on a malformed file,
+    the same "inert by contract" rule `_artifact_manifest` follows, rather
+    than failing an otherwise-whole bundle."""
+    path = paths.group_dir(group_id) / "ledger.json"
+    if not path.is_file():
+        return None
+    try:
+        ledger = Ledger.load(path)
+    except (OSError, ValueError):
+        return None
+    return [attempt.model_dump(mode="json") for attempt in ledger.attempts]
 
 
 def _escalations_by_group(paths: RunPaths) -> dict[str, list[ExportEscalation]]:
@@ -793,6 +816,7 @@ def build_export(
                 sessions=sessions,
                 artifacts=artifacts,
                 escalations=group_escalations,
+                ledger=_group_ledger(paths, group.group_id),
             )
         )
     groups = [
@@ -859,14 +883,18 @@ def _artifact_manifest(paths: RunPaths) -> list[ExportManifestEntry] | None:
 
 
 def _dump_export_json(export: RunExport) -> str:
-    """``ingest.json``'s text. ``artifact_manifest`` is the one field this
-    contract omits entirely rather than emitting as ``null`` when absent: a
-    run predating plan U6 must export byte-for-byte what it did before this
-    key existed (additive rule, see the module docstring). Every other
-    optional field keeps emitting ``null`` as it always has."""
+    """``ingest.json``'s text. ``artifact_manifest`` and a group's ``ledger``
+    are the fields this contract omits entirely rather than emitting as
+    ``null`` when absent: a run predating the plan that introduced each must
+    export byte-for-byte what it did before that key existed (additive rule,
+    see the module docstring). Every other optional field keeps emitting
+    ``null`` as it always has."""
     payload = export.model_dump(mode="json", by_alias=True)
     if payload.get("artifact_manifest") is None:
         del payload["artifact_manifest"]
+    for group in payload.get("groups", []):
+        if group.get("ledger") is None:
+            group.pop("ledger", None)
     return json.dumps(payload, indent=2) + "\n"
 
 

@@ -27,15 +27,13 @@ import fnmatch
 import hashlib
 import json
 import os
-import subprocess
-import time
 import uuid
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from string import Template
 
 from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, ArtifactEntry
+from orchestrator.execution.command_runner import CommandDied, CommandRunner, TimedOut
 from orchestrator.execution.confinement import (
     build_policy,
     default_cache_root,
@@ -53,17 +51,6 @@ from orchestrator.execution.manifest import (
 )
 from orchestrator.execution.merge import MergeConflict, commits_ahead
 from orchestrator.execution.preflight import PreflightFailure
-from orchestrator.execution.run_child import (
-    RunChildState,
-    boot_id,
-    is_adoptable,
-    kill_process_group,
-    launch,
-    proc_cmdline_head,
-    proc_starttime,
-    process_alive,
-)
-from orchestrator.execution.sessions import _scrub_virtualenv, session_display_name
 from orchestrator.execution.scheduler import (
     Executor,
     GroupContext,
@@ -71,6 +58,7 @@ from orchestrator.execution.scheduler import (
     GroupState,
     RunAbort,
 )
+from orchestrator.execution.sessions import _scrub_virtualenv, session_display_name
 from orchestrator.execution.worktrees import (
     _git,
     _git_ok,
@@ -103,10 +91,6 @@ SURPRISE_SUMMARY_MAX_CHARS = 120
 DEFAULT_POLL_INTERVAL_S = 1.0
 
 
-class TimedOut(Exception):
-    """A command exceeded its declared ``wall_clock_min`` cap."""
-
-
 def make_executor(deps) -> Executor:
     async def executor(ctx: GroupContext) -> GroupState:
         return await _RunExecution(deps, ctx).run()
@@ -115,17 +99,22 @@ def make_executor(deps) -> Executor:
 
 
 class _RunExecution:
+    #: overridden by ``EvaluateExecution`` (plan U8) so args parse with the
+    #: KPI Contract instead of rejecting it as an unknown field.
+    _args_model: type[RunArgs] = RunArgs
+
     def __init__(self, deps, ctx: GroupContext):
         self.deps = deps
         self.ctx = ctx
         self.group = ctx.group
         self.gid = ctx.group.id
         self.paths = deps.store.paths
-        self.args = RunArgs.model_validate(self.group.recipe_args or {})
+        self.args = self._args_model.model_validate(self.group.recipe_args or {})
         self.workspace: Path | None = None
         self._heartbeat = RoundHeartbeat(
             self.paths, self.gid, log=lambda text: log_event(self.paths, text)
         )
+        self._commands = CommandRunner(self.paths, self.gid, self._heartbeat)
         # The manifest entry for this attempt's runner (plan: a run group is a
         # real ``SessionRole.RUNNER`` session, so `status`, the report and the
         # observatory see it with no reader change) and the surprises consumed
@@ -156,6 +145,7 @@ class _RunExecution:
         log_event(self.paths, f"group {self.gid}: run recipe worktree ready at {self.workspace}")
         attempt_dir = run_dir / f"attempt-{attempt_no}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
+        await self._before_commands(attempt_dir)
 
         for idx in range(start_idx, len(self.args.commands)):
             n = idx + 1
@@ -163,7 +153,7 @@ class _RunExecution:
             cwd = self.workspace / command.cwd if command.cwd else self.workspace
             try:
                 result = await self._run_command(attempt_dir, n, command, cwd)
-            except (TimedOut, _CommandDied) as exc:
+            except (TimedOut, CommandDied) as exc:
                 results.append(
                     CommandResult(
                         cmd=command.cmd,
@@ -176,7 +166,7 @@ class _RunExecution:
                     f"({command.cmd!r}) {exc}"
                 )
             results.append(result)
-            self._write_result(attempt_dir, n, result)
+            self._commands.write_result(attempt_dir, n, result)
             if result.exit_status != 0:
                 await self._triage_and_fail(
                     f"group {self.gid}: command {n}/{len(self.args.commands)} "
@@ -190,6 +180,7 @@ class _RunExecution:
             )
 
         measurements, measurements_missing = self._read_measurements()
+        await self._after_measurements(measurements, measurements_missing)
 
         offenders = self._porcelain_offenders()
         if offenders:
@@ -206,14 +197,9 @@ class _RunExecution:
         commit = await self._commit_and_merge()
 
         summary = self._build_summary(results, measurements_missing)
-        record = RunRecord(
-            commands=results,
-            outputs=list(self.args.outputs),
-            measurements=measurements,
-            summary=summary,
-        )
+        record = self._build_record(results, measurements, summary)
         self._write_verification_report(results, attempt_no, summary)
-        self._write_settled(attempt_dir, "completed", summary)
+        self._commands.write_settled(attempt_dir, "completed", summary)
         self._register_artifact(record, commit, measurements_missing, sha256)
         log_event(self.paths, f"group {self.gid}: run recipe completed")
         return GroupState.COMPLETED
@@ -307,22 +293,10 @@ class _RunExecution:
     def _run_dir(self) -> Path:
         return self.paths.group_dir(self.gid) / "run"
 
-    def _existing_attempts(self, run_dir: Path) -> list[int]:
-        if not run_dir.is_dir():
-            return []
-        found = []
-        for child in run_dir.iterdir():
-            if child.is_dir() and child.name.startswith("attempt-"):
-                try:
-                    found.append(int(child.name.removeprefix("attempt-")))
-                except ValueError:
-                    continue
-        return sorted(found)
-
     def _start_attempt(self, run_dir: Path) -> tuple[int, int, list[CommandResult]]:
         """Returns ``(attempt_no, start_idx, results)`` — ``results`` is
         pre-seeded with the commands a retry is carrying forward unrun."""
-        attempts = self._existing_attempts(run_dir)
+        attempts = self._commands.existing_attempts(run_dir)
         if not attempts:
             return 1, 0, []
         latest = attempts[-1]
@@ -362,15 +336,6 @@ class _RunExecution:
                 results.append(result)
                 start_idx = idx + 1
         return latest + 1, start_idx, results
-
-    def _write_result(self, attempt_dir: Path, n: int, result: CommandResult) -> None:
-        atomic_write_text(attempt_dir / f"{n}.result.json", result.model_dump_json(indent=2) + "\n")
-
-    def _write_settled(self, attempt_dir: Path, outcome: str, detail: str) -> None:
-        atomic_write_text(
-            attempt_dir / "settled.json",
-            json.dumps({"outcome": outcome, "detail": detail}, indent=2) + "\n",
-        )
 
     # --------------------------------------------------------- commands
 
@@ -428,170 +393,49 @@ class _RunExecution:
         return _scrub_virtualenv({**base, **worker_cache_env(self._worker_cache_root(), base=base)})
 
     async def _run_command(self, attempt_dir: Path, n: int, command, cwd: Path) -> CommandResult:
-        cwd.mkdir(parents=True, exist_ok=True)
-        state_path = attempt_dir / f"{n}.state.json"
-        exit_path = attempt_dir / f"{n}.exit"
-        out_path = attempt_dir / f"{n}.out"
-        err_path = attempt_dir / f"{n}.err"
-        cancelled_path = attempt_dir / f"{n}.cancelled"
-        cap_seconds = command.wall_clock_min * 60.0
-
-        state: RunChildState | None = None
-        proc: subprocess.Popen | None = None
-        if cancelled_path.is_file():
-            # A deliberate stop (ctrl-c, Observatory Stop, an abort cancelling
-            # in-flight groups) killed this child on purpose — see the
-            # CancelledError handler below. It did not "die with the
-            # orchestrator": relaunch it instead of spending a triage call
-            # and failing the group (smoke r20260926: SIGINT + resume cost a
-            # triage call and a `retry` for a command that was never broken).
-            self._discard_cancelled_child(n, state_path, exit_path, cancelled_path)
-        elif state_path.is_file() and not exit_path.is_file():
-            candidate = RunChildState.model_validate_json(state_path.read_text())
-            if is_adoptable(candidate, current_boot_id=boot_id()):
-                state = candidate
-                log_event(
-                    self.paths,
-                    f"group {self.gid}: re-adopted run child pid {state.pid} for command {n}",
-                )
-            elif not process_alive(candidate.pid) and not exit_path.is_file():
-                raise _CommandDied("died with the orchestrator (no exit file, pid gone)")
-
-        if state is None:
-            preexec_fn = self._confinement_preexec(cwd, attempt_dir)
-            proc = await asyncio.to_thread(
-                launch,
-                command.cmd,
-                cwd=cwd,
-                exit_path=exit_path,
-                out_path=out_path,
-                err_path=err_path,
-                preexec_fn=preexec_fn,
-                env=self._child_env(),
-            )
-            state = RunChildState(
-                n=n,
-                pid=proc.pid,
-                starttime=proc_starttime(proc.pid),
-                cmdline_head=proc_cmdline_head(proc.pid),
-                started_at=datetime.now(UTC).isoformat(),
-                started_monotonic=time.monotonic(),
-                boot_id=boot_id(),
-            )
-            atomic_write_text(state_path, state.model_dump_json(indent=2) + "\n")
-
-        total = len(self.args.commands)
-        self._heartbeat_phase(n, total, state, cap_seconds)
-        try:
-            exit_code = await self._await_exit(
-                state.pid,
-                exit_path,
-                state.started_monotonic,
-                cap_seconds,
-                relabel=lambda elapsed: self._relabel_heartbeat(n, total, elapsed, cap_seconds),
-            )
-        except asyncio.CancelledError:
-            # Marker first, kill second: the marker is what tells the
-            # re-entry this was deliberate, so it must be on disk even if
-            # the process is torn down before the grace period ends.
-            atomic_write_text(
-                cancelled_path,
-                json.dumps(
-                    {"pid": state.pid, "cancelled_at": datetime.now(UTC).isoformat()}, indent=2
-                )
-                + "\n",
-            )
-            log_event(
-                self.paths,
-                f"group {self.gid}: command {n}/{total} stopped with the orchestrator "
-                f"(pid {state.pid} killed); `resume` relaunches it",
-            )
-            kill_process_group(state.pid)
-            raise
-        finally:
-            # Reap our own direct child (never a re-adopted one — this
-            # process is not its parent, so waitpid would raise ECHILD) so a
-            # long-lived orchestrator does not accumulate zombies.
-            if proc is not None:
-                try:
-                    await asyncio.to_thread(proc.wait, 5)
-                except subprocess.TimeoutExpired:
-                    pass
-        duration = time.monotonic() - state.started_monotonic
-        if exit_code is None:
-            raise _CommandDied("died with the orchestrator (no exit file, pid gone)")
-        return CommandResult(cmd=command.cmd, exit_status=exit_code, duration_s=duration)
-
-    async def _await_exit(
-        self,
-        pid: int,
-        exit_path: Path,
-        started_monotonic: float,
-        cap_seconds: float,
-        relabel: Callable[[float], None] | None = None,
-    ) -> int | None:
-        """Poll until the child's exit file appears (or the child vanishes).
-
-        ``relabel`` is called with the elapsed seconds on every poll so the
-        heartbeat's ``Ns/caps`` label keeps moving: on r20260924 it froze at
-        ``0s/60s`` for a whole command because it was written once, at launch.
-        """
-        while True:
-            if exit_path.is_file():
-                text = exit_path.read_text().strip()
-                return int(text) if text else None
-            elapsed = time.monotonic() - started_monotonic
-            if relabel is not None:
-                relabel(elapsed)
-            if elapsed > cap_seconds:
-                kill_process_group(pid)
-                raise TimedOut(f"exceeded wall_clock_min cap of {cap_seconds / 60:.2f} minutes")
-            await asyncio.sleep(DEFAULT_POLL_INTERVAL_S)
-            if not process_alive(pid) and not exit_path.is_file():
-                return None
-
-    @staticmethod
-    def _phase_label(n: int, total: int, elapsed: float, cap_seconds: float) -> str:
-        return f"command {n}/{total} · {elapsed:.0f}s/{cap_seconds:.0f}s"
-
-    def _relabel_heartbeat(self, n: int, total: int, elapsed: float, cap_seconds: float) -> None:
-        """Refresh the moving ``Ns/caps`` label *and* carry it to disk now.
-
-        ``relabel_phase`` alone leaves the write to the heartbeat's regular
-        tick (15 s), so a ``status`` a few seconds into a command read the
-        ``0s`` label ``mark_phase`` wrote at launch until the next tick came
-        round. One small atomic write per poll is what keeps the label honest.
-        """
-        self._heartbeat.relabel_phase(self._phase_label(n, total, elapsed, cap_seconds))
-        self._heartbeat.write_once()
-
-    def _discard_cancelled_child(
-        self, n: int, state_path: Path, exit_path: Path, cancelled_path: Path
-    ) -> None:
-        """Clear a deliberately-stopped command's remains so it relaunches
-        fresh. If the kill never landed (the process was torn down mid-grace)
-        and the same child is still there, finish the job first; a stale exit
-        file (a child that caught SIGTERM and let the wrapper record ``143``)
-        would otherwise be read as this relaunch's exit status."""
-        if state_path.is_file():
-            try:
-                previous = RunChildState.model_validate_json(state_path.read_text())
-            except ValueError:
-                previous = None
-            if previous is not None and is_adoptable(previous, current_boot_id=boot_id()):
-                kill_process_group(previous.pid)
-        log_event(
-            self.paths,
-            f"group {self.gid}: command {n} was stopped deliberately last time; relaunching",
+        """Thin delegation to ``CommandRunner.run`` — the wall-clock cap,
+        re-adoption, cancellation and heartbeat-labelling mechanics all live
+        there now; this executor supplies only what it knows: the confined
+        preexec function, the environment, and the command's place in the
+        run's total."""
+        preexec_fn = self._confinement_preexec(cwd, attempt_dir)
+        return await self._commands.run(
+            attempt_dir,
+            n,
+            command,
+            cwd,
+            preexec_fn=preexec_fn,
+            env=self._child_env(),
+            total=len(self.args.commands),
+            poll_interval=DEFAULT_POLL_INTERVAL_S,
         )
-        for path in (cancelled_path, state_path, exit_path):
-            path.unlink(missing_ok=True)
 
-    def _heartbeat_phase(
-        self, n: int, total: int, state: RunChildState, cap_seconds: float
-    ) -> None:
-        elapsed = time.monotonic() - state.started_monotonic
-        self._heartbeat.mark_phase(self._phase_label(n, total, elapsed, cap_seconds))
+    # -------------------------------------------------- overridable hooks
+
+    async def _before_commands(self, attempt_dir: Path) -> None:
+        """Called once per attempt, right after ``attempt_dir`` exists and
+        before the first declared command runs. A no-op for ``run``;
+        ``evaluate`` (plan U8) uses it for the harness hash check and the
+        optional smoke command."""
+
+    async def _after_measurements(self, measurements: dict, measurements_missing: bool) -> None:
+        """Called once, right after ``_read_measurements``. A no-op for
+        ``run``; ``evaluate`` (plan U8) extracts the KPI and guard values
+        here, failing (via ``_triage_and_fail``) when a declared key is
+        missing."""
+
+    def _build_record(
+        self, results: list[CommandResult], measurements: dict, summary: str
+    ) -> RunRecord:
+        """The completion contract for this attempt. Overridden by
+        ``evaluate`` (plan U8) to return an ``EvaluationRecord`` carrying the
+        KPI, guards and harness hash extracted in ``_after_measurements``."""
+        return RunRecord(
+            commands=results,
+            outputs=list(self.args.outputs),
+            measurements=measurements,
+            summary=summary,
+        )
 
     # ------------------------------------------------------------ output
 
@@ -718,7 +562,7 @@ class _RunExecution:
                 paths=list(record.outputs),
                 sha256=sha256,
                 commit=commit,
-                schema="RunRecord",
+                schema=type(record).__name__,
                 summary=record.summary,
                 status="complete",
                 measurements=dict(record.measurements),
@@ -746,7 +590,7 @@ class _RunExecution:
         r20260925-101742 it blamed a slow sampler for a 20-minute timeout whose
         stderr said ``Permission denied`` in its first line."""
         run_dir = self._run_dir()
-        attempts = self._existing_attempts(run_dir)
+        attempts = self._commands.existing_attempts(run_dir)
         if not attempts:
             return "(no command output recorded)"
         attempt_dir = run_dir / f"attempt-{attempts[-1]}"
@@ -784,9 +628,9 @@ class _RunExecution:
             if response is not None and response.answer:
                 message = f"{message}\n[operator] {response.answer}"
         run_dir = self._run_dir()
-        attempts = self._existing_attempts(run_dir)
+        attempts = self._commands.existing_attempts(run_dir)
         if attempts:
-            self._write_settled(run_dir / f"attempt-{attempts[-1]}", "failed", message)
+            self._commands.write_settled(run_dir / f"attempt-{attempts[-1]}", "failed", message)
         raise GroupFailure(message)
 
     async def _escalate_decision(self, prompt_text: str):
@@ -815,8 +659,3 @@ class _RunExecution:
                 f"operator aborted the run at group {self.gid} (run recipe needs_decision)"
             )
         return response
-
-
-class _CommandDied(Exception):
-    """A recorded Run Child pid is gone with no exit file — it died along
-    with a previous orchestrator process rather than completing."""

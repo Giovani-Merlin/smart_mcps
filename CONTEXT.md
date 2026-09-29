@@ -333,8 +333,9 @@ tool allowlist, completion contract, reviewer prompt, merge behaviour, pricing
 function and handoff prompt. Declared per unit in the task map
 (`recipe: research`); a unit declaring none runs `code`, today's coder-and-
 reviewer machine, unchanged. v1 of the registry (`orchestrator/recipes/`)
-ships exactly two entries, `code` and `run`; `research` and `synthesize` are
-named in the origin brainstorm as the next increment's, not yet registered.
+ships exactly two entries, `code` and `run`; the next increment (brainstorm
+2026-09-27) adds `research`, `evaluate` and `optimize`; `synthesize` is
+deferred until a pipeline needs an N→1 reduce.
 Always written "Unit Recipe" in prose, never bare
 "recipe" — for the same reason \[[Preflight Kind]\] is never bare "kind".
 _Avoid_: kind (taken by \[[Preflight Kind]\]), machine (taken by machine
@@ -359,3 +360,60 @@ receives *instead of* the payload: the entry, never the file body, which the
 unit opens only when it needs the detail.
 _Avoid_: artifact store (that is `data_dirs` — the bytes; this is the index
 over them), findings index (research is only one of its producers)
+
+**Findings Artifact**:
+The document a `research` \[[Unit Recipe]\] unit commits under `docs/research/`
+and registers in the \[[Artifact Manifest]\]: a list of findings, each carrying at
+least one source reference and a confidence, plus an optional \[[Spec Refinement]\].
+Its summary is the manifest entry a downstream unit reads.
+_Avoid_: research report (prose with no schema), answers file (the research
+skills' `research_answers.md` is an input format, not this artifact)
+
+**Spec Refinement**:
+A bounded edit to the spec of an existing downstream unit that a document
+unit's artifact may carry — applied through the existing spec-rewrite path to
+the unit named in the plan's `depends_on`, and never anything else. Refining a
+unit is allowed; creating, splitting or removing one is not (ADR 0010).
+_Avoid_: replan (changes the graph), recommendation (prose nobody applies)
+
+**KPI Contract**:
+The block on an `evaluate` or `optimize` unit naming the one measurement key
+that is the objective, its direction, the minimum effect worth keeping, the
+guard metrics that may not worsen, and the \[[Evaluation Harness]\] paths. Read
+off the command's measurements JSON; the orchestrator never computes a KPI
+itself.
+_Avoid_: metric (any measurement is one; the KPI is the one being optimised),
+objective (overloaded by the plan's Objective section)
+
+**Evaluation Harness**:
+The set of paths — scoring script, held-out inputs, seeds, budget constants and
+the lines that enforce them — that a \[[KPI Contract]\] declares protected. Built
+or named by a human-planned unit before any loop, excluded from the optimizer's
+mutable files, and hash-checked by the evaluate child before every scoring run.
+_Avoid_: eval script (only one of the protected paths), benchmark (implies a
+public suite)
+
+**Champion**:
+The commit an `optimize` group currently holds as best — the baseline until a
+candidate is kept. Every candidate is scored against it and every discard resets
+the worktree to it; it is what merges when the loop ends.
+_Avoid_: best-so-far (fine in prose, but the ledger column is `champion`),
+HEAD (the coder's HEAD may be a discarded candidate)
+
+**Attempt Ledger**:
+The per-group, append-only record of every optimize attempt: candidate commit,
+KPI and guard values, delta to the \[[Champion]\], noise floor at the time,
+outcome, harness hash and one line of why. Injected into every round's prompt
+so the coder knows what was tried, and registered as the group's artifact when
+the loop ends with no keep.
+_Avoid_: results.tsv (autoresearch's untracked, unread file — the anti-pattern),
+history (the transcript is also history)
+
+**Keep-or-Revert**:
+The orchestrator's accept rule for an optimize candidate, decided from numbers
+alone: `keep`, `promising` (improved, awaiting one confirmation run),
+`inconclusive` (within the noise floor), `discard` (regressed or a guard
+worsened) or `crash`. The coder proposes; the orchestrator decides and moves the
+\[[Champion]\]. The single deliberate divergence from autoresearch, where the
+agent decides.
+_Avoid_: accept/reject (two-valued; hides `inconclusive` and `promising`)

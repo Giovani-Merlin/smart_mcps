@@ -40,12 +40,14 @@ class ReviewerRound:
     _launch_call: Callable[[], Callable[..., RoundResult]]
     _decisions_text: Callable[[], str]
     _persist_reviewer_usage: Callable[[str], None]
+    _worker_recipe: Callable[[], object]
 
     async def _review_round(
         self, report_path: Path, rounds: int
     ) -> tuple[ReviewerVerdict | None, Path | None]:
-        if self.group.intensity == ReviewIntensity.SELF_VERIFY:
-            return None, None  # AE7: no reviewer session is ever created
+        recipe = self._worker_recipe()
+        if self.group.intensity == ReviewIntensity.SELF_VERIFY or recipe.reviewer_prompt is None:
+            return None, None  # AE7 / plan U5: no reviewer session is ever created
         assert self.workspace is not None
         self.ctx.set_state(GroupState.REVIEWING)
         self._heartbeat.mark_phase("reviewer verifying the report")  # F4
@@ -55,6 +57,7 @@ class ReviewerRound:
                 session_id=sid,
                 prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
+                extra_allowed_tools=recipe.extra_allowed_tools,
             )
 
         if self.reviewer_sid is None:
@@ -68,11 +71,13 @@ class ReviewerRound:
                         base_ref=self.deps.base_ref_for(self.group),
                         scratch_dir=str(self.workspace / REVIEW_SCRATCH_DIRNAME),
                         decisions=self._decisions_text(),
+                        template=recipe.reviewer_prompt,
                     ),
                     name=session_display_name(
                         self.deps.run_id, self.gid, "reviewer", self.generation
                     ),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )
@@ -88,6 +93,7 @@ class ReviewerRound:
                         str(report_path), decisions=self._decisions_text()
                     ),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )
@@ -123,6 +129,7 @@ class ReviewerRound:
                     session_id=self.reviewer_sid,
                     prompt=render_extra_pass_prompt(),
                     cwd=self.workspace,
+                    extra_allowed_tools=recipe.extra_allowed_tools,
                 ),
                 recover=_reviewer_recover,
             )

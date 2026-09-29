@@ -47,7 +47,11 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
 1. **Commits exist, tree is clean.** `git rev-parse --verify HEAD`;
    `git status --porcelain`. A dirty tree is allowed only if the human
    accepts it explicitly — workers fork from the launch commit, so anything
-   uncommitted is invisible to them.
+   uncommitted is invisible to them. `run` and `resume` also refuse to launch
+   when the installed `smart-mcps-orchestrate` (a non-editable `uv tool`
+   copy) differs from the source it was installed from, naming the
+   `uv tool install --reinstall <repo>` command — reinstall rather than
+   passing `--allow-stale-install`, unless running old code is the point.
 2. **Config exists and names the data.** `.orchestrator/config.toml` must
    exist — print the absolute path you actually read
    (`realpath .orchestrator/config.toml`; F6, r20260924: a driver launched
@@ -66,7 +70,10 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
 3. **Grouping exists and is current.** `smart-mcps-orchestrate groupings`.
    If the plan file is newer than the grouping's `groups.json`, or the plan
    was deepened since, regenerate: `smart-mcps-orchestrate plan-check <plan>`
-   then `smart-mcps-orchestrate group <plan>`. The launch below selects the
+   then `smart-mcps-orchestrate group <plan>`. Resolve every `plan-check`
+   warning before launch: a program off the worker allowlist interrupts its
+   group on a `permission_denied` unless your own settings grant it — mark
+   the item `Run (driver):` in the plan and regroup, or confirm the grant. The launch below selects the
    grouping by `--plan "$PLAN"`; that still errors when two groupings were
    built from the same plan — then pick one with `--grouping NAME` instead.
 4. **The environment builds on the launch branch.** Read
@@ -176,40 +183,42 @@ Live — wait it out.
 
 Greppable anchors, all in `logs/run.log`:
 
-| event                | line                                                                                                                       |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)                                                               |
-| escalation answered  | `ESCALATION <id> answered: <action>`                                                                                       |
-| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                 |
-| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                               |
-| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                     |
-| coder launched       | `group <gid> generation <n>: coder launching, …`                                                                           |
-| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                   |
-| reviewer verdict     | `… reviewer verdict <status>`                                                                                              |
-| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                     |
-| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>`                                                     |
-| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                                                                       |
-| group not live       | `group <gid> generation <n>: not live for <age> in <phase> — <evidence>`                                                   |
-| group live again     | `group <gid> generation <n>: live again: <signal> <age> ago` (or `child exited`)                                           |
-| machine suspend      | `machine suspend detected: <gap>`                                                                                          |
-| suspend cure         | `group <gid> generation <n>: suspend cure <k>/<max> — no sign of life since wake at <ts>; killing session <sid> pid <pid>` |
-| cures exhausted      | `group <gid> generation <n>: cures exhausted (<k>/<max>); reporting only`                                                  |
-| group done           | `group <gid>: completed`                                                                                                   |
-| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                     |
-| run ended by you     | `run <id> aborted by operator: …`                                                                                          |
-| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                      |
-| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)             |
-| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                       |
-| run recipe done      | `group <gid>: run recipe completed`                                                                                        |
+| event                | line                                                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)                                                                        |
+| escalation answered  | `ESCALATION <id> answered: <action>`                                                                                                |
+| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                          |
+| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                                        |
+| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                              |
+| coder launched       | `group <gid> generation <n>: coder launching, …`                                                                                    |
+| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                            |
+| reviewer verdict     | `… reviewer verdict <status>`                                                                                                       |
+| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                              |
+| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>`                                                              |
+| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                                                                                |
+| group not live       | `group <gid> generation <n>: not live for <age> in <phase> — <evidence>`                                                            |
+| group live again     | `group <gid> generation <n>: live again: <signal> <age> ago` (or `child exited`)                                                    |
+| machine suspend      | `machine suspend detected: <gap>`                                                                                                   |
+| suspend cure         | `group <gid> generation <n>: suspend cure <k>/<max> — no sign of life since wake at <ts>; killing session <sid> pid <pid>`          |
+| cures exhausted      | `group <gid> generation <n>: cures exhausted (<k>/<max>); reporting only`                                                           |
+| group done           | `group <gid>: completed`                                                                                                            |
+| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                              |
+| run ended by you     | `run <id> aborted by operator: …`                                                                                                   |
+| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                               |
+| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)                      |
+| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                                |
+| run recipe done      | `group <gid>: run recipe completed`                                                                                                 |
 | late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` (non-blocking; read it now, not at finish) |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
   `triage-guide.md`, "When status reports Not Live", for the three cases and
   when manual intervention (`kill -INT -<pgid>`, `resume`) is actually
   warranted.
+
 - **`machine suspend detected`** followed by **`suspend cure`** means the
   probe already killed and warm-resumed a child with no Sign of Life since
   the wake — no action needed unless `cures exhausted` follows.
+
 - **`cures exhausted`** is the one line here that does ask you to act: the
   probe has used its budget for this generation and will only keep
   reporting from here.
@@ -273,7 +282,7 @@ it blocks (the `blocks` clause on the raise line):
 | `reviewer_structural`                       | the group boundaries are wrong                            | `answer` with a boundary decision — a rewrite is the right tool here                                                                                                 |
 | `merge_conflict`                            | fixable by hand                                           | fix in the worktree, commit, `answer "resolved by hand: …"`; else `skip`                                                                                             |
 | `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite                                                                                            |
-| same                                        | a fix you must commit (fixture, dep, config)              | commit on the **integration branch only** — the retry re-merges it into the group branch before the gate; a worktree commit too leaves duplicates (triage-guide)   |
+| same                                        | a fix you must commit (fixture, dep, config)              | commit on the **integration branch only** — the retry re-merges it into the group branch before the gate; a worktree commit too leaves duplicates (triage-guide)     |
 | same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                                                                                             |
 | same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)                                                                                 |
 | `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                                                                                                  |
@@ -334,6 +343,43 @@ Either way, fix the underlying cause (environment, a bad command, a wrong
    attempt reads and deletes that file itself.
 3. `smart-mcps-orchestrate resume $RUN`.
 
+### Driving an `optimize` group
+
+An `optimize` group is the code loop plus a KPI-scored settle step, so
+`coder_blocked`/`reviewer_too_hard` triage above applies to it unchanged —
+what's different is the group's own ledger and a patience escalation the
+loop can raise instead of failing outright.
+
+- **Read the ledger before triaging anything about the group.**
+  `<group_dir>/ledger.json` is append-only: one row per round, each with the
+  candidate's commit, the KPI delta, the guard deltas, and the outcome
+  (`keep` / `promising` / `inconclusive` / `discard` / `crash`). Read it
+  before touching a `coder_blocked` on this group — a run of `discard`s is
+  the loop working as designed, not a bug, and nothing there needs a fix.
+- **A `promising` candidate gets a cheat-reviewer round before it confirms.**
+  You'll see an extra reviewer session between rounds; its `changes_required`
+  is a `discard` recorded in the ledger with the reviewer's notes, not a
+  normal review-loop escalation — no action from you unless it looks wrong,
+  in which case treat it like any other `reviewer_too_hard`.
+- **A patience escalation** (`kind: caps_exhausted`, the ledger attached) is
+  raised when the loop's `[recipes.optimize]` bounds trip: `patience` (4)
+  consecutive non-improving rounds, or `consecutive_reverts` (3) discards in
+  a row. This is a product question, not an environment fix — read the
+  ledger's recent rows and ask the human whether to keep going (raise
+  `evaluations`, `--action retry`), accept the current Champion as final, or
+  rewrite the unit's `kpi`/`commands`. Do not `retry` a patience escalation
+  yourself without one of those decisions; guessing which way to push the
+  loop is exactly the case this skill reserves for a human.
+- **A FAILED `optimize` group's recovery is `retry`-only**, the same as a
+  `run` group above — the scheduler does not attempt stranded-work resolve
+  for any non-`code` recipe. `smart-mcps-orchestrate retry $RUN <gid>` then
+  `resume $RUN`.
+- **A zero-hit loop is not a failure.** If every candidate across
+  `evaluations` rounds is `discard`/`inconclusive`, the group still
+  completes: the ledger is registered as the group's Artifact Manifest entry
+  and the run report reads "no improvement found (N ruled out)". Don't treat
+  a full ledger of discards at generation end as something to escalate.
+
 ## Phase 4 — Finish
 
 When the process exits (signal **(b)**):
@@ -346,9 +392,7 @@ When the process exits (signal **(b)**):
    `Run (driver):` item**, the CLI **auto-finished** (push + PR) the moment
    the last group went terminal — `run complete (N completed, M resolved by operator)` on stdout and the PR URL in `logs/run.log`; the one-pager
    then lands on the PR after the fact (write it, re-run `finish`). When
-   driver-run items exist, the CLI holds instead — `run <id>: not
-   auto-finishing — N driver-run verification item(s) wait for the run
-   driver (<gid>: <ids>; …)` — because those items are the only evidence
+   driver-run items exist, the CLI holds instead — `run <id>: not auto-finishing — N driver-run verification item(s) wait for the run driver (<gid>: <ids>; …)` — because those items are the only evidence
    that exercises the merged code for real (r20260924-134934 merged a `run`
    recipe that could not start, and only the driver's live items showed it).
    Run them (step 4), fix what they find, write the one-pager, then run
@@ -364,7 +408,7 @@ When the process exits (signal **(b)**):
       it before launching the *next* run (`finish` reads it fresh, so this
       run only gets a report if it was already set before launch).
    2. Preview the computed formats now, so you write the one-pager from real
-      facts: `smart-mcps-orchestrate report $RUN --format all --out /tmp/rr-$RUN`.
+      facts: `smart-mcps-orchestrate report $RUN --format all --out .orchestrator/runs/$RUN/report-preview`.
       This writes `facts.json`, `report.html`, and `CHANGELOG-entry.md`
       there and nothing else — it never touches `docs/RUNLOG.md` unless you
       add `--update-runlog`, and never writes into a worktree. `finish`
@@ -375,8 +419,7 @@ When the process exits (signal **(b)**):
       looks for it, **once the run has ended** (no merge left to sweep it):
       `smart-mcps-orchestrate report $RUN --out .worktrees/$RUN/integration/docs/runs/$RUN --scaffold one-pager`
       Do not scaffold it while groups are still merging: the next merge
-      sweeps the untracked draft into a `recover(<run>): integration work
-      stranded by an interrupted run` commit, and an unfilled scaffold makes
+      sweeps the untracked draft into a `recover(<run>): integration work stranded by an interrupted run` commit, and an unfilled scaffold makes
       any `finish` — the CLI's own auto-finish included — abort on
       validation (r20260924-134934). Drafting early is fine elsewhere, e.g.
       under `.orchestrator/`, copied in after the run ends.
@@ -384,7 +427,7 @@ When the process exits (signal **(b)**):
       - **Extract.** Build one prompt from two XML-delimited sources and
         nothing else — never a transcript:
         ```
-        <facts>…contents of /tmp/rr-$RUN/CHANGELOG-entry.md…</facts>
+        <facts>…contents of .orchestrator/runs/$RUN/report-preview/CHANGELOG-entry.md…</facts>
         <driver_notes>…contents of .orchestrator/notes-$RUN.md…</driver_notes>
         ```
         From them list `{pointer, fact quote}` items, one per thing worth
@@ -419,7 +462,10 @@ When the process exits (signal **(b)**):
       transcript from inside a confined worktree, so those it always leaves
       to you). A `passed by the coder` line needs nothing. Run each from the group's
       worktree, or from the integration worktree once merged, and paste the
-      result into the one-pager's Run notes. A live-tier item costs real
+      result into the one-pager's Run notes. Run a live-tier pytest item with
+      `--basetemp=.orchestrator/runs/$RUN/live-<item>` and its output to a log
+      beside it: pytest's default temp dir is under `/tmp`, and a reboot
+      mid-item wiped r20260927-100604's scratch repos with the evidence. A live-tier item costs real
       tokens (`-m llm`, ~$0.20 and a few minutes here) — that is the price of
       the evidence, not a reason to skip it. A failure here is a finding: fix
       it and re-verify, or say plainly in the report that the item is unproven.

@@ -1801,7 +1801,16 @@ class TestResolveConflictLadder:
             def __init__(self):
                 self.calls = 0
 
-            def resume(self, *, session_id, prompt, cwd, json_schema=None, on_turn=None):
+            def resume(
+                self,
+                *,
+                session_id,
+                prompt,
+                cwd,
+                json_schema=None,
+                extra_allowed_tools=(),
+                on_turn=None,
+            ):
                 self.calls += 1
                 if resolve:
                     subprocess.run(

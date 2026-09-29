@@ -341,3 +341,79 @@ def test_run_recipe_group_that_failed_is_not_landed(tmp_path: Path) -> None:
     (unit,) = facts.units
     assert unit.landed is False
     assert {v.status for v in unit.verification} == {"recipe"}
+
+
+# -------------------------------------------------------------- optimize recipe
+
+
+def _optimize_group(group_id: str = "g1") -> Group:
+    group = _base_group(group_id)
+    return group.model_copy(update={"recipe": "optimize"})
+
+
+def _build_optimize_run(tmp_path: Path, *, ledger_attempts: list[dict], state: str) -> RunPaths:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _write_plan(repo_root, "docs/plans/fixture.md")
+    paths = RunPaths(repo_root, RUN_ID, run_dir=tmp_path / "run")
+    _write_groups_json(paths, group=_optimize_group())
+    _write_manifest(paths, group_id="g1", group_name="Widget", summary="An optimize unit.")
+    _write_state(paths, group_id="g1", state=state)
+    ledger_path = paths.group_dir("g1") / "ledger.json"
+    atomic_write_text(ledger_path, json.dumps({"attempts": ledger_attempts}, indent=2) + "\n")
+    return paths
+
+
+def _attempt(round_no: int, outcome: str, delta: float | None) -> dict:
+    return {
+        "round_no": round_no,
+        "candidate_commit": f"{'a' * 39}{round_no}",
+        "kpi_value": None if delta is None else 1.0,
+        "guard_values": {},
+        "delta": delta,
+        "noise_floor": 0.0,
+        "outcome": outcome,
+        "harness_hash": "deadbeef",
+        "why": "test",
+        "at": "2026-01-01T00:00:00+00:00",
+    }
+
+
+def test_optimize_group_with_one_keep_reports_ledger_rows_and_champion_moved(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.report.facts import build_facts
+
+    attempts = [
+        _attempt(1, "discard", -0.1),
+        _attempt(2, "inconclusive", 0.0),
+        _attempt(3, "keep", 0.5),
+        _attempt(4, "discard", -0.2),
+    ]
+    paths = _build_optimize_run(tmp_path, ledger_attempts=attempts, state="completed")
+    facts = build_facts(paths.repo_root, RUN_ID, run_dir=paths.run_dir)
+
+    group = facts.groups[0]
+    assert group.recipe == "optimize"
+    assert group.ledger_rows == 4
+    assert group.champion_moved is True
+    assert group.keeps == [{"round": 3, "delta": 0.5, "candidate_commit": f"{'a' * 39}3"}]
+
+
+def test_optimize_group_zero_hit_reports_no_keeps_and_still_lands(tmp_path: Path) -> None:
+    from orchestrator.report.facts import build_facts
+
+    attempts = [
+        _attempt(1, "discard", -0.1),
+        _attempt(2, "inconclusive", 0.0),
+        _attempt(3, "discard", -0.3),
+    ]
+    paths = _build_optimize_run(tmp_path, ledger_attempts=attempts, state="completed")
+    facts = build_facts(paths.repo_root, RUN_ID, run_dir=paths.run_dir)
+
+    group = facts.groups[0]
+    assert group.ledger_rows == 3
+    assert group.keeps == []
+    assert group.champion_moved is False
+    (unit,) = facts.units
+    assert unit.landed is True

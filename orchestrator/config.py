@@ -732,11 +732,21 @@ class RunRecipeConfig(BaseModel):
     poll_interval_s: float = 5.0
 
 
+class OptimizeRecipeConfig(BaseModel):
+    """``[recipes.optimize]`` defaults: how long the loop tolerates a run of
+    non-improving candidates before escalating to the operator with the
+    ledger attached, rather than failing the group (R19)."""
+
+    patience: int = 4
+    consecutive_reverts: int = 3
+
+
 class RecipesConfig(BaseModel):
     """``[recipes]``: the allow-list of non-``code`` recipes (``code`` implicit)."""
 
     enabled: list[str] = Field(default_factory=list)
     run: RunRecipeConfig = Field(default_factory=RunRecipeConfig)
+    optimize: OptimizeRecipeConfig = Field(default_factory=OptimizeRecipeConfig)
 
     @field_validator("enabled")
     @classmethod

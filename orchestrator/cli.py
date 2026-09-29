@@ -681,6 +681,15 @@ def _add_execution_args(cmd: argparse.ArgumentParser) -> None:
             "the mapper is an unseeded LLM call"
         ),
     )
+    cmd.add_argument(
+        "--allow-stale-install",
+        action="store_true",
+        help=(
+            "launch even when this uv-tool install of the orchestrator differs from "
+            "the source directory it was installed from (default: refuse, naming "
+            "the reinstall command)"
+        ),
+    )
     _add_auto_resume_arg(cmd)
     _add_model_args(cmd)
 
@@ -1539,6 +1548,15 @@ def _cmd_plan_check(args: argparse.Namespace) -> int:
     except PlanEditError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # Repo-aware verification-item lint (r20260927-100604: a `bash -c … /tmp`
+    # coder item halted the run and a wrong bundle path needed a driver
+    # correction — both readable in the plan before launch).
+    from orchestrator.grouping.verification_lint import lint_verification
+
+    lint_problems, lint_warnings = lint_verification(plan_text, repo_root)
+    problems = [*problems, *lint_problems]
+    for warning in lint_warnings:
+        print(f"plan-check: warning: {warning}")
     if not problems:
         print(f"plan-check: {plan_path} is internally consistent")
         return 0
@@ -1804,6 +1822,13 @@ def _cmd_run(
     *,
     resume: bool,
 ) -> int:
+    if not getattr(args, "allow_stale_install", False):
+        from orchestrator.install_check import stale_install_message
+
+        stale = stale_install_message()
+        if stale is not None:
+            print(f"error: {stale}", file=sys.stderr)
+            return 1
     repo_root = args.repo.resolve()
     run_id = args.run_id if resume else (args.run_id or _default_run_id())
     paths = RunPaths(repo_root, run_id)

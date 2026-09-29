@@ -262,8 +262,10 @@ carries, deepened or not. A worker is Landlock-confined (see
 `orchestrator/execution/confinement.py`) to: its own worktree, its own
 `~/.claude/projects/<slug-of-that-worktree>`, the worktree's git dirs, the
 probed `~/.claude` runtime dirs, `~/.claude/.credentials.json`, the
-orchestrator cache root, `system_write_paths()` (`/tmp` among them), and
-whatever `[session] extra_write_paths` adds. Reads are never restricted;
+orchestrator cache root, `system_write_paths()` (`/tmp` among them — writable,
+but no plan item may use it: a restart wipes it and it has lost run data more
+than once, so `plan-check` fails a `Run:` line naming it), and whatever
+`[session] extra_write_paths` adds. Reads are never restricted;
 **writes outside that list fail with `PermissionError`**, and the worker
 usually reports it as a mysterious environment defect.
 
@@ -275,7 +277,8 @@ For each `Run:` command, ask what it *writes* and where:
 | a repo-level data dir (a corpus, models, renders)               | add it to `[workspace] data_dirs` (it is symlinked in and allowlisted) |
 | a fixed path outside the worktree (a shared cache, `/opt/...`)  | add it to `[session] extra_write_paths` and say so in the unit         |
 | a path not knowable until the run (see below)                   | mark the item `Run (driver):`                                          |
-| `/tmp`, or kills/resumes a child process                        | fine — `Run:`; process control is not a write                          |
+| `/tmp` or `/var/tmp`                                            | rewrite to `.coder-scratch/` — never `/tmp`: a restart wipes it        |
+| kills/resumes a child process                                   | fine — `Run:`; process control is not a write                          |
 
 **The default is `Run:`; `Run (driver):` only when the command spawns a nested
 `claude` or writes to a path outside the allowlist that cannot be declared in
@@ -337,6 +340,26 @@ whole unit, since a `run` group prices as its declared wall clock plus a
 fixed triage-token allowance rather than file arithmetic (see
 `docs/orchestrator-task-map.md`'s v2 section). A command with no
 `wall_clock_min` deserves a question, not a guessed default.
+
+### `research`, `evaluate` and `optimize` units in the sweep
+
+A `research` unit needs no sandbox-sweep entry of its own — its worker
+session already carries three extra allowed-tools rules from the registry
+(`Bash(smart-mcps-perplexity *)`, `WebSearch`, `WebFetch`), added on every
+call the same way the code loop's own rules are, so a Perplexity query or a
+web fetch inside a `research` group's worker is already inside the
+allowlist, not a gap to sweep. Landlock confines writes only — reads and
+network are unconfined for every worker — so nothing about `research`
+widens what it can write.
+
+`evaluate` sweeps exactly like a `run` unit above: its `recipe_args.commands`
+run against the Run Child profile, and its `harness_paths` files must be
+readable (not writable) from the harness unit's own commit — sweep for a
+missing read grant, not a missing write one. `optimize` sweeps like a coder
+unit for its own `commands` (worker profile) plus, for the evaluate step it
+runs internally each round, the same Run Child check `evaluate` gets;
+`allow_write` on an `optimize` unit is the coder's own extra Landlock grants,
+subject to the same `~/.claude` rejection as `run`'s.
 
 ### The `PATH`-not-absolute-path rule, again
 

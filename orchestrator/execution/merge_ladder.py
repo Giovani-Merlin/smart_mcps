@@ -9,10 +9,13 @@ place the attributes below are born (see `ExecutionHost`).
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
 
 from orchestrator.execution.artifacts import ARTIFACT_SUMMARY_MAX_CHARS, ArtifactEntry
 from orchestrator.execution.escalating import _is_retry, _operator_surprise
@@ -30,7 +33,12 @@ from orchestrator.execution.prompting import (
 )
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
 from orchestrator.execution.sessions import SessionError, nudge_until_report
-from orchestrator.execution.worktrees import changed_paths, ensure_excluded, integration_branch
+from orchestrator.execution.worktrees import (
+    _git_ok,
+    changed_paths,
+    ensure_excluded,
+    integration_branch,
+)
 from orchestrator.model import (
     CoderReport,
     EscalationKind,
@@ -40,6 +48,7 @@ from orchestrator.model import (
     Surprise,
     VerificationResult,
 )
+from orchestrator.recipes.registry import UnitRecipe
 
 if TYPE_CHECKING:
     from orchestrator.execution.review import ReviewDeps
@@ -121,6 +130,9 @@ class MergeLadder:
     async def _merge(self) -> bool:
         assert self.workspace is not None
         attempts_left = self.deps.execution.max_conflict_resolve_attempts
+        from orchestrator.recipes import get_recipe
+
+        recipe = get_recipe(self.group.recipe)
         while True:
             self.ctx.set_state(GroupState.MERGING)
             self._heartbeat.mark_phase("merging into integration")  # F4
@@ -129,7 +141,14 @@ class MergeLadder:
             # Read before the merge, not after (plan U6): `merge_group` removes
             # the group's own worktree on success, so `self.workspace` no
             # longer exists by the time control returns here.
+            self._commit_declared_outputs(recipe)
             paths = changed_paths(self.workspace, self.deps.base_ref_for(self.group))
+            offenders = self._merge_policy_offenders(recipe, paths)
+            if offenders:
+                raise GroupFailure(
+                    "merge refused: paths outside the recipe's declared commit globs: "
+                    + ", ".join(offenders)
+                )
             try:
                 merge_sha = await asyncio.to_thread(
                     self.deps.merge_group, self.group, self.workspace
@@ -217,12 +236,80 @@ class MergeLadder:
                 raise GroupFailure(diagnosis) from exc
             self._log(f"group {self.gid}: merged into the integration branch")
             self._log_driver_run_items()
-            self._register_code_artifact(commit=merge_sha, paths=paths)
+            self._register_artifact(recipe=recipe, commit=merge_sha, paths=paths)
             return True
 
-    def _register_code_artifact(self, *, commit: str, paths: list[str]) -> None:
+    def _recipe_args(self, recipe: UnitRecipe) -> BaseModel | None:
+        """The group's ``recipe_args`` dict, validated into the recipe's own
+        args model — the same reconstruction ``_RunExecution`` and
+        ``OptimizeExecution`` do at ``__init__``, needed here too since
+        ``Group.recipe_args`` is stored as a plain dict."""
+        if recipe.args_model is None:
+            return None
+        return recipe.args_model.model_validate(self.group.recipe_args or {})
+
+    def _commit_declared_outputs(self, recipe: UnitRecipe) -> None:
+        """Commit uncommitted files that match the recipe's declared commit
+        globs — what the run executor already does for ``commit_paths``. A
+        research worker that wrote its Findings Artifact but skipped the commit
+        (r20260927 g3-4, second live attempt) otherwise dies at merge on
+        "no commits ahead". Only the declared globs are staged, so nothing the
+        recipe did not declare can ride along; a no-op for ``commit_globs is
+        None`` (the code and optimize ladders) and a clean tree."""
+        policy = recipe.merge(self._recipe_args(recipe))
+        if not policy.commit_globs:
+            return
+        assert self.workspace is not None
+        pending = _porcelain_paths(
+            _git_ok(self.workspace, "status", "--porcelain", "--untracked-files=all")
+        )
+        matching = [
+            path
+            for path in pending
+            if any(fnmatch.fnmatch(path, glob) for glob in policy.commit_globs)
+        ]
+        if not matching:
+            return
+        _git_ok(self.workspace, "add", "-A", "--", *matching)
+        _git_ok(
+            self.workspace,
+            "commit",
+            "-m",
+            f"{self.group.recipe}({self.gid}): commit declared output left uncommitted",
+        )
+        self._log(
+            f"group {self.gid}: committed {len(matching)} declared output(s) the worker "
+            f"left uncommitted — {', '.join(matching)}"
+        )
+
+    def _merge_policy_offenders(self, recipe: UnitRecipe, paths: list[str]) -> list[str]:
+        """Paths outside the recipe's declared commit globs — the union of
+        ``paths`` (``changed_paths``, plan U6) and ``git status --porcelain``
+        (catches an uncommitted/untracked path that a diff against the base
+        ref would miss), mirroring ``_RunExecution._porcelain_offenders``.
+        Empty for ``commit_globs is None`` (the code ladder), without ever
+        touching git — a non-git ``workspace`` in a scripted test must not
+        trip here."""
+        policy = recipe.merge(self._recipe_args(recipe))
+        if policy.commit_globs is None:
+            return []
+        assert self.workspace is not None
+        # `--untracked-files=all`: the default collapses an untracked directory
+        # to `docs/`, which no file glob (`docs/research/x.md`) can ever match
+        # — r20260927 g3-4 refused a research merge naming `docs/`.
+        porcelain = _porcelain_paths(
+            _git_ok(self.workspace, "status", "--porcelain", "--untracked-files=all")
+        )
+        all_paths = list(dict.fromkeys([*paths, *porcelain]))
+        return [
+            path
+            for path in all_paths
+            if not any(fnmatch.fnmatch(path, glob) for glob in policy.commit_globs)
+        ]
+
+    def _register_artifact(self, *, recipe: UnitRecipe, commit: str, paths: list[str]) -> None:
         """Register this group's Artifact Manifest entry on a successful
-        merge (plan U6 Goal). A no-op when no Artifact Manifest is wired —
+        merge (plan U6/U15 Goal). A no-op when no Artifact Manifest is wired —
         every construction site that predates this unit."""
         store = self.deps.artifacts
         if store is None:
@@ -236,7 +323,7 @@ class MergeLadder:
                 recipe=self.group.recipe,
                 paths=paths,
                 commit=commit,
-                schema="CoderReport",
+                schema=recipe.contract.__name__,
                 summary=summary[:ARTIFACT_SUMMARY_MAX_CHARS],
                 status="complete",
             )
@@ -444,6 +531,20 @@ class MergeLadder:
             return False
         self._log(f"group {self.gid}: conflict resolve attempt reported completed")
         return True
+
+
+def _porcelain_paths(status_output: str) -> list[str]:
+    """Paths named by ``git status --porcelain`` (a rename's target, not its
+    source), the same parse ``_RunExecution._porcelain_offenders`` uses."""
+    paths = []
+    for line in status_output.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip()
+        if "->" in path:  # rename entries: "old -> new"
+            path = path.split(" -> ", 1)[1].strip()
+        paths.append(path)
+    return paths
 
 
 def _short_test_summary(output: str) -> str:
