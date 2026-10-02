@@ -1,0 +1,14 @@
+# Orchestrator configuration for b3quant. Committed on purpose (see .gitignore):
+# a cloud container is ephemeral and every session must read the same file.
+# Reference: smart_mcps docs/orchestrator-grouping-config.md
+
+[recipes]
+enabled = ["research", "run", "evaluate", "optimize"]
+
+[workspace]
+# Shared into every worker worktree without being committed. The data lake
+# (parquet + MANIFEST.json) and the evaluation output directory live here.
+data_dirs = ["data"]
+
+[escalation]
+enabled = true

@@ -8,6 +8,11 @@ node_modules/
 
 # Orchestrator run artifacts (see orchestrator/README.md)
 .orchestrator/
+# b3quant/ is a future standalone repo living here until it is split out; its
+# orchestrator config is committed on purpose (see b3quant/.gitignore).
+!b3quant/.orchestrator/
+b3quant/.orchestrator/*
+!b3quant/.orchestrator/config.toml
 .worktrees/
 
 # Auto-saved query dumps stay out of git; curated research docs are tracked.

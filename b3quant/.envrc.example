@@ -1,0 +1,4 @@
+# Copy this file to .envrc and run: direnv allow
+# .envrc is gitignored — never commit secrets.
+
+export PERPLEXITY_API_KEY="pplx-your-key-here"

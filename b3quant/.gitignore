@@ -1,0 +1,20 @@
+.envrc
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+
+# The data lake is shared into worktrees via [workspace] data_dirs, never committed.
+data/
+!data/MANIFEST.json
+
+# Orchestrator run artifacts; the config is committed so every container reads the same one.
+.orchestrator/*
+!.orchestrator/config.toml
+.worktrees/
+.coder-scratch/
+
+# Auto-saved query dumps stay out of git; curated research docs are tracked.
+docs/research/perplexity/
+.codegraph/
