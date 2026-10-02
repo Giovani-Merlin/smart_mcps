@@ -1,11 +1,26 @@
 # b3quant — Perplexity briefs for the loop-1 research tracks
 
 **Date:** 2026-10-02
-**Purpose:** the questions the human runs manually in Perplexity (the cloud
-container cannot reach `api.perplexity.ai`, and `b3.com.br` is egress-blocked)
-so the answers exist before `/orchestrator-plan` and seed each `research`
-unit's `recipe_args`. Each brief maps to one requirement in
+**Purpose:** the nine questions, one per research track, that seed each
+`research` unit's `recipe_args` in the plan built from
 `docs/brainstorms/2026-10-02-b3quant-trading-research-pipeline-requirements.md`.
+Each brief maps to one requirement there.
+
+**Status (2026-10-02, later the same day):** all nine were run from the cloud
+container through `smart-mcps-perplexity` with `--context-size high` — B1,
+B2, B3, B4 and B6 with `research` (sonar-deep-research, nine to ten minutes
+each), B5, B7, B8 and B9 with `reason` (sonar-reasoning-pro, one to three
+minutes each). The raw answers are committed under `docs/research/inbox/` as
+`B<n>-<slug>.md`, each headed with the mode and wall clock. The first draft of
+this file assumed the container could not reach `api.perplexity.ai`; it can,
+given `PERPLEXITY_API_KEY` in the environment. `b3.com.br` is still
+unreachable from here, and Perplexity's own retrieval did not reach it
+either, so B1's pricing questions stay open for the human's network.
+
+The briefs are kept verbatim below so a track can be re-run when its question
+changes. Re-running is not part of the orchestrator run: the plan's research
+units read the inbox answer named in their `focus_paths` and verify its
+claims against primary sources.
 
 ## Which mode to use
 
@@ -15,13 +30,16 @@ unit's `recipe_args`. Each brief maps to one requirement in
 | **Pro search with reasoning**   | `reason`       | the question is already framed with named options and needs a recommendation with trade-offs        |
 | **Normal Pro search**           | `ask`          | one fact or one list, answerable from a few pages                                                   |
 
-Run Deep Research for B1, B2, B3, B4 and B6. Run reasoning for B5, B7, B8
-and B9. Paste each answer into `docs/research/inbox/<brief-id>.md` in the
-new repo; the plan's research units read them as upstream material and
-verify the claims that matter against primary sources.
+Deep Research was used for B1, B2, B3, B4 and B6; reasoning for B5, B7, B8
+and B9. To re-run one brief from the CLI, write its fenced text to a file and
+pass it with `--file`:
 
-Each brief below is written to paste as is. The preamble repeats on purpose:
-Perplexity has no memory across runs.
+```sh
+smart-mcps-perplexity research "Answer the brief in the attached file in full, with sources (URL, year) for every claim." --file B1.md --context-size high
+```
+
+Each brief below is self-contained on purpose: Perplexity has no memory
+across runs.
 
 ______________________________________________________________________
 
@@ -214,14 +232,19 @@ news in loop 2.
 
 ______________________________________________________________________
 
-## After the answers come back
+## What the answers changed
 
-- Save each as `docs/research/inbox/B<n>-<slug>.md` in the new repo with the
-  date and the mode used at the top.
-- B1 decides the book purchase and the schema of the book-ingest unit; read
-  it before anything else.
-- B8 decides the shape of the intraday harness; the plan's engine unit
-  depends on it.
-- The remaining briefs seed `recipe_args.question` and `focus_paths` of the
-  corresponding research units; the units verify the claims that matter and
-  write the Findings Artifact with sources.
+The brainstorm's "What the nine briefs established" section carries the
+digest; the one-line verdicts:
+
+| Brief | Verdict that reached the brainstorm                                                                                                                                             |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1    | No public pricing anywhere; purchase is priced by quotes (UP2DATA ON DEMAND plus two distributors). Lead: B3's public `NEGOCIOS*` files with participant codes may still exist. |
+| B2    | Gradient boosting over order-flow features is the intraday baseline; one-tick labels are economically empty; no evidence of transfer to futures.                                |
+| B3    | Three signals: multi-level microprice, aggressor OFI, broker-tagged aggressor imbalance. Iceberg detection heuristic unless order ids exist. VPIN is a diagnostic.              |
+| B4    | Gradient boosting first for swing; foundation models have no net-of-cost evidence; no WIN/WDO daily study exists.                                                               |
+| B5    | Eight ticks per pair round trip, ≥ 4 ticks of spread volatility to break even; WIN–WDO tradable, WIN–cash and WDO–DOL arbitraged away; no B3 Kalman evidence.                   |
+| B6    | No evidence RL beats a tuned rule at tens of runs on one GPU; the gate stands; environment design patterns named.                                                               |
+| B7    | No-go on pattern detectors, go on breakout parameterisation; the answer's own sources are weak, so R18 checks the primary literature.                                           |
+| B8    | Nautilus for intraday plus a vectorised stack, with a kill test against a thin replayer; custom L3 ingestion for B3 is still unverified.                                        |
+| B9    | Free timestamped calendars exist (IBGE, B3 holidays, Bacen); news feeds are licensed and deferred to loop 2.                                                                    |

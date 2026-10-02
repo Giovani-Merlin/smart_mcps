@@ -42,6 +42,22 @@ side and, when present, buyer and seller broker codes.
 _Avoid_: times and trades (platform jargon for the same thing), ticks (MT5's
 word covers bid/ask updates too)
 
+**Aggressor**:
+The side that consumed liquidity in a trade — a buy that lifted the ask or a
+sell that hit the bid — classified from the tape against the quotes (or
+carried as a flag when the source provides it). Aggressor-signed volume over a
+window is the order-flow imbalance the intraday models read.
+_Avoid_: agressão (platform jargon for the same thing), initiator (ambiguous
+between the order and the participant)
+
+**Participant Code**:
+The B3 identifier of the trading participant (brokerage) on each side of a
+trade or order, present in some public and purchased data and anonymised in
+others. A Big-Player Imprint is only computable where it is present; every
+dataset manifest states whether it is.
+_Avoid_: broker name (a mapping that changes; the code is the key), player
+(a platform's word for a participant it chose to display)
+
 **Big-Player Imprint**:
 A measurable, persistent pattern in the Tape or Book attributable to one
 participant's flow — broker-tagged aggression, repeated refills at one price,
