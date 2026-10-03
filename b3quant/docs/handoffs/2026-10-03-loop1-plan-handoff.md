@@ -3,7 +3,7 @@
 **Date:** 2026-10-03
 **State:** `docs/plans/2026-10-03-001-feat-b3quant-loop1-free-data-plan.md`
 is written, verified and validated (plan-check consistent; `group --no-spec`
-gives 21 groups with every recipe unit isolated; `--advise` reports no
+gives 22 groups with every recipe unit isolated; `--advise` reports no
 cohesion seam; `--dry-run` shows the task map parsed and the mapper skipped).
 Nothing has been deepened or run.
 
@@ -47,7 +47,7 @@ Nothing has been deepened or run.
 3. **Deepen the plan**: `/orchestrator-deepen docs/plans/2026-10-03-001-feat-b3quant-loop1-free-data-plan.md`
    — edge cases, non-goals and `Run:`/`Pass:` splits per group; its sandbox
    sweep re-checks every `Run:` line against the allowlist.
-4. **Run the first group only** (U1–U4 land together as g1): it ships the
+4. **Run the first two groups only** (U1 and U3 as g1, then U2 and U4 as g12): it ships the
    export script. Then run `scripts/mt5_export.py` on Windows per
    `docs/runbooks/mt5-export.md`, copy the output to `data/raw/mt5/`, and
    resume. The research groups (g2–g9, g21) need no data and can run in the

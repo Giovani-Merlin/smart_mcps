@@ -25,7 +25,7 @@ checklist (R33) is the `Run (driver):` items below.
 
 **Deferred to plan 2, by decision** (`Decision · one plan or two at the order-book boundary`): `R5. book-ingest`, `R26. book-signals`, the
 DeepLOB/TLOB-class second candidate of `R25. model-intraday`, and
-`R30. forecast-combiner`. Plan 2 is written once `U9. book-data-research`
+`R30. forecast-combiner`; with them, R3's clause "B3's public trade files with participant codes … if R4 finds them live" (the parser belongs beside the broker-tagged signals it feeds) and R25's depth-dependent features (queue imbalance, multi-level microprice), which need an order book. Plan 2 is written once `U9. book-data-research`
 has quotes in hand and the human has decided the purchase; its units need
 the format, depth and price only that unit can find.
 
@@ -145,6 +145,7 @@ which only the run-driver sets.
   `harness_paths` is the same two globs and no optimize unit's `files:` ever
   overlaps it. Candidates live outside `src/` (`models/`, `strategies/`) so
   the mutable region is a directory, not a module inside the package.
+- **The Dataset Manifest lives at `data/lake/MANIFEST.json`**, beside the parquet it indexes, rather than R2's `data/MANIFEST.json`: one directory to share, hash and verify; the semantics are unchanged.
 - **Costs in BRL per leg, two ticks per side, fee table in `eval/fees.toml`.**
   Tick values: WIN 0.2 BRL per point × 5-point tick = 1.00 BRL per tick per
   contract; WDO 10 BRL per point × 0.5-point tick = 5.00 BRL per tick per
@@ -178,7 +179,7 @@ which only the run-driver sets.
   escalation are the recipe's validated defaults. At most one GPU-training
   loop at a time — in plan 1 none trains on the GPU unless `U10` picks a
   sequence model, in which case `U23` is the only GPU loop.
-- **Units downstream of an optimize loop share no files or tags with units upstream of it.** The grouper isolates every recipe unit; a code group that both feeds and consumes the same loop is a cycle no dependency-respecting split can cut (`group` refused the first draft on exactly this). So `U27`, `U29` and `U30` carry only `depends_on` edges to the rest of the plan, and `rl/README.md` rather than the shared `README.md`.
+- **Units downstream of an optimize loop share no files or tags with units upstream of it.** The grouper isolates every recipe unit; a code group that both feeds and consumes the same loop is a cycle no dependency-respecting split can cut (`group` refused the first draft on exactly this). So `U27`, `U29` and `U30` share no files with upstream units and consume only tags that recipe units or other downstream units implement (`champion-swing`, `candidate-forecast-rule`), never a tag of an upstream code unit; `U29` writes `rl/README.md` rather than the shared `README.md`.
 - **Perplexity access is an environment fact.** `PERPLEXITY_API_KEY` is
   exported in the run-driver's WSL2 shell (`.envrc` from `.envrc.example`);
   never in a plan, a config or a `Run:` line.
@@ -223,7 +224,7 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Summary**: `src/b3quant/lake/` writes datasets to `data/lake/<source>/<instrument>/<granularity>/part-*.parquet` with UTC timestamps plus a `session_date` column (America/Sao_Paulo), and maintains `data/lake/MANIFEST.json` with source, licence, instrument, granularity, date range, row count and sha256 per dataset; a dataset absent from the manifest does not exist for any reader.
 - **Goal**: `write_dataset(frame, source, instrument, granularity, licence)` validates the schema (a `ts_utc` datetime column with UTC zone, `session_date` date), writes sorted parquet, hashes the written bytes and upserts the manifest entry; `read_dataset(...)` refuses a dataset whose on-disk hash differs from the manifest; `b3quant lake list` prints the manifest as a table; `b3quant lake verify` rehashes everything and exits non-zero on a mismatch.
 - **Recipe**: —
-- **Files**: `src/b3quant/lake/__init__.py` *(new, small)*, `src/b3quant/lake/manifest.py` *(new, medium)*, `src/b3quant/lake/paths.py` *(new, small)*, `src/b3quant/cli.py`, `tests/test_lake.py` *(new, medium)*
+- **Files**: `src/b3quant/lake/__init__.py` *(new, small)*, `src/b3quant/lake/manifest.py` *(new, medium)*, `src/b3quant/lake/paths.py` *(new, small)*, `src/b3quant/cli.py` *(new in U1)*, `tests/test_lake.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U1
 - **Slice**: —
@@ -231,38 +232,39 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Verification**:
   - Run: `uv run pytest tests/test_lake.py -q` Pass: writing a frame then flipping one byte of a parquet part makes `read_dataset` raise naming the dataset and both hashes.
   - Run: `uv run b3quant lake list --root .coder-scratch/lake` Pass: after the test wrote one dataset there, prints one row with its sha256 and row count.
-  - Run: `uv run python -c "import polars as pl, pyarrow.parquet as pq; print(pq.__name__)"` Pass: the real pyarrow writer is what the lake uses (import succeeds in the project venv).
+  - Run: `uv run python -c "import pyarrow.parquet as pq, glob; print(pq.read_metadata(glob.glob('.coder-scratch/lake/**/part-*.parquet', recursive=True)[0]).num_rows)"` Pass: the real pyarrow reader reports the same row count that `lake list` printed for the dataset the test wrote.
 
 ### U4. free-ingest — MT5 ticks and M1, COTAHIST daily, continuous contracts, into the lake
 
 - **Summary**: `b3quant ingest mt5 --raw data/raw/mt5` parses the export into `mt5/<WIN|WDO>/{ticks,m1,daily}` datasets (daily aggregated from M1 by session), `b3quant fetch cotahist --years 2010-2025` downloads the annual COTAHIST files from B3 into `data/raw/cotahist/` and `b3quant ingest cotahist` parses the 245-byte fixed-width layout into `cotahist/<ticker>/daily` for the Instrument Universe (top-20 by median daily financial volume over the last twelve months of data, written to the manifest as the universe), and `b3quant ingest continuous` publishes `WIN` and `WDO` continuous series with a volume-based roll rule, the roll dates recorded, and a back-adjustment flag.
-- **Goal**: Every dataset lands through U3 with a licence string; MT5 timestamps are converted from the server offset in `export.json` to UTC; the COTAHIST parser handles type-01 rows, two implied decimals, `TPMERC` 010 only, `CODBDI` 02 only, and carries a corporate-action adjustment table (`src/b3quant/ingest/adjustments.toml`, hand-maintained, splits only) applied on read as a flag; the continuous-contract writer rolls when the next contract's 5-session volume exceeds the front's, writes `roll_dates` into the manifest entry, and keeps the raw per-contract series. Schema tests run on the U2 self-test fixture and on a committed 200-row COTAHIST sample.
+- **Goal**: The real ingest writes into the shared data dir `data/lake` (the lake every later unit reads; `data/` is writable in every worktree as the data layer), while the unit tests use `.coder-scratch/lake`. Every dataset lands through U3 with a licence string; MT5 timestamps are converted from the server offset in `export.json` to UTC; the COTAHIST parser handles type-01 rows, two implied decimals, `TPMERC` 010 only, `CODBDI` 02 only, and carries a corporate-action adjustment table (`src/b3quant/ingest/adjustments.toml`, hand-maintained, splits only) applied on read as a flag; the continuous-contract writer rolls when the next contract's 5-session volume exceeds the front's, writes `roll_dates` into the manifest entry, and keeps the raw per-contract series. Schema tests run on the U2 self-test fixture and on a committed 200-row COTAHIST sample.
 - **Recipe**: —
-- **Files**: `src/b3quant/ingest/__init__.py` *(new, small)*, `src/b3quant/ingest/mt5.py` *(new, medium)*, `src/b3quant/ingest/cotahist.py` *(new, medium)*, `src/b3quant/ingest/continuous.py` *(new, medium)*, `src/b3quant/ingest/adjustments.toml` *(new, small)*, `src/b3quant/ingest/fetch.py` *(new, small)*, `src/b3quant/cli.py`, `tests/fixtures/cotahist_sample.txt` *(new, small)*, `tests/test_ingest_mt5.py` *(new, medium)*, `tests/test_ingest_cotahist.py` *(new, medium)*, `tests/test_continuous.py` *(new, small)*
+- **Files**: `src/b3quant/ingest/__init__.py` *(new, small)*, `src/b3quant/ingest/mt5.py` *(new, medium)*, `src/b3quant/ingest/cotahist.py` *(new, medium)*, `src/b3quant/ingest/continuous.py` *(new, medium)*, `src/b3quant/ingest/adjustments.toml` *(new, small)*, `src/b3quant/ingest/fetch.py` *(new, small)*, `src/b3quant/cli.py` *(new in U1)*, `tests/fixtures/cotahist_sample.txt` *(new, small)*, `tests/test_ingest_mt5.py` *(new, medium)*, `tests/test_ingest_cotahist.py` *(new, medium)*, `tests/test_continuous.py` *(new, small)*
 - **Symbols**: —
 - **Depends-on**: U2, U3
 - **Slice**: —
 - **Implements / Consumes**: implements `lake-datasets` / `mt5-raw-schema`, `dataset-manifest`
 - **Verification**:
   - Run: `uv run pytest tests/test_ingest_cotahist.py tests/test_ingest_mt5.py tests/test_continuous.py -q` Pass: all pass; the COTAHIST sample's `PREULT` of `0000000003850` reads as 38.50.
-  - Run: `uv run b3quant ingest mt5 --raw data/raw/mt5 --lake .coder-scratch/lake` Pass: on the real export in the data dir, writes `mt5/WIN/m1`, `mt5/WDO/m1`, `mt5/WIN/ticks`, `mt5/WDO/ticks`, `mt5/WIN/daily`, `mt5/WDO/daily` and prints each dataset's date range; the earliest M1 date matches `export.json`.
-  - Run: `uv run b3quant fetch cotahist --years 2024-2024 --raw .coder-scratch/cotahist` Pass: downloads one real annual file from B3 (WSL2 reaches b3.com.br) and `b3quant ingest cotahist --raw .coder-scratch/cotahist --lake .coder-scratch/lake` writes at least 20 tickers' daily datasets and a `universe` entry listing 20 tickers.
-  - Run: `uv run b3quant ingest continuous --lake .coder-scratch/lake` Pass: `WIN` and `WDO` continuous datasets exist with a non-empty `roll_dates` list in the manifest and `back_adjusted: false`.
+  - Run: `uv run b3quant ingest mt5 --raw data/raw/mt5 --lake data/lake` Pass: on the real export in the data dir, writes into the shared lake `mt5/WIN/m1`, `mt5/WDO/m1`, `mt5/WIN/ticks`, `mt5/WDO/ticks`, `mt5/WIN/daily`, `mt5/WDO/daily` and prints each dataset's date range; the earliest M1 date matches `export.json`.
+  - Run: `uv run b3quant fetch cotahist --years 2016-2025 --raw data/raw/cotahist` Pass: downloads the real annual files from B3 (WSL2 reaches b3.com.br) into the data dir, and `uv run b3quant ingest cotahist --raw data/raw/cotahist --lake data/lake` writes at least 20 tickers' daily datasets and a `universe` entry listing 20 tickers into the shared lake.
+  - Run: `uv run b3quant ingest continuous --lake data/lake` Pass: in the shared lake, `WIN` and `WDO` continuous datasets exist with a non-empty `roll_dates` list in the manifest and `back_adjusted: false`.
 
 ### U5. exogenous-features — a point-in-time feature store for covariates and the macro calendar
 
 - **Summary**: `src/b3quant/features/` builds `data/lake/features/<name>/daily` datasets where every row carries `known_at_utc`, from free sources: USD/BRL PTAX and the Selic target from Bacen's SGS API, DI1 settlement from B3's daily bulletin, ES, NQ, DXY and Brent daily closes from a free CSV endpoint, VALE3 from COTAHIST as the iron-ore proxy, IBGE's release calendar, Bacen's Copom calendar, FOMC and payroll dates, and B3's holiday table — each as the source `U16. research-news-macro` confirmed.
 - **Goal**: `b3quant features build --lake data/lake` writes every feature with `known_at_utc` = publication instant (never the reference period), a `features/calendar/events` dataset with `event`, `known_at_utc`, `value`, `consensus` (null when no free consensus exists), and a `point_in_time(frame, at)` reader that returns only rows known before `at`; `tests/test_features_pit.py` proves no feature at time t uses a row published after t by constructing a frame with a future-published row and asserting the reader hides it. Where a source `U16` found is paid, the feature is written empty with `source: "unavailable"` in the manifest and the Findings Artifact is cited.
 - **Recipe**: —
-- **Files**: `src/b3quant/features/__init__.py` *(new, small)*, `src/b3quant/features/store.py` *(new, medium)*, `src/b3quant/features/calendar.py` *(new, medium)*, `src/b3quant/features/covariates.py` *(new, medium)*, `src/b3quant/cli.py`, `tests/test_features_pit.py` *(new, medium)*
+- **Files**: `src/b3quant/features/__init__.py` *(new, small)*, `src/b3quant/features/store.py` *(new, medium)*, `src/b3quant/features/calendar.py` *(new, medium)*, `src/b3quant/features/covariates.py` *(new, medium)*, `src/b3quant/cli.py` *(new in U1)*, `tests/test_features_pit.py` *(new, medium)*
 - **Symbols**: —
-- **Depends-on**: U3, U16
+- **Depends-on**: U3, U4, U16
 - **Slice**: —
 - **Implements / Consumes**: implements `feature-store` / `dataset-manifest`
 - **Verification**:
   - Run: `uv run pytest tests/test_features_pit.py -q` Pass: the point-in-time reader hides a row whose `known_at_utc` is after the query instant, and the monotonicity test on `known_at_utc` passes.
-  - Run: `uv run b3quant features build --lake .coder-scratch/lake --only calendar` Pass: fetches IBGE's real release calendar and Bacen's real Copom dates over the network and writes at least 24 calendar events with UTC instants for the last twelve months.
-  - Run: `uv run b3quant features build --lake .coder-scratch/lake --only ptax` Pass: the real Bacen SGS call returns daily PTAX and the dataset's manifest entry names the series id and the licence.
+  - Run: `uv run b3quant features build --lake data/lake --only calendar` Pass: fetches IBGE's real release calendar and Bacen's real Copom dates over the network and writes at least 24 calendar events with UTC instants for the last twelve months into the shared lake.
+  - Run: `uv run b3quant features build --lake data/lake --only ptax` Pass: the real Bacen SGS call returns daily PTAX and the dataset's manifest entry names the series id and the licence.
+  - Run: `uv run b3quant features build --lake data/lake` Pass: every feature in the Summary's list is written to the shared lake or recorded `source: "unavailable"` with the Findings Artifact cited; `uv run b3quant lake verify --root data/lake` exits 0 afterwards.
 
 ### U6. cost-model — B3 fees from a versioned table plus two ticks per side, in BRL per leg
 
@@ -277,22 +279,24 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Verification**:
   - Run: `uv run pytest tests/test_costs.py -q` Pass: one WIN contract round trip at two ticks per side costs `2 × (fees + 2 × 1.00 BRL)`; one WDO contract uses 5.00 BRL per tick; the one-tick variant is strictly smaller and reported separately.
   - Run: `uv run python -c "import tomllib; d=tomllib.load(open('eval/fees.toml','rb')); print(sorted(d))"` Pass: prints the instrument keys `WIN`, `WDO`, `DOL`, `IND`, `stock`, each with `as_of` and `source_url`.
+  - Run: `uv run python -c "import tomllib, urllib.request as u; d=tomllib.load(open('eval/fees.toml','rb')); print(u.urlopen(d['WIN']['source_url'], timeout=30).status)"` Pass: prints `200` (the fee page the table cites is reachable from the run machine).
   - Run (driver): `uv run python -c "import tomllib; print(tomllib.load(open('eval/fees.toml','rb'))['WIN'])"` Pass: the driver compares the printed emolument and registration values against B3's fee page on the run date and records the match in the run notes (R33: the two-tick cost model is what every ledger row charges).
 
 ### U7. harness-core — folds, probes, the harness hash and the `b3quant eval` command
 
-- **Summary**: `eval/` gains the fold writer (`b3quant folds build`) that writes purged, embargoed walk-forward fold sets keyed by dataset hash to `eval/folds/<name>.json` with the Held-out Year carved out into `holdout`, the leakage probes (shuffled labels, future-shifted features, timestamp monotonicity, point-in-time) that crash a scoring run naming the probe, the harness hash over `eval/**` and `src/b3quant/cli.py`, and `b3quant eval <candidate-dir> --contract <forecast|strategy> --folds <set> --out <json>` which is the only way a number is produced.
-- **Goal**: `eval/folds.py` builds `daily` (12-month test windows rolling from 2016 over `cotahist`/`features`/`mt5 daily`), `intraday-5m` and `intraday-1m` (3-month windows over the MT5 span) with purge = the longest label horizon declared by the set and a 5-session embargo, and writes `holdout` as the last twelve months of every dataset; a fold file records the dataset hashes it was built from and `b3quant eval` refuses a fold set whose hashes no longer match `data/lake/MANIFEST.json`. `eval/probes.py` runs before every scoring pass; `eval/cli.py` imports `<candidate-dir>/candidate.py`, delegates scoring to the contract (U8) and writes the measurements JSON with `harness_hash`, `dataset_hashes`, `fold_set`, `wall_clock_s`; `--folds holdout` exits 2 unless `B3QUANT_HOLDOUT=1`. `eval/holdout.toml` states the boundary rule.
+- **Summary**: `eval/` gains the fold writer (`b3quant folds build --lake data/lake`) that writes and commits the four purged, embargoed walk-forward fold sets keyed by dataset hash (`eval/folds/daily.json`, `intraday-5m.json`, `intraday-1m.json`, `holdout.json`) with the Held-out Year carved out into `holdout`, the leakage probes (shuffled labels, future-shifted features, timestamp monotonicity, point-in-time) that crash a scoring run naming the probe, the harness hash over `eval/**` and `src/b3quant/cli.py`, and `b3quant eval <candidate-dir> --contract <forecast|strategy> --folds <set> --out <json>` which is the only way a number is produced.
+- **Goal**: `eval/folds.py` builds `daily` (12-month test windows rolling from 2016 over `cotahist`/`features`/`mt5 daily`), `intraday-5m` and `intraday-1m` (3-month windows over the MT5 span) with purge = the longest label horizon declared by the set and a 5-session embargo, and writes `holdout` as the last twelve months of every dataset; a fold file records the dataset hashes it was built from and `b3quant eval` refuses a fold set whose hashes no longer match `data/lake/MANIFEST.json`. `eval/probes.py` runs before every scoring pass; `eval/cli.py` imports `<candidate-dir>/candidate.py`, loads the contract module `eval/contracts/<name>.py` named by `--contract` (shipped by U8; with none present it exits 3 naming the missing module), runs the probes, and writes the measurements JSON with `harness_hash`, `dataset_hashes`, `fold_set`, `wall_clock_s`, `params`; it also accepts `--copy-to <path>` (write a second copy of the JSON, creating the directory), `--param key=value` (repeatable; forwarded to the candidate and echoed under `params`), `--print-harness-hash` (print the hash and exit 0 without scoring) and `--engine-ab` (reserved for U26); `--folds holdout` exits 2 unless `B3QUANT_HOLDOUT=1`. `eval/holdout.toml` states the boundary rule. The fold sets are built from the real shared lake and committed, so every downstream worker sees them.
 - **Recipe**: —
-- **Files**: `eval/folds.py` *(new, medium)*, `eval/folds/.gitkeep` *(new, small)*, `eval/holdout.toml` *(new, small)*, `eval/probes.py` *(new, medium)*, `eval/hash.py` *(new, small)*, `eval/cli.py` *(new, medium)*, `src/b3quant/cli.py`, `tests/test_folds.py` *(new, medium)*, `tests/test_probes.py` *(new, medium)*, `tests/test_eval_cli.py` *(new, medium)*, `tests/fixtures/candidates/constant/candidate.py` *(new, small)*
+- **Files**: `eval/folds.py` *(new, medium)*, `eval/folds/daily.json` *(new, small)*, `eval/folds/intraday-5m.json` *(new, small)*, `eval/folds/intraday-1m.json` *(new, small)*, `eval/folds/holdout.json` *(new, small)*, `eval/holdout.toml` *(new, small)*, `eval/probes.py` *(new, medium)*, `eval/hash.py` *(new, small)*, `eval/cli.py` *(new, medium)*, `src/b3quant/cli.py` *(new in U1)*, `tests/test_folds.py` *(new, medium)*, `tests/test_probes.py` *(new, medium)*, `tests/test_eval_cli.py` *(new, medium)*, `tests/fixtures/candidates/constant/candidate.py` *(new, small)*
 - **Symbols**: —
-- **Depends-on**: U3, U6
+- **Depends-on**: U3, U4, U6
 - **Slice**: —
 - **Implements / Consumes**: implements `eval-cli`, `fold-sets` / `dataset-manifest`, `cost-model`
 - **Verification**:
   - Run: `uv run pytest tests/test_folds.py tests/test_probes.py tests/test_eval_cli.py -q` Pass: every fold's test window starts after its train window plus purge plus embargo; no fold in any non-holdout set overlaps the holdout boundary; a candidate reading a feature shifted one step into the future makes `b3quant eval` exit non-zero with `probe: future-shift` on stderr.
-  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/constant --contract forecast --folds daily --out .coder-scratch/out/m.json` Pass: on the real lake in `data/lake`, writes a JSON whose `forecast_skill` is approximately 0 for the constant candidate and whose `harness_hash` equals the one `uv run b3quant eval --print-harness-hash` prints.
-  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/constant --contract forecast --folds holdout --out .coder-scratch/out/h.json` Pass: exits 2 with `holdout is driver-only` on stderr (no `B3QUANT_HOLDOUT` in the worker's environment).
+  - Run: `uv run b3quant folds build --lake data/lake` Pass: writes the four fold files under `eval/folds/`, each naming the dataset hashes from the real `data/lake` manifest; `daily` has at least 6 folds, `intraday-5m` and `intraday-1m` at least 4, and `holdout` one window covering the last twelve months of every dataset.
+  - Run: `uv run b3quant eval --print-harness-hash` Pass: prints a 64-hex hash, and printing it twice gives the same value.
+  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/constant --contract forecast --folds holdout --out .coder-scratch/out/h.json` Pass: exits 2 with `holdout is driver-only` on stderr (the check runs before any contract is loaded; no `B3QUANT_HOLDOUT` in the worker's environment).
 
 ### U8. kpi-contracts — forecast skill against naive and net walk-forward Sharpe
 
@@ -306,7 +310,8 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Implements / Consumes**: implements `forecast-kpi`, `strategy-kpi` / `eval-cli`, `cost-model`
 - **Verification**:
   - Run: `uv run pytest tests/test_contracts.py -q` Pass: a candidate that copies the naive forecast scores `forecast_skill == 0` within 1e-9; a flat strategy scores `net_sharpe == 0` and `trade_count == 0`; a classification candidate with `label_threshold_ticks = 1` is refused.
-  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/flat --contract strategy --folds intraday-5m --out .coder-scratch/out/s.json` Pass: on the real lake, writes every key listed in the Goal, with `deflated_sharpe` and `pbo` present as numbers.
+  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/flat --contract strategy --folds intraday-5m --out .coder-scratch/out/s.json --copy-to .coder-scratch/out/copy/s.json --param mode=flat` Pass: on the real lake, writes every key listed in the Goal with `deflated_sharpe` and `pbo` present as numbers, the copy is byte-identical to the original, and `params.mode` is `"flat"` in both.
+  - Run: `mkdir -p .coder-scratch/out && uv run b3quant eval tests/fixtures/candidates/constant --contract forecast --folds daily --out .coder-scratch/out/m.json` Pass: on the real lake in `data/lake`, writes a JSON whose `forecast_skill` is approximately 0 for the constant candidate and whose `harness_hash` equals the one `uv run b3quant eval --print-harness-hash` prints.
 
 ### U9. book-data-research — price historical B3 order-book data and find the free broker-tagged tape
 
@@ -325,6 +330,7 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Verification**:
   - Run: `grep -c "https://" docs/research/r4-book-data-findings.md` Pass: at least 10 (every finding sourced).
   - Run: `grep -n "Recommendation" docs/research/r4-book-data-findings.md` Pass: a recommendation section exists naming a vendor or UP2DATA ON DEMAND, a window, a granularity and a price or "quote pending" with the contact.
+  - Run (driver): `test -n "$PERPLEXITY_API_KEY" && echo set` Pass: prints `set` in the run-driver's shell before `run` (R33; the value is never printed).
   - Run (driver): `grep -n "NEGOCIOS" docs/research/r4-book-data-findings.md` Pass: the driver confirms the artifact states whether the public trade files are live, by opening the cited B3 URL from WSL2.
 
 ### U10. research-swing-forecast — what beats naive at one to five days, net of costs
@@ -587,7 +593,7 @@ No ADR: none of the above is both hard to reverse and surprising.
     - smoke: uv run b3quant eval --print-harness-hash
   - evaluations: 20
   - allow_write: []
-- **Files**: `models/swing/candidate.py`, `models/swing/features.py`, `models/swing/second.py`, `models/swing/params.toml`
+- **Files**: `models/swing/candidate.py`, `models/swing/features.py`, `models/swing/second.py`, `models/swing/params.toml` *(all created by U22; the loop's mutable region)*
 - **Symbols**: —
 - **Depends-on**: U22
 - **Slice**: —
@@ -631,7 +637,7 @@ No ADR: none of the above is both hard to reverse and surprising.
     - smoke: uv run b3quant eval --print-harness-hash
   - evaluations: 20
   - allow_write: []
-- **Files**: `models/intraday/candidate.py`, `models/intraday/features.py`, `models/intraday/params.toml`
+- **Files**: `models/intraday/candidate.py`, `models/intraday/features.py`, `models/intraday/params.toml` *(all created by U24; the loop's mutable region)*
 - **Symbols**: —
 - **Depends-on**: U24
 - **Slice**: —
@@ -645,7 +651,7 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Summary**: `eval/intraday/` replays a full session deterministically from the MT5 tick stream for any `strategies/*` candidate, applying `eval/costs.py` fills at two ticks of slippage, through the engine `U17` chose (NautilusTrader behind an adapter, or the thin trades-plus-quotes replayer, which ships in both cases); it runs the breakout baseline through both paths on the same sessions and reports whether P&L and drawdown differ beyond noise.
 - **Goal**: `eval/intraday/replayer.py` (always) and, if chosen, `eval/intraday/nautilus_adapter.py` expose `replay(candidate, session) -> fills`; the strategy contract calls the engine named in `eval/intraday/engine.toml`; `b3quant eval --engine-ab strategies/breakout --sessions 20` writes `data/eval/engine-ab.json` with both engines' net P&L and drawdown per session and a paired-test p-value; `eval/intraday/instruments.py` defines WIN and WDO sessions, ticks and rolls for the engine.
 - **Recipe**: —
-- **Files**: `eval/intraday/__init__.py` *(new, small)*, `eval/intraday/replayer.py` *(new, large)*, `eval/intraday/nautilus_adapter.py` *(new, medium)*, `eval/intraday/instruments.py` *(new, small)*, `eval/intraday/engine.toml` *(new, small)*, `eval/cli.py`, `tests/test_intraday_harness.py` *(new, medium)*
+- **Files**: `eval/intraday/__init__.py` *(new, small)*, `eval/intraday/replayer.py` *(new, large)*, `eval/intraday/nautilus_adapter.py` *(new, medium)*, `eval/intraday/instruments.py` *(new, small)*, `eval/intraday/engine.toml` *(new, small)*, `eval/cli.py` *(new in U7)*, `tests/test_intraday_harness.py` *(new, medium)*
 - **Symbols**: —
 - **Depends-on**: U4, U7, U18, U17
 - **Slice**: —
@@ -693,7 +699,7 @@ No ADR: none of the above is both hard to reverse and surprising.
     - smoke: uv run b3quant eval --print-harness-hash
   - evaluations: 20
   - allow_write: []
-- **Files**: `strategies/forecast_rule/candidate.py`, `strategies/forecast_rule/params.toml`
+- **Files**: `strategies/forecast_rule/candidate.py`, `strategies/forecast_rule/params.toml` *(both created by U27; the loop's mutable region)*
 - **Symbols**: —
 - **Depends-on**: U27
 - **Slice**: —
@@ -729,7 +735,8 @@ No ADR: none of the above is both hard to reverse and surprising.
 - **Verification**:
   - Run: `uv run pytest tests/test_write_verdicts.py -q` Pass: a synthetic ledger and baseline record render a track section with champion, KPI, ledger counts and a `go` / `no-go` placeholder the coder must replace.
   - Run (driver): `uv run python scripts/holdout_eval.py --tracks swing,intraday,rule --out data/eval` Pass: with `B3QUANT_HOLDOUT=1` in the driver's shell, three `holdout-*.json` files appear and the verdict document's held-out lines quote their `net_sharpe` or `forecast_skill`.
-  - Run: `grep -c "## Track:" docs/verdicts/loop-1.md` Pass: 9 (one section per track), none containing `TBD`.
+  - Run: `mkdir -p .coder-scratch/out && uv run python scripts/write_verdicts.py --eval data/eval --out .coder-scratch/out/verdict.md` Pass: the generated document quotes `net_sharpe` from the real `breakout-baseline.json` and `pairs-stocks-baseline.json` in the data dir (written by U19 and U21 before this unit).
+  - Run: `grep -c "## Track:" docs/verdicts/loop-1.md` Pass: 9 (one section per track), and `grep -c "placeholder" docs/verdicts/loop-1.md` prints 0.
 
 ## Task Map
 
@@ -838,7 +845,7 @@ tasks:
       src/b3quant/features/covariates.py: medium
       tests/test_features_pit.py: medium
     symbols: []
-    depends_on: [u3-data-lake, u16-research-news-macro]
+    depends_on: [u3-data-lake, u4-free-ingest, u16-research-news-macro]
     implements: ["feature-store"]
     consumes: ["dataset-manifest"]
   - task_id: u6-cost-model
@@ -865,7 +872,10 @@ tasks:
     slice: null
     files:
       - eval/folds.py
-      - eval/folds/.gitkeep
+      - eval/folds/daily.json
+      - eval/folds/intraday-5m.json
+      - eval/folds/intraday-1m.json
+      - eval/folds/holdout.json
       - eval/holdout.toml
       - eval/probes.py
       - eval/hash.py
@@ -877,7 +887,10 @@ tasks:
       - tests/fixtures/candidates/constant/candidate.py
     size_hints:
       eval/folds.py: medium
-      eval/folds/.gitkeep: small
+      eval/folds/daily.json: small
+      eval/folds/intraday-5m.json: small
+      eval/folds/intraday-1m.json: small
+      eval/folds/holdout.json: small
       eval/holdout.toml: small
       eval/probes.py: medium
       eval/hash.py: small
@@ -887,7 +900,7 @@ tasks:
       tests/test_eval_cli.py: medium
       tests/fixtures/candidates/constant/candidate.py: small
     symbols: []
-    depends_on: [u3-data-lake, u6-cost-model]
+    depends_on: [u3-data-lake, u4-free-ingest, u6-cost-model]
     implements: ["eval-cli", "fold-sets"]
     consumes: ["dataset-manifest", "cost-model"]
   - task_id: u8-kpi-contracts
