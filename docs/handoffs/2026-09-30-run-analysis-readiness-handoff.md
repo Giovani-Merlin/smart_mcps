@@ -76,7 +76,7 @@ with the two blocks below, and an empty `data/corpus.db` placeholder that let
 
    Swap in `r20260828-220035` for any run that exports mostly missing transcripts.
 
-5. **Reconcile the draft with the requirements doc** from an infinity-skills session:
+5. **Reconcile the draft with the requirements doc** from an infinity-skills session (the remote grill was started on 2026-10-05 and stopped by Giovani at its first question — which R-IDs to carry — so the local grill starts there):
    `/orchestrator-plan docs/brainstorms/2026-09-27-run-analysis-program-requirements.md`, pointing the session at the draft as its starting text so the grill carries the local R-IDs onto the existing units and settles the plan's four open questions. Then `smart-mcps-orchestrate plan-check` and `group --no-spec` again.
 
 6. `/orchestrator-deepen docs/plans/2026-09-30-001-feat-run-analysis-program-plan.md`, then `/orchestrator-run` on it. The R29 driver checklist is already written as `Run (driver):` items on U2, U6, U7, U8 and U9.
