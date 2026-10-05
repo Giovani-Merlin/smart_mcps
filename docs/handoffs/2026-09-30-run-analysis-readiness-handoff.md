@@ -1,5 +1,15 @@
 # Run-analysis program — readiness handoff (2026-09-30)
 
+
+> **Update 2026-10-05 (local session) — steps 1–5 below are DONE.** The four local files are committed in
+> infinity-skills, the tool is reinstalled, `[recipes]` is configured, and the grill settled on the full
+> requirements scope. The draft plan named below was **replaced** by
+> `infinity-skills/docs/plans/2026-10-05-001-feat-run-analysis-program-plan.md` (R1–R21, nine runs / four repos,
+> 17 units, 11 groups; plan-check, group and the verifier clean). Export now happens inside the plan's `run`
+> unit, not as a driver preflight, so the bundle-export loop in step 4 is obsolete. Remaining: add `.cache`
+> to `[workspace] data_dirs`, `/orchestrator-deepen` the new plan, then `/orchestrator-run` it. Run 2 (the
+> grouping KPI loop) still waits for Run 1's `data/analysis/latest/read-overlap.json`.
+
 Written from a remote container session that had both repositories but not
 the operator's machine. It answers one question — *can the run-analysis
 program be planned and run now?* — and leaves everything the local session
