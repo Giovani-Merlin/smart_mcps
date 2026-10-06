@@ -59,6 +59,7 @@ from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.liveness import ActivityRegistry
 from orchestrator.execution.ratelimit import UsageLimitGate
+from orchestrator.execution.round_signals import RoundSignals
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 from orchestrator.model import WorkerReport
 
@@ -368,6 +369,9 @@ class RoundResult:
     #: (plan P2). Empty for every stub and for any round where nothing matched;
     #: used only to corroborate a `permission_denied` report's own account.
     deny_signals: list[str] = field(default_factory=list, repr=False)
+    #: The round's tool-call reading (``round_signals.RoundSignals``); ``None``
+    #: until a runner attaches one.
+    signals: RoundSignals | None = field(default=None, repr=False)
 
 
 def session_display_name(run_id: str, group_id: str, role: str, generation: int) -> str:

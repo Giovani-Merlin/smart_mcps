@@ -290,6 +290,38 @@ def test_a_raising_on_event_hook_does_not_prevent_wait_from_returning(fake_home,
     assert outcome.envelope.get("result") == "OK"
 
 
+def test_on_tool_event_receives_assistant_and_user_events(fake_home, tmp_path):
+    script(fake_home, {"result": "OK", "tool_results": ["3 files changed"]})
+    argv = [*STREAM_ARGV, "--session-id", "44444444-4444-4444-4444-444444444444"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+    seen: list[dict] = []
+    stream.on_tool_event = seen.append
+    stream.start(prompt="go")
+    stream.wait()
+
+    types = [e["type"] for e in seen]
+    assert "assistant" in types and "user" in types
+    assert "result" not in types
+
+
+def test_a_raising_on_tool_event_hook_does_not_stop_the_stream(fake_home, tmp_path):
+    script(fake_home, {"result": "OK", "tool_results": ["x"]})
+    argv = [*STREAM_ARGV, "--session-id", "55555555-5555-5555-5555-555555555555"]
+    env = {**os.environ, "FAKE_CLAUDE_HOME": str(fake_home)}
+    stream = StreamingProcess(argv, cwd=tmp_path, env=env)
+
+    def boom(_event: dict) -> None:
+        raise RuntimeError("hook exploded")
+
+    stream.on_tool_event = boom
+    stream.start(prompt="go")
+    outcome = stream.wait()
+
+    assert outcome.envelope is not None
+    assert outcome.envelope.get("result") == "OK"
+
+
 def test_last_assistant_text_is_captured_from_the_final_assistant_event(fake_home, tmp_path):
     script(
         fake_home,
