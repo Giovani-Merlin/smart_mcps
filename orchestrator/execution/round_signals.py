@@ -32,6 +32,8 @@ DEFAULT_VERIFY_PATTERN = (
     r"pre-commit|cargo test|go test|npm test|unittest)\b"
 )
 _WAIT_RE = re.compile(r"\bkill -0\b|\bsleep |\btail -f\b|\bjobs\b|\bwait |\bnohup\b|\bps ")
+# Public name: the export (transcript_events.py) tags polling commands with the same regex.
+WAIT_COMMAND_RE = _WAIT_RE
 _SEARCH_PROGRAMS = frozenset({"ls", "find", "grep", "rg"})
 _READ_TOOLS = frozenset({"Read", "Glob"})
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
