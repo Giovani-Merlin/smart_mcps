@@ -25,9 +25,17 @@ follows it.
   not for scratch files, not for a quick check, not when a spec or a habit
   suggests it. `/tmp` is wiped on restart and lies outside the run's record,
   so whatever lands there is lost evidence. Your worktree already is the
-  temporary space: `.coder-scratch/` for throwaway files, `mktemp -p
-  .coder-scratch` when a tool needs a unique path, and a `data_dirs` path for
+  temporary space: `.coder-scratch/` for throwaway files, `mktemp -p .coder-scratch` when a tool needs a unique path, and a `data_dirs` path for
   large outputs that must outlive the group.
+- Use `git -C <absolute path> …` instead of `cd X && git …`: the CLI refuses
+  the compound command because the `cd` changes the trust boundary.
+- Never put `$(…)`, brace expansion (`{a,b}`) or a newline followed by `#`
+  inside a quoted argument — the CLI's static analysis refuses them
+  (`simple_expansion`, "Newline followed by #"). Multi-line Python goes in a
+  file under `.coder-scratch/` that you then run, not in a `python -c "…"`
+  argument.
+- `Read` the exact span before every `Edit`; copy `old_string` from that
+  output, never from a diff or from memory.
 - Run long or real verification (a full suite, a pipeline over real data, a
   render) in the **foreground** and wait for it. A background task is killed
   when your session ends its turn, so a verification you backgrounded never

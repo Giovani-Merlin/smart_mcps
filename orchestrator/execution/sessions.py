@@ -25,6 +25,7 @@ a later probe reads, never something this module decides or acts on.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -59,6 +60,7 @@ from orchestrator.execution.worktrees import denied_git_tool_patterns
 from orchestrator.execution.auth import AuthLadder, is_auth_error
 from orchestrator.execution.liveness import ActivityRegistry
 from orchestrator.execution.ratelimit import UsageLimitGate
+from orchestrator.execution.round_signals import RoundSignals
 from orchestrator.execution.streaming import StreamError, StreamingProcess, TurnUsage
 from orchestrator.model import WorkerReport
 
@@ -358,6 +360,17 @@ class SessionUsage:
         self.last_context_tokens = usage.context_tokens
 
 
+def _accepts_end_round(on_turn: Callable) -> bool:
+    """Whether an ``on_turn`` observer takes the third ``end_round`` argument;
+    two-argument observers (``usage, send``) are still supported."""
+    try:
+        params = list(inspect.signature(on_turn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 3 or any(p.kind is p.VAR_POSITIONAL for p in params)
+
+
 @dataclass(frozen=True)
 class RoundResult:
     session_id: str
@@ -368,6 +381,9 @@ class RoundResult:
     #: (plan P2). Empty for every stub and for any round where nothing matched;
     #: used only to corroborate a `permission_denied` report's own account.
     deny_signals: list[str] = field(default_factory=list, repr=False)
+    #: The round's tool-call reading (``round_signals.RoundSignals``); ``None``
+    #: until a runner attaches one.
+    signals: RoundSignals | None = field(default=None, repr=False)
 
 
 def session_display_name(run_id: str, group_id: str, role: str, generation: int) -> str:
@@ -508,6 +524,7 @@ class SessionRunner:
         session_id: str | None = None,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """Start a fresh worker session and run its first round in one call.
@@ -541,6 +558,7 @@ class SessionRunner:
             extra=["--session-id", session_id, "--name", name],
             json_schema=json_schema,
             extra_allowed=extra_allowed_tools,
+            add_dirs=add_dirs,
             on_turn=on_turn,
         )
 
@@ -554,6 +572,7 @@ class SessionRunner:
         session_id: str | None = None,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """LEGACY — reached only under ``session.fork_base_session`` (default
@@ -603,6 +622,7 @@ class SessionRunner:
                 extra=extra,
                 json_schema=json_schema,
                 extra_allowed=extra_allowed_tools,
+                add_dirs=add_dirs,
                 on_turn=on_turn,
             )
 
@@ -614,6 +634,7 @@ class SessionRunner:
         cwd: Path,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """One warm round against an existing session. ``on_turn`` — see
@@ -624,6 +645,7 @@ class SessionRunner:
             extra=["--resume", session_id],
             json_schema=json_schema,
             extra_allowed=extra_allowed_tools,
+            add_dirs=add_dirs,
             on_turn=on_turn,
         )
 
@@ -680,6 +702,7 @@ class SessionRunner:
         extra: list[str],
         json_schema: dict | None = None,
         extra_allowed: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         model: str | None = None,
     ) -> RoundResult:
@@ -712,6 +735,8 @@ class SessionRunner:
             allowed += worktree_path_rules(self.allowed_tools, cwd)
         if allowed:
             argv += ["--allowedTools", ",".join(allowed)]
+        for add_dir in add_dirs:
+            argv += ["--add-dir", str(add_dir)]
         denied = self.effective_disallowed_tools()
         if denied:
             argv += ["--disallowedTools", ",".join(denied)]
@@ -729,7 +754,7 @@ class SessionRunner:
             argv += ["--thinking", self.thinking]
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
-        context = _argv_context(extra)
+        context = _argv_context(extra, add_dirs)
         return self._call_with_retry(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
 
     def _call_with_retry(
@@ -885,6 +910,7 @@ class SessionRunner:
             usage=usage,
             envelope=envelope,
             deny_signals=deny_signals,
+            signals=getattr(on_turn, "signals", None),
         )
 
     def _spawn(
@@ -946,7 +972,20 @@ class SessionRunner:
             preexec_fn=preexec_fn,
         )
         if on_turn is not None:
-            stream.on_turn = lambda usage: on_turn(usage, stream.send)
+
+            def end_round(text: str) -> None:
+                """Send *text* as the round's last follow-up and close stdin, so
+                the child exits once it has answered it."""
+                stream.send(text)
+                stream.close_stdin()
+
+            if _accepts_end_round(on_turn):
+                stream.on_turn = lambda usage: on_turn(usage, stream.send, end_round)
+            else:
+                stream.on_turn = lambda usage: on_turn(usage, stream.send)
+            signals = getattr(on_turn, "signals", None)
+            if signals is not None:
+                stream.on_tool_event = signals.observe
         if self.activity is not None:
             activity = self.activity
 
@@ -1034,10 +1073,21 @@ def launch_env(base: dict[str, str], cwd: Path | None) -> dict[str, str]:
     outside every recipe's commit globs (so a research merge is never refused
     over a saved citation), and archived to the group's run directory at
     merge. ``cwd=None`` (a bare call with no worktree) leaves ``base`` as is.
+
+    ``TMPDIR`` and ``TMP`` point at the same directory (created if absent):
+    a worker's TMPDIR otherwise defaults to ``/tmp``, outside the Landlock
+    write set, so a bare ``mktemp`` was refused.
     """
     if cwd is None:
         return base
-    return {**base, "CLAUDE_PROJECT_DIR": str(Path(cwd) / WORKER_PROJECT_DIRNAME)}
+    scratch = Path(cwd) / WORKER_PROJECT_DIRNAME
+    scratch.mkdir(parents=True, exist_ok=True)
+    return {
+        **base,
+        "CLAUDE_PROJECT_DIR": str(scratch),
+        "TMPDIR": str(scratch),
+        "TMP": str(scratch),
+    }
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
@@ -1090,19 +1140,24 @@ def _with_fresh_session_id(argv: list[str]) -> list[str]:
     return fresh
 
 
-def _argv_context(extra: list[str]) -> str:
+def _argv_context(extra: list[str], add_dirs: Sequence[Path] = ()) -> str:
     """Session context for error messages without echoing whole prompts."""
+    context = "new session"
     for flag in ("--session-id", "--resume"):
         if flag in extra:
-            return f"{flag} {extra[extra.index(flag) + 1]}"
-    return "new session"
+            context = f"{flag} {extra[extra.index(flag) + 1]}"
+            break
+    for add_dir in add_dirs:
+        context += f" --add-dir {add_dir}"
+    return context
 
 
 def _session_id_from_context(context: str) -> str:
     """The session id out of an ``_argv_context`` string, or "" for a plain
     new session ("--session-id <id>" and "--resume <id>" are the only two
     shapes that string ever takes besides the literal "new session")."""
-    prefix, _, value = context.partition(" ")
+    prefix, _, rest = context.partition(" ")
+    value = rest.split(" ", 1)[0]
     if prefix in ("--session-id", "--resume"):
         return value
     return ""

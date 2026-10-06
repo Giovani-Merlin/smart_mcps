@@ -460,7 +460,7 @@ def test_session_cost_is_exported_additively_and_reads_zero_on_older_manifests(
     paths.manifest_path.write_text(text.replace('"total_cost_usd": 0.0,\n', ""))
     destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
     payload = json.loads((destination / "ingest.json").read_text())
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == SCHEMA_VERSION
     by_id = {s["session_id"]: s for s in payload["groups"][0]["sessions"]}
     assert by_id["aaa"]["cost_usd"] == 1.84
     assert by_id["bbb"]["cost_usd"] == 0.0

@@ -145,6 +145,9 @@ def denied_git_tool_patterns() -> list[str]:
     return [f"Bash(git {' '.join(denied)}:*)" for denied in DENIED_GIT_SUBCOMMANDS]
 
 
+WORKTREE_SLUG_MAX_LEN = 24
+
+
 def slugify(name: str, max_len: int = 40) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug[:max_len].rstrip("-") or "group"
@@ -159,7 +162,7 @@ def worktree_path(repo_root: Path, run_id: str, group_id: str, name: str) -> Pat
     """
     if group_id == "integration":
         return repo_root / ".worktrees" / run_id / "integration"
-    return repo_root / ".worktrees" / run_id / f"{group_id}-{slugify(name)}"
+    return repo_root / ".worktrees" / run_id / f"{group_id}-{slugify(name, WORKTREE_SLUG_MAX_LEN)}"
 
 
 def _legacy_worktree_path(repo_root: Path, group_id: str, name: str) -> Path:

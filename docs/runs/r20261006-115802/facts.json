@@ -1,0 +1,1159 @@
+{
+  "run_id": "r20261006-115802",
+  "plan_path": "docs/plans/2026-10-06-001-feat-worker-friction-and-live-breakers-plan.md",
+  "plan_title": "Worker friction, live breakers and the export the analyses need",
+  "plan_objective": "Meet R1–R15 of the origin document: remove the sandbox and prompt friction the\nten-run analysis measured (R1–R6), build the three in-round signals the data\nranked worth building plus one advisory (R7–R10), and extend the Run Bundle so\nthe next analysis pass measures per-turn usage, peak context, denial links and\npolling instead of estimating them (R11–R15). Every number below is from\n`infinity-skills/docs/research/2026-10-05-*.md` and run r20261006-050234.",
+  "origin": "docs/brainstorms/2026-10-06-worker-friction-and-live-breakers-requirements.md",
+  "created_at": "2026-10-06T10:01:30.509929+00:00",
+  "finished_at": null,
+  "pr_url": null,
+  "git_range": {
+    "base_sha": "89faf3611a0b76008aa86d1385f118a8f413c92a",
+    "tip_sha": "bdfa2977e2f2b532f5b974eedffe32df9816ee86",
+    "available": true
+  },
+  "changed_files": [
+    {
+      "path": "orchestrator/cli.py",
+      "added": 4,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/config.py",
+      "added": 8,
+      "deleted": 2,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/escalating.py",
+      "added": 2,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/execution/export.py",
+      "added": 129,
+      "deleted": 2,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/execution/generation.py",
+      "added": 70,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/prompting.py",
+      "added": 23,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/records.py",
+      "added": 77,
+      "deleted": 17,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/review.py",
+      "added": 7,
+      "deleted": 1,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/execution/reviewer.py",
+      "added": 4,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/round_signals.py",
+      "added": 245,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/execution/scheduler.py",
+      "added": 25,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/execution/sessions.py",
+      "added": 62,
+      "deleted": 7,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/streaming.py",
+      "added": 16,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/execution/transcript_events.py",
+      "added": 44,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/worktrees.py",
+      "added": 4,
+      "deleted": 1,
+      "group_id": "g3"
+    },
+    {
+      "path": "orchestrator/model.py",
+      "added": 3,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/observatory/runs.py",
+      "added": 2,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/prompts/limit_stop.md",
+      "added": 3,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/prompts/redundant_read.md",
+      "added": 3,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/prompts/repeat_denial.md",
+      "added": 5,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/prompts/stall_nudge.md",
+      "added": 4,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/prompts/worker_ground_rules.md",
+      "added": 10,
+      "deleted": 2,
+      "group_id": "g2"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "added": 1,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_content_filter.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_export.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_export_v3.py",
+      "added": 163,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_launch_env_rules.py",
+      "added": 62,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "tests/test_read_roots.py",
+      "added": 116,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_review_loop.py",
+      "added": 18,
+      "deleted": 9,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_review_scratch.py",
+      "added": 2,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_rewrite_counter.py",
+      "added": 134,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "tests/test_round_signals.py",
+      "added": 132,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_streaming.py",
+      "added": 32,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_suspend_cure.py",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_turn_observer.py",
+      "added": 160,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_verification_gate.py",
+      "added": 115,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_worktrees.py",
+      "added": 21,
+      "deleted": 0,
+      "group_id": "g3"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "read-roots — the worker's own run directory is a trusted read root",
+      "recipe": "code",
+      "summary": "[R1] A worker is launched with `--add-dir <repo>/.orchestrator/runs/<run_id>` so a compound Bash command that reads its…",
+      "report_summary": "Added add_dirs to SessionRunner.start_worker/start_fork/resume (emitting one --add-dir per entry after the allowlist flags), passed [deps.store.paths.run_dir] at every coder, reviewer and resume launch site in generation.py and reviewer.py, and extended _argv_context to name --add-dir (with _session_id_from_context made robust to it). Updated test runner stubs for the new kwarg and added tests/test_read_roots.py. Full suite green (2177 passed), ruff clean, committed.",
+      "spec": "# Group g1: read-roots — the worker's own run directory is a trusted read root\n\nMembers:\n- u1-read-roots: read-roots — the worker's own run directory is a trusted read root\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U1. read-roots — the worker's own run directory is a trusted read root\n\n- **Summary**: [R1] A worker is launched with `--add-dir <repo>/.orchestrator/runs/<run_id>` so a compound Bash command that reads its own run's `run.log` or group reports is no longer refused; no other directory is added.\n- **Goal**: `SessionRunner.start_worker`, `start_fork` and `resume` accept `add_dirs: Sequence[Path] = ()` and emit one `--add-dir <path>` per entry after the allowlist flags; the group executor passes `[self.deps.paths.run_dir]` at every coder, reviewer and resume launch site in `generation.py`; the reviewer launch (`reviewer.py:56`, `runner.resume(...)`) passes the same. `_argv_context` names `--add-dir` in the context line so the launch log shows it.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/sessions.py`, `orchestrator/execution/generation.py`, `orchestrator/execution/reviewer.py`, `tests/test_read_roots.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_read_roots.py -q` Pass: green — a stub-CLI coder launch's recorded argv contains exactly one `--add-dir` whose value is the run directory, and a launch with `add_dirs=()` contains none.\n  - Run (driver): `uv run pytest tests/test_read_roots.py -m llm -q --basetemp=.orchestrator/live-u1` Pass: a confined real worker running `ls .orchestrator/runs/<run>/ && echo ok` in a compound command prints `ok` with no \"requires approval\" refusal in its stream; the same worker's `ls /tmp && echo ok` is still refused.\n  - Run: `uv run ruff check orchestrator/execution/sessions.py orchestrator/execution/generation.py tests/test_read_roots.py` Pass: no findings.\n\n",
+      "merge_sha": "fb9d7f019814b8cd8525e04e242025f8fa7300d4",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-read-roots"
+      ],
+      "planned_files": [
+        "orchestrator/execution/generation.py",
+        "orchestrator/execution/reviewer.py",
+        "orchestrator/execution/sessions.py",
+        "tests/test_read_roots.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/reviewer.py",
+        "tests/test_cli.py",
+        "tests/test_content_filter.py",
+        "tests/test_read_roots.py",
+        "tests/test_review_scratch.py",
+        "tests/test_suspend_cure.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:01:33.141547+00:00",
+          "ended_at": "2026-10-06T10:12:35.640+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 80,
+            "output": 11584,
+            "cache_creation": 96727
+          },
+          "cache_read_tokens": 3197458
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2220,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g2",
+      "name": "tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule",
+      "recipe": "code",
+      "summary": "[R2, R3, R4] Every worker spawn sets `TMPDIR` and `TMP` to `<worktree>/.coder-scratch/`, and the ground rules forbid `c…",
+      "report_summary": "launch_env now sets TMPDIR and TMP to <cwd>/.coder-scratch, creating it if absent. The ground rules gained bullets for git -C, banned quoted-argument forms with multi-line Python in a scratch file, and Read-before-Edit. Added tests/test_launch_env_rules.py (3 tests); they pass, ruff is clean, and the existing sessions tests still pass. Committed.",
+      "spec": "# Group g2: tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule\n\nMembers:\n- u2-tmpdir-and-shell-rules: tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U2. tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule\n\n- **Summary**: [R2, R3, R4] Every worker spawn sets `TMPDIR` and `TMP` to `<worktree>/.coder-scratch/`, and the ground rules forbid `cd X && git`, `$(…)`/brace/newline-`#` inside quoted arguments, and an `Edit` whose `old_string` was not copied from an immediately preceding `Read`.\n- **Goal**: `launch_env` (sessions.py) adds `TMPDIR` and `TMP` beside `CLAUDE_PROJECT_DIR`, pointing at `.coder-scratch/`, which it creates if absent; `orchestrator/prompts/worker_ground_rules.md` gains, under \"For coders\", one bullet per rule: `git -C <absolute path>` instead of `cd X && git` (the CLI refuses the trust change); no `$(…)`, brace expansion or a newline followed by `#` inside a quoted argument (static-analysis refusals `simple_expansion`, \"Newline followed by #\"); multi-line Python in a file under `.coder-scratch/`; and \"`Read` the exact span before every `Edit`; copy `old_string` from that output, never from a diff or from memory\".\n- **Recipe**: —\n- **Files**: `orchestrator/execution/sessions.py`, `orchestrator/prompts/worker_ground_rules.md`, `tests/test_launch_env_rules.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_launch_env_rules.py -q` Pass: green — `launch_env(base, cwd)` returns `TMPDIR == TMP == <cwd>/.coder-scratch` and leaves `base` untouched; the rendered worker prompt contains the strings `git -C`, `simple_expansion` and `never from a diff`.\n  - Run (driver): `uv run pytest tests/test_launch_env_rules.py -m llm -q --basetemp=.orchestrator/live-u2` Pass: a confined real worker running `mktemp` prints a path under its worktree's `.coder-scratch/`, and `mktemp -d && echo ok` is not refused.\n  - Run: `uv run ruff check orchestrator/execution/sessions.py tests/test_launch_env_rules.py` Pass: no findings.\n\n",
+      "merge_sha": "5b4634de441abd66a984ea6b2ca22040c418fbcf",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u2-tmpdir-and-shell-rules"
+      ],
+      "planned_files": [
+        "orchestrator/execution/sessions.py",
+        "orchestrator/prompts/worker_ground_rules.md",
+        "tests/test_launch_env_rules.py"
+      ],
+      "touched_files": [
+        "orchestrator/prompts/worker_ground_rules.md",
+        "tests/test_launch_env_rules.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:12:38.290447+00:00",
+          "ended_at": "2026-10-06T10:16:33.812+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 12,
+            "output": 2958,
+            "cache_creation": 52865
+          },
+          "cache_read_tokens": 332412
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2223,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g3",
+      "name": "short-worktree-slugs — group worktree names are capped at 24 characters",
+      "recipe": "code",
+      "summary": "[R6] New worktrees are created at `.worktrees/<run>/<gid>-<slug>` with the slug capped at 24 characters, so every path…",
+      "report_summary": "Added WORKTREE_SLUG_MAX_LEN = 24 and used it in worktree_path (integration path unchanged; legacy path helper keeps the old 40 cap so older worktrees are still adopted). Added two tests in tests/test_worktrees.py. All verification items pass and the work is committed.",
+      "spec": "# Group g3: short-worktree-slugs — group worktree names are capped at 24 characters\n\nMembers:\n- u3-short-worktree-slugs: short-worktree-slugs — group worktree names are capped at 24 characters\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U3. short-worktree-slugs — group worktree names are capped at 24 characters\n\n- **Summary**: [R6] New worktrees are created at `.worktrees/<run>/<gid>-<slug>` with the slug capped at 24 characters, so every path argument a worker writes is shorter; resumed runs keep their recorded paths.\n- **Goal**: `slugify(name, max_len=24)` is the default used by `worktree_path`; the cap is one named constant; a worktree recorded in `state.json` or the manifest under a longer name is still resolved by its recorded path on resume (the existing resolve-by-branch path, `worktrees.py:196`).\n- **Recipe**: —\n- **Files**: `orchestrator/execution/worktrees.py`, `tests/test_worktrees.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_worktrees.py -q` Pass: green — `worktree_path(repo, \"r1\", \"g1\", \"<60-character name>\")` ends in a slug of at most 24 characters with no trailing `-`, and the `integration` worktree path is unchanged.\n  - Run: `uv run python -c \"from orchestrator.execution.worktrees import worktree_path; from pathlib import Path; print(worktree_path(Path('/r'), 'r1', 'g2', 'evidence-run the report md evidence section rendered over the real run set'))\"` Pass: prints `/r/.worktrees/r1/g2-evidence-run-the-report` (the 24-character cut ends in `-`, which is stripped).\n  - Run: `uv run ruff check orchestrator/execution/worktrees.py tests/test_worktrees.py` Pass: no findings.\n\n",
+      "merge_sha": "464ce6e72eccad27a29c39363494ca32de92a28d",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-short-worktree-slugs"
+      ],
+      "planned_files": [
+        "orchestrator/execution/worktrees.py",
+        "tests/test_worktrees.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/worktrees.py",
+        "tests/test_worktrees.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:16:36.407351+00:00",
+          "ended_at": "2026-10-06T10:20:22.714+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 10,
+            "output": 1919,
+            "cache_creation": 50089
+          },
+          "cache_read_tokens": 260023
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2225,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g4",
+      "name": "round-signals — one per-round reading of tool calls, results, action classes and repeats",
+      "recipe": "code",
+      "summary": "`orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool ca…",
+      "report_summary": "Added orchestrator/execution/round_signals.py (RoundSignals: paired tool calls/results, action classes, identical_denials, stall_window, redundant_read, last_edit_unverified, turn_index), an on_tool_event hook on StreamingProcess (exceptions swallowed), and RoundResult.signals. Added tests/test_round_signals.py and two streaming tests. All verification items pass; sessions/review-loop suites still green.",
+      "spec": "# Group g4: round-signals — one per-round reading of tool calls, results, action classes and repeats\n\nMembers:\n- u4-round-signals: round-signals — one per-round reading of tool calls, results, action classes and repeats\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g5 consumes `u5-turn-observer` — u5-turn-observer: [R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default, ends the round within one turn of crossing `context_token_limit`, ends it on the third identical denied command, sends one \"change approach\" nudge per stall window, and sends one reminder per redundantly re-read file.\n- g6 consumes `u6-verification-omission-gate` — u6-verification-omission-gate: [R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree when the round's signals show the last `edit` had no later `verify` action; a red result becomes a `changes_required` round carrying the failing output.\n- g7 consumes `u8-export-links-and-wait` — u8-export-links-and-wait: [R13, R14] A `permission_denied` artifact in the bundle names the event id of the denied tool call (`denial_event_id`), every exported surprise carries the `session_id` and `seq` of the report it came from, and every `Bash` event whose command is process polling carries `tags: [\"wait\"]`.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U4. round-signals — one per-round reading of tool calls, results, action classes and repeats\n\n- **Summary**: `orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.\n- **Goal**: `StreamingProcess` gains `on_tool_event: Callable[[dict], None] | None`, called for every `assistant` and `user` event with the raw event (never raising into the reader, like `on_event`). `RoundSignals.observe(event)` pairs `tool_use` blocks with their `tool_result` by `tool_use_id`; classifies each call: `Read`/`Glob` → `read`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `edit`, `Grep`/`Bash` whose program is `ls`/`find`/`grep`/`rg` → `search`, `Bash` matching a configurable verify regex (`pytest|tox|nox|vitest|jest|mocha|ruff|mypy|tsc|pyright|flake8|eslint|pre-commit|cargo test|go test|npm test|unittest`, the same set `derive_action_type` uses in infinity-skills) → `verify`, `Bash` matching `kill -0|sleep |tail -f|jobs|wait |nohup|ps ` → `wait`, else `other`. It exposes: `identical_denials(command) -> int` (count of `tool_result` with `is_error` whose text matches the stream's deny patterns for the same normalised command); `stall_window() -> StallWindow | None` (the last K calls share one `(command string, error signature)` with no new touched file, no signature change and no `verify` result change; K from config, 2K when every call in the window is `read`/`search`; `search` calls never form a window); `redundant_read(path) -> int | None` (the turn index of the earlier `Read` of the same path with no `edit` of it in between, else None, at most once per path); `last_edit_unverified() -> bool`; `turn_index`. Error signature is `<tool>:<first error line, lowercased, digits stripped>`. `RoundResult` (sessions.py:362) gains `signals: RoundSignals | None = None`, the carrier every later reader uses.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/round_signals.py` *(new, large)*, `orchestrator/execution/streaming.py`, `tests/test_round_signals.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: `RoundSignals` / —\n- **Verification**:\n  - Run: `uv run pytest tests/test_round_signals.py -q` Pass: green — on a synthetic event list: eight identical failing `Bash` calls with one error text yield one stall window and `identical_denials` of 0; the same with deny text yields `identical_denials == 8`; twelve `ls` calls of distinct paths yield no window; `Read a, Read a` yields `redundant_read(\"a\") == 0` and `Read a, Edit a, Read a` yields None; `Edit a, Bash pytest, report` yields `last_edit_unverified() is False` and `Edit a, Bash ruff check` also False; `Edit a, Read b` yields True.\n  - Run: `uv run pytest tests/test_streaming.py -q` Pass: green — the existing stream tests are unchanged and a new case shows `on_tool_event` receives both the `assistant` tool_use event and the `user` tool_result event of one fake-CLI round, and a hook that raises does not stop the stream.\n  - Run: `uv run ruff check orchestrator/execution/round_signals.py orchestrator/execution/streaming.py tests/test_round_signals.py` Pass: no findings.\n\n",
+      "merge_sha": "dee79546a81d5f4a99600e31ca4d010ca6099639",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u4-round-signals"
+      ],
+      "planned_files": [
+        "orchestrator/execution/round_signals.py",
+        "orchestrator/execution/streaming.py",
+        "tests/test_round_signals.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/round_signals.py",
+        "orchestrator/execution/streaming.py",
+        "tests/test_round_signals.py",
+        "tests/test_streaming.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:20:25.194602+00:00",
+          "ended_at": "2026-10-06T10:22:21.172895+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 18,
+            "output": 12897,
+            "cache_creation": 69923
+          },
+          "cache_read_tokens": 589231
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:22:21.172895+00:00",
+          "ended_at": "2026-10-06T10:25:45.718+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 8,
+            "output": 1493,
+            "cache_creation": 55181
+          },
+          "cache_read_tokens": 197801
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2236,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g4/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g5",
+      "name": "turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder",
+      "recipe": "code",
+      "summary": "[R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default…",
+      "report_summary": "Implemented the turn observer: context ladder on by default; new stall_window_k and repeat_denial_cap; four prompt renderers and templates; end_round wiring and RoundSignals install/attach in SessionRunner; observer in records.py with the 100% stop, repeat-denial stop, stall nudge (second nudge after another K calls) and redundant-read reminder, each logging a run.log line. Existing review-loop ladder tests updated for the new default. Full suite green (2245 passed).",
+      "spec": "# Group g5: turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder\n\nMembers:\n- u5-turn-observer: turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g4 provides `u4-round-signals` — u4-round-signals: `orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.\n\nDownstream groups:\n- g6 consumes `u6-verification-omission-gate` — u6-verification-omission-gate: [R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree when the round's signals show the last `edit` had no later `verify` action; a red result becomes a `changes_required` round carrying the failing output.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U5. turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder\n\n- **Summary**: [R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default, ends the round within one turn of crossing `context_token_limit`, ends it on the third identical denied command, sends one \"change approach\" nudge per stall window, and sends one reminder per redundantly re-read file.\n- **Goal**: `BreakerConfig.context_ladder_enabled` defaults to `True`; new fields `stall_window_k: int = 8` (pure read/search windows use `2 * stall_window_k`) and `repeat_denial_cap: int = 3`. The coder round call passes an `end_round: Callable[[str], None]` beside `send` — it sends the given text as a final follow-up and closes stdin so the child exits after that turn (`sessions.py` wiring around the `on_turn` lambda, line 948) — and installs the round's `RoundSignals` as the stream's `on_tool_event`. The same object is attached to the round's `RoundResult.signals` when the round settles, so `_settle_round` reads it without a second parser. In `on_turn`: at ≥ 100% of the limit, after the compact prompt, `end_round(render_limit_stop_prompt())` once; when `identical_denials(cmd) >= repeat_denial_cap` for the call just observed, `end_round(render_repeat_denial_prompt(cmd))` once; when `stall_window()` is new (its start index was not nudged yet), `send(render_stall_nudge_prompt(window))`; when `redundant_read(path)` returns a turn index, `send(render_redundant_read_prompt(path, turn))`. Every send and end logs one `run.log` line (`group <gid> generation <n>: <signal> at turn <t> — <detail>`). The four prompt renderers live in `prompting.py`. `_breaker_reason` is unchanged: a round ended by the 100% stop is retired there as today.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/records.py`, `orchestrator/execution/prompting.py`, `orchestrator/config.py`, `orchestrator/execution/sessions.py`, `tests/test_turn_observer.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U4\n- **Slice**: —\n- **Implements / Consumes**: — / `RoundSignals`\n- **Verification**:\n  - Run: `uv run pytest tests/test_turn_observer.py -q` Pass: green — with the stub runner's per-turn sequences: a round whose fourth turn reports context above the limit receives the compact prompt and then exactly one stop follow-up, and the stream's stdin is closed after it; three identical denied `Bash` calls produce one repeat-denial follow-up and a closed stdin, two do not; eight identical failing calls produce one stall nudge and sixteen produce two; `Read a, Read a` produces one reminder and a third read none; each event writes its `run.log` line.\n  - Run: `uv run pytest tests/test_review_loop.py -q -k \"ladder or context\"` Pass: green — the existing ladder tests pass with the default flipped (a test that asserted the off-by-default behaviour is updated to assert on-by-default, and one asserts `context_ladder_enabled = false` in config still disables every prompt).\n  - Run: `uv run python -c \"from orchestrator.config import BreakerConfig; b = BreakerConfig(); print(b.context_ladder_enabled, b.stall_window_k, b.repeat_denial_cap)\"` Pass: prints `True 8 3`.\n  - Run: `uv run ruff check orchestrator/execution/records.py orchestrator/execution/prompting.py orchestrator/config.py orchestrator/execution/sessions.py tests/test_turn_observer.py` Pass: no findings.\n\n",
+      "merge_sha": "8e9aa3fbc2daa413acbfe62ec0a2c08a57fe24f4",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u5-turn-observer"
+      ],
+      "planned_files": [
+        "orchestrator/config.py",
+        "orchestrator/execution/prompting.py",
+        "orchestrator/execution/records.py",
+        "orchestrator/execution/sessions.py",
+        "tests/test_turn_observer.py"
+      ],
+      "touched_files": [
+        "orchestrator/config.py",
+        "orchestrator/execution/prompting.py",
+        "orchestrator/execution/sessions.py",
+        "orchestrator/prompts/limit_stop.md",
+        "orchestrator/prompts/redundant_read.md",
+        "orchestrator/prompts/repeat_denial.md",
+        "orchestrator/prompts/stall_nudge.md",
+        "tests/test_review_loop.py",
+        "tests/test_turn_observer.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:25:48.495463+00:00",
+          "ended_at": "2026-10-06T10:35:05.307+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 46,
+            "output": 19445,
+            "cache_creation": 95997
+          },
+          "cache_read_tokens": 1990350
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2245,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g5/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g6",
+      "name": "verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review",
+      "recipe": "code",
+      "summary": "[R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree wh…",
+      "report_summary": "Added the verification-omission gate in generation.py (_verification_omission_verdict, called from _settle_round before _review_round). Added ReviewDeps.preflight_config (default None = gate off) and wired it in cli.py. tests/test_verification_gate.py (3 tests, real run_preflight with real check commands in a git-initialised workspace) covers red check -> changes_required without a reviewer and with the failing output in the verdict and next prompt, green check -> reviewer, and verified edit -> no check run. Run.log anchor lines are asserted. The gate does not pass provision_args (--all-extras) to run_preflight, unlike the merge gate.",
+      "spec": "# Group g6: verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review\n\nMembers:\n- u6-verification-omission-gate: verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g4 provides `u4-round-signals` — u4-round-signals: `orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.\n- g5 provides `u5-turn-observer` — u5-turn-observer: [R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default, ends the round within one turn of crossing `context_token_limit`, ends it on the third identical denied command, sends one \"change approach\" nudge per stall window, and sends one reminder per redundantly re-read file.\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U6. verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review\n\n- **Summary**: [R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree when the round's signals show the last `edit` had no later `verify` action; a red result becomes a `changes_required` round carrying the failing output.\n- **Goal**: In `_settle_round`, after the report-level verification gate and before `_review_round`, if `result.signals is not None and result.signals.last_edit_unverified()` is True and `config.preflight.check_command` resolves, call `run_preflight(worktree, config=…, output_dir=<group dir>/omission-check-r<N>/, log=…)`; log `group <gid> generation <n> round <r>: verification omitted after the last edit — running check command`; on failure, synthesise a `ReviewerVerdict(status=\"changes_required\", required_changes=[<first failing test or the tail of the log>], notes=\"verification omitted …\")` and continue into the existing changes_required path (breaker gate, next-round prompt) without spending a reviewer session; on success, log `… check command green` and proceed to review as today. A reviewer session or a non-`code` recipe is never gated.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/generation.py`, `tests/test_verification_gate.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: U4, U5\n- **Slice**: —\n- **Implements / Consumes**: — / `RoundSignals`\n- **Verification**:\n  - Run: `uv run pytest tests/test_verification_gate.py -q` Pass: green — a stub round `Edit a, Read b, report completed` with a check command that fails ends as `changes_required` with the failing output in `required_changes` and no reviewer session spawned; the same with a green check command reaches the reviewer; `Edit a, Bash pytest -q, report completed` never runs the check command; the `run.log` carries the two anchor lines.\n  - Run: `uv run pytest tests/test_review_loop.py -q -k \"settle or approved\"` Pass: green — existing settle-round tests are unchanged (their stub rounds carry a verify action or no edit).\n  - Run: `uv run ruff check orchestrator/execution/generation.py tests/test_verification_gate.py` Pass: no findings.\n\n",
+      "merge_sha": "11d6226d4989299eedefc5d20220116d5e99dc2c",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u6-verification-omission-gate"
+      ],
+      "planned_files": [
+        "orchestrator/execution/generation.py",
+        "tests/test_verification_gate.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/generation.py",
+        "tests/test_verification_gate.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:35:07.798936+00:00",
+          "ended_at": "2026-10-06T10:40:25.002+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 48,
+            "output": 13310,
+            "cache_creation": 102754
+          },
+          "cache_read_tokens": 2188137
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2248,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g6/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g7",
+      "name": "export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle + export-links-and-wait — denials and surprises linked to their events, polling tagged",
+      "recipe": "code",
+      "summary": "2 units: export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle, export-li…",
+      "report_summary": "Implemented export bundle v3. NeutralEvent gained usage and tags, with wait tags from the shared WAIT_COMMAND_RE. SessionEntry and the observatory SnapshotSession gained peak_context_tokens, which records.py updates per turn and on usage copy. Export now emits phases from run.log, peak and last context per session, denial_event_id, and surprise session_id and seq. SCHEMA_VERSION is 3. Added tests/test_export_v3.py and updated one hardcoded schema_version assertion in tests/test_export.py to use SCHEMA_VERSION.",
+      "spec": "# Group g7: export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle + export-links-and-wait — denials and surprises linked to their events, polling tagged\n\nMembers:\n- u7-export-usage-and-context: export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle\n- u8-export-links-and-wait: export-links-and-wait — denials and surprises linked to their events, polling tagged\n\nIntra-group order (depends_on):\n- u7-export-usage-and-context before u8-export-links-and-wait\n\nUpstream groups:\n- g4 provides `u4-round-signals` — u4-round-signals: `orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.\n\nDownstream groups:\n- g8 consumes `u9-rewrite-counter` — u9-rewrite-counter: [R15] `state.json` carries each group's `rewrites` count and `last_rewrite_counted`, written by `_rewrite`, shown by `status`, and exported on the group.\n\nContracts (cross-group):\n- (none)\n\nSlice: export-v3\n\n\n### U7. export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle\n\n- **Summary**: [R11, R12] Every assistant event in `events/<session>.jsonl.gz` carries `usage {input, output, cache_read, cache_creation}`, every session carries `peak_context_tokens` and `last_context_tokens`, every group carries a `phases` timeline from `run.log`, and `ingest.json` is `schema_version` 3.\n- **Goal**: `NeutralEvent` gains `usage: ExportUsage | None` (transcript_events.py), filled by `_events_from_content` from the transcript line's `message.usage` for `assistant` rows and left None elsewhere; `SessionEntry` (model.py) gains `peak_context_tokens: int = 0`, updated by the per-turn bookkeeping in `records.py` as `max(peak, context)` and persisted with `last_context_tokens`; `ExportSession` gains both fields (0 when unrecorded); `ExportGroup` gains `phases: list[ExportPhase]` (`{phase, at}`) parsed from the group's `run.log` anchors (`worktree ready`, `round N: started`, `round N: ended (<status>)`, `merge attempt`, `merged into the integration branch`, `completed` / `failed`); `SCHEMA_VERSION = 3`; a bundle built from a run without the facts omits nothing and fills zeros/empties.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/transcript_events.py`, `orchestrator/execution/export.py`, `orchestrator/execution/records.py`, `orchestrator/model.py`, `tests/test_export_v3.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: export-v3\n- **Implements / Consumes**: `bundle-v3` / —\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_v3.py -q -k usage` Pass: green — `build_export(paths, project=…, events_dir=…, transcript_root=<tmp>)` over a synthetic transcript tree (the way `tests/test_export.py` builds one: two `assistant` lines carrying `message.usage`, one `user` tool_result line) yields `schema_version == 3`, a four-field `usage` on exactly the two assistant events and `None` elsewhere, and a session whose `peak_context_tokens >= last_context_tokens` is read from a manifest entry carrying both.\n  - Run: `uv run pytest tests/test_export_v3.py -q -k phases` Pass: green — `build_export` over `RunPaths(repo_root, 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035'))` with no transcripts yields, for every group, a non-empty `phases` list parsed from the tracked `run.log`, in log order, starting with a `worktree ready` or `round 1: started` entry and ending with `completed` or `failed`; sessions export with `peak_context_tokens == 0` (unrecorded) and nothing raises.\n  - Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.export import build_export; from orchestrator.execution.manifest import RunPaths; e = build_export(RunPaths(Path('.'), 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035')), project='fx'); print(e.schema_version, [(g.id, [ph.phase for ph in g.phases][:3]) for g in e.groups][:2])\"` Pass: prints `3` and, for the first two groups, three phase names each taken from the tracked fixture `run.log` (a real artifact of run r20260828-220035, not written by this unit).\n  - Run: `uv run pytest tests/test_export.py -q` Pass: green — every existing export assertion still holds (additive fields only).\n  - Run: `uv run ruff check orchestrator/execution/transcript_events.py orchestrator/execution/export.py orchestrator/execution/records.py orchestrator/model.py tests/test_export_v3.py` Pass: no findings.\n\n\n\n### U8. export-links-and-wait — denials and surprises linked to their events, polling tagged\n\n- **Summary**: [R13, R14] A `permission_denied` artifact in the bundle names the event id of the denied tool call (`denial_event_id`), every exported surprise carries the `session_id` and `seq` of the report it came from, and every `Bash` event whose command is process polling carries `tags: [\"wait\"]`.\n- **Goal**: `NeutralEvent` gains `tags: list[str]` (empty by default); `_events_from_content` tags a `Bash` tool call `wait` when its command matches the same polling regex `RoundSignals` uses (one shared constant in `round_signals.py` imported by `transcript_events.py`); `ExportArtifact` gains `denial_event_id: str | None`, filled for a `permission_denied` coder report by locating, in that session's parsed events, the last `Bash` tool call whose `command` equals the report's `denied_command` (whitespace-normalised); `ExportSurprise` gains `session_id: str | None` and `seq: int` (the surprise's index within its report).\n- **Recipe**: —\n- **Files**: `orchestrator/execution/export.py`, `orchestrator/execution/transcript_events.py`, `tests/test_export_v3.py`\n- **Symbols**: —\n- **Depends-on**: U4, U7\n- **Slice**: export-v3\n- **Implements / Consumes**: — / `bundle-v3`\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_v3.py -q -k \"denial or wait or surprise\"` Pass: green — a fixture run with a `permission_denied` report exports `denial_event_id` equal to the event id of the matching `Bash` call; a transcript with `kill -0 123` and `sleep 5` yields two events tagged `wait` and a `pytest -q` event with no tag; every exported surprise has a `session_id` and consecutive `seq` within its report.\n  - Run: `uv run python -c \"from orchestrator.execution.round_signals import WAIT_COMMAND_RE as W; print([bool(W.search(c)) for c in ['kill -0 48389', 'sleep 5; tail -f .orchestrator/runs/r1/logs/run.log', 'uv run pytest -q', 'nohup smart-mcps-orchestrate run --repo . &', 'ls -la data/']])\"` Pass: prints `[True, True, False, True, False]` — the shared constant classifies the real polling commands drivers and workers issued on run r20261006-050234 as `wait` and leaves a test run and a listing untagged.\n  - Run: `uv run ruff check orchestrator/execution/export.py orchestrator/execution/transcript_events.py tests/test_export_v3.py` Pass: no findings.\n\n",
+      "merge_sha": "d220dd69023dfa70cd03f4d3c03c591181cab729",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u7-export-usage-and-context",
+        "u8-export-links-and-wait"
+      ],
+      "planned_files": [
+        "orchestrator/execution/export.py",
+        "orchestrator/execution/records.py",
+        "orchestrator/execution/transcript_events.py",
+        "orchestrator/model.py",
+        "tests/test_export_v3.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/records.py",
+        "orchestrator/execution/transcript_events.py",
+        "orchestrator/model.py",
+        "orchestrator/observatory/runs.py",
+        "tests/test_export.py",
+        "tests/test_export_v3.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:40:27.826014+00:00",
+          "ended_at": "2026-10-06T10:51:09.252+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 38,
+            "output": 14867,
+            "cache_creation": 90623
+          },
+          "cache_read_tokens": 1619400
+        }
+      ],
+      "escalations": [
+        {
+          "id": "898941bcac83",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g7: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261006-115802/groups/g7/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261006-115802/groups/g7/preflight-check-pytest.log",
+          "created_at": "2026-10-06T10:46:22.620996Z",
+          "request_path": "escalations/request-898941bcac83.json",
+          "response_path": "escalations/response-898941bcac83.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2252,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g7/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g8",
+      "name": "rewrite-counter — the rewrite count and whether it was charged are persisted and exported",
+      "recipe": "code",
+      "summary": "[R15] `state.json` carries each group's `rewrites` count and `last_rewrite_counted`, written by `_rewrite`, shown by `s…",
+      "report_summary": "Added rewrites/last_rewrite_counted (plus an internal rewrites_charged so resumed cap checks ignore spec refinements) to GroupRunState; _rewrite persists every rewrite via a new GroupContext.record_rewrite hook wired to Scheduler.record_rewrite; resumed executors seed self.rewrites from the charged count; status prints the rewrites line; ExportGroup carries rewrite_count and last_rewrite_counted from state.json. Edited cli.py and review.py beyond the listed files (required for status and resume seeding). Full suite 2257 passed, ruff clean.",
+      "spec": "# Group g8: rewrite-counter — the rewrite count and whether it was charged are persisted and exported\n\nMembers:\n- u9-rewrite-counter: rewrite-counter — the rewrite count and whether it was charged are persisted and exported\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g7 provides `u7-export-usage-and-context` — u7-export-usage-and-context: [R11, R12] Every assistant event in `events/<session>.jsonl.gz` carries `usage {input, output, cache_read, cache_creation}`, every session carries `peak_context_tokens` and `last_context_tokens`, every group carries a `phases` timeline from `run.log`, and `ingest.json` is `schema_version` 3.\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U9. rewrite-counter — the rewrite count and whether it was charged are persisted and exported\n\n- **Summary**: [R15] `state.json` carries each group's `rewrites` count and `last_rewrite_counted`, written by `_rewrite`, shown by `status`, and exported on the group.\n- **Goal**: `GroupRunState` gains `rewrites: int = 0` and `last_rewrite_counted: bool | None = None`; `_rewrite` updates both through the group context (`ctx`) on every rewrite — counted or not — and `status` prints `rewrites: N (last: counted|spec refinement)` on a group with any; `ExportGroup` gains `rewrite_count: int` and `last_rewrite_counted: bool | None` read from `state.json` (0/None for old runs). The in-memory `self.rewrites` the cap check uses is initialised from the persisted value on resume, so a resumed group no longer forgets rewrites spent before the restart.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/scheduler.py`, `orchestrator/execution/escalating.py`, `orchestrator/execution/export.py`, `tests/test_rewrite_counter.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: U7\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_rewrite_counter.py -q` Pass: green — a stub group rewritten once by a blocked report persists `rewrites == 1, last_rewrite_counted is True` in `state.json`; a pre-launch refinement-only rewrite persists `rewrites == 1, last_rewrite_counted is False`; a resume after a counted rewrite starts `self.rewrites` at 1; the export of that run carries `rewrite_count == 1`.\n  - Run: `uv run pytest tests/test_rewrite_observability.py tests/test_spec_refinement.py -q` Pass: green — existing rewrite tests unchanged.\n  - Run: `uv run pytest tests/test_rewrite_counter.py -q -k status` Pass: green — the test copies `tests/fixtures/runs/r20260828-220035` into `<tmp>/.orchestrator/runs/`, sets `rewrites = 2` and `last_rewrite_counted = False` on one group in that copy's `state.json`, runs `smart-mcps-orchestrate status r20260828-220035 --repo <tmp>` as a subprocess, and asserts the output carries `rewrites: 2 (last: spec refinement)` for that group and no rewrites line for a group left at 0 — the oracle is the real CLI over a real run's state file.\n  - Run: `uv run ruff check orchestrator/execution/scheduler.py orchestrator/execution/escalating.py orchestrator/execution/export.py tests/test_rewrite_counter.py` Pass: no findings.\n\n",
+      "merge_sha": "94652a2e45d49cfb57834b5571206549241aaa53",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u9-rewrite-counter"
+      ],
+      "planned_files": [
+        "orchestrator/execution/escalating.py",
+        "orchestrator/execution/export.py",
+        "orchestrator/execution/scheduler.py",
+        "tests/test_rewrite_counter.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/execution/escalating.py",
+        "orchestrator/execution/export.py",
+        "orchestrator/execution/review.py",
+        "orchestrator/execution/scheduler.py",
+        "tests/test_rewrite_counter.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-06T10:51:11.966613+00:00",
+          "ended_at": "2026-10-06T11:02:45.475+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 44,
+            "output": 12308,
+            "cache_creation": 85086
+          },
+          "cache_read_tokens": 1762934
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2257,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g8/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-read-roots",
+      "group_id": "g1",
+      "title": "read-roots — the worker's own run directory is a trusted read root",
+      "summary": "[R1] A worker is launched with `--add-dir <repo>/.orchestrator/runs/<run_id>` so a compound Bash command that reads its own run's `run.log` or group reports is no longer refused; no other directory is added.",
+      "goal": "`SessionRunner.start_worker`, `start_fork` and `resume` accept `add_dirs: Sequence[Path] = ()` and emit one `--add-dir <path>` per entry after the allowlist flags; the group executor passes `[self.deps.paths.run_dir]` at every coder, reviewer and resume launch site in `generation.py`; the reviewer launch (`reviewer.py:56`, `runner.resume(...)`) passes the same. `_argv_context` names `--add-dir` in the context line so the launch log shows it.",
+      "section_text": "### U1. read-roots — the worker's own run directory is a trusted read root\n\n- **Summary**: [R1] A worker is launched with `--add-dir <repo>/.orchestrator/runs/<run_id>` so a compound Bash command that reads its own run's `run.log` or group reports is no longer refused; no other directory is added.\n- **Goal**: `SessionRunner.start_worker`, `start_fork` and `resume` accept `add_dirs: Sequence[Path] = ()` and emit one `--add-dir <path>` per entry after the allowlist flags; the group executor passes `[self.deps.paths.run_dir]` at every coder, reviewer and resume launch site in `generation.py`; the reviewer launch (`reviewer.py:56`, `runner.resume(...)`) passes the same. `_argv_context` names `--add-dir` in the context line so the launch log shows it.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/sessions.py`, `orchestrator/execution/generation.py`, `orchestrator/execution/reviewer.py`, `tests/test_read_roots.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_read_roots.py -q` Pass: green — a stub-CLI coder launch's recorded argv contains exactly one `--add-dir` whose value is the run directory, and a launch with `add_dirs=()` contains none.\n  - Run (driver): `uv run pytest tests/test_read_roots.py -m llm -q --basetemp=.orchestrator/live-u1` Pass: a confined real worker running `ls .orchestrator/runs/<run>/ && echo ok` in a compound command prints `ok` with no \"requires approval\" refusal in its stream; the same worker's `ls /tmp && echo ok` is still refused.\n  - Run: `uv run ruff check orchestrator/execution/sessions.py orchestrator/execution/generation.py tests/test_read_roots.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "Run: `uv run pytest tests/test_read_roots.py -q` Pass: green — a stub-CLI coder launch's recorded argv contains exactly one `--add-dir` whose value is the run directory, and a launch with `add_dirs=()` contains none.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_read_roots.py -q: 4 passed; stub CLI argv has exactly one --add-dir equal to the run dir, none when add_dirs=()."
+        },
+        {
+          "item_id": "g1-2",
+          "description": "Run (driver): `uv run pytest tests/test_read_roots.py -m llm -q --basetemp=.orchestrator/live-u1` Pass: a confined real worker running `ls .orchestrator/runs/<run>/ && echo ok` in a compound command prints `ok` with no \"requires approval\" refusal in its stream; the same worker's `ls /tmp && echo ok` is still refused.",
+          "status": "driver-run",
+          "evidence": "driver-run: `uv run pytest tests/test_read_roots.py -m llm -q --basetemp=.orchestrator/live-u1` spawns a nested real `claude`, so I did not run it (no error produced). The live test is written and deselected by default."
+        },
+        {
+          "item_id": "g1-3",
+          "description": "Run: `uv run ruff check orchestrator/execution/sessions.py orchestrator/execution/generation.py tests/test_read_roots.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "uv run ruff check on the three named files plus reviewer.py: All checks passed."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-tmpdir-and-shell-rules",
+      "group_id": "g2",
+      "title": "tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule",
+      "summary": "[R2, R3, R4] Every worker spawn sets `TMPDIR` and `TMP` to `<worktree>/.coder-scratch/`, and the ground rules forbid `cd X && git`, `$(…)`/brace/newline-`#` inside quoted arguments, and an `Edit` whose `old_string` was not copied from an immediately preceding `Read`.",
+      "goal": "`launch_env` (sessions.py) adds `TMPDIR` and `TMP` beside `CLAUDE_PROJECT_DIR`, pointing at `.coder-scratch/`, which it creates if absent; `orchestrator/prompts/worker_ground_rules.md` gains, under \"For coders\", one bullet per rule: `git -C <absolute path>` instead of `cd X && git` (the CLI refuses the trust change); no `$(…)`, brace expansion or a newline followed by `#` inside a quoted argument (static-analysis refusals `simple_expansion`, \"Newline followed by #\"); multi-line Python in a file under `.coder-scratch/`; and \"`Read` the exact span before every `Edit`; copy `old_string` from that output, never from a diff or from memory\".",
+      "section_text": "### U2. tmpdir-and-shell-rules — temp files land in the worktree and the three refused shell forms are banned by rule\n\n- **Summary**: [R2, R3, R4] Every worker spawn sets `TMPDIR` and `TMP` to `<worktree>/.coder-scratch/`, and the ground rules forbid `cd X && git`, `$(…)`/brace/newline-`#` inside quoted arguments, and an `Edit` whose `old_string` was not copied from an immediately preceding `Read`.\n- **Goal**: `launch_env` (sessions.py) adds `TMPDIR` and `TMP` beside `CLAUDE_PROJECT_DIR`, pointing at `.coder-scratch/`, which it creates if absent; `orchestrator/prompts/worker_ground_rules.md` gains, under \"For coders\", one bullet per rule: `git -C <absolute path>` instead of `cd X && git` (the CLI refuses the trust change); no `$(…)`, brace expansion or a newline followed by `#` inside a quoted argument (static-analysis refusals `simple_expansion`, \"Newline followed by #\"); multi-line Python in a file under `.coder-scratch/`; and \"`Read` the exact span before every `Edit`; copy `old_string` from that output, never from a diff or from memory\".\n- **Recipe**: —\n- **Files**: `orchestrator/execution/sessions.py`, `orchestrator/prompts/worker_ground_rules.md`, `tests/test_launch_env_rules.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_launch_env_rules.py -q` Pass: green — `launch_env(base, cwd)` returns `TMPDIR == TMP == <cwd>/.coder-scratch` and leaves `base` untouched; the rendered worker prompt contains the strings `git -C`, `simple_expansion` and `never from a diff`.\n  - Run (driver): `uv run pytest tests/test_launch_env_rules.py -m llm -q --basetemp=.orchestrator/live-u2` Pass: a confined real worker running `mktemp` prints a path under its worktree's `.coder-scratch/`, and `mktemp -d && echo ok` is not refused.\n  - Run: `uv run ruff check orchestrator/execution/sessions.py tests/test_launch_env_rules.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "Run: `uv run pytest tests/test_launch_env_rules.py -q` Pass: green — `launch_env(base, cwd)` returns `TMPDIR == TMP == <cwd>/.coder-scratch` and leaves `base` untouched; the rendered worker prompt contains the strings `git -C`, `simple_expansion` and `never from a diff`.",
+          "status": "pass",
+          "evidence": "3 passed: TMPDIR == TMP == <cwd>/.coder-scratch, base unmodified, and the ground-rules template contains 'git -C', 'simple_expansion' and 'never from a diff'."
+        },
+        {
+          "item_id": "g2-2",
+          "description": "Run (driver): `uv run pytest tests/test_launch_env_rules.py -m llm -q --basetemp=.orchestrator/live-u2` Pass: a confined real worker running `mktemp` prints a path under its worktree's `.coder-scratch/`, and `mktemp -d && echo ok` is not refused.",
+          "status": "driver-run",
+          "evidence": "driver-run. It needs `-m llm`, which spawns a nested claude, so I did not run it."
+        },
+        {
+          "item_id": "g2-3",
+          "description": "Run: `uv run ruff check orchestrator/execution/sessions.py tests/test_launch_env_rules.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff: All checks passed."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-short-worktree-slugs",
+      "group_id": "g3",
+      "title": "short-worktree-slugs — group worktree names are capped at 24 characters",
+      "summary": "[R6] New worktrees are created at `.worktrees/<run>/<gid>-<slug>` with the slug capped at 24 characters, so every path argument a worker writes is shorter; resumed runs keep their recorded paths.",
+      "goal": "`slugify(name, max_len=24)` is the default used by `worktree_path`; the cap is one named constant; a worktree recorded in `state.json` or the manifest under a longer name is still resolved by its recorded path on resume (the existing resolve-by-branch path, `worktrees.py:196`).",
+      "section_text": "### U3. short-worktree-slugs — group worktree names are capped at 24 characters\n\n- **Summary**: [R6] New worktrees are created at `.worktrees/<run>/<gid>-<slug>` with the slug capped at 24 characters, so every path argument a worker writes is shorter; resumed runs keep their recorded paths.\n- **Goal**: `slugify(name, max_len=24)` is the default used by `worktree_path`; the cap is one named constant; a worktree recorded in `state.json` or the manifest under a longer name is still resolved by its recorded path on resume (the existing resolve-by-branch path, `worktrees.py:196`).\n- **Recipe**: —\n- **Files**: `orchestrator/execution/worktrees.py`, `tests/test_worktrees.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_worktrees.py -q` Pass: green — `worktree_path(repo, \"r1\", \"g1\", \"<60-character name>\")` ends in a slug of at most 24 characters with no trailing `-`, and the `integration` worktree path is unchanged.\n  - Run: `uv run python -c \"from orchestrator.execution.worktrees import worktree_path; from pathlib import Path; print(worktree_path(Path('/r'), 'r1', 'g2', 'evidence-run the report md evidence section rendered over the real run set'))\"` Pass: prints `/r/.worktrees/r1/g2-evidence-run-the-report` (the 24-character cut ends in `-`, which is stripped).\n  - Run: `uv run ruff check orchestrator/execution/worktrees.py tests/test_worktrees.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g3-1",
+          "description": "Run: `uv run pytest tests/test_worktrees.py -q` Pass: green — `worktree_path(repo, \"r1\", \"g1\", \"<60-character name>\")` ends in a slug of at most 24 characters with no trailing `-`, and the `integration` worktree path is unchanged.",
+          "status": "pass",
+          "evidence": "13 passed"
+        },
+        {
+          "item_id": "g3-2",
+          "description": "Run: `uv run python -c \"from orchestrator.execution.worktrees import worktree_path; from pathlib import Path; print(worktree_path(Path('/r'), 'r1', 'g2', 'evidence-run the report md evidence section rendered over the real run set'))\"` Pass: prints `/r/.worktrees/r1/g2-evidence-run-the-report` (the 24-character cut ends in `-`, which is stripped).",
+          "status": "pass",
+          "evidence": "printed /r/.worktrees/r1/g2-evidence-run-the-report"
+        },
+        {
+          "item_id": "g3-3",
+          "description": "Run: `uv run ruff check orchestrator/execution/worktrees.py tests/test_worktrees.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff: All checks passed"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-round-signals",
+      "group_id": "g4",
+      "title": "round-signals — one per-round reading of tool calls, results, action classes and repeats",
+      "summary": "`orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.",
+      "goal": "`StreamingProcess` gains `on_tool_event: Callable[[dict], None] | None`, called for every `assistant` and `user` event with the raw event (never raising into the reader, like `on_event`). `RoundSignals.observe(event)` pairs `tool_use` blocks with their `tool_result` by `tool_use_id`; classifies each call: `Read`/`Glob` → `read`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `edit`, `Grep`/`Bash` whose program is `ls`/`find`/`grep`/`rg` → `search`, `Bash` matching a configurable verify regex (`pytest|tox|nox|vitest|jest|mocha|ruff|mypy|tsc|pyright|flake8|eslint|pre-commit|cargo test|go test|npm test|unittest`, the same set `derive_action_type` uses in infinity-skills) → `verify`, `Bash` matching `kill -0|sleep |tail -f|jobs|wait |nohup|ps ` → `wait`, else `other`. It exposes: `identical_denials(command) -> int` (count of `tool_result` with `is_error` whose text matches the stream's deny patterns for the same normalised command); `stall_window() -> StallWindow | None` (the last K calls share one `(command string, error signature)` with no new touched file, no signature change and no `verify` result change; K from config, 2K when every call in the window is `read`/`search`; `search` calls never form a window); `redundant_read(path) -> int | None` (the turn index of the earlier `Read` of the same path with no `edit` of it in between, else None, at most once per path); `last_edit_unverified() -> bool`; `turn_index`. Error signature is `<tool>:<first error line, lowercased, digits stripped>`. `RoundResult` (sessions.py:362) gains `signals: RoundSignals | None = None`, the carrier every later reader uses.",
+      "section_text": "### U4. round-signals — one per-round reading of tool calls, results, action classes and repeats\n\n- **Summary**: `orchestrator/execution/round_signals.py` turns a round's stream events into one `RoundSignals` object — paired tool calls and results, action classes (`read`, `edit`, `verify`, `search`, `wait`, `other`), touched files, identical-denial counts, stall windows, redundant reads and \"last edit has no later verify\" — fed by a new full-event hook on `StreamingProcess`.\n- **Goal**: `StreamingProcess` gains `on_tool_event: Callable[[dict], None] | None`, called for every `assistant` and `user` event with the raw event (never raising into the reader, like `on_event`). `RoundSignals.observe(event)` pairs `tool_use` blocks with their `tool_result` by `tool_use_id`; classifies each call: `Read`/`Glob` → `read`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `edit`, `Grep`/`Bash` whose program is `ls`/`find`/`grep`/`rg` → `search`, `Bash` matching a configurable verify regex (`pytest|tox|nox|vitest|jest|mocha|ruff|mypy|tsc|pyright|flake8|eslint|pre-commit|cargo test|go test|npm test|unittest`, the same set `derive_action_type` uses in infinity-skills) → `verify`, `Bash` matching `kill -0|sleep |tail -f|jobs|wait |nohup|ps ` → `wait`, else `other`. It exposes: `identical_denials(command) -> int` (count of `tool_result` with `is_error` whose text matches the stream's deny patterns for the same normalised command); `stall_window() -> StallWindow | None` (the last K calls share one `(command string, error signature)` with no new touched file, no signature change and no `verify` result change; K from config, 2K when every call in the window is `read`/`search`; `search` calls never form a window); `redundant_read(path) -> int | None` (the turn index of the earlier `Read` of the same path with no `edit` of it in between, else None, at most once per path); `last_edit_unverified() -> bool`; `turn_index`. Error signature is `<tool>:<first error line, lowercased, digits stripped>`. `RoundResult` (sessions.py:362) gains `signals: RoundSignals | None = None`, the carrier every later reader uses.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/round_signals.py` *(new, large)*, `orchestrator/execution/streaming.py`, `tests/test_round_signals.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: `RoundSignals` / —\n- **Verification**:\n  - Run: `uv run pytest tests/test_round_signals.py -q` Pass: green — on a synthetic event list: eight identical failing `Bash` calls with one error text yield one stall window and `identical_denials` of 0; the same with deny text yields `identical_denials == 8`; twelve `ls` calls of distinct paths yield no window; `Read a, Read a` yields `redundant_read(\"a\") == 0` and `Read a, Edit a, Read a` yields None; `Edit a, Bash pytest, report` yields `last_edit_unverified() is False` and `Edit a, Bash ruff check` also False; `Edit a, Read b` yields True.\n  - Run: `uv run pytest tests/test_streaming.py -q` Pass: green — the existing stream tests are unchanged and a new case shows `on_tool_event` receives both the `assistant` tool_use event and the `user` tool_result event of one fake-CLI round, and a hook that raises does not stop the stream.\n  - Run: `uv run ruff check orchestrator/execution/round_signals.py orchestrator/execution/streaming.py tests/test_round_signals.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g4-1",
+          "description": "Run: `uv run pytest tests/test_round_signals.py -q` Pass: green — on a synthetic event list: eight identical failing `Bash` calls with one error text yield one stall window and `identical_denials` of 0; the same with deny text yields `identical_denials == 8`; twelve `ls` calls of distinct paths yield no window; `Read a, Read a` yields `redundant_read(\"a\") == 0` and `Read a, Edit a, Read a` yields None; `Edit a, Bash pytest, report` yields `last_edit_unverified() is False` and `Edit a, Bash ruff check` also False; `Edit a, Read b` yields True.",
+          "status": "pass",
+          "evidence": "tests/test_round_signals.py green"
+        },
+        {
+          "item_id": "g4-2",
+          "description": "Run: `uv run pytest tests/test_streaming.py -q` Pass: green — the existing stream tests are unchanged and a new case shows `on_tool_event` receives both the `assistant` tool_use event and the `user` tool_result event of one fake-CLI round, and a hook that raises does not stop the stream.",
+          "status": "pass",
+          "evidence": "tests/test_streaming.py green incl. two new on_tool_event cases against fake claude"
+        },
+        {
+          "item_id": "g4-3",
+          "description": "Run: `uv run ruff check orchestrator/execution/round_signals.py orchestrator/execution/streaming.py tests/test_round_signals.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff check clean"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u5",
+      "task_id": "u5-turn-observer",
+      "group_id": "g5",
+      "title": "turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder",
+      "summary": "[R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default, ends the round within one turn of crossing `context_token_limit`, ends it on the third identical denied command, sends one \"change approach\" nudge per stall window, and sends one reminder per redundantly re-read file.",
+      "goal": "`BreakerConfig.context_ladder_enabled` defaults to `True`; new fields `stall_window_k: int = 8` (pure read/search windows use `2 * stall_window_k`) and `repeat_denial_cap: int = 3`. The coder round call passes an `end_round: Callable[[str], None]` beside `send` — it sends the given text as a final follow-up and closes stdin so the child exits after that turn (`sessions.py` wiring around the `on_turn` lambda, line 948) — and installs the round's `RoundSignals` as the stream's `on_tool_event`. The same object is attached to the round's `RoundResult.signals` when the round settles, so `_settle_round` reads it without a second parser. In `on_turn`: at ≥ 100% of the limit, after the compact prompt, `end_round(render_limit_stop_prompt())` once; when `identical_denials(cmd) >= repeat_denial_cap` for the call just observed, `end_round(render_repeat_denial_prompt(cmd))` once; when `stall_window()` is new (its start index was not nudged yet), `send(render_stall_nudge_prompt(window))`; when `redundant_read(path)` returns a turn index, `send(render_redundant_read_prompt(path, turn))`. Every send and end logs one `run.log` line (`group <gid> generation <n>: <signal> at turn <t> — <detail>`). The four prompt renderers live in `prompting.py`. `_breaker_reason` is unchanged: a round ended by the 100% stop is retired there as today.",
+      "section_text": "### U5. turn-observer — the ladder on by default, the 100% stop, the repeat-denial stop, the stall nudge and the redundant-read reminder\n\n- **Summary**: [R5, R7, R8, R10] `_make_coder_on_turn` reads the round's `RoundSignals` and, with the context ladder now on by default, ends the round within one turn of crossing `context_token_limit`, ends it on the third identical denied command, sends one \"change approach\" nudge per stall window, and sends one reminder per redundantly re-read file.\n- **Goal**: `BreakerConfig.context_ladder_enabled` defaults to `True`; new fields `stall_window_k: int = 8` (pure read/search windows use `2 * stall_window_k`) and `repeat_denial_cap: int = 3`. The coder round call passes an `end_round: Callable[[str], None]` beside `send` — it sends the given text as a final follow-up and closes stdin so the child exits after that turn (`sessions.py` wiring around the `on_turn` lambda, line 948) — and installs the round's `RoundSignals` as the stream's `on_tool_event`. The same object is attached to the round's `RoundResult.signals` when the round settles, so `_settle_round` reads it without a second parser. In `on_turn`: at ≥ 100% of the limit, after the compact prompt, `end_round(render_limit_stop_prompt())` once; when `identical_denials(cmd) >= repeat_denial_cap` for the call just observed, `end_round(render_repeat_denial_prompt(cmd))` once; when `stall_window()` is new (its start index was not nudged yet), `send(render_stall_nudge_prompt(window))`; when `redundant_read(path)` returns a turn index, `send(render_redundant_read_prompt(path, turn))`. Every send and end logs one `run.log` line (`group <gid> generation <n>: <signal> at turn <t> — <detail>`). The four prompt renderers live in `prompting.py`. `_breaker_reason` is unchanged: a round ended by the 100% stop is retired there as today.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/records.py`, `orchestrator/execution/prompting.py`, `orchestrator/config.py`, `orchestrator/execution/sessions.py`, `tests/test_turn_observer.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U4\n- **Slice**: —\n- **Implements / Consumes**: — / `RoundSignals`\n- **Verification**:\n  - Run: `uv run pytest tests/test_turn_observer.py -q` Pass: green — with the stub runner's per-turn sequences: a round whose fourth turn reports context above the limit receives the compact prompt and then exactly one stop follow-up, and the stream's stdin is closed after it; three identical denied `Bash` calls produce one repeat-denial follow-up and a closed stdin, two do not; eight identical failing calls produce one stall nudge and sixteen produce two; `Read a, Read a` produces one reminder and a third read none; each event writes its `run.log` line.\n  - Run: `uv run pytest tests/test_review_loop.py -q -k \"ladder or context\"` Pass: green — the existing ladder tests pass with the default flipped (a test that asserted the off-by-default behaviour is updated to assert on-by-default, and one asserts `context_ladder_enabled = false` in config still disables every prompt).\n  - Run: `uv run python -c \"from orchestrator.config import BreakerConfig; b = BreakerConfig(); print(b.context_ladder_enabled, b.stall_window_k, b.repeat_denial_cap)\"` Pass: prints `True 8 3`.\n  - Run: `uv run ruff check orchestrator/execution/records.py orchestrator/execution/prompting.py orchestrator/config.py orchestrator/execution/sessions.py tests/test_turn_observer.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g5-1",
+          "description": "Run: `uv run pytest tests/test_turn_observer.py -q` Pass: green — with the stub runner's per-turn sequences: a round whose fourth turn reports context above the limit receives the compact prompt and then exactly one stop follow-up, and the stream's stdin is closed after it; three identical denied `Bash` calls produce one repeat-denial follow-up and a closed stdin, two do not; eight identical failing calls produce one stall nudge and sixteen produce two; `Read a, Read a` produces one reminder and a third read none; each event writes its `run.log` line.",
+          "status": "pass",
+          "evidence": "tests/test_turn_observer.py: 8 passed, covering the 100% stop and closed stdin, repeat-denial (3 yes, 2 no), stall nudge at 8 and 16, redundant read once, run.log lines, and a real SessionRunner+fake_claude end_round/signals round trip."
+        },
+        {
+          "item_id": "g5-2",
+          "description": "Run: `uv run pytest tests/test_review_loop.py -q -k \"ladder or context\"` Pass: green — the existing ladder tests pass with the default flipped (a test that asserted the off-by-default behaviour is updated to assert on-by-default, and one asserts `context_ladder_enabled = false` in config still disables every prompt).",
+          "status": "pass",
+          "evidence": "13 ladder/context tests pass after updating expectations for the default flip and the extra stop follow-up; a test asserts config false disables every prompt."
+        },
+        {
+          "item_id": "g5-3",
+          "description": "Run: `uv run python -c \"from orchestrator.config import BreakerConfig; b = BreakerConfig(); print(b.context_ladder_enabled, b.stall_window_k, b.repeat_denial_cap)\"` Pass: prints `True 8 3`.",
+          "status": "pass",
+          "evidence": "Printed: True 8 3"
+        },
+        {
+          "item_id": "g5-4",
+          "description": "Run: `uv run ruff check orchestrator/execution/records.py orchestrator/execution/prompting.py orchestrator/config.py orchestrator/execution/sessions.py tests/test_turn_observer.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff: All checks passed"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u6",
+      "task_id": "u6-verification-omission-gate",
+      "group_id": "g6",
+      "title": "verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review",
+      "summary": "[R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree when the round's signals show the last `edit` had no later `verify` action; a red result becomes a `changes_required` round carrying the failing output.",
+      "goal": "In `_settle_round`, after the report-level verification gate and before `_review_round`, if `result.signals is not None and result.signals.last_edit_unverified()` is True and `config.preflight.check_command` resolves, call `run_preflight(worktree, config=…, output_dir=<group dir>/omission-check-r<N>/, log=…)`; log `group <gid> generation <n> round <r>: verification omitted after the last edit — running check command`; on failure, synthesise a `ReviewerVerdict(status=\"changes_required\", required_changes=[<first failing test or the tail of the log>], notes=\"verification omitted …\")` and continue into the existing changes_required path (breaker gate, next-round prompt) without spending a reviewer session; on success, log `… check command green` and proceed to review as today. A reviewer session or a non-`code` recipe is never gated.",
+      "section_text": "### U6. verification-omission-gate — a report whose last edit was never followed by a verify command runs the check command before review\n\n- **Summary**: [R9] A `completed` coder report is accepted for review only after the repo's `check_command` has run on the worktree when the round's signals show the last `edit` had no later `verify` action; a red result becomes a `changes_required` round carrying the failing output.\n- **Goal**: In `_settle_round`, after the report-level verification gate and before `_review_round`, if `result.signals is not None and result.signals.last_edit_unverified()` is True and `config.preflight.check_command` resolves, call `run_preflight(worktree, config=…, output_dir=<group dir>/omission-check-r<N>/, log=…)`; log `group <gid> generation <n> round <r>: verification omitted after the last edit — running check command`; on failure, synthesise a `ReviewerVerdict(status=\"changes_required\", required_changes=[<first failing test or the tail of the log>], notes=\"verification omitted …\")` and continue into the existing changes_required path (breaker gate, next-round prompt) without spending a reviewer session; on success, log `… check command green` and proceed to review as today. A reviewer session or a non-`code` recipe is never gated.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/generation.py`, `tests/test_verification_gate.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: U4, U5\n- **Slice**: —\n- **Implements / Consumes**: — / `RoundSignals`\n- **Verification**:\n  - Run: `uv run pytest tests/test_verification_gate.py -q` Pass: green — a stub round `Edit a, Read b, report completed` with a check command that fails ends as `changes_required` with the failing output in `required_changes` and no reviewer session spawned; the same with a green check command reaches the reviewer; `Edit a, Bash pytest -q, report completed` never runs the check command; the `run.log` carries the two anchor lines.\n  - Run: `uv run pytest tests/test_review_loop.py -q -k \"settle or approved\"` Pass: green — existing settle-round tests are unchanged (their stub rounds carry a verify action or no edit).\n  - Run: `uv run ruff check orchestrator/execution/generation.py tests/test_verification_gate.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g6-1",
+          "description": "Run: `uv run pytest tests/test_verification_gate.py -q` Pass: green — a stub round `Edit a, Read b, report completed` with a check command that fails ends as `changes_required` with the failing output in `required_changes` and no reviewer session spawned; the same with a green check command reaches the reviewer; `Edit a, Bash pytest -q, report completed` never runs the check command; the `run.log` carries the two anchor lines.",
+          "status": "pass",
+          "evidence": "3 passed"
+        },
+        {
+          "item_id": "g6-2",
+          "description": "Run: `uv run pytest tests/test_review_loop.py -q -k \"settle or approved\"` Pass: green — existing settle-round tests are unchanged (their stub rounds carry a verify action or no edit).",
+          "status": "pass",
+          "evidence": "Vacuous: the -k filter 'settle or approved' deselected all 92 tests in tests/test_review_loop.py. I ran the whole tests/test_review_loop.py and tests/test_cli.py instead: 211 passed."
+        },
+        {
+          "item_id": "g6-3",
+          "description": "Run: `uv run ruff check orchestrator/execution/generation.py tests/test_verification_gate.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff check clean on generation.py and the new test file (one unused import auto-fixed)"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u7",
+      "task_id": "u7-export-usage-and-context",
+      "group_id": "g7",
+      "title": "export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle",
+      "summary": "[R11, R12] Every assistant event in `events/<session>.jsonl.gz` carries `usage {input, output, cache_read, cache_creation}`, every session carries `peak_context_tokens` and `last_context_tokens`, every group carries a `phases` timeline from `run.log`, and `ingest.json` is `schema_version` 3.",
+      "goal": "`NeutralEvent` gains `usage: ExportUsage | None` (transcript_events.py), filled by `_events_from_content` from the transcript line's `message.usage` for `assistant` rows and left None elsewhere; `SessionEntry` (model.py) gains `peak_context_tokens: int = 0`, updated by the per-turn bookkeeping in `records.py` as `max(peak, context)` and persisted with `last_context_tokens`; `ExportSession` gains both fields (0 when unrecorded); `ExportGroup` gains `phases: list[ExportPhase]` (`{phase, at}`) parsed from the group's `run.log` anchors (`worktree ready`, `round N: started`, `round N: ended (<status>)`, `merge attempt`, `merged into the integration branch`, `completed` / `failed`); `SCHEMA_VERSION = 3`; a bundle built from a run without the facts omits nothing and fills zeros/empties.",
+      "section_text": "### U7. export-usage-and-context — per-event usage, peak context and the group phase timeline in the bundle\n\n- **Summary**: [R11, R12] Every assistant event in `events/<session>.jsonl.gz` carries `usage {input, output, cache_read, cache_creation}`, every session carries `peak_context_tokens` and `last_context_tokens`, every group carries a `phases` timeline from `run.log`, and `ingest.json` is `schema_version` 3.\n- **Goal**: `NeutralEvent` gains `usage: ExportUsage | None` (transcript_events.py), filled by `_events_from_content` from the transcript line's `message.usage` for `assistant` rows and left None elsewhere; `SessionEntry` (model.py) gains `peak_context_tokens: int = 0`, updated by the per-turn bookkeeping in `records.py` as `max(peak, context)` and persisted with `last_context_tokens`; `ExportSession` gains both fields (0 when unrecorded); `ExportGroup` gains `phases: list[ExportPhase]` (`{phase, at}`) parsed from the group's `run.log` anchors (`worktree ready`, `round N: started`, `round N: ended (<status>)`, `merge attempt`, `merged into the integration branch`, `completed` / `failed`); `SCHEMA_VERSION = 3`; a bundle built from a run without the facts omits nothing and fills zeros/empties.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/transcript_events.py`, `orchestrator/execution/export.py`, `orchestrator/execution/records.py`, `orchestrator/model.py`, `tests/test_export_v3.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: export-v3\n- **Implements / Consumes**: `bundle-v3` / —\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_v3.py -q -k usage` Pass: green — `build_export(paths, project=…, events_dir=…, transcript_root=<tmp>)` over a synthetic transcript tree (the way `tests/test_export.py` builds one: two `assistant` lines carrying `message.usage`, one `user` tool_result line) yields `schema_version == 3`, a four-field `usage` on exactly the two assistant events and `None` elsewhere, and a session whose `peak_context_tokens >= last_context_tokens` is read from a manifest entry carrying both.\n  - Run: `uv run pytest tests/test_export_v3.py -q -k phases` Pass: green — `build_export` over `RunPaths(repo_root, 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035'))` with no transcripts yields, for every group, a non-empty `phases` list parsed from the tracked `run.log`, in log order, starting with a `worktree ready` or `round 1: started` entry and ending with `completed` or `failed`; sessions export with `peak_context_tokens == 0` (unrecorded) and nothing raises.\n  - Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.export import build_export; from orchestrator.execution.manifest import RunPaths; e = build_export(RunPaths(Path('.'), 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035')), project='fx'); print(e.schema_version, [(g.id, [ph.phase for ph in g.phases][:3]) for g in e.groups][:2])\"` Pass: prints `3` and, for the first two groups, three phase names each taken from the tracked fixture `run.log` (a real artifact of run r20260828-220035, not written by this unit).\n  - Run: `uv run pytest tests/test_export.py -q` Pass: green — every existing export assertion still holds (additive fields only).\n  - Run: `uv run ruff check orchestrator/execution/transcript_events.py orchestrator/execution/export.py orchestrator/execution/records.py orchestrator/model.py tests/test_export_v3.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g7-1",
+          "description": "Run: `uv run pytest tests/test_export_v3.py -q -k usage` Pass: green — `build_export(paths, project=…, events_dir=…, transcript_root=<tmp>)` over a synthetic transcript tree (the way `tests/test_export.py` builds one: two `assistant` lines carrying `message.usage`, one `user` tool_result line) yields `schema_version == 3`, a four-field `usage` on exactly the two assistant events and `None` elsewhere, and a session whose `peak_context_tokens >= last_context_tokens` is read from a manifest entry carrying both.",
+          "status": "pass",
+          "evidence": "pytest -k usage green"
+        },
+        {
+          "item_id": "g7-2",
+          "description": "Run: `uv run pytest tests/test_export_v3.py -q -k phases` Pass: green — `build_export` over `RunPaths(repo_root, 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035'))` with no transcripts yields, for every group, a non-empty `phases` list parsed from the tracked `run.log`, in log order, starting with a `worktree ready` or `round 1: started` entry and ending with `completed` or `failed`; sessions export with `peak_context_tokens == 0` (unrecorded) and nothing raises.",
+          "status": "pass",
+          "evidence": "pytest -k phases green over the fixture run"
+        },
+        {
+          "item_id": "g7-3",
+          "description": "Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.export import build_export; from orchestrator.execution.manifest import RunPaths; e = build_export(RunPaths(Path('.'), 'r20260828-220035', run_dir=Path('tests/fixtures/runs/r20260828-220035')), project='fx'); print(e.schema_version, [(g.id, [ph.phase for ph in g.phases][:3]) for g in e.groups][:2])\"` Pass: prints `3` and, for the first two groups, three phase names each taken from the tracked fixture `run.log` (a real artifact of run r20260828-220035, not written by this unit).",
+          "status": "pass",
+          "evidence": "printed 3 and three phase names each for g1 and g3 from the fixture run.log"
+        },
+        {
+          "item_id": "g7-4",
+          "description": "Run: `uv run pytest tests/test_export.py -q` Pass: green — every existing export assertion still holds (additive fields only).",
+          "status": "pass",
+          "evidence": "tests/test_export.py green after updating one hardcoded schema_version==2 to SCHEMA_VERSION"
+        },
+        {
+          "item_id": "g7-5",
+          "description": "Run: `uv run ruff check orchestrator/execution/transcript_events.py orchestrator/execution/export.py orchestrator/execution/records.py orchestrator/model.py tests/test_export_v3.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff clean"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u8",
+      "task_id": "u8-export-links-and-wait",
+      "group_id": "g7",
+      "title": "export-links-and-wait — denials and surprises linked to their events, polling tagged",
+      "summary": "[R13, R14] A `permission_denied` artifact in the bundle names the event id of the denied tool call (`denial_event_id`), every exported surprise carries the `session_id` and `seq` of the report it came from, and every `Bash` event whose command is process polling carries `tags: [\"wait\"]`.",
+      "goal": "`NeutralEvent` gains `tags: list[str]` (empty by default); `_events_from_content` tags a `Bash` tool call `wait` when its command matches the same polling regex `RoundSignals` uses (one shared constant in `round_signals.py` imported by `transcript_events.py`); `ExportArtifact` gains `denial_event_id: str | None`, filled for a `permission_denied` coder report by locating, in that session's parsed events, the last `Bash` tool call whose `command` equals the report's `denied_command` (whitespace-normalised); `ExportSurprise` gains `session_id: str | None` and `seq: int` (the surprise's index within its report).",
+      "section_text": "### U8. export-links-and-wait — denials and surprises linked to their events, polling tagged\n\n- **Summary**: [R13, R14] A `permission_denied` artifact in the bundle names the event id of the denied tool call (`denial_event_id`), every exported surprise carries the `session_id` and `seq` of the report it came from, and every `Bash` event whose command is process polling carries `tags: [\"wait\"]`.\n- **Goal**: `NeutralEvent` gains `tags: list[str]` (empty by default); `_events_from_content` tags a `Bash` tool call `wait` when its command matches the same polling regex `RoundSignals` uses (one shared constant in `round_signals.py` imported by `transcript_events.py`); `ExportArtifact` gains `denial_event_id: str | None`, filled for a `permission_denied` coder report by locating, in that session's parsed events, the last `Bash` tool call whose `command` equals the report's `denied_command` (whitespace-normalised); `ExportSurprise` gains `session_id: str | None` and `seq: int` (the surprise's index within its report).\n- **Recipe**: —\n- **Files**: `orchestrator/execution/export.py`, `orchestrator/execution/transcript_events.py`, `tests/test_export_v3.py`\n- **Symbols**: —\n- **Depends-on**: U4, U7\n- **Slice**: export-v3\n- **Implements / Consumes**: — / `bundle-v3`\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_v3.py -q -k \"denial or wait or surprise\"` Pass: green — a fixture run with a `permission_denied` report exports `denial_event_id` equal to the event id of the matching `Bash` call; a transcript with `kill -0 123` and `sleep 5` yields two events tagged `wait` and a `pytest -q` event with no tag; every exported surprise has a `session_id` and consecutive `seq` within its report.\n  - Run: `uv run python -c \"from orchestrator.execution.round_signals import WAIT_COMMAND_RE as W; print([bool(W.search(c)) for c in ['kill -0 48389', 'sleep 5; tail -f .orchestrator/runs/r1/logs/run.log', 'uv run pytest -q', 'nohup smart-mcps-orchestrate run --repo . &', 'ls -la data/']])\"` Pass: prints `[True, True, False, True, False]` — the shared constant classifies the real polling commands drivers and workers issued on run r20261006-050234 as `wait` and leaves a test run and a listing untagged.\n  - Run: `uv run ruff check orchestrator/execution/export.py orchestrator/execution/transcript_events.py tests/test_export_v3.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g7-6",
+          "description": "Run: `uv run pytest tests/test_export_v3.py -q -k \"denial or wait or surprise\"` Pass: green — a fixture run with a `permission_denied` report exports `denial_event_id` equal to the event id of the matching `Bash` call; a transcript with `kill -0 123` and `sleep 5` yields two events tagged `wait` and a `pytest -q` event with no tag; every exported surprise has a `session_id` and consecutive `seq` within its report.",
+          "status": "pass",
+          "evidence": "pytest -k denial/wait/surprise green"
+        },
+        {
+          "item_id": "g7-7",
+          "description": "Run: `uv run python -c \"from orchestrator.execution.round_signals import WAIT_COMMAND_RE as W; print([bool(W.search(c)) for c in ['kill -0 48389', 'sleep 5; tail -f .orchestrator/runs/r1/logs/run.log', 'uv run pytest -q', 'nohup smart-mcps-orchestrate run --repo . &', 'ls -la data/']])\"` Pass: prints `[True, True, False, True, False]` — the shared constant classifies the real polling commands drivers and workers issued on run r20261006-050234 as `wait` and leaves a test run and a listing untagged.",
+          "status": "pass",
+          "evidence": "printed [True, True, False, True, False]"
+        },
+        {
+          "item_id": "g7-8",
+          "description": "Run: `uv run ruff check orchestrator/execution/export.py orchestrator/execution/transcript_events.py tests/test_export_v3.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff clean"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u9",
+      "task_id": "u9-rewrite-counter",
+      "group_id": "g8",
+      "title": "rewrite-counter — the rewrite count and whether it was charged are persisted and exported",
+      "summary": "[R15] `state.json` carries each group's `rewrites` count and `last_rewrite_counted`, written by `_rewrite`, shown by `status`, and exported on the group.",
+      "goal": "`GroupRunState` gains `rewrites: int = 0` and `last_rewrite_counted: bool | None = None`; `_rewrite` updates both through the group context (`ctx`) on every rewrite — counted or not — and `status` prints `rewrites: N (last: counted|spec refinement)` on a group with any; `ExportGroup` gains `rewrite_count: int` and `last_rewrite_counted: bool | None` read from `state.json` (0/None for old runs). The in-memory `self.rewrites` the cap check uses is initialised from the persisted value on resume, so a resumed group no longer forgets rewrites spent before the restart.",
+      "section_text": "### U9. rewrite-counter — the rewrite count and whether it was charged are persisted and exported\n\n- **Summary**: [R15] `state.json` carries each group's `rewrites` count and `last_rewrite_counted`, written by `_rewrite`, shown by `status`, and exported on the group.\n- **Goal**: `GroupRunState` gains `rewrites: int = 0` and `last_rewrite_counted: bool | None = None`; `_rewrite` updates both through the group context (`ctx`) on every rewrite — counted or not — and `status` prints `rewrites: N (last: counted|spec refinement)` on a group with any; `ExportGroup` gains `rewrite_count: int` and `last_rewrite_counted: bool | None` read from `state.json` (0/None for old runs). The in-memory `self.rewrites` the cap check uses is initialised from the persisted value on resume, so a resumed group no longer forgets rewrites spent before the restart.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/scheduler.py`, `orchestrator/execution/escalating.py`, `orchestrator/execution/export.py`, `tests/test_rewrite_counter.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: U7\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_rewrite_counter.py -q` Pass: green — a stub group rewritten once by a blocked report persists `rewrites == 1, last_rewrite_counted is True` in `state.json`; a pre-launch refinement-only rewrite persists `rewrites == 1, last_rewrite_counted is False`; a resume after a counted rewrite starts `self.rewrites` at 1; the export of that run carries `rewrite_count == 1`.\n  - Run: `uv run pytest tests/test_rewrite_observability.py tests/test_spec_refinement.py -q` Pass: green — existing rewrite tests unchanged.\n  - Run: `uv run pytest tests/test_rewrite_counter.py -q -k status` Pass: green — the test copies `tests/fixtures/runs/r20260828-220035` into `<tmp>/.orchestrator/runs/`, sets `rewrites = 2` and `last_rewrite_counted = False` on one group in that copy's `state.json`, runs `smart-mcps-orchestrate status r20260828-220035 --repo <tmp>` as a subprocess, and asserts the output carries `rewrites: 2 (last: spec refinement)` for that group and no rewrites line for a group left at 0 — the oracle is the real CLI over a real run's state file.\n  - Run: `uv run ruff check orchestrator/execution/scheduler.py orchestrator/execution/escalating.py orchestrator/execution/export.py tests/test_rewrite_counter.py` Pass: no findings.\n\n",
+      "verification": [
+        {
+          "item_id": "g8-1",
+          "description": "Run: `uv run pytest tests/test_rewrite_counter.py -q` Pass: green — a stub group rewritten once by a blocked report persists `rewrites == 1, last_rewrite_counted is True` in `state.json`; a pre-launch refinement-only rewrite persists `rewrites == 1, last_rewrite_counted is False`; a resume after a counted rewrite starts `self.rewrites` at 1; the export of that run carries `rewrite_count == 1`.",
+          "status": "pass",
+          "evidence": "tests/test_rewrite_counter.py green: blocked report -> rewrites 1/True; refinement-only -> 1/False; resume seeds self.rewrites=1; export rewrite_count verified on a fixture state."
+        },
+        {
+          "item_id": "g8-2",
+          "description": "Run: `uv run pytest tests/test_rewrite_observability.py tests/test_spec_refinement.py -q` Pass: green — existing rewrite tests unchanged.",
+          "status": "pass",
+          "evidence": "test_rewrite_observability and test_spec_refinement green, unchanged."
+        },
+        {
+          "item_id": "g8-3",
+          "description": "Run: `uv run pytest tests/test_rewrite_counter.py -q -k status` Pass: green — the test copies `tests/fixtures/runs/r20260828-220035` into `<tmp>/.orchestrator/runs/`, sets `rewrites = 2` and `last_rewrite_counted = False` on one group in that copy's `state.json`, runs `smart-mcps-orchestrate status r20260828-220035 --repo <tmp>` as a subprocess, and asserts the output carries `rewrites: 2 (last: spec refinement)` for that group and no rewrites line for a group left at 0 — the oracle is the real CLI over a real run's state file.",
+          "status": "pass",
+          "evidence": "test_status_prints_rewrites_line runs the real CLI as a subprocess over a copy of r20260828-220035 with g1 set to rewrites=2/False; asserts the line for g1 and none for g2."
+        },
+        {
+          "item_id": "g8-4",
+          "description": "Run: `uv run ruff check orchestrator/execution/scheduler.py orchestrator/execution/escalating.py orchestrator/execution/export.py tests/test_rewrite_counter.py` Pass: no findings.",
+          "status": "pass",
+          "evidence": "ruff check clean on the four named files (and cli.py, review.py)."
+        }
+      ],
+      "landed": true
+    }
+  ],
+  "rids": [],
+  "timeline": [
+    {
+      "at": "2026-10-06T10:01:33.141547+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:12:35.640+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:12:38.290447+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:16:33.812+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:16:36.407351+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:20:22.714+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:20:25.194602+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:22:21.172895+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:22:21.172895+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-06T10:25:45.718+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-06T10:25:48.495463+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:35:05.307+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:35:07.798936+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:40:25.002+00:00",
+      "kind": "session_end",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:40:27.826014+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:46:22.620996Z",
+      "kind": "escalation",
+      "group_id": "g7",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-10-06T10:51:09.252+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T10:51:11.966613+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-06T11:02:45.475+00:00",
+      "kind": "session_end",
+      "group_id": "g8",
+      "label": "coder"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": true,
+  "base_context_path": "base-context.md"
+}

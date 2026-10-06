@@ -176,6 +176,7 @@ class StreamingProcess:
         env: dict[str, str],
         on_turn: Callable[[TurnUsage], None] | None = None,
         on_event: Callable[[str], None] | None = None,
+        on_tool_event: Callable[[dict], None] | None = None,
         tracker: SubprocessTracker | None = None,
         context: str = "",
         preexec_fn: Callable[[], None] | None = None,
@@ -190,6 +191,10 @@ class StreamingProcess:
         #: dispatch drops on the floor. Never allowed to break the reader:
         #: see ``_safe_on_event``.
         self.on_event = on_event
+        #: Fired with the raw event for every ``assistant`` and ``user`` line —
+        #: the tool calls and their results, which ``RoundSignals`` pairs. Same
+        #: contract as ``on_event``: see ``_safe_on_tool_event``.
+        self.on_tool_event = on_tool_event
         self._tracker = tracker
         self._context = context
         self._preexec_fn = preexec_fn
@@ -259,6 +264,8 @@ class StreamingProcess:
             event_type = event.get("type")
             if event_type is not None:
                 self._safe_on_event(event_type)
+            if event_type in ("assistant", "user"):
+                self._safe_on_tool_event(event)
             if event_type == "assistant":
                 self._last_assistant_text = _assistant_text(event)[:_LAST_ASSISTANT_TEXT_MAX_CHARS]
                 usage = ((event.get("message") or {}).get("usage")) or {}
@@ -303,6 +310,15 @@ class StreamingProcess:
         try:
             self.on_event(event_type)
         except Exception:  # noqa: BLE001 - evidence must never break the reader
+            pass
+
+    def _safe_on_tool_event(self, event: dict) -> None:
+        """Call ``on_tool_event``, if any, never letting it break the reader."""
+        if self.on_tool_event is None:
+            return
+        try:
+            self.on_tool_event(event)
+        except Exception:  # noqa: BLE001 - a signal reader must never break the stream
             pass
 
     def _collect_deny_signals(self, event: dict) -> None:

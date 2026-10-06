@@ -285,6 +285,29 @@ def render_ladder_compact_prompt() -> str:
     return load_template("ladder_compact")
 
 
+def render_limit_stop_prompt() -> str:
+    """Final follow-up when a round crosses 100% of ``context_token_limit``: the
+    round ends after this turn and the group is retired at the round boundary."""
+    return load_template("limit_stop")
+
+
+def render_repeat_denial_prompt(command: str) -> str:
+    """Final follow-up on the third identical denied command: stop retrying."""
+    return Template(load_template("repeat_denial")).substitute(command=command)
+
+
+def render_stall_nudge_prompt(window) -> str:
+    """One "change approach" nudge for a stall window (``round_signals.StallWindow``)."""
+    return Template(load_template("stall_nudge")).substitute(
+        command=window.key[0], count=window.count
+    )
+
+
+def render_redundant_read_prompt(path: str, turn: int) -> str:
+    """One reminder that *path* was already read, unedited, at *turn*."""
+    return Template(load_template("redundant_read")).substitute(path=path, turn=turn)
+
+
 def render_handoff_prompt(
     run_id: str,
     group: Group,

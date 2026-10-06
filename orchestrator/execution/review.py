@@ -25,6 +25,7 @@ from orchestrator.config import (
     BreakerConfig,
     ExecutionConfig,
     LivenessConfig,
+    PreflightConfig,
     RecipesConfig,
     WorkspaceConfig,
 )
@@ -101,6 +102,11 @@ class ReviewDeps:
     # from) degrades to "no_baseline", which never attributes a failure as
     # new — the same conservative default `compare_to_baseline` documents.
     preflight_baseline: PreflightBaseline | None = None
+    # The merge gate's check configuration, reused by the verification-omission
+    # gate (a `completed` report whose last edit was never verified). ``None``
+    # leaves that gate off, so every construction site that predates it is
+    # unchanged.
+    preflight_config: PreflightConfig | None = None
     # `provision_on_failure = "warn"`: the sync failure text for a group whose
     # worktree launched without a working environment, folded into its first
     # coder prompt. None (or a None result) means the environment is fine.
@@ -147,7 +153,7 @@ class _GroupExecution(
         self.group = ctx.group
         self.gid = ctx.group.id
         self.generation = ctx.generation
-        self.rewrites = 0
+        self.rewrites = getattr(ctx, "rewrites", 0)
         self.sessions_spawned = 0
         self.extra_pass_done = False
         self.handoff_prompt: str | None = None

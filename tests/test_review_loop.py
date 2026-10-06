@@ -137,6 +137,7 @@ class StubRunner:
         session_id=None,
         json_schema=None,
         extra_allowed_tools=(),
+        add_dirs=(),
         on_turn=None,
     ) -> RoundResult:
         """The default launch path (ADR 0007): a fresh session whose first
@@ -160,6 +161,7 @@ class StubRunner:
         session_id=None,
         json_schema=None,
         extra_allowed_tools=(),
+        add_dirs=(),
         on_turn=None,
     ) -> RoundResult:
         """The legacy launch path, reached only under fork_base_session."""
@@ -180,7 +182,7 @@ class StubRunner:
         return self._round(session_id)
 
     def resume(
-        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
     ) -> RoundResult:
         self.prompts[session_id].append(prompt)
         self.extra_allowed_tools[session_id] = tuple(extra_allowed_tools)
@@ -1352,7 +1354,7 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     # fresh fork, logging the reason instead of the resumed-session line.
     class FailOnResume(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
         ):
             if session_id == "sess-warm":
                 raise SessionError("claude exited 1")
@@ -1394,7 +1396,7 @@ async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
 
     class LimitOnResume(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
         ):
             if session_id == "sess-warm":
                 raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
@@ -1431,7 +1433,7 @@ async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
     # `interrupted` again (classification asserted by g1's scheduler tests).
     class AlwaysDown(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
         ):
             raise SessionError("warm resume down")
 
@@ -1457,7 +1459,7 @@ async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypa
     # once at generation end — the re-entry pre-check needs the freshest number.
     class GrowingContext(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
         ):
             self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
             return super().resume(
@@ -1653,6 +1655,7 @@ class TestRoundHeartbeat:
                 cwd,
                 json_schema=None,
                 extra_allowed_tools=(),
+                add_dirs=(),
                 on_turn=None,
             ):
                 if session_id == "sess-warm" and not in_flight:
@@ -1904,7 +1907,9 @@ async def test_ladder_100_percent_sends_compact_report_prompt_and_ends_gracefull
     # the round still ends by its own report being parsed — never killed mid-turn.
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
-    assert len(runner.sent[sid]) == 1
+    # the compact prompt, then the stop follow-up that ends the round (the stub
+    # has no stdin to close, so `end_round` falls back to `send`).
+    assert len(runner.sent[sid]) == 2
     assert "report" in runner.sent[sid][0].lower()
 
 
@@ -1935,11 +1940,15 @@ async def test_ladder_thresholds_fire_at_most_once_per_round_even_with_many_turn
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
-    assert len(runner.sent[sid]) == 3  # exactly one per threshold, despite six turns
+    assert len(runner.sent[sid]) == 4  # one per threshold plus the 100% stop, despite six turns
+
+
+def test_ladder_is_on_by_default():
+    assert BreakerConfig().context_ladder_enabled is True
 
 
 @pytest.mark.asyncio
-async def test_ladder_disabled_by_default_sends_nothing_even_crossing_every_threshold(tmp_path):
+async def test_ladder_disabled_in_config_sends_nothing_even_crossing_every_threshold(tmp_path):
     runner = StubRunner({"r1-g1-coder-g1": [coder_report()]})
 
     def on_fork(name: str) -> None:
@@ -1948,7 +1957,7 @@ async def test_ladder_disabled_by_default_sends_nothing_even_crossing_every_thre
             runner.turn_sequences[sid] = [[TurnUsage(input_tokens=250_000)]]
 
     runner.on_fork = on_fork
-    harness = Harness(tmp_path, runner)  # default BreakerConfig: context_ladder_enabled=False
+    harness = Harness(tmp_path, runner, breaker=BreakerConfig(context_ladder_enabled=False))
     state = await harness.run(make_group(intensity=ReviewIntensity.SELF_VERIFY))
     assert state == GroupState.COMPLETED
     sid = runner.session_ids["r1-g1-coder-g1"]
