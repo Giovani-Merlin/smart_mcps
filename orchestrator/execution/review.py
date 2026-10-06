@@ -153,7 +153,7 @@ class _GroupExecution(
         self.group = ctx.group
         self.gid = ctx.group.id
         self.generation = ctx.generation
-        self.rewrites = 0
+        self.rewrites = getattr(ctx, "rewrites", 0)
         self.sessions_spawned = 0
         self.extra_pass_done = False
         self.handoff_prompt: str | None = None

@@ -198,6 +198,13 @@ class GroupRunState(BaseModel):
     # same session, so it never touches `reentry_count` — that counter bounds
     # a session becoming unreachable, not a machine going to sleep under it.
     cures: dict[str, int] = Field(default_factory=dict)
+    # plan U9: spec rewrites this group has had (counted or not) and whether the
+    # latest one spent ``max_rewrites`` (None = never rewritten).
+    rewrites: int = 0
+    last_rewrite_counted: bool | None = None
+    # The subset of ``rewrites`` that spent ``max_rewrites`` — what a resumed
+    # group's cap check restarts from (spec refinements are never charged).
+    rewrites_charged: int = 0
 
 
 class LivePid(BaseModel):
@@ -276,6 +283,10 @@ class GroupContext:
     # other constructor (production included, pre-U5) keeps working unchanged
     # — only the review loop's own cure-recovery path needs the persisted one.
     record_cure: Callable[[], int] = field(default_factory=lambda: _NoopCureCounter())
+    # plan U9: charged rewrites already spent before this entry (a resumed group
+    # starts its cap check here) and the hook persisting each new rewrite.
+    rewrites: int = 0
+    record_rewrite: Callable[[bool], None] = lambda counted: None
 
 
 # Runs one group to a terminal state (U7 wires the review loop in here).
@@ -395,6 +406,18 @@ class Scheduler:
             count = entry.cures[key]
             self._persist()
             return count
+
+    def record_rewrite(self, group_id: str, counted: bool) -> None:
+        """Persist one spec rewrite for this group (plan U9): ``rewrites``
+        counts every rewrite, charged or not; ``last_rewrite_counted`` says
+        whether the latest one spent ``max_rewrites``."""
+        with self._lock:
+            entry = self.state.groups[group_id]
+            entry.rewrites += 1
+            entry.last_rewrite_counted = counted
+            if counted:
+                entry.rewrites_charged += 1
+            self._persist()
 
     def pending_group_ids(self) -> list[str]:
         """Groups not yet started or finished (plan U7): what a blocking
@@ -673,6 +696,8 @@ class Scheduler:
             set_state=lambda state: self.set_state(gid, state),
             set_generation=lambda generation: self.set_generation(gid, generation),
             record_cure=lambda: self.record_cure(gid),
+            rewrites=entry.rewrites_charged,
+            record_rewrite=lambda counted: self.record_rewrite(gid, counted),
         )
         try:
             final = await self.executor(context)

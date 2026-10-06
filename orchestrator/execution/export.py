@@ -211,6 +211,10 @@ class ExportGroup(BaseModel):
     #: group id is absent from that snapshot (never observed in a real run).
     spec: dict | None = None
     rewrites: list[ExportRewrite] = Field(default_factory=list)
+    #: Spec rewrites the group had, counted or not, and whether the latest one
+    #: spent ``max_rewrites``; read from ``state.json`` (0/None for old runs).
+    rewrite_count: int = 0
+    last_rewrite_counted: bool | None = None
     phases: list[ExportPhase] = Field(default_factory=list)
     sessions: list[ExportSession] = Field(default_factory=list)
     artifacts: list[ExportArtifact] = Field(default_factory=list)
@@ -590,6 +594,16 @@ def _group_spec(paths: RunPaths, group_id: str) -> dict | None:
     return None
 
 
+def _group_run_states(paths: RunPaths) -> dict[str, dict]:
+    """Per-group entries of ``state.json``; empty when it is absent or unreadable."""
+    try:
+        raw = json.loads(paths.state_path.read_text())
+        groups = raw.get("groups", {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {gid: entry for gid, entry in groups.items() if isinstance(entry, dict)}
+
+
 def _group_rewrites(
     paths: RunPaths,
     group_id: str,
@@ -839,6 +853,7 @@ def build_export(
     root = transcript_root or default_transcript_root()
     escalations = _escalations_by_group(paths)
     phases = _group_phases(paths)
+    group_states = _group_run_states(paths)
 
     base_context_path = paths.run_dir / "base-context.md"
     base_context_text: str | None = None
@@ -920,6 +935,10 @@ def build_export(
                 depends_on=list(group.depends_on),
                 spec=_group_spec(paths, group.group_id),
                 rewrites=_group_rewrites(paths, group.group_id, artifacts, group_escalations),
+                rewrite_count=group_states.get(group.group_id, {}).get("rewrites", 0),
+                last_rewrite_counted=group_states.get(group.group_id, {}).get(
+                    "last_rewrite_counted"
+                ),
                 phases=phases.get(group.group_id, []),
                 sessions=sessions,
                 artifacts=artifacts,
