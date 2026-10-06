@@ -508,6 +508,7 @@ class SessionRunner:
         session_id: str | None = None,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """Start a fresh worker session and run its first round in one call.
@@ -541,6 +542,7 @@ class SessionRunner:
             extra=["--session-id", session_id, "--name", name],
             json_schema=json_schema,
             extra_allowed=extra_allowed_tools,
+            add_dirs=add_dirs,
             on_turn=on_turn,
         )
 
@@ -554,6 +556,7 @@ class SessionRunner:
         session_id: str | None = None,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """LEGACY — reached only under ``session.fork_base_session`` (default
@@ -603,6 +606,7 @@ class SessionRunner:
                 extra=extra,
                 json_schema=json_schema,
                 extra_allowed=extra_allowed_tools,
+                add_dirs=add_dirs,
                 on_turn=on_turn,
             )
 
@@ -614,6 +618,7 @@ class SessionRunner:
         cwd: Path,
         json_schema: dict | None = None,
         extra_allowed_tools: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
     ) -> RoundResult:
         """One warm round against an existing session. ``on_turn`` — see
@@ -624,6 +629,7 @@ class SessionRunner:
             extra=["--resume", session_id],
             json_schema=json_schema,
             extra_allowed=extra_allowed_tools,
+            add_dirs=add_dirs,
             on_turn=on_turn,
         )
 
@@ -680,6 +686,7 @@ class SessionRunner:
         extra: list[str],
         json_schema: dict | None = None,
         extra_allowed: Sequence[str] = (),
+        add_dirs: Sequence[Path] = (),
         on_turn: Callable[[TurnUsage, Callable[[str], None]], None] | None = None,
         model: str | None = None,
     ) -> RoundResult:
@@ -712,6 +719,8 @@ class SessionRunner:
             allowed += worktree_path_rules(self.allowed_tools, cwd)
         if allowed:
             argv += ["--allowedTools", ",".join(allowed)]
+        for add_dir in add_dirs:
+            argv += ["--add-dir", str(add_dir)]
         denied = self.effective_disallowed_tools()
         if denied:
             argv += ["--disallowedTools", ",".join(denied)]
@@ -729,7 +738,7 @@ class SessionRunner:
             argv += ["--thinking", self.thinking]
         if json_schema is not None:
             argv += ["--json-schema", json.dumps(json_schema)]
-        context = _argv_context(extra)
+        context = _argv_context(extra, add_dirs)
         return self._call_with_retry(argv, prompt=prompt, cwd=cwd, context=context, on_turn=on_turn)
 
     def _call_with_retry(
@@ -1090,19 +1099,24 @@ def _with_fresh_session_id(argv: list[str]) -> list[str]:
     return fresh
 
 
-def _argv_context(extra: list[str]) -> str:
+def _argv_context(extra: list[str], add_dirs: Sequence[Path] = ()) -> str:
     """Session context for error messages without echoing whole prompts."""
+    context = "new session"
     for flag in ("--session-id", "--resume"):
         if flag in extra:
-            return f"{flag} {extra[extra.index(flag) + 1]}"
-    return "new session"
+            context = f"{flag} {extra[extra.index(flag) + 1]}"
+            break
+    for add_dir in add_dirs:
+        context += f" --add-dir {add_dir}"
+    return context
 
 
 def _session_id_from_context(context: str) -> str:
     """The session id out of an ``_argv_context`` string, or "" for a plain
     new session ("--session-id <id>" and "--resume <id>" are the only two
     shapes that string ever takes besides the literal "new session")."""
-    prefix, _, value = context.partition(" ")
+    prefix, _, rest = context.partition(" ")
+    value = rest.split(" ", 1)[0]
     if prefix in ("--session-id", "--resume"):
         return value
     return ""

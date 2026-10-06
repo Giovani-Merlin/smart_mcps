@@ -167,6 +167,7 @@ class ScratchWritingRunner:
         session_id=None,
         json_schema=None,
         extra_allowed_tools=(),
+        add_dirs=(),
         on_turn=None,
     ) -> RoundResult:
         self._counter += 1
@@ -183,7 +184,7 @@ class ScratchWritingRunner:
         return RoundResult(session_id=sid, text=text, usage=RoundUsage(), envelope={})
 
     def resume(
-        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
     ) -> RoundResult:
         raise AssertionError("not used in this scenario")
 
