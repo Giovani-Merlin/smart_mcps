@@ -23,6 +23,17 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from orchestrator.execution.round_signals import WAIT_COMMAND_RE
+
+
+class EventUsage(BaseModel):
+    """One assistant turn's token usage, from the transcript line's ``message.usage``."""
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_creation: int = 0
+
 
 class NeutralEvent(BaseModel):
     """One user turn, assistant turn, tool call, or tool result."""
@@ -36,6 +47,10 @@ class NeutralEvent(BaseModel):
     tool_input: Any | None = None  # JSON, uncapped
     tool_output: str | None = None  # uncapped
     is_error: bool = False
+    #: Only on assistant events: the turn's usage. None elsewhere.
+    usage: EventUsage | None = None
+    #: Derived labels; today only ``wait`` (a polling Bash command).
+    tags: list[str] = Field(default_factory=list)
 
 
 class StripResult(BaseModel):
@@ -66,6 +81,30 @@ def _tool_result_text(content: Any) -> str | None:
                 parts.append(block)
         return "".join(parts)
     return str(content)
+
+
+def _usage_of(message: dict) -> EventUsage | None:
+    raw = message.get("usage")
+    if not isinstance(raw, dict):
+        return None
+
+    def num(key: str) -> int:
+        value = raw.get(key)
+        return value if isinstance(value, int) else 0
+
+    return EventUsage(
+        input=num("input_tokens"),
+        output=num("output_tokens"),
+        cache_read=num("cache_read_input_tokens"),
+        cache_creation=num("cache_creation_input_tokens"),
+    )
+
+
+def _is_wait(tool_name: Any, tool_input: Any) -> bool:
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return False
+    command = tool_input.get("command")
+    return isinstance(command, str) and bool(WAIT_COMMAND_RE.search(command))
 
 
 def _events_from_content(
@@ -107,6 +146,7 @@ def _events_from_content(
                     tool_name=block.get("name"),
                     tool_use_id=block.get("id"),
                     tool_input=block.get("input"),
+                    tags=["wait"] if _is_wait(block.get("name"), block.get("input")) else [],
                 )
             )
         elif block_type == "tool_result":
@@ -173,6 +213,10 @@ def parse_transcript(path: Path, *, strip_prefix: str | None = None) -> ParsedTr
         uuid = str(record.get("uuid") or "")
         timestamp = record.get("timestamp")
         line_events = _events_from_content(record_type, message.get("content"), uuid, timestamp)
+        if record_type == "assistant":
+            usage = _usage_of(message)
+            if usage is not None:
+                line_events = [e.model_copy(update={"usage": usage}) for e in line_events]
 
         if record_type == "user" and not seen_first_user_line:
             seen_first_user_line = True

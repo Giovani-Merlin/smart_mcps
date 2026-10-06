@@ -88,6 +88,7 @@ class SnapshotSession(BaseModel):
     # keeps them in a separate panel. All read 0 for runs recorded before the
     # split shipped, which the client renders as "actuals not recorded".
     last_context_tokens: int = 0
+    peak_context_tokens: int = 0
     rounds_completed: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -675,6 +676,7 @@ def build_snapshot(paths: RunPaths, project: str) -> RunSnapshot:
                             retirement_reason=session.retirement_reason,
                             transcript_path=session.transcript_path,
                             last_context_tokens=session.last_context_tokens,
+                            peak_context_tokens=session.peak_context_tokens,
                             rounds_completed=session.rounds_completed,
                             total_input_tokens=session.total_input_tokens,
                             total_output_tokens=session.total_output_tokens,

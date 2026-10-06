@@ -55,6 +55,7 @@ class SessionRecords:
         """
         usage = self.deps.runner.usage_of(session_id)
         entry.last_context_tokens = usage.last_context_tokens
+        entry.peak_context_tokens = max(entry.peak_context_tokens, usage.last_context_tokens)
         entry.rounds_completed = usage.rounds
         entry.total_input_tokens = usage.total_input_tokens
         entry.total_output_tokens = usage.total_output_tokens
@@ -116,6 +117,7 @@ class SessionRecords:
                 + usage.cache_creation_input_tokens
             )
             entry.last_context_tokens = context
+            entry.peak_context_tokens = max(entry.peak_context_tokens, context)
             self.deps.store.save(self.deps.manifest)
             if not breaker.context_ladder_enabled:
                 return
