@@ -2411,6 +2411,7 @@ def _cmd_run(
             # plan U3: read back regardless of resume, so a resumed run's merge
             # gate still knows what was already red on the launch branch.
             preflight_baseline=load_baseline(paths.preflight_baseline_path),
+            preflight_config=config.preflight,
             activity=activity,
             liveness=config.liveness,
             triage=_triage_provider(

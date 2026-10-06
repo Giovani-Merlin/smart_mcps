@@ -27,6 +27,7 @@ from orchestrator.execution.prompting import (
     render_revision_prompt,
     render_worker_prompt,
 )
+from orchestrator.execution.preflight import PreflightFailure, run_preflight
 from orchestrator.execution.records import _spec_hash
 from orchestrator.execution.scheduler import GroupContext, GroupFailure, GroupState
 from orchestrator.execution.sessions import (
@@ -487,7 +488,13 @@ class GenerationLoop:
                 f"({len(gaps)} required item(s) unmet)"
             )
         else:
-            verdict, verdict_path = await self._review_round(report_path, rounds)
+            verdict = await self._verification_omission_verdict(result, rounds)
+            if verdict is not None:
+                verdict_path = self.deps.store.save_group_artifact(
+                    self.gid, artifact_name("verdict", self.generation, rounds), verdict
+                )
+            else:
+                verdict, verdict_path = await self._review_round(report_path, rounds)
         if verdict is None or verdict.status == "approved":
             invalid = self._invalid_spec_refinement(report)
             if invalid is not None:
@@ -524,6 +531,59 @@ class GenerationLoop:
             self._prepare_handoff(report, verdict)
             return False, None, None
         return None, verdict, verdict_path
+
+    async def _verification_omission_verdict(
+        self, result: RoundResult, rounds: int
+    ) -> ReviewerVerdict | None:
+        """The verification-omission gate (plan U6): a `completed` report whose
+        last edit has no later verify action runs the check command before
+        review. Returns a synthetic `changes_required` verdict when it is red,
+        else `None` (gate off, not applicable, or green — review proceeds)."""
+        signals = result.signals
+        config = self.deps.preflight_config
+        if (
+            config is None
+            or signals is None
+            or self.workspace is None
+            or self.group.recipe != "code"
+            or not signals.last_edit_unverified()
+        ):
+            return None
+        tag = f"group {self.gid} generation {self.generation} round {rounds}"
+        self._log(f"{tag}: verification omitted after the last edit — running check command")
+        self._heartbeat.mark_phase("running the check command (verification omitted)")
+        output_dir = self.deps.store.paths.group_dir(self.gid) / f"omission-check-r{rounds}"
+        try:
+            await asyncio.to_thread(
+                run_preflight,
+                self.workspace,
+                config=config,
+                output_dir=output_dir,
+                log=self._log,
+                declared_files=(),
+            )
+        except PreflightFailure as exc:
+            if exc.output_path is None:
+                # A dirty tree is not evidence about the diff; the merge gate
+                # reports it with its own remedy.
+                self._log(f"{tag}: check command not run ({exc.reason})")
+                return None
+            tail = ""
+            try:
+                tail = "\n".join(exc.output_path.read_text(errors="replace").splitlines()[-40:])
+            except OSError:
+                pass
+            self._log(f"{tag}: check command red ({exc.kind})")
+            return ReviewerVerdict(
+                status="changes_required",
+                required_changes=[f"{exc.reason}\n{tail}".strip()],
+                notes=(
+                    "verification omitted: the last edit was never followed by a "
+                    "verify command, and the check command fails"
+                ),
+            )
+        self._log(f"{tag}: check command green")
+        return None
 
     def _downstream_tasks(self) -> list[str]:
         """Every task owned by a group transitively downstream of this one
