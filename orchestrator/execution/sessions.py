@@ -1043,10 +1043,21 @@ def launch_env(base: dict[str, str], cwd: Path | None) -> dict[str, str]:
     outside every recipe's commit globs (so a research merge is never refused
     over a saved citation), and archived to the group's run directory at
     merge. ``cwd=None`` (a bare call with no worktree) leaves ``base`` as is.
+
+    ``TMPDIR`` and ``TMP`` point at the same directory (created if absent):
+    a worker's TMPDIR otherwise defaults to ``/tmp``, outside the Landlock
+    write set, so a bare ``mktemp`` was refused.
     """
     if cwd is None:
         return base
-    return {**base, "CLAUDE_PROJECT_DIR": str(Path(cwd) / WORKER_PROJECT_DIRNAME)}
+    scratch = Path(cwd) / WORKER_PROJECT_DIRNAME
+    scratch.mkdir(parents=True, exist_ok=True)
+    return {
+        **base,
+        "CLAUDE_PROJECT_DIR": str(scratch),
+        "TMPDIR": str(scratch),
+        "TMP": str(scratch),
+    }
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:
