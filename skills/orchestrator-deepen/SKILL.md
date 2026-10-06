@@ -302,9 +302,27 @@ persists, and what it does not:
 | a session's role (`researcher`, `coder`)                | `manifest.json` → `groups.<gid>.sessions[].role`, or the `<role> launching` line in `run.log`     | the word `researcher` anywhere else in `run.log`        |
 | what a worker was told (a manifest entry, a refinement) | `groups/<gid>/spec-gen<N>.json` (`spec` text), `artifacts.json` entries                           | `groups/<gid>/prompt*.md` — no prompt file is persisted |
 | a `run` group's command progress                        | `groups/<gid>/run/attempt-<k>/<n>.result.json` (`exit_status`, `duration_s`)                      | `command N/M` lines — heartbeat phases are not logged   |
-| a rewrite was free (`spec_refinement` only)             | the `rewriting spec (…) (spec refinement, not counted)` suffix in `run.log`                       | a per-group `rewrites` counter — none is persisted      |
+| a rewrite was free (`spec_refinement` only)             | `state.json` → `groups.<gid>.rewrites` / `last_rewrite_counted` (persisted since run r20261006-115802), or the `(spec refinement, not counted)` suffix in `run.log` | a `rewrites:` line in `status` for a group with none  |
 | the exported bundle                                     | `smart-mcps-orchestrate export <run> --repo <main checkout>` — a worktree has no `.orchestrator/` | `--repo .` from inside a worktree                       |
 | a `run` unit's prompt                                   | nothing — a `run` group has no coder and no prompt; assert on its `artifacts.json` entry instead  | any prompt                                              |
+
+**A live item's oracle is a side effect, and its control removes the
+mechanism.** Two of r20261006-115802's driver items were unprovable as
+written and had to be rewritten by the run driver:
+
+- *Oracle.* Never `Pass:` on the model's answer text or the JSON envelope
+  (`"MARKER" in stdout`): a refused command's explanation quotes the marker
+  and passes. Assert on something the command itself materialises — a file it
+  creates, a line it appends, an exit status, a row — and read that from disk.
+- *Control.* The negative case is the **same command with the mechanism
+  removed** (without `--add-dir`, without the env var, with the rule
+  deleted), not a different target the probe never governed. "`ls /tmp` is
+  still refused" tested the allowlist, not the read root — and the CLI lists
+  `/tmp` freely with `Bash(ls *)` granted, so the control itself was false.
+- *Existence.* Every `Run (driver):` item names a test or command that
+  exists in the unit's `Files` when the group merges. A coder reporting
+  "driver-run, not run" for a test it never wrote passes the merge gate; the
+  driver finds the gap only at finish.
 
 Write the decision into the plan:
 

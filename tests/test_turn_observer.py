@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 
 from orchestrator.config import BreakerConfig
+from orchestrator.model import SessionEntry, SessionRole
 from orchestrator.execution.records import SessionRecords
 from orchestrator.execution.round_signals import RoundSignals
 from orchestrator.execution.sessions import SessionRunner
@@ -49,8 +50,11 @@ class _Records(SessionRecords):
 
 def _observer(**breaker):
     records = _Records(BreakerConfig(context_token_limit=200_000, **breaker))
+    # A real SessionEntry, not a namespace stub: the observer's bookkeeping writes
+    # whatever fields the model carries, and a stub lagging one field behind
+    # failed a sibling group's merge gate (run r20261006-115802, g7).
     on_turn = records._make_coder_on_turn(
-        SimpleNamespace(last_context_tokens=0, peak_context_tokens=0)
+        SessionEntry(session_id="s-observer", role=SessionRole.CODER)
     )
     return records, on_turn, on_turn.signals, _Recorder()
 
