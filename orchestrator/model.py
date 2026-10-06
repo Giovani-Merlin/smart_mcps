@@ -84,6 +84,62 @@ class VerificationItem(BaseModel):
         return self
 
 
+#: Below this description similarity a rewritten verification item is a new
+#: item, not a reworded plan item.
+VERIFICATION_MATCH_FLOOR = 0.5
+
+
+def reconcile_verification_ids(
+    original: list[VerificationItem], rewritten: list[VerificationItem]
+) -> list[VerificationItem]:
+    """Give a rewritten group's verification items the plan's ids back.
+
+    The rewrite speccer re-ids items freely (``g9-blockers-tests`` for the
+    plan's ``g9-1``), while ``groups.json``, the merge log, the report facts
+    and the one-pager pointer legend all key on the plan's ids — so a
+    rewritten group's coder reported eight passes that the report counted as
+    "0/12 pass, unit not landed" (r20261006-050234, g1 gen 2 and g9). Items
+    keep an id the plan already has; the rest are matched to the closest
+    unclaimed plan item by description (``difflib`` ratio over
+    whitespace-normalised text) and take its id; anything below
+    ``VERIFICATION_MATCH_FLOOR`` is genuinely new and keeps the speccer's id.
+    Order, descriptions and flags are the speccer's; only ids change.
+    """
+    import difflib
+
+    def norm(text: str) -> str:
+        return " ".join(text.lower().split())
+
+    unclaimed = {item.id: norm(item.description) for item in original}
+    reconciled: list[VerificationItem] = []
+    pending: list[tuple[int, VerificationItem]] = []
+    for index, item in enumerate(rewritten):
+        if item.id in unclaimed:
+            del unclaimed[item.id]
+            reconciled.append(item)
+        else:
+            reconciled.append(item)
+            pending.append((index, item))
+    # Best matches first, so a close rewording is not robbed of its id by a
+    # looser one that merely came earlier in the list.
+    scored: list[tuple[float, int, str]] = []
+    for index, item in pending:
+        text = norm(item.description)
+        for plan_id, plan_text in unclaimed.items():
+            ratio = difflib.SequenceMatcher(None, text, plan_text).ratio()
+            if ratio >= VERIFICATION_MATCH_FLOOR:
+                scored.append((ratio, index, plan_id))
+    taken_ids: set[str] = set()
+    taken_indexes: set[int] = set()
+    for ratio, index, plan_id in sorted(scored, key=lambda s: (-s[0], s[1])):
+        if plan_id in taken_ids or index in taken_indexes:
+            continue
+        taken_ids.add(plan_id)
+        taken_indexes.add(index)
+        reconciled[index] = reconciled[index].model_copy(update={"id": plan_id})
+    return reconciled
+
+
 class GroupSpec(BaseModel):
     """A group's name/summary/spec/verification, however produced — assembled
     deterministically (plan U2) or written by the mid-run rewrite speccer."""

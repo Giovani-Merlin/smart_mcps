@@ -940,7 +940,7 @@ class SessionRunner:
         stream = StreamingProcess(
             argv,
             cwd=cwd,
-            env=self._env,
+            env=launch_env(self._env, cwd),
             tracker=tracker,
             context=context,
             preexec_fn=preexec_fn,
@@ -1015,6 +1015,29 @@ def _fork_cwd_experiment(cwd: Path, extra: list[str]) -> tuple[Path, list[str]]:
             repo_root = parent.parent
             return repo_root, [*extra, "--add-dir", str(resolved)]
     return cwd, extra
+
+
+#: Where a worker's tools may persist side files: `smart-mcps-perplexity`
+#: saves its full JSON under ``$CLAUDE_PROJECT_DIR/docs/research/perplexity/``.
+WORKER_PROJECT_DIRNAME = ".coder-scratch"
+
+
+def launch_env(base: dict[str, str], cwd: Path | None) -> dict[str, str]:
+    """The environment one worker spawn gets: ``base`` plus a
+    ``CLAUDE_PROJECT_DIR`` pointing at the worktree's ``.coder-scratch/``.
+
+    Research workers ran without it (r20261006-050234, every researcher):
+    the Perplexity CLI keys its citation save on that variable, so no
+    citation JSON persisted and all three findings documents reported
+    "no URLs". It points at ``.coder-scratch/`` rather than the worktree root
+    on purpose — that directory is inside the Landlock write set, git-ignored,
+    outside every recipe's commit globs (so a research merge is never refused
+    over a saved citation), and archived to the group's run directory at
+    merge. ``cwd=None`` (a bare call with no worktree) leaves ``base`` as is.
+    """
+    if cwd is None:
+        return base
+    return {**base, "CLAUDE_PROJECT_DIR": str(Path(cwd) / WORKER_PROJECT_DIRNAME)}
 
 
 def _scrub_virtualenv(env: dict[str, str]) -> dict[str, str]:

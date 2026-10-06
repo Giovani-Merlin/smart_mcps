@@ -190,7 +190,7 @@ Greppable anchors, all in `logs/run.log`:
 | escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                          |
 | retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                                        |
 | spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                              |
-| coder launched       | `group <gid> generation <n>: coder launching, …`                                                                                    |
+| worker launched      | `group <gid> generation <n>: <role> launching, …` (`coder`, `researcher`; a `run` group has none)                                                                                    |
 | round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                            |
 | reviewer verdict     | `… reviewer verdict <status>`                                                                                                       |
 | coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                              |
@@ -229,7 +229,7 @@ Greppable anchors, all in `logs/run.log`:
   lands: a seam bug named here is cheapest to fix while the source group's
   coder is still up (`answer` it, or note it for the finish).
 
-Handy: `grep -E "verdict|ended \(|retired|coder launch|usage limit: (pausing|resuming)|not live for|live again|suspend|SURPRISE" logs/run.log`.
+Handy: `grep -E "verdict|ended \(|retired|launching|usage limit: (pausing|resuming)|not live for|live again|suspend|SURPRISE" logs/run.log`.
 
 ### What a live `run` group looks like
 

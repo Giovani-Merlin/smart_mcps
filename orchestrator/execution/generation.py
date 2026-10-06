@@ -310,9 +310,12 @@ class GenerationLoop:
             # mentioned it had started, and a live run showed a silent gap with no
             # indication anything was happening.
             launch = "forking base session" if self.deps.fork_base_session else "fresh session"
+            # The role, not a literal "coder": a research group's worker is a
+            # researcher, and run.log never said so (r20261006-050234 — the
+            # role was only in manifest.json). Code groups read exactly as before.
             self._log(
                 f"group {self.gid} generation {self.generation}: "
-                f"coder launching, {launch} (session {self.coder_sid})"
+                f"{recipe.worker_role.value} launching, {launch} (session {self.coder_sid})"
             )
             # `round N: started` logged and marked *before* the fork call, not
             # after — matching `_reenter`'s pattern. `start_fork` is itself round

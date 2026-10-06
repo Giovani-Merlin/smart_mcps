@@ -320,3 +320,21 @@ def test_surprise_for_a_run_recipe_group_writes_a_no_coder_anchor_line(tmp_path)
     # A code group that is still pending writes no anchor line, as before.
     board.mark(surprise("heads up", ["g3"]), source_group="g2")
     assert "→ g3" not in _run_log(paths)
+
+
+def test_a_surprise_naming_the_sources_own_task_is_not_pending_for_the_source():
+    """r20261006-050234: g1's reviewer named `u5`, a task of g1 itself; it
+    resolved to g1 after the source filter ran, and an approved group was
+    rewritten for a doc-only change. The source is excluded after resolution."""
+    board = SurpriseBoard(groups=thirteen_groups())
+    board.mark(surprise("lint counts as verify", ["u16-play-route"]), source_group="g5")
+    assert board.pending_for("g5") == []
+    # Nothing else was named either, so it is a run-level finding, not lost.
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [
+        surprise("lint counts as verify", ["u16-play-route"])
+    ]
+    # A surprise naming the source's task *and* another group still reaches
+    # the other group, and only it.
+    board.mark(surprise("shape changed", ["u16-play-route", "g7"]), source_group="g5")
+    assert board.pending_for("g5") == []
+    assert board.pending_for("g7") == [surprise("shape changed", ["u16-play-route", "g7"])]

@@ -310,8 +310,15 @@ def configured_check_step(
     """
     argv = list(command)
     junit = output_dir / f"{junit_stem}.xml"
-    if argv and argv[-1] == "pytest":
-        argv += ["-p", "no:cacheprovider", f"--junitxml={junit}"]
+    # The `pytest` token may sit anywhere — `["uv", "run", "pytest", "-q"]`
+    # (infinity-skills, r20261006-050234) ended in `-q`, matched nothing here,
+    # and a red baseline recorded zero per-test outcomes, so the gate had no
+    # evidence to excuse a failure already red on the launch branch. The flags
+    # go right after the token, before any user args, and are not re-added
+    # when the operator already wrote a `--junitxml=` of their own.
+    if "pytest" in argv and not any(arg.startswith("--junitxml") for arg in argv):
+        at = argv.index("pytest") + 1
+        argv[at:at] = ["-p", "no:cacheprovider", f"--junitxml={junit}"]
     return CheckStep(name="configured", argv=argv, junit_path=junit)
 
 

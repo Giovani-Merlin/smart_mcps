@@ -292,6 +292,20 @@ Do not propose loosening it. (A test that pins its fixture cwd to a fixed
 path *can* be allowlisted instead — offer that only if the human wants the
 check to run inside the sandbox.)
 
+**A `Run (driver):` item must assert on something the run actually
+materialises.** Four of r20261006-050234's driver items could never pass as
+written because they grepped for things that do not exist. What the run
+persists, and what it does not:
+
+| the item wants to prove…                                | read it from                                                                                      | never from                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| a session's role (`researcher`, `coder`)                | `manifest.json` → `groups.<gid>.sessions[].role`, or the `<role> launching` line in `run.log`     | the word `researcher` anywhere else in `run.log`        |
+| what a worker was told (a manifest entry, a refinement) | `groups/<gid>/spec-gen<N>.json` (`spec` text), `artifacts.json` entries                           | `groups/<gid>/prompt*.md` — no prompt file is persisted |
+| a `run` group's command progress                        | `groups/<gid>/run/attempt-<k>/<n>.result.json` (`exit_status`, `duration_s`)                      | `command N/M` lines — heartbeat phases are not logged   |
+| a rewrite was free (`spec_refinement` only)             | the `rewriting spec (…) (spec refinement, not counted)` suffix in `run.log`                       | a per-group `rewrites` counter — none is persisted      |
+| the exported bundle                                     | `smart-mcps-orchestrate export <run> --repo <main checkout>` — a worktree has no `.orchestrator/` | `--repo .` from inside a worktree                       |
+| a `run` unit's prompt                                   | nothing — a `run` group has no coder and no prompt; assert on its `artifacts.json` entry instead  | any prompt                                              |
+
 Write the decision into the plan:
 
 - Allowlisted → name the path in the unit's prose, and tell the human the
