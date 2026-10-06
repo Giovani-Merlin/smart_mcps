@@ -204,6 +204,7 @@ from orchestrator.model import (
     SessionEntry,
     SessionRole,
     Surprise,
+    reconcile_verification_ids,
 )
 from orchestrator.prompts import load_template
 
@@ -2948,7 +2949,9 @@ def _rewrite_provider(
                 "name": spec.name,
                 "summary": spec.summary,
                 "spec": spec.spec,
-                "verification": spec.verification,
+                # The plan's ids survive the rewrite: every downstream reader
+                # (merge log, report facts, one-pager pointers) keys on them.
+                "verification": reconcile_verification_ids(group.verification, spec.verification),
             }
         )
 

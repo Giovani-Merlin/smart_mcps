@@ -106,6 +106,13 @@ class SurpriseBoard:
 
     def mark(self, surprise: Surprise, *, source_group: str | None = None) -> None:
         with self._lock:
+            # The source is excluded *after* resolution, not before: a worker
+            # names its own group by one of its task ids ("u5" from g1 in
+            # r20261006-050234), which resolved to g1 itself and — raised during
+            # the review of an approved round — rewrote an approved group and
+            # spent a generation on a doc-only change. A finding about the
+            # source's own spec is already in its report; it is never a
+            # pending surprise for itself.
             targets = [gid for gid in surprise.affected_groups if gid != source_group]
             if len(targets) > WIDE_FANOUT_THRESHOLD:
                 _logger.warning(
@@ -117,7 +124,7 @@ class SurpriseBoard:
             keys: list[str] = []
             for gid in targets:
                 for key in self._resolve(gid, surprise, source_group):
-                    if key not in keys:
+                    if key != source_group and key not in keys:
                         keys.append(key)
             if not keys and self._group_ids is not None:
                 # No other group named (an empty list, or only the source

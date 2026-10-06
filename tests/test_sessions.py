@@ -1216,3 +1216,17 @@ def test_start_worker_honours_a_caller_supplied_session_id(fake_home, tmp_path):
     assert result.session_id == sid
     call = calls(fake_home)[-1]
     assert call["prompt"] == "go"  # an empty base context adds nothing at all
+
+
+def test_launch_env_points_claude_project_dir_at_the_worktree_scratch_dir(tmp_path):
+    """r20261006-050234: research workers had no CLAUDE_PROJECT_DIR, so the
+    Perplexity CLI persisted no citation JSON. It targets `.coder-scratch/`
+    (git-ignored, inside the write set, archived at merge), never the root."""
+    from orchestrator.execution.sessions import launch_env
+
+    base = {"PATH": "/usr/bin", "HOME": "/home/x"}
+    env = launch_env(base, tmp_path)
+    assert env["CLAUDE_PROJECT_DIR"] == str(tmp_path / ".coder-scratch")
+    assert env["PATH"] == "/usr/bin" and env["HOME"] == "/home/x"
+    assert "CLAUDE_PROJECT_DIR" not in base  # the shared base is untouched
+    assert launch_env(base, None) is base

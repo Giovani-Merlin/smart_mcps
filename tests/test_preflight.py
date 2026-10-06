@@ -1082,3 +1082,31 @@ def test_unattributed_exit_diagnosis_names_the_step_exit_and_log(tmp_path):
     assert attributable is True
     assert "`vitest` exited 1 with 0 failing tests" in diagnosis
     assert f"Unhandled Errors section of {log}" in diagnosis
+
+
+def test_a_configured_pytest_command_with_trailing_args_still_gets_a_junitxml(tmp_path):
+    """r20261006-050234: `["uv", "run", "pytest", "-q"]` ends in `-q`, matched
+    nothing, and the baseline recorded zero per-test outcomes on a red launch
+    branch. The flags go right after the `pytest` token, before the user's."""
+    out_dir = tmp_path / "out"
+    step = configured_check_step(
+        ["uv", "run", "pytest", "-q"], output_dir=out_dir, junit_stem="preflight-junit"
+    )
+    assert step.argv == [
+        "uv",
+        "run",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        f"--junitxml={out_dir / 'preflight-junit.xml'}",
+        "-q",
+    ]
+    assert step.junit_path == out_dir / "preflight-junit.xml"
+
+    # An operator who already names a report path keeps their own.
+    own = configured_check_step(
+        ["uv", "run", "pytest", "--junitxml=mine.xml"],
+        output_dir=out_dir,
+        junit_stem="preflight-junit",
+    )
+    assert own.argv == ["uv", "run", "pytest", "--junitxml=mine.xml"]
