@@ -387,8 +387,14 @@ class BreakerConfig(BaseModel):
     # riding the per-turn observer the streaming channel (plan U1) provides —
     # bounds *cost* inside a round, not stuck-ness (that's R7's wall-clock
     # rejection; a token ceiling is a proxy for the former, never the latter).
-    # Off by default so an existing run/test is unaffected until it opts in.
-    context_ladder_enabled: bool = False
+    # On by default: crossing 100% also ends the round within one turn, so the
+    # limit is enforced mid-round rather than at the next round boundary.
+    context_ladder_enabled: bool = True
+    # In-round stall nudge: this many identical, non-progressing observations
+    # (twice as many for pure read windows) earn one "change approach" nudge.
+    stall_window_k: int = 8
+    # The Nth identical denied command ends the round with a stop-retrying prompt.
+    repeat_denial_cap: int = 3
 
 
 class ExecutionConfig(BaseModel):

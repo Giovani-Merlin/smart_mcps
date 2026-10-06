@@ -18,7 +18,12 @@ from orchestrator.execution.prompting import (
     render_ladder_compact_prompt,
     render_ladder_prioritized_prompt,
     render_ladder_summary_prompt,
+    render_limit_stop_prompt,
+    render_redundant_read_prompt,
+    render_repeat_denial_prompt,
+    render_stall_nudge_prompt,
 )
+from orchestrator.execution.round_signals import READ, RoundSignals
 from orchestrator.execution.sessions import RoundResult, SessionRunner, session_display_name
 from orchestrator.execution.streaming import TurnUsage
 from orchestrator.model import Group, SessionEntry, SessionRole
@@ -69,28 +74,41 @@ class SessionRecords:
 
     def _make_coder_on_turn(
         self, entry: SessionEntry
-    ) -> Callable[[TurnUsage, Callable[[str], None]], None]:
-        """Per-turn observer for one coder round call (plan U1's seam), doing two
-        unrelated things that happen to ride the same callback:
+    ) -> Callable[[TurnUsage, Callable[[str], None], Callable[[str], None] | None], None]:
+        """Per-turn observer for one coder round call (plan U1's seam).
 
         - continuous bookkeeping (plan U4): ``last_context_tokens`` updates as
           turns stream in, not only once the round finishes and
-          ``_persist_coder_usage`` runs — so a group's manifest entry reflects
-          reality while it is still in flight, not just after.
+          ``_persist_coder_usage`` runs.
         - the staged context ladder (plan U3), gated by
-          ``breaker.context_ladder_enabled`` (off by default): 70%/90%/100% of
+          ``breaker.context_ladder_enabled`` (on by default): 70%/90%/100% of
           ``context_token_limit`` each send at most one staged prompt onto the
-          still-running round via ``send``. This bounds *cost* inside a round —
-          a token ceiling is a proxy for cost, not for stuck, which is why R7
-          rejected a wall-clock timeout here for the opposite reason.
+          still-running round via ``send``; at 100% the round is also ended
+          (``end_round``) after the compact prompt, so the limit holds within one
+          turn. ``_breaker_reason`` still retires the group at the boundary.
+        - the round's ``RoundSignals`` (exposed as ``on_turn.signals``; the
+          session runner installs it as the stream's ``on_tool_event`` and
+          attaches it to the ``RoundResult``): the third identical denied command
+          ends the round, a stall window earns one "change approach" nudge, and a
+          redundantly re-read file earns one reminder. They share the ladder
+          switch: off disables every in-round prompt.
 
-        ``fired`` is local to this call, so a fresh round always gets its own
-        clean set of thresholds — a round sitting at 99% from a prior round
-        never suppresses this round's own 70% checkpoint.
+        All state is local to this call, so a fresh round starts clean.
         """
         fired: set[str] = set()
+        breaker = self.deps.breaker
+        signals = RoundSignals(stall_k=breaker.stall_window_k)
+        denial_ended: set[str] = set()
+        stall_nudged: dict[int, int] = {}
+        reminded: set[str] = set()
 
-        def on_turn(usage: TurnUsage, send: Callable[[str], None]) -> None:
+        def on_turn(
+            usage: TurnUsage,
+            send: Callable[[str], None],
+            end_round: Callable[[str], None] | None = None,
+        ) -> None:
+            end = end_round or send
+            turn = signals.turn_index
             context = (
                 usage.input_tokens
                 + usage.output_tokens
@@ -99,12 +117,22 @@ class SessionRecords:
             )
             entry.last_context_tokens = context
             self.deps.store.save(self.deps.manifest)
-            if not self.deps.breaker.context_ladder_enabled:
+            if not breaker.context_ladder_enabled:
                 return
-            limit = self.deps.breaker.context_token_limit
+
+            def note(signal: str, detail: str) -> None:
+                self._log(
+                    f"group {self.gid} generation {self.generation}: "
+                    f"{signal} at turn {turn} — {detail}"
+                )
+
+            limit = breaker.context_token_limit
             if context >= limit and "100" not in fired:
                 fired.update({"70", "90", "100"})
                 send(render_ladder_compact_prompt())
+                end(render_limit_stop_prompt())
+                note("context limit stop", f"{context} of {limit} tokens; round ended")
+                return
             elif context >= limit * 0.9 and "90" not in fired:
                 fired.update({"70", "90"})
                 send(render_ladder_prioritized_prompt())
@@ -112,6 +140,36 @@ class SessionRecords:
                 fired.add("70")
                 send(render_ladder_summary_prompt())
 
+            for call in list(signals.calls):
+                if (
+                    call.denied
+                    and call.command not in denial_ended
+                    and signals.identical_denials(call.command) >= breaker.repeat_denial_cap
+                ):
+                    denial_ended.add(call.command)
+                    end(render_repeat_denial_prompt(call.command))
+                    note(
+                        "repeat denial stop",
+                        f"{breaker.repeat_denial_cap} denials of `{call.command}`; round ended",
+                    )
+                    return
+
+            window = signals.stall_window()
+            if window is not None:
+                need = breaker.stall_window_k * (2 if signals.calls[-1].action == READ else 1)
+                last = stall_nudged.get(window.start_call)
+                if last is None or window.count >= last + need:
+                    stall_nudged[window.start_call] = window.count
+                    send(render_stall_nudge_prompt(window))
+                    note("stall nudge", f"`{window.key[0]}` x{window.count}")
+
+            for path, earlier in signals.redundant_reads().items():
+                if path not in reminded:
+                    reminded.add(path)
+                    send(render_redundant_read_prompt(path, earlier))
+                    note("redundant read reminder", f"{path} first read at turn {earlier}")
+
+        on_turn.signals = signals  # type: ignore[attr-defined]
         return on_turn
 
     def _adopt_actual_session_id(self, result: RoundResult) -> None:
