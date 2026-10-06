@@ -32,6 +32,10 @@ Mechanics worth keeping (each cost a wrong result before it was noticed):
   rules rather than replacing them (see `test_e2e_live.py`), so an operator rule
   can grant the command and make any pattern look like it worked.
 - A control case that must be **denied** is what proves the probe can still fail.
+- The oracle is a **side effect on disk**, never the envelope text. The stub
+  appends a line to `ran.log` when it runs; `MARKER in proc.stdout` used to be
+  the check, and a refused run's explanation quoting the marker passed it
+  (run r20261006-115802, item g1-2).
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ pytestmark = [
 ]
 
 MARKER = "PROBE_RAN_42"
+WITNESS = "ran.log"  # one line appended per execution of a stub program
 VENV_PYTHON = '.venv/bin/python -c "print(42)"'
 PROMPT = "Run the shell command `{command}` using the Bash tool. Do not explain."
 PROBE_TIMEOUT_S = 120
@@ -65,20 +70,28 @@ def probe_dir(tmp_path_factory) -> Path:
     answers that without depending on any interpreter behaviour.
     """
     root = tmp_path_factory.mktemp("permprobe")
+    script = f"#!/bin/sh\necho {MARKER}\nprintf 'ran\\n' >> {root / WITNESS}\n"
     venv_python = root / ".venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
-    venv_python.write_text(f"#!/bin/sh\necho {MARKER}\n")
+    venv_python.write_text(script)
     venv_python.chmod(0o755)
     # A *different* program, to catch a rule that grants more than its tool.
     other = venv_python.parent / "other"
-    other.write_text(f"#!/bin/sh\necho {MARKER}\n")
+    other.write_text(script)
     other.chmod(0o755)
     return root
 
 
+def _executions(cwd: Path) -> int:
+    witness = cwd / WITNESS
+    return witness.read_text().count("\n") if witness.exists() else 0
+
+
 def _command_ran(pattern: str, cwd: Path, command: str = VENV_PYTHON) -> bool:
-    """True when the rule let `command` actually execute."""
-    proc = subprocess.run(
+    """True when the rule let `command` actually execute — the stub wrote its
+    witness line, whatever the model said about it."""
+    before = _executions(cwd)
+    subprocess.run(
         [
             "claude",
             "--print",
@@ -98,7 +111,7 @@ def _command_ran(pattern: str, cwd: Path, command: str = VENV_PYTHON) -> bool:
         timeout=PROBE_TIMEOUT_S,
         env=dict(os.environ),
     )
-    return MARKER in proc.stdout
+    return _executions(cwd) > before
 
 
 def test_a_rule_granting_nothing_relevant_is_denied(probe_dir: Path) -> None:
