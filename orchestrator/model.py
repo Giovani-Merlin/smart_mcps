@@ -207,6 +207,9 @@ class SessionEntry(BaseModel):
     # with the process, and re-entry needs a pre-check against the breaker limit
     # before warm-resuming an interrupted coder.
     last_context_tokens: int = 0
+    # High-water mark of the context size over every turn of the session, updated
+    # beside ``last_context_tokens``. 0 = not recorded.
+    peak_context_tokens: int = 0
     # Cumulative spend, persisted alongside the context size on the same saves.
     # Distinct from last_context_tokens, which is occupancy of the latest round:
     # these sum every round of the session, so a group's actual cost can be

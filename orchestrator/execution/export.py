@@ -48,7 +48,7 @@ from orchestrator.execution.transcript_events import parse_transcript, write_eve
 from orchestrator.grouping.llm_record import INDEX_NAME as LLM_INDEX_NAME
 
 #: Bump only on a breaking change to the contract; additive fields are free.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 FRAMEWORK = "smart-mcps-orchestrator"
 
 _ARTIFACT_RE = re.compile(r"^(report|verdict)-g(\d+)-r(\d+)\.json$")
@@ -92,12 +92,26 @@ class ExportSession(BaseModel):
     #: additively under schema_version 2; ``0.0`` means "not recorded" on the
     #: same convention as ``tokens``.
     cost_usd: float = 0.0
+    #: Largest context any turn of the session reached, and the latest turn's
+    #: context (schema_version 3). 0 = not recorded.
+    peak_context_tokens: int = 0
+    last_context_tokens: int = 0
+
+
+class ExportPhase(BaseModel):
+    """One lifecycle anchor of a group, parsed from ``run.log`` (schema_version 3)."""
+
+    phase: str
+    at: str
 
 
 class ExportSurprise(BaseModel):
     kind: str
     description: str = ""
     affected_groups: list[str] = Field(default_factory=list)
+    #: The session whose report carried it, and its index within that report.
+    session_id: str | None = None
+    seq: int = 0
 
 
 class ExportArtifact(BaseModel):
@@ -122,6 +136,9 @@ class ExportArtifact(BaseModel):
     #: was, attributed by the same classifier the review loop uses.
     denial_kind: str | None = None
     denied_command: str = ""
+    #: Event id (in the owning session's events file) of the last Bash call whose
+    #: command is the report's ``denied_command``; null when not found.
+    denial_event_id: str | None = None
     required_changes: list[str] = Field(default_factory=list)
     #: Non-null when the file was unreadable/half-written; the artifact is
     #: still listed so the consumer knows a round happened.
@@ -194,6 +211,7 @@ class ExportGroup(BaseModel):
     #: group id is absent from that snapshot (never observed in a real run).
     spec: dict | None = None
     rewrites: list[ExportRewrite] = Field(default_factory=list)
+    phases: list[ExportPhase] = Field(default_factory=list)
     sessions: list[ExportSession] = Field(default_factory=list)
     artifacts: list[ExportArtifact] = Field(default_factory=list)
     escalations: list[ExportEscalation] = Field(default_factory=list)
@@ -368,6 +386,7 @@ def _artifact(path: Path, run_dir: Path) -> ExportArtifact:
         for item in content.get("surprises") or []
         if isinstance(item, dict)
     ]
+    surprises = [s.model_copy(update={"seq": i}) for i, s in enumerate(surprises)]
     status = content.get("status")
     denial_kind = None
     if status == "permission_denied":
@@ -405,6 +424,87 @@ def _group_artifacts(paths: RunPaths, group_id: str) -> list[ExportArtifact]:
     # authoritative sequence — an "other" file's mtime says nothing about rounds.
     artifacts.sort(key=lambda a: (a.generation is None, a.generation or 0, a.round or 0, a.path))
     return artifacts
+
+
+_PHASE_LINE_RE = re.compile(
+    r"^(?P<at>\S+)\s+group (?P<gid>\S+?)(?: generation \d+)?(?: round (?P<round>\d+))?: (?P<msg>.*)$"
+)
+
+
+def _group_phases(paths: RunPaths) -> dict[str, list[ExportPhase]]:
+    """Lifecycle anchors per group, in log order, from ``logs/run.log``."""
+    log = paths.event_log_path
+    if not log.is_file():
+        return {}
+    phases: dict[str, list[ExportPhase]] = {}
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _PHASE_LINE_RE.match(line)
+        if not match:
+            continue
+        message, round_no = match.group("msg"), match.group("round")
+        if round_no is not None:
+            if message == "started":
+                phase = f"round {round_no}: started"
+            elif message.startswith("ended ("):
+                phase = f"round {round_no}: ended {message[len('ended ') :]}"
+            else:
+                continue
+        elif message.startswith("worktree ready"):
+            phase = "worktree ready"
+        elif message in ("merge attempt", "merged into the integration branch"):
+            phase = message
+        elif message == "completed" or message.startswith("failed"):
+            phase = message.split(" ", 1)[0]
+        else:
+            continue
+        phases.setdefault(match.group("gid"), []).append(
+            ExportPhase(phase=phase, at=match.group("at"))
+        )
+    return phases
+
+
+def _denial_event_id(events: list, denied_command: str) -> str | None:
+    wanted = " ".join(denied_command.split())
+    if not wanted:
+        return None
+    found: str | None = None
+    for event in events:
+        if event.tool_name != "Bash" or not isinstance(event.tool_input, dict):
+            continue
+        command = event.tool_input.get("command")
+        if isinstance(command, str) and " ".join(command.split()) == wanted:
+            found = event.event_id
+    return found
+
+
+def _link_artifacts(
+    artifacts: list[ExportArtifact],
+    sessions: list[ExportSession],
+    events_by_session: dict[str, list],
+) -> list[ExportArtifact]:
+    """Attach the owning session to each surprise and the denied call's event id
+    to each ``permission_denied`` report."""
+    linked: list[ExportArtifact] = []
+    for artifact in artifacts:
+        role = {"coder_report": "coder", "reviewer_verdict": "reviewer"}.get(artifact.kind)
+        owner = next(
+            (s for s in sessions if s.role == role and s.generation == artifact.generation),
+            None,
+        )
+        if owner is None:
+            linked.append(artifact)
+            continue
+        update: dict = {
+            "surprises": [
+                s.model_copy(update={"session_id": owner.session_id}) for s in artifact.surprises
+            ]
+        }
+        if artifact.status == "permission_denied":
+            update["denial_event_id"] = _denial_event_id(
+                events_by_session.get(owner.session_id, []), artifact.denied_command
+            )
+        linked.append(artifact.model_copy(update=update))
+    return linked
 
 
 def _group_ledger(paths: RunPaths, group_id: str) -> list[dict] | None:
@@ -738,6 +838,7 @@ def build_export(
 
     root = transcript_root or default_transcript_root()
     escalations = _escalations_by_group(paths)
+    phases = _group_phases(paths)
 
     base_context_path = paths.run_dir / "base-context.md"
     base_context_text: str | None = None
@@ -754,6 +855,7 @@ def build_export(
     groups: list[ExportGroup] = []
     for group in snapshot.groups:
         sessions: list[ExportSession] = []
+        events_by_session: dict[str, list] = {}
         for session in group.sessions:
             if session.role == "orchestrator":
                 # Synthetic rewrite/base rows the snapshot injects for board
@@ -771,6 +873,7 @@ def build_export(
                 parsed = parse_transcript(Path(transcript), strip_prefix=base_context_text)
                 stripped = parsed.strip.applied
                 events_count = len(parsed.events)
+                events_by_session[session.session_id] = parsed.events
                 write_events_gz(events_dir / f"{session.session_id}.jsonl.gz", parsed.events)
                 events_path = f"events/{session.session_id}.jsonl.gz"
             sessions.append(
@@ -795,10 +898,14 @@ def build_export(
                         cache_creation=session.total_cache_creation_tokens,
                     ),
                     cost_usd=session.total_cost_usd,
+                    peak_context_tokens=session.peak_context_tokens,
+                    last_context_tokens=session.last_context_tokens,
                 )
             )
         sessions.sort(key=_session_sort_key)
-        artifacts = _group_artifacts(paths, group.group_id)
+        artifacts = _link_artifacts(
+            _group_artifacts(paths, group.group_id), sessions, events_by_session
+        )
         group_escalations = escalations.get(group.group_id, [])
         groups.append(
             ExportGroup(
@@ -813,6 +920,7 @@ def build_export(
                 depends_on=list(group.depends_on),
                 spec=_group_spec(paths, group.group_id),
                 rewrites=_group_rewrites(paths, group.group_id, artifacts, group_escalations),
+                phases=phases.get(group.group_id, []),
                 sessions=sessions,
                 artifacts=artifacts,
                 escalations=group_escalations,
