@@ -2,7 +2,7 @@
 
 The stub tests run against tests/fake_claude.py and spend no tokens. The live
 test (opt in with `-m llm`) asks the real CLI whether a compound command reading
-the run directory is still refused.
+the run directory is still refused without `--add-dir` and runs with it.
 """
 
 from __future__ import annotations
@@ -82,25 +82,35 @@ def test_context_line_names_add_dir_without_breaking_the_session_id():
 
 @pytest.mark.llm
 @pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
-def test_a_compound_read_of_the_run_directory_runs_but_tmp_is_still_refused(tmp_path):
+def test_a_compound_read_of_the_run_directory_runs_only_with_add_dir(tmp_path):
+    """The control is the same command without `--add-dir`, not a read of `/tmp`:
+    the CLI lists `/tmp` freely, so that never measured the read root (run
+    r20261006-115802, item g1-2). Without the flag the CLI refuses the run
+    directory as outside the session's working directory; with it the compound
+    command runs."""
     run_dir = tmp_path / "runs" / "r1"
     run_dir.mkdir(parents=True)
     (run_dir / "run.log").write_text("x\n")
     work = tmp_path / "work"
     work.mkdir()
 
-    def ran(path: Path) -> bool:
-        proc = subprocess.run(
-            [
-                "claude", "--print", "--output-format", "json",
-                "--permission-mode", "acceptEdits", "--setting-sources", "",
-                "--allowedTools", "Bash(ls *)",
-                "--add-dir", str(run_dir),
-            ],
-            input=f"Run the shell command `ls {path} && echo PROBE_OK_42` with the Bash tool.",
+    def ran(*, add_dir: bool) -> bool:
+        # The oracle is a file the compound command creates, not the model's
+        # answer text: a refused command's explanation can still quote a marker.
+        witness = work / f"ran-{'with' if add_dir else 'without'}-add-dir"
+        argv = [
+            "claude", "--print", "--output-format", "json",
+            "--permission-mode", "acceptEdits", "--setting-sources", "",
+            "--allowedTools", "Bash(ls *)", "Bash(touch *)",
+        ]  # fmt: skip
+        if add_dir:
+            argv += ["--add-dir", str(run_dir)]
+        subprocess.run(
+            argv,
+            input=f"Run the shell command `ls {run_dir} && touch {witness}` with the Bash tool.",
             capture_output=True, text=True, cwd=work, timeout=120, env=dict(os.environ),
         )  # fmt: skip
-        return "PROBE_OK_42" in proc.stdout
+        return witness.exists()
 
-    assert ran(run_dir)
-    assert not ran(Path("/tmp"))
+    assert not ran(add_dir=False)
+    assert ran(add_dir=True)
