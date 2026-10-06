@@ -204,3 +204,24 @@ def test_rescue_on_a_clean_worktree_writes_nothing(repo, tmp_path):
     dest = tmp_path / "rescued"
     assert rescue_ignored_outputs(repo, dest, cap_bytes=100) == []
     assert not dest.exists()
+
+
+# ------------------------------------------------------- worktree slug cap
+
+
+def test_worktree_path_caps_the_slug_at_24_characters(tmp_path):
+    from orchestrator.execution.worktrees import WORKTREE_SLUG_MAX_LEN, worktree_path
+
+    name = "evidence-run the report md evidence section rendered over the real run set"
+    slug = worktree_path(tmp_path, "r1", "g2", name).name.removeprefix("g2-")
+    assert len(slug) <= WORKTREE_SLUG_MAX_LEN == 24
+    assert slug == "evidence-run-the-report"
+    assert not slug.endswith("-")
+
+
+def test_worktree_path_integration_is_unchanged(tmp_path):
+    from orchestrator.execution.worktrees import worktree_path
+
+    assert worktree_path(tmp_path, "r1", "integration", "x" * 60) == (
+        tmp_path / ".worktrees" / "r1" / "integration"
+    )
