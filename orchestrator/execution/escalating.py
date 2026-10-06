@@ -271,6 +271,8 @@ class EscalationHandlers:
         self.group = await asyncio.to_thread(self.deps.rewrite_spec, self.group, surprises)
         if counted:
             self.rewrites += 1
+        if (record := getattr(self.ctx, "record_rewrite", None)) is not None:
+            record(counted)
         self.handoff_prompt = None  # the fresh session gets the rewritten spec
         if self.sessions_spawned:
             self._advance_generation()

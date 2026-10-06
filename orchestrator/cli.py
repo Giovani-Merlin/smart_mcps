@@ -3196,6 +3196,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
             # exclusion are three different situations with three different fixes.
             shared = f" on {', '.join(hold.files)}" if hold.files else ""
             line += f"\n  held ({hold.reason.value}) by {hold.group_id}{shared}"
+        if entry.rewrites:
+            kind = "counted" if entry.last_rewrite_counted else "spec refinement"
+            line += f"\n  rewrites: {entry.rewrites} (last: {kind})"
         print(line)
         group_entry = manifest.groups.get(gid) if manifest is not None else None
         if group_entry is not None:
