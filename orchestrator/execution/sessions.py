@@ -25,6 +25,7 @@ a later probe reads, never something this module decides or acts on.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -357,6 +358,17 @@ class SessionUsage:
         self.total_cache_creation_tokens += spend.cache_creation_input_tokens
         self.total_cost_usd += spend.cost_usd
         self.last_context_tokens = usage.context_tokens
+
+
+def _accepts_end_round(on_turn: Callable) -> bool:
+    """Whether an ``on_turn`` observer takes the third ``end_round`` argument;
+    two-argument observers (``usage, send``) are still supported."""
+    try:
+        params = list(inspect.signature(on_turn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 3 or any(p.kind is p.VAR_POSITIONAL for p in params)
 
 
 @dataclass(frozen=True)
@@ -898,6 +910,7 @@ class SessionRunner:
             usage=usage,
             envelope=envelope,
             deny_signals=deny_signals,
+            signals=getattr(on_turn, "signals", None),
         )
 
     def _spawn(
@@ -959,7 +972,20 @@ class SessionRunner:
             preexec_fn=preexec_fn,
         )
         if on_turn is not None:
-            stream.on_turn = lambda usage: on_turn(usage, stream.send)
+
+            def end_round(text: str) -> None:
+                """Send *text* as the round's last follow-up and close stdin, so
+                the child exits once it has answered it."""
+                stream.send(text)
+                stream.close_stdin()
+
+            if _accepts_end_round(on_turn):
+                stream.on_turn = lambda usage: on_turn(usage, stream.send, end_round)
+            else:
+                stream.on_turn = lambda usage: on_turn(usage, stream.send)
+            signals = getattr(on_turn, "signals", None)
+            if signals is not None:
+                stream.on_tool_event = signals.observe
         if self.activity is not None:
             activity = self.activity
 
