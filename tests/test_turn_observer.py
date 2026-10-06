@@ -49,7 +49,9 @@ class _Records(SessionRecords):
 
 def _observer(**breaker):
     records = _Records(BreakerConfig(context_token_limit=200_000, **breaker))
-    on_turn = records._make_coder_on_turn(SimpleNamespace(last_context_tokens=0))
+    on_turn = records._make_coder_on_turn(
+        SimpleNamespace(last_context_tokens=0, peak_context_tokens=0)
+    )
     return records, on_turn, on_turn.signals, _Recorder()
 
 
