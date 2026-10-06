@@ -338,6 +338,7 @@ class GenerationLoop:
                     cwd=self.workspace,
                     session_id=self.coder_sid,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                     on_turn=coder_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
@@ -345,6 +346,7 @@ class GenerationLoop:
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                     on_turn=coder_on_turn,
                 ),
             )
@@ -390,6 +392,7 @@ class GenerationLoop:
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                     on_turn=self._make_coder_on_turn(self.coder_entry),
                 )
                 return _coder_nudge(resumed)
@@ -598,6 +601,7 @@ class GenerationLoop:
                 prompt=nudge_prompt,
                 cwd=self.workspace,
                 extra_allowed_tools=recipe.extra_allowed_tools,
+                add_dirs=[self.deps.store.paths.run_dir],
                 on_turn=coder_on_turn,
             ),
             recover=lambda sid: self.deps.runner.resume(
@@ -605,6 +609,7 @@ class GenerationLoop:
                 prompt=render_reentry_prompt(self.group),
                 cwd=self.workspace,
                 extra_allowed_tools=recipe.extra_allowed_tools,
+                add_dirs=[self.deps.store.paths.run_dir],
                 on_turn=coder_on_turn,
             ),
         )
@@ -634,6 +639,7 @@ class GenerationLoop:
                 prompt=render_revision_prompt(str(verdict_path), verdict.required_changes),
                 cwd=self.workspace,
                 extra_allowed_tools=recipe.extra_allowed_tools,
+                add_dirs=[self.deps.store.paths.run_dir],
                 on_turn=revision_on_turn,
             ),
             recover=lambda sid: self.deps.runner.resume(
@@ -641,6 +647,7 @@ class GenerationLoop:
                 prompt=render_reentry_prompt(self.group),
                 cwd=self.workspace,
                 extra_allowed_tools=recipe.extra_allowed_tools,
+                add_dirs=[self.deps.store.paths.run_dir],
                 on_turn=revision_on_turn,
             ),
         )
@@ -718,6 +725,7 @@ class GenerationLoop:
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                     on_turn=reentry_on_turn,
                 ),
                 recover=lambda sid: self.deps.runner.resume(
@@ -725,6 +733,7 @@ class GenerationLoop:
                     prompt=render_reentry_prompt(self.group),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                     on_turn=reentry_on_turn,
                 ),
             )

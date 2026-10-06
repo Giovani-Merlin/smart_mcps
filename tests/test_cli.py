@@ -1809,6 +1809,7 @@ class TestResolveConflictLadder:
                 cwd,
                 json_schema=None,
                 extra_allowed_tools=(),
+                add_dirs=(),
                 on_turn=None,
             ):
                 self.calls += 1

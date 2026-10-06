@@ -169,7 +169,7 @@ class ContentFilteringStubRunner(StubRunner):
         return super()._launch(prompt, name, session_id, on_turn)
 
     def resume(
-        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), on_turn=None
+        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
     ):
         self._resume_calls += 1
         if self._resume_calls == self._filter_on_resume_call:

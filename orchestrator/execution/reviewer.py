@@ -58,6 +58,7 @@ class ReviewerRound:
                 prompt=render_re_review_prompt(str(report_path), decisions=self._decisions_text()),
                 cwd=self.workspace,
                 extra_allowed_tools=recipe.extra_allowed_tools,
+                add_dirs=[self.deps.store.paths.run_dir],
             )
 
         if self.reviewer_sid is None:
@@ -78,6 +79,7 @@ class ReviewerRound:
                     ),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                 ),
                 recover=_reviewer_recover,
             )
@@ -94,6 +96,7 @@ class ReviewerRound:
                     ),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                 ),
                 recover=_reviewer_recover,
             )
@@ -130,6 +133,7 @@ class ReviewerRound:
                     prompt=render_extra_pass_prompt(),
                     cwd=self.workspace,
                     extra_allowed_tools=recipe.extra_allowed_tools,
+                    add_dirs=[self.deps.store.paths.run_dir],
                 ),
                 recover=_reviewer_recover,
             )
