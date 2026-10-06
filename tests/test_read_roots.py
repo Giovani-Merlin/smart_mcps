@@ -73,6 +73,30 @@ def test_resume_and_fork_pass_add_dirs_through(fake_home, tmp_path):
     assert _add_dir_values(_last_argv(fake_home)) == [str(run_dir)]
 
 
+def test_runner_level_extra_add_dirs_join_every_call_once(fake_home, tmp_path):
+    """`extra_add_dirs` (the data layer's real directories, wired by the CLI)
+    ride on every worker call after the per-call run directory, deduplicated.
+    Run r20261006-162245 g10: `cp data/corpus.db …` — a plan verification item —
+    was refused because `data/` resolves through a symlink to a directory the
+    CLI did not count as a working directory."""
+    data_root = tmp_path / "repo" / "data"
+    runner = SessionRunner(
+        claude_bin=[sys.executable, str(FAKE_CLAUDE)],
+        env={"FAKE_CLAUDE_HOME": str(fake_home)},
+        transcript_root=fake_home / "projects",
+        extra_add_dirs=[data_root],
+    )
+    run_dir = tmp_path / "run"
+    runner.start_worker(base_context="", prompt="go", name="n", cwd=tmp_path, add_dirs=[run_dir])
+    assert _add_dir_values(_last_argv(fake_home)) == [str(run_dir), str(data_root)]
+    runner.start_worker(base_context="", prompt="go", name="n", cwd=tmp_path)
+    assert _add_dir_values(_last_argv(fake_home)) == [str(data_root)]
+    runner.start_worker(
+        base_context="", prompt="go", name="n", cwd=tmp_path, add_dirs=[data_root, run_dir]
+    )
+    assert _add_dir_values(_last_argv(fake_home)) == [str(data_root), str(run_dir)]
+
+
 def test_context_line_names_add_dir_without_breaking_the_session_id():
     context = _argv_context(["--resume", "abc-123"], [Path("/x/run")])
     assert "--add-dir /x/run" in context
@@ -108,6 +132,41 @@ def test_a_compound_read_of_the_run_directory_runs_only_with_add_dir(tmp_path):
         subprocess.run(
             argv,
             input=f"Run the shell command `ls {run_dir} && touch {witness}` with the Bash tool.",
+            capture_output=True, text=True, cwd=work, timeout=120, env=dict(os.environ),
+        )  # fmt: skip
+        return witness.exists()
+
+    assert not ran(add_dir=False)
+    assert ran(add_dir=True)
+
+
+@pytest.mark.llm
+@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
+def test_a_copy_through_a_data_symlink_runs_only_with_the_target_as_add_dir(tmp_path):
+    """The data layer's exact shape: `<work>/data` is a symlink to a directory
+    outside the working directory. The CLI resolves the link and refuses
+    `cp data/corpus.db …` as "outside the allowed working directories" (run
+    r20261006-162245 g10, a plan verification item); with the link's *target*
+    as `--add-dir` the same command runs. Oracle: the copied file exists."""
+    real_data = tmp_path / "repo" / "data"
+    real_data.mkdir(parents=True)
+    (real_data / "corpus.db").write_bytes(b"sqlite-ish")
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "data").symlink_to(real_data, target_is_directory=True)
+
+    def ran(*, add_dir: bool) -> bool:
+        witness = work / f"copy-{'with' if add_dir else 'without'}-add-dir.db"
+        argv = [
+            "claude", "--print", "--output-format", "json",
+            "--permission-mode", "acceptEdits", "--setting-sources", "",
+            "--allowedTools", "Bash(cp *)",
+        ]  # fmt: skip
+        if add_dir:
+            argv += ["--add-dir", str(real_data)]
+        subprocess.run(
+            argv,
+            input=f"Run the shell command `cp data/corpus.db {witness.name}` with the Bash tool.",
             capture_output=True, text=True, cwd=work, timeout=120, env=dict(os.environ),
         )  # fmt: skip
         return witness.exists()

@@ -1770,6 +1770,9 @@ def build_session_runner(
     A construction site no test can see is a construction site that drifts.
     """
     session = config.session
+    # The real directories behind the data-layer links: Landlock write set
+    # *and* CLI read roots (`--add-dir`) — see `SessionRunner.extra_add_dirs`.
+    data_roots = data_layer_write_paths(repo_root, config.workspace) if repo_root else []
     return SessionRunner(
         claude_bin=session.claude_bin,
         model=session.model,
@@ -1787,8 +1790,9 @@ def build_session_runner(
         cache_root=_cache_root(session),
         extra_write_paths=[
             *(Path(p).expanduser() for p in session.extra_write_paths),
-            *(data_layer_write_paths(repo_root, config.workspace) if repo_root else []),
+            *data_roots,
         ],
+        extra_add_dirs=data_roots,
         gate=gate,
         auth_ladder=auth_ladder,
         auth_gate=auth_gate,

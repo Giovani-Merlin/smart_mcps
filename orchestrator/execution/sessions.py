@@ -422,6 +422,7 @@ class SessionRunner:
         safety_deny: bool = True,
         cache_root: Path | None = None,
         extra_write_paths: Sequence[Path] | None = None,
+        extra_add_dirs: Sequence[Path] | None = None,
         gate: UsageLimitGate | None = None,
         auth_ladder: AuthLadder | None = None,
         auth_gate: UsageLimitGate | None = None,
@@ -450,6 +451,16 @@ class SessionRunner:
         self.cache_root = Path(cache_root) if cache_root is not None else default_cache_root()
         self._cache_dirs = worker_cache_dirs(self.cache_root)
         self.extra_write_paths = [Path(p) for p in extra_write_paths or []]
+        # Read roots every worker call gets as `--add-dir`, on top of the
+        # per-call ones (the run directory). The shared data layer's real
+        # directories go here: a worker reaches `<worktree>/data` through a
+        # symlink, and the CLI's own working-directory boundary resolves that
+        # link and refuses a shell file op on it ("resolves through a symlink
+        # to …, which is outside the allowed working directories" — run
+        # r20261006-162245 g10, `cp data/corpus.db …`, a plan verification
+        # item) unless the target is an added directory. Landlock still decides
+        # writes; this only widens what the CLI lets a command *read*.
+        self.extra_add_dirs = [Path(p) for p in extra_add_dirs or []]
         cache_env = worker_cache_env(self.cache_root, base=dict(os.environ))
         # HOME is never rewritten: `_claude_home`, transcript discovery,
         # `probe_claude_runtime_dirs` and the project-slug rule all key off it,
@@ -735,7 +746,11 @@ class SessionRunner:
             allowed += worktree_path_rules(self.allowed_tools, cwd)
         if allowed:
             argv += ["--allowedTools", ",".join(allowed)]
-        for add_dir in add_dirs:
+        added: list[Path] = []
+        for add_dir in [*add_dirs, *self.extra_add_dirs]:
+            if add_dir in added:
+                continue
+            added.append(add_dir)
             argv += ["--add-dir", str(add_dir)]
         denied = self.effective_disallowed_tools()
         if denied:

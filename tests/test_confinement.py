@@ -752,6 +752,23 @@ def test_cli_built_runner_is_confined_and_carries_safety_rules(tmp_path, monkeyp
     )
     assert configured.cache_root == Path("/somewhere/caches")
     assert configured.extra_write_paths == [Path("/opt/bun")]
+    assert configured.extra_add_dirs == []
+
+
+def test_cli_wires_data_dirs_as_read_roots_and_write_paths(tmp_path):
+    """With a repo root, the data layer's real directories are both Landlock
+    write paths and CLI read roots (`--add-dir`) — the second half was missing,
+    so a confined worker could write through `<worktree>/data` but the CLI
+    refused `cp data/corpus.db …` as outside its working directories (run
+    r20261006-162245 g10)."""
+    from orchestrator.cli import build_session_runner
+    from orchestrator.config import OrchestratorConfig
+
+    config = OrchestratorConfig.model_validate({"workspace": {"data_dirs": ["data", ".cache"]}})
+    runner = build_session_runner(config, repo_root=tmp_path)
+    assert tmp_path / "data" in runner.extra_add_dirs
+    assert tmp_path / ".cache" in runner.extra_add_dirs
+    assert set(runner.extra_add_dirs) <= set(runner.extra_write_paths)
 
 
 def test_the_worker_process_really_receives_the_cache_environment(tmp_path):
