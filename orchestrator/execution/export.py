@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1025,6 +1026,53 @@ def _dump_export_json(export: RunExport) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
+class TranscriptCensus(BaseModel):
+    """How many exported sessions have a resolvable transcript."""
+
+    total: int
+    missing: list[str]
+
+    @property
+    def ok(self) -> int:
+        return self.total - len(self.missing)
+
+    def line(self, run_id: str) -> str:
+        return (
+            f"export {run_id}: {self.ok}/{self.total} sessions with transcripts, "
+            f"{len(self.missing)} transcript_missing"
+        )
+
+
+def transcript_census(
+    repo_root: Path,
+    run_id: str,
+    *,
+    project: str | None = None,
+    transcript_root: Path | None = None,
+) -> TranscriptCensus:
+    """Count the sessions ``build_export`` will export whose transcript
+    ``_resolve_transcript`` cannot find. Writes nothing."""
+    from orchestrator.observatory.runs import build_snapshot
+
+    paths = RunPaths(repo_root, run_id)
+    if not paths.run_dir.is_dir():
+        raise ExportError(f"no run directory at {paths.run_dir}")
+    snapshot = build_snapshot(paths, project or repo_root.name)
+    if not snapshot.groups:
+        raise ExportError(f"run {run_id} has no manifest, state, or DAG to export")
+    root = transcript_root or default_transcript_root()
+    total = 0
+    missing: list[str] = []
+    for group in snapshot.groups:
+        for session in group.sessions:
+            if session.role == "orchestrator":
+                continue
+            total += 1
+            if _resolve_transcript(session.session_id, session.transcript_path, root)[1]:
+                missing.append(session.session_id)
+    return TranscriptCensus(total=total, missing=missing)
+
+
 def export_run(
     repo_root: Path,
     run_id: str,
@@ -1032,13 +1080,41 @@ def export_run(
     project: str | None = None,
     transcript_root: Path | None = None,
     out_dir: Path | None = None,
+    allow_missing: bool = False,
+    clear: bool = False,
 ) -> Path:
     """Build the contract and write the ``ingest/`` package atomically
     (``ingest.json`` plus ``events/<session_id>.jsonl.gz``). Returns the
-    package directory."""
+    package directory.
+
+    Refuses, before writing anything, a bundle with any ``transcript_missing``
+    session (unless ``allow_missing``) and a target already holding
+    ``ingest.json`` or ``events/`` (unless ``clear``, which removes exactly
+    those two entries)."""
     paths = RunPaths(repo_root, run_id)
     package_dir = out_dir or paths.run_dir / "ingest"
     events_dir = package_dir / "events"
+    census = transcript_census(repo_root, run_id, project=project, transcript_root=transcript_root)
+    if census.missing and not allow_missing:
+        raise ExportError(
+            f"{len(census.missing)}/{census.total} sessions transcript_missing "
+            f"({', '.join(census.missing)}); pass --allow-missing to export metadata only"
+        )
+    stale = [p for p in (package_dir / "ingest.json", events_dir) if p.exists()]
+    if stale:
+        # The default <run_dir>/ingest is the tool's own output and re-export
+        # there is the documented idempotent overwrite; only an explicit
+        # --out can hold someone else's (or a previous run's) files.
+        if out_dir is not None and not clear:
+            raise ExportError(
+                f"{package_dir} already holds an export "
+                f"({', '.join(p.name for p in stale)}); pass --clear to replace it"
+            )
+        for entry in stale:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
     export = build_export(
         paths,
         project=project or repo_root.name,
