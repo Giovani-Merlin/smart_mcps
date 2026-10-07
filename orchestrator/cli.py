@@ -1562,9 +1562,10 @@ def _cmd_plan_check(args: argparse.Namespace) -> int:
     # Repo-aware verification-item lint (r20260927-100604: a `bash -c … /tmp`
     # coder item halted the run and a wrong bundle path needed a driver
     # correction — both readable in the plan before launch).
-    from orchestrator.grouping.verification_lint import lint_verification
+    from orchestrator.grouping.verification_lint import lint_goal_symbols, lint_verification
 
     lint_problems, lint_warnings = lint_verification(plan_text, repo_root)
+    lint_warnings = [*lint_warnings, *lint_goal_symbols(plan_text, repo_root)]
     problems = [*problems, *lint_problems]
     for warning in lint_warnings:
         print(f"plan-check: warning: {warning}")
