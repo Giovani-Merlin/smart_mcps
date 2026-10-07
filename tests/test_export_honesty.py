@@ -99,3 +99,46 @@ def test_non_empty_out_refuses_and_clear_removes_only_the_export(tmp_path: Path)
     assert notes.read_text() == "keep me"
     assert (out / "ingest.json").is_file()
     assert (out / "events" / "aaa.jsonl.gz").is_file()
+
+
+def test_runner_session_without_transcript_is_not_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `run` recipe's attempt entry is a shell command, not a claude session:
+    the census neither counts it nor refuses over it (live run-recipe test,
+    r20261007-082701)."""
+    root = tmp_path / "projects"
+    _write_transcript(root, "slug", "aaa", text_after_base="work")
+    paths = _write_run(
+        tmp_path,
+        groups={
+            "g1": GroupManifestEntry(
+                group_id="g1",
+                group_name="render",
+                summary="s",
+                sessions=[
+                    _session(
+                        "g1-run-a1", SessionRole.RUNNER, started_at="2026-01-01T00:00:05+00:00"
+                    )
+                ],
+            ),
+            "g2": GroupManifestEntry(
+                group_id="g2",
+                group_name="alpha",
+                summary="s",
+                sessions=[
+                    _session("aaa", SessionRole.CODER, started_at="2026-01-01T00:00:06+00:00")
+                ],
+            ),
+        },
+        states={"g1": {"state": "completed"}, "g2": {"state": "completed"}},
+    )
+    monkeypatch.setattr(export_module, "default_transcript_root", lambda: root)
+    code = main(["export", RUN_ID, "--repo", str(paths.repo_root), "--out", str(tmp_path / "o")])
+    assert code == 0
+    assert "1/1 sessions with transcripts, 0 transcript_missing" in capsys.readouterr().out
+    payload = json.loads((tmp_path / "o" / "ingest.json").read_text())
+    flags = {
+        s["session_id"]: s["transcript_missing"] for g in payload["groups"] for s in g["sessions"]
+    }
+    assert flags == {"g1-run-a1": True, "aaa": False}

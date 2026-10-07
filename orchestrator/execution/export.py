@@ -1065,7 +1065,11 @@ def transcript_census(
     missing: list[str] = []
     for group in snapshot.groups:
         for session in group.sessions:
-            if session.role == "orchestrator":
+            if session.role in ("orchestrator", "runner"):
+                # Synthetic board rows, and a `run` recipe's attempt entry
+                # (`<gid>-run-a<n>`): the Run Child is a shell command, not a
+                # claude session, so there is no transcript to be missing
+                # (live r20261007-082701: a clean run was refused over it).
                 continue
             total += 1
             if _resolve_transcript(session.session_id, session.transcript_path, root)[1]:
