@@ -289,7 +289,8 @@ Evidence that a worker child is doing something, read by the orchestrator every
 heartbeat tick: a stream-json event of any type from the child, a live process
 whose parent is the child (a tool call in flight), or the child's own CPU ticks
 advancing. Any one suffices; none is a judgement about the work's quality or
-speed.
+speed. After a `result` event CPU ticks are not evidence — a child that finished
+its turn and is still alive is idle, not working.
 _Avoid_: heartbeat (that is the driver's own tick, which advances whether or not
 the child does anything), progress (implies the work is nearer done)
 
