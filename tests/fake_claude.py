@@ -453,7 +453,12 @@ def main() -> int:
             "total_cost_usd": float(scripted.get("total_cost_usd", 0.0)),
             "modelUsage": {},
         }
-        print(json.dumps(envelope))
+        print(json.dumps(envelope), flush=True)
+        if scripted.get("wait_stdin_eof"):
+            # The real CLI does not exit on its own `result` while stdin is
+            # open — it waits for the next message. Model that so a test can
+            # prove the orchestrator closes stdin in every follow-up shape.
+            sys.stdin.read()
         return finish(0)
     finally:
         if fork_lock is not None:

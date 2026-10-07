@@ -397,7 +397,8 @@ def sign_of_life(
         after the child's first assistant event — something the model
         launched, not an MCP server booted with the session (a child whose
         start time cannot be read is given the benefit of the doubt), or
-    (c) CPU ticks having advanced since the last sample.
+    (c) CPU ticks having advanced since the last sample — not consulted once
+        the child's newest stream event is `result`.
 
     Facts only — this never decides "stuck", it decides whether *this tick*
     saw evidence of life and, if so, what kind.
@@ -415,6 +416,11 @@ def sign_of_life(
         head = kids[0].cmdline or f"pid {kids[0].pid}"
         evidence = f'tool child "{head}" running'
         return SignOfLife(at=at, signal="tool_child", evidence=evidence, cpu_ticks=current_cpu)
+
+    # After a `result` the turn is over: a child that is still alive is idle,
+    # and its small background CPU draw is not evidence of work.
+    if child.last_event_type == "result":
+        return SignOfLife(at=None, signal=None, evidence="idle after result", cpu_ticks=current_cpu)
 
     if current_cpu is not None and prev_cpu is not None and current_cpu > prev_cpu:
         return SignOfLife(at=at, signal="cpu", evidence="cpu advancing", cpu_ticks=current_cpu)

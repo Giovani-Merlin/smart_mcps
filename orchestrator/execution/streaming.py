@@ -155,6 +155,18 @@ class SubprocessTracker(Protocol):
     def exited(self, pid: int) -> None: ...
 
 
+#: Seconds a mid-round follow-up's own ``result`` gets to *start* arriving
+#: (an ``assistant`` event) before stdin is closed anyway. The CLI folds a
+#: follow-up that lands while a turn is still running into that turn and emits
+#: ONE ``result`` for both — so counting "one result owed per follow-up" left
+#: stdin open forever (run r20261006-162245, g1: two redundant-read reminders,
+#: one result, 80 minutes blocked in epoll_wait at 0.6% CPU, which the liveness
+#: probe read as "cpu advancing"). Closing stdin early is harmless: a queued
+#: follow-up is still answered before the child exits on EOF (that is what
+#: ``end_round`` relies on).
+RESULT_GRACE_S = 20.0
+
+
 class StreamingProcess:
     """One tracked ``claude`` subprocess speaking stream-json in both directions.
 
@@ -180,8 +192,11 @@ class StreamingProcess:
         tracker: SubprocessTracker | None = None,
         context: str = "",
         preexec_fn: Callable[[], None] | None = None,
+        result_grace_s: float | None = None,
     ) -> None:
         self._argv = argv
+        self._result_grace_s = RESULT_GRACE_S if result_grace_s is None else result_grace_s
+        self._grace_timer: threading.Timer | None = None
         self._cwd = cwd
         self._env = env
         self.on_turn = on_turn
@@ -267,6 +282,10 @@ class StreamingProcess:
             if event_type in ("assistant", "user"):
                 self._safe_on_tool_event(event)
             if event_type == "assistant":
+                # A new turn is under way (a follow-up got its own turn after
+                # all): its `result` will decide when stdin closes.
+                with self._lock:
+                    self._cancel_grace_locked()
                 self._last_assistant_text = _assistant_text(event)[:_LAST_ASSISTANT_TEXT_MAX_CHARS]
                 usage = ((event.get("message") or {}).get("usage")) or {}
                 if usage:
@@ -290,14 +309,21 @@ class StreamingProcess:
                 # CPU, blocked in epoll_wait on an open stdin pipe.) EOF is what
                 # ends the process, so close stdin once nothing is outstanding.
                 # A follow-up sent mid-round still owes us its own `result`.
+                # A follow-up written while the turn was running is usually
+                # folded into it (one `result` for both), sometimes answered in
+                # a turn of its own. Neither is knowable here, so give the
+                # second case `RESULT_GRACE_S` to show an `assistant` event and
+                # close stdin otherwise — see the constant's note.
                 with self._lock:
                     if self._pending_followups > 0:
                         self._pending_followups -= 1
+                        self._arm_grace_locked()
                     else:
                         self._close_stdin_locked()
         # stdout is at EOF: the child is finishing or has died. Never leave stdin
         # open here, or a child that failed without a `result` wedges `wait()`.
         with self._lock:
+            self._cancel_grace_locked()
             self._close_stdin_locked()
 
     def _safe_on_event(self, event_type: str) -> None:
@@ -378,7 +404,20 @@ class StreamingProcess:
             # The child exited underneath us; `wait()` reports the real failure.
             self._stdin_closed = True
 
+    def _arm_grace_locked(self) -> None:
+        self._cancel_grace_locked()
+        timer = threading.Timer(self._result_grace_s, self.close_stdin)
+        timer.daemon = True
+        self._grace_timer = timer
+        timer.start()
+
+    def _cancel_grace_locked(self) -> None:
+        if self._grace_timer is not None:
+            self._grace_timer.cancel()
+            self._grace_timer = None
+
     def _close_stdin_locked(self) -> None:
+        self._cancel_grace_locked()
         if self._stdin_closed:
             return
         self._stdin_closed = True

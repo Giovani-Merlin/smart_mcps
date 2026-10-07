@@ -752,7 +752,9 @@ def test_llm_call_transcript_keeps_its_whole_first_message(tmp_path: Path) -> No
     paths = _run_with_one_group(tmp_path)
     _write_llm_index(paths, [_llm_call(1, "spec-1", transcript)])
 
-    destination = export_run(paths.repo_root, RUN_ID, project="proj", transcript_root=root)
+    destination = export_run(
+        paths.repo_root, RUN_ID, project="proj", transcript_root=root, allow_missing=True
+    )
     payload = json.loads((destination / "ingest.json").read_text())
     [call] = payload["llm_calls"]
     assert "base_context_stripped" not in call

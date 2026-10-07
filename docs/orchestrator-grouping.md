@@ -511,10 +511,17 @@ verbatim, or the operation is refused naming every difference it finds.
   every map entry have a matching `### U<N>.` section and vice versa), or,
   with `--against`, diffs two plans' task-map entries and unit ids
   byte-for-byte on the ids surviving in both and reports every difference —
-  used by `/orchestrator-deepen` to guard its own enrichment writes.
+  used by `/orchestrator-deepen` to guard its own enrichment writes. It also
+  runs a Goal-symbol lint: a backticked identifier used as the subject of a
+  change verb in a unit's Goal ("`X` gains", "`X` becomes") is looked up by a
+  regex over the repo's tracked Python files, and a warning
+  "U<N>: Goal changes X, defined in <file>, which is not in its Files" is
+  printed when none of the defining files is listed. The rule is
+  subject-verb only — a symbol the Goal merely calls is not flagged — and it
+  warns, never fails.
   **`plan-check` makes no LLM call and no codegraph call** — it is a pure
-  string/YAML operation over already-loaded plan text, sub-second even on the
-  repo's largest plan.
+  string/YAML operation over already-loaded plan text and a file scan,
+  sub-second even on the repo's largest plan.
 
 `split`'s per-document plan text is built directly from `plan_edit.py`'s
 extraction primitives (`split_units`, `extract_task_map_entries`,

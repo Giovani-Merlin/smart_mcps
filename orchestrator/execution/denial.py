@@ -227,7 +227,9 @@ def _rule_pattern(rule: str) -> str:
 _REMEDIES: dict[DenialKind, str] = {
     DenialKind.HARNESS_ALLOWLIST: (
         "the permission layer refused the call before it ran — add a matching rule "
-        "to [session] allowed_tools"
+        "to [session] allowed_tools; if the error says a path 'resolves through a "
+        "symlink … outside the allowed working directories', the target is a shared "
+        "data dir and must be a read root (`--add-dir`; [workspace] data_dirs are)"
     ),
     DenialKind.KERNEL_DENIED: (
         "the command ran and the kernel refused a write — the target is outside the "

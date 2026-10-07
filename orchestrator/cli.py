@@ -503,6 +503,16 @@ def main(
         default=None,
         help="project label recorded in the bundle (default: the repo directory name)",
     )
+    export_cmd.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="export metadata only for sessions whose transcript cannot be found",
+    )
+    export_cmd.add_argument(
+        "--clear",
+        action="store_true",
+        help="replace an existing ingest.json and events/ in --out (nothing else is removed)",
+    )
 
     report_cmd = subparsers.add_parser(
         "report", help="render a human-facing report from a finished run's artifacts"
@@ -1552,9 +1562,10 @@ def _cmd_plan_check(args: argparse.Namespace) -> int:
     # Repo-aware verification-item lint (r20260927-100604: a `bash -c … /tmp`
     # coder item halted the run and a wrong bundle path needed a driver
     # correction — both readable in the plan before launch).
-    from orchestrator.grouping.verification_lint import lint_verification
+    from orchestrator.grouping.verification_lint import lint_goal_symbols, lint_verification
 
     lint_problems, lint_warnings = lint_verification(plan_text, repo_root)
+    lint_warnings = [*lint_warnings, *lint_goal_symbols(plan_text, repo_root)]
     problems = [*problems, *lint_problems]
     for warning in lint_warnings:
         print(f"plan-check: warning: {warning}")
@@ -1770,6 +1781,9 @@ def build_session_runner(
     A construction site no test can see is a construction site that drifts.
     """
     session = config.session
+    # The real directories behind the data-layer links: Landlock write set
+    # *and* CLI read roots (`--add-dir`) — see `SessionRunner.extra_add_dirs`.
+    data_roots = data_layer_write_paths(repo_root, config.workspace) if repo_root else []
     return SessionRunner(
         claude_bin=session.claude_bin,
         model=session.model,
@@ -1787,8 +1801,9 @@ def build_session_runner(
         cache_root=_cache_root(session),
         extra_write_paths=[
             *(Path(p).expanduser() for p in session.extra_write_paths),
-            *(data_layer_write_paths(repo_root, config.workspace) if repo_root else []),
+            *data_roots,
         ],
+        extra_add_dirs=data_roots,
         gate=gate,
         auth_ladder=auth_ladder,
         auth_gate=auth_gate,
@@ -3310,15 +3325,19 @@ def _cmd_export(args: argparse.Namespace) -> int:
     Skills first). Pure read of the run directory → one atomic write."""
     # Local import: export pulls the Observatory's snapshot composer (fastapi)
     # that no other CLI path needs.
-    from orchestrator.execution.export import ExportError, export_run
+    from orchestrator.execution.export import ExportError, export_run, transcript_census
 
     repo_root = args.repo.resolve()
     try:
+        census = transcript_census(repo_root, args.run_id, project=args.project)
+        print(census.line(args.run_id))
         destination = export_run(
             repo_root,
             args.run_id,
             project=args.project,
             out_dir=args.out,
+            allow_missing=args.allow_missing,
+            clear=args.clear,
         )
     except ExportError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -182,7 +182,15 @@ class StubRunner:
         return self._round(session_id)
 
     def resume(
-        self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
+        self,
+        *,
+        session_id,
+        prompt,
+        cwd,
+        json_schema=None,
+        extra_allowed_tools=(),
+        add_dirs=(),
+        on_turn=None,
     ) -> RoundResult:
         self.prompts[session_id].append(prompt)
         self.extra_allowed_tools[session_id] = tuple(extra_allowed_tools)
@@ -1354,7 +1362,15 @@ async def test_reentry_falls_through_to_fork_when_warm_resume_raises(tmp_path):
     # fresh fork, logging the reason instead of the resumed-session line.
     class FailOnResume(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
+            self,
+            *,
+            session_id,
+            prompt,
+            cwd,
+            json_schema=None,
+            extra_allowed_tools=(),
+            add_dirs=(),
+            on_turn=None,
         ):
             if session_id == "sess-warm":
                 raise SessionError("claude exited 1")
@@ -1396,7 +1412,15 @@ async def test_a_usage_limit_on_reentry_does_not_spend_a_generation(tmp_path):
 
     class LimitOnResume(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
+            self,
+            *,
+            session_id,
+            prompt,
+            cwd,
+            json_schema=None,
+            extra_allowed_tools=(),
+            add_dirs=(),
+            on_turn=None,
         ):
             if session_id == "sess-warm":
                 raise UsageLimit("claude exited 1 (--resume …): Claude AI usage limit reached")
@@ -1433,7 +1457,15 @@ async def test_reentry_fork_failure_propagates_instead_of_retrying(tmp_path):
     # `interrupted` again (classification asserted by g1's scheduler tests).
     class AlwaysDown(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
+            self,
+            *,
+            session_id,
+            prompt,
+            cwd,
+            json_schema=None,
+            extra_allowed_tools=(),
+            add_dirs=(),
+            on_turn=None,
         ):
             raise SessionError("warm resume down")
 
@@ -1459,7 +1491,15 @@ async def test_coder_context_tokens_persist_after_every_round(tmp_path, monkeypa
     # once at generation end — the re-entry pre-check needs the freshest number.
     class GrowingContext(StubRunner):
         def resume(
-            self, *, session_id, prompt, cwd, json_schema=None, extra_allowed_tools=(), add_dirs=(), on_turn=None
+            self,
+            *,
+            session_id,
+            prompt,
+            cwd,
+            json_schema=None,
+            extra_allowed_tools=(),
+            add_dirs=(),
+            on_turn=None,
         ):
             self.context_tokens[session_id] = self.context_tokens.get(session_id, 1_000) + 5_000
             return super().resume(
@@ -2239,6 +2279,11 @@ async def test_merge_log_names_a_driver_run_item_the_coder_passed(tmp_path):
         ]
     )
     harness = Harness(tmp_path, StubRunner({"r1-g1-coder-g1": [report]}))
+    # The report gate holds a required driver item whose named pytest file is
+    # absent from the worktree (driver_items.py), so the file the item names
+    # must exist for a `pass` to be accepted.
+    (harness.workspace / "tests").mkdir()
+    (harness.workspace / "tests" / "test_x.py").write_text("def test_a():\n    pass\n")
     assert await harness.run(_driver_group()) == GroupState.COMPLETED
     lines = run_log_lines(harness)
     assert any("1 driver-run verification item(s) passed by the coder — g1-5" in ln for ln in lines)

@@ -329,10 +329,8 @@ def test_a_surprise_naming_the_sources_own_task_is_not_pending_for_the_source():
     board = SurpriseBoard(groups=thirteen_groups())
     board.mark(surprise("lint counts as verify", ["u16-play-route"]), source_group="g5")
     assert board.pending_for("g5") == []
-    # Nothing else was named either, so it is a run-level finding, not lost.
-    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == [
-        surprise("lint counts as verify", ["u16-play-route"])
-    ]
+    # Only the source was named: already in its report, so nothing is pending.
+    assert board.pending_for(SurpriseBoard.RUN_LEVEL) == []
     # A surprise naming the source's task *and* another group still reaches
     # the other group, and only it.
     board.mark(surprise("shape changed", ["u16-play-route", "g7"]), source_group="g5")

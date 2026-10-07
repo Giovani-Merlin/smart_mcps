@@ -143,6 +143,11 @@ class _RunExecution:
         self._heartbeat.mark_phase("worktree")
         self.workspace = await asyncio.to_thread(self.deps.workspace_for, self.group)
         log_event(self.paths, f"group {self.gid}: run recipe worktree ready at {self.workspace}")
+        log_event(
+            self.paths,
+            f"group {self.gid}: run recipe attempt {attempt_no} starting at command "
+            f"{start_idx + 1}/{len(self.args.commands)}",
+        )
         attempt_dir = run_dir / f"attempt-{attempt_no}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
         await self._before_commands(attempt_dir)
@@ -154,19 +159,20 @@ class _RunExecution:
             try:
                 result = await self._run_command(attempt_dir, n, command, cwd)
             except (TimedOut, CommandDied) as exc:
-                results.append(
-                    CommandResult(
-                        cmd=command.cmd,
-                        exit_status=124 if isinstance(exc, TimedOut) else 1,
-                        duration_s=command.wall_clock_min * 60.0,
-                    )
+                synthesised = CommandResult(
+                    cmd=command.cmd,
+                    exit_status=124 if isinstance(exc, TimedOut) else 1,
+                    duration_s=command.wall_clock_min * 60.0,
                 )
+                results.append(synthesised)
+                self._log_command(n, synthesised)
                 await self._triage_and_fail(
                     f"group {self.gid}: command {n}/{len(self.args.commands)} "
                     f"({command.cmd!r}) {exc}"
                 )
             results.append(result)
             self._commands.write_result(attempt_dir, n, result)
+            self._log_command(n, result)
             if result.exit_status != 0:
                 await self._triage_and_fail(
                     f"group {self.gid}: command {n}/{len(self.args.commands)} "
@@ -203,6 +209,13 @@ class _RunExecution:
         self._register_artifact(record, commit, measurements_missing, sha256)
         log_event(self.paths, f"group {self.gid}: run recipe completed")
         return GroupState.COMPLETED
+
+    def _log_command(self, n: int, result: CommandResult) -> None:
+        log_event(
+            self.paths,
+            f"group {self.gid}: command {n}/{len(self.args.commands)}"
+            f": exit {result.exit_status} ({result.duration_s:.1f}s)",
+        )
 
     # ---------------------------------------------------- runner session
 

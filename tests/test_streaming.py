@@ -147,6 +147,40 @@ def test_send_reaches_the_child_mid_round_and_is_echoed_back(fake_home, tmp_path
     assert result.text == "echo: hello from the orchestrator"
 
 
+def test_followups_folded_into_one_result_still_close_stdin(fake_home, tmp_path, monkeypatch):
+    """Two mid-round follow-ups, ONE `result` (the CLI folds messages that land
+    during a running turn into that turn), and a child that — like the real
+    CLI — only exits on stdin EOF. Before the grace close this wedged the round
+    forever: r20261006-162245 g1 sat 80 minutes in epoll_wait after its result."""
+    import time
+
+    from orchestrator.execution import streaming
+
+    monkeypatch.setattr(streaming, "RESULT_GRACE_S", 0.5, raising=False)
+    script(
+        fake_home,
+        {
+            "await_send": True,
+            "wait_stdin_eof": True,
+            "turns": [{"input_tokens": 5, "output_tokens": 1}],
+        },
+    )
+    runner = make_runner(fake_home)
+    sends = {"n": 0}
+
+    def on_turn(usage: TurnUsage, send) -> None:
+        if sends["n"] < 2:
+            sends["n"] += 1
+            send(f"reminder {sends['n']}")
+
+    started = time.monotonic()
+    result = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path, on_turn=on_turn)
+    elapsed = time.monotonic() - started
+    assert sends["n"] == 2
+    assert result.text == "echo: reminder 1"
+    assert elapsed < 10, f"round did not end after the folded follow-ups ({elapsed:.1f}s)"
+
+
 def test_nonzero_exit_raises_session_error_with_argv_context(fake_home, tmp_path):
     runner = make_runner(fake_home)
     base = runner.start_base(run_id="r1", base_context="ctx", cwd=tmp_path)
