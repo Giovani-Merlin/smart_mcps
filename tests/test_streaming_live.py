@@ -87,6 +87,34 @@ def test_a_mid_round_followup_is_answered_and_still_terminates(tmp_path: Path) -
     assert "SECOND" in (outcome.envelope.get("result") or "")
 
 
+def test_two_followups_mid_turn_still_terminate(tmp_path: Path) -> None:
+    """Two back-to-back `send()` calls from the first `on_turn` must not wedge.
+
+    Deliberately does not assert how many `result` events arrived or whether the
+    CLI folded the replies into one turn: folding is timing-dependent on the CLI
+    side, and a test pinning it would flake. Termination is the contract — the
+    live guard for the wedge that `RESULT_GRACE_S` closes.
+    """
+    stream = StreamingProcess(ARGV, cwd=tmp_path, env=dict(os.environ))
+    sent: list[int] = []
+
+    def on_turn(_usage) -> None:
+        if not sent:
+            sent.append(1)
+            stream.send("Now reply with exactly one word: SECOND")
+            stream.send("Then reply with exactly one word: THIRD")
+
+    stream.on_turn = on_turn
+    started = time.time()
+    stream.start(prompt="Reply with exactly: FIRST")
+    outcome = stream.wait()
+    elapsed = time.time() - started
+
+    assert elapsed < ROUND_TIMEOUT_S, f"round did not terminate ({elapsed:.0f}s)"
+    assert outcome.returncode == 0, outcome.stderr
+    assert outcome.envelope is not None
+
+
 def test_a_session_id_is_spent_by_its_first_use_and_the_cli_refuses_the_second(
     tmp_path: Path,
 ) -> None:
