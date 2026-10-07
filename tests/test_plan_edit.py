@@ -4,6 +4,7 @@ the `plan-check` CLI guard (plan U1).
 
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 
@@ -71,8 +72,18 @@ tasks:
 """
 
 
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
 def _raising_codegraph(*args, **kwargs):
-    raise AssertionError(f"plan-check must never touch codegraph or an LLM (args={args})")
+    # `plan-check` may shell out to `git` (the Goal-symbol lint lists tracked
+    # Python files with `git ls-files`); what it must never spawn is codegraph
+    # or a `claude` worker. Anything else runs for real.
+    argv = args[0] if args else kwargs.get("args", ())
+    tokens = [str(t) for t in (argv if isinstance(argv, (list, tuple)) else [argv])]
+    if any("codegraph" in t or Path(t).name == "claude" for t in tokens):
+        raise AssertionError(f"plan-check must never touch codegraph or an LLM (args={args})")
+    return _REAL_SUBPROCESS_RUN(*args, **kwargs)
 
 
 class TestExtractionAndReassembly:

@@ -30,8 +30,10 @@ a reference, and a redirect target is an output. Zero LLM, zero codegraph.
 
 from __future__ import annotations
 
+import keyword
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 from orchestrator.config import _BASE_ALLOWED_TOOLS, PATH_PREFIXES
@@ -39,8 +41,10 @@ from orchestrator.grouping.plan_edit import (
     PlanEditError,
     _parse_entry_fields,
     _safe_split_units,
+    _unit_key_for_task,
     extract_task_map_entries,
 )
+from orchestrator.grouping.plan_sections import _split_bullets
 from orchestrator.model import is_driver_run
 
 #: A verification bullet's command: ``Run: `cmd``` or ``Run (driver): `cmd```.
@@ -188,3 +192,118 @@ def lint_verification(plan_text: str, repo_root: Path) -> tuple[list[str], list[
                     "declared in any unit's files"
                 )
     return list(dict.fromkeys(problems)), list(dict.fromkeys(warnings))
+
+
+#: Verbs that make a backticked name the subject of a change in a Goal.
+_CHANGE_VERBS = (
+    "gains",
+    "becomes",
+    "now",
+    "no longer",
+    "extends",
+    "accepts",
+    "emits",
+    "prints",
+    "logs",
+    "raises",
+    "returns",
+    "refuses",
+    "drops",
+    "writes",
+    "reads",
+    "stops",
+    "is",
+    "are",
+)
+_DOTTED_NAME = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+_SUBJECT_VERB = re.compile(
+    "`(?P<name>" + _DOTTED_NAME + ")`(?:'s)?\\s+(?P<verb>" + "|".join(_CHANGE_VERBS) + ")\\b"
+)
+_DEFINITION = re.compile(r"^\s*(?:async\s+def|def|class)\s+(\w+)\b", re.MULTILINE)
+_SKIP_DIRS = {".venv", ".worktrees", "node_modules", ".git"}
+_MIN_SYMBOL_LEN = 4
+
+
+def _python_files(repo: Path) -> list[str]:
+    """Repo-relative tracked ``*.py`` paths (``git ls-files``, else a walk)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--", "*.py"],
+            capture_output=True,
+            check=True,
+        ).stdout.decode()
+        return [p for p in out.split("\0") if p]
+    except (OSError, subprocess.CalledProcessError):
+        return [
+            path.relative_to(repo).as_posix()
+            for path in repo.rglob("*.py")
+            if not _SKIP_DIRS.intersection(path.relative_to(repo).parts)
+        ]
+
+
+def _definitions_index(repo: Path) -> dict[str, set[str]]:
+    """Symbol name → repo-relative files that ``def``/``class`` it."""
+    index: dict[str, set[str]] = {}
+    for rel in _python_files(repo):
+        try:
+            text = (repo / rel).read_text(errors="replace")
+        except OSError:
+            continue
+        for name in _DEFINITION.findall(text):
+            index.setdefault(name, set()).add(rel)
+    return index
+
+
+def _unit_files(plan_text: str) -> dict[str, set[str]]:
+    """Unit key (``u7``) → the files its task-map entry declares."""
+    try:
+        doc = extract_task_map_entries(plan_text)
+    except PlanEditError:
+        return {}
+    if doc is None:
+        return {}
+    files: dict[str, set[str]] = {}
+    for task_id in doc.order:
+        key = _unit_key_for_task(task_id)
+        if key is None:
+            continue
+        try:
+            fields = _parse_entry_fields(doc.entries[task_id])
+        except Exception:  # a malformed entry is validate_plan's to report
+            continue
+        files.setdefault(key, set()).update(str(f) for f in fields.get("files") or [])
+    return files
+
+
+def lint_goal_symbols(plan_text: str, repo_root: Path) -> list[str]:
+    """Warnings for a unit whose Goal changes a symbol (a backticked name
+    followed by a change verb) defined only in files outside its ``files``.
+    A name defined nowhere is prospective; a bare mention is silent."""
+    unit_files = _unit_files(plan_text)
+    if not unit_files:
+        return []
+    index: dict[str, set[str]] | None = None
+    warnings: list[str] = []
+    for unit_id, unit_text in _safe_split_units(plan_text).items():
+        if unit_id not in unit_files:
+            continue
+        goal = _split_bullets(unit_text).get("Goal", "")
+        for match in _SUBJECT_VERB.finditer(goal):
+            segments = match.group("name").split(".")
+            names = {
+                n
+                for n in (segments[0], segments[-1])
+                if len(n) >= _MIN_SYMBOL_LEN and not keyword.iskeyword(n)
+            }
+            if not names:
+                continue
+            if index is None:
+                index = _definitions_index(repo_root.resolve())
+            defining = set().union(*(index.get(n, set()) for n in names))
+            if not defining or defining & unit_files[unit_id]:
+                continue
+            warnings.append(
+                f"{unit_id}: Goal changes {match.group('name')} ({match.group('verb')}), "
+                f"defined in {', '.join(sorted(defining))}, which is not in its Files"
+            )
+    return list(dict.fromkeys(warnings))

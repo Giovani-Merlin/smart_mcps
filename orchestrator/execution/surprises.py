@@ -126,28 +126,42 @@ class SurpriseBoard:
                 for key in self._resolve(gid, surprise, source_group):
                     if key != source_group and key not in keys:
                         keys.append(key)
+            if not keys and surprise.affected_groups:
+                # Every named target was the source itself: already in its
+                # report, so nothing is persisted — only an anchor line.
+                self._log_own_group_surprise(surprise, source_group)
+                return
             if not keys and self._group_ids is not None:
-                # No other group named (an empty list, or only the source
-                # itself): a finding about future work, which must reach the
-                # run's residue report rather than vanish.
+                # No group named at all: a finding about future work, which
+                # must reach the run's residue report rather than vanish.
                 keys.append(self.RUN_LEVEL)
             for key in keys:
                 self._append(key, surprise)
                 self._log_late_surprise(key, surprise, source_group)
             self._persist()
 
-    def _log_late_surprise(self, key: str, surprise: Surprise, source_group: str | None) -> None:
+    def _log_own_group_surprise(self, surprise: Surprise, source_group: str | None) -> None:
+        self._log_late_surprise(None, surprise, source_group)
+
+    def _log_late_surprise(
+        self, key: str | None, surprise: Surprise, source_group: str | None
+    ) -> None:
         """One anchor line in run.log for a surprise nobody will consume —
         non-blocking, no escalation: the driver greps `SURPRISE` and decides.
         The bucket is still appended as before, so the residue report and
-        every existing reader see exactly what they saw."""
+        every existing reader see exactly what they saw. Forms:
+        `→ (no target group)`, `→ <gid> (already merged)`,
+        `→ <gid> (<recipe> recipe, no coder)`, and — `key` None, nothing
+        persisted — `→ (own group; already in its report)`."""
         if self._paths is None:
             return
         src = source_group or "?"
         desc = " ".join(surprise.description.split())
         if len(desc) > 200:
             desc = desc[:199] + "…"
-        if key == self.RUN_LEVEL:
+        if key is None:
+            line = f"SURPRISE [{surprise.kind}] group {src} → (own group; already in its report): {desc}"
+        elif key == self.RUN_LEVEL:
             line = f"SURPRISE [{surprise.kind}] group {src} → (no target group): {desc}"
         elif self._settled(key):
             line = f"SURPRISE [{surprise.kind}] group {src} → {key} (already merged): {desc}"
@@ -240,7 +254,7 @@ class SurpriseBoard:
 #: consume it at; ``RUN_LEVEL`` never named a group at all; anything else was
 #: still reachable when the run stopped.
 REASON_GROUP_COMPLETED = "never delivered — group already completed"
-REASON_UNKNOWN_GROUP = "unknown group id"
+REASON_UNKNOWN_GROUP = "no target group named, or an unknown id"
 REASON_RUN_ENDED = "run ended before delivery"
 
 

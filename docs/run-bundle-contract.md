@@ -126,6 +126,16 @@ content is already carried by `rewrites`.
 | `tokens`                  | `ExportTokens`            | all-zero means "not recorded", not "zero spent" — see below                                                                                                                                                                                                                                             |
 | `cost_usd`                | float                     | summed `total_cost_usd` of the session's round envelopes; `0.0` means "not recorded" (same convention as `tokens`). Added additively, v2 — absent on bundles exported before it                                                                                                                         |
 
+**Export census and refusals.** Before writing anything, `export` counts the
+sessions whose transcript cannot be resolved and prints
+`export <run>: <ok>/<total> sessions with transcripts, <missing> transcript_missing`.
+If any session is missing, the export refuses (exit 1, nothing written)
+unless `--allow-missing` is passed — the one legitimate case is a run whose
+transcripts are gone for good, and the resulting bundle is metadata-only for
+those sessions. An `--out` that already holds `ingest.json` or `events/`
+also refuses unless `--clear`, which removes only those two entries first;
+without it a re-export would leave stale `events/*.jsonl.gz` behind.
+
 `ExportTokens` (`input`, `output`, `cache_read`, `cache_creation`, all int):
 this is the one place the contract deliberately uses `0` instead of `null`
 for an absent value, because the manifest itself already treats `0` as

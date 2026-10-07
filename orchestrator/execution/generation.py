@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from orchestrator.execution.artifacts import ArtifactEntry, render_artifact_inputs_block
 from orchestrator.execution.denial import classify_denial, denial_remedy
+from orchestrator.execution.driver_items import driver_items_naming_missing_tests
 from orchestrator.execution.heartbeat import RoundHeartbeat
 from orchestrator.execution.manifest import artifact_name, completed_round_count
 from orchestrator.execution.prompting import (
@@ -471,6 +472,10 @@ class GenerationLoop:
         # `_review_round` creates no reviewer for that tier, so without it
         # the coder's own `status` field is the entire gate.
         gaps = unmet_required_verification(self.group.verification, report.verification_results)
+        if self.group.recipe == "code":
+            gaps += driver_items_naming_missing_tests(
+                self.group.verification, report.verification_results, Path(self.workspace)
+            )
         if gaps:
             verdict: ReviewerVerdict | None = ReviewerVerdict(
                 status="changes_required",
