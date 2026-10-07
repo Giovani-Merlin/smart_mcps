@@ -1,0 +1,1038 @@
+{
+  "run_id": "r20261007-082701",
+  "plan_path": "docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md",
+  "plan_title": "Fixes from run r20261006-162245 — export honesty, result-aware liveness, run phase lines, own-group surprises, the live-tier guard, and two plan-check seeds",
+  "plan_objective": "Close the tool-side backlog that driving infinity-skills run r20261006-162245\nleft behind (`.orchestrator/notes-driver-findings-r20261006-162245.md`,\nitems 3–7) plus the two seeds the previous smart_mcps run left open (S1, S2\nin `.orchestrator/notes-r20261006-115802.md`), on the branch that already\ncarries the two mid-run fixes (`fix/stream-result-grace-close`, PR #19).\nEvery unit is a defect with a regression test, or a guard against the class\nof defect that cost the most driver time:\n\n- `export` wrote metadata-only bundles with exit 0 and \"wrote <dir>\" when the\n  raw transcripts were gone, and re-exporting into an existing `--out` left\n  stale `events/*.jsonl.gz` behind — one wasted hour-long rebuild.\n- The liveness probe read an idle child's 0.6% CPU as \"cpu advancing\" for 94\n  minutes after its `result` event, so no `not live` line ever came.\n- A `run` recipe's per-command phases live only in heartbeat labels and\n  `attempt-*/n.result.json`; a plan item that greps `run.log` for\n  `command N/6` cannot pass.\n- A surprise naming only its own group is bucketed `__run__` and reported at\n  `finish` as \"unknown group id\".\n- Nothing runs the worker-seam live tests before a run; wedge 2 (data_dirs\n  not a read root) was exactly a live-coverage gap.\n- S1: a `Run (driver):` item naming a test that does not exist passes the\n  gate and the merge; the driver finds out after the run.\n- S2: a unit whose Goal says a symbol changes while the symbol's file is not\n  in its Files groups wrong and surprises the wrong group; `plan-check` says\n  nothing.\n\nNot in scope (decided 2026-10-07): checking a `Run:` line's flags against the\nprogram's `--help` (the `--db` case), the token undercount from r20260927, a\n`data_dirs` path lint (moot after 815b118), and the optimize KPI loop.",
+  "origin": "direct",
+  "created_at": "2026-10-07T06:30:33.707996+00:00",
+  "finished_at": null,
+  "pr_url": null,
+  "git_range": {
+    "base_sha": "78b4232afee09f9f0266927b6081f46438c19fd7",
+    "tip_sha": "aa6d8fde5edf41cab1af0dead65a98f14babb211",
+    "available": true
+  },
+  "changed_files": [
+    {
+      "path": "CONTEXT.md",
+      "added": 2,
+      "deleted": 1,
+      "group_id": "g2"
+    },
+    {
+      "path": "docs/orchestrator-grouping.md",
+      "added": 10,
+      "deleted": 3,
+      "group_id": "g8"
+    },
+    {
+      "path": "docs/run-bundle-contract.md",
+      "added": 10,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/cli.py",
+      "added": 17,
+      "deleted": 2,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/driver_items.py",
+      "added": 83,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/export.py",
+      "added": 81,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/generation.py",
+      "added": 5,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/liveness.py",
+      "added": 7,
+      "deleted": 1,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/execution/run_executor.py",
+      "added": 19,
+      "deleted": 6,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/execution/surprises.py",
+      "added": 21,
+      "deleted": 7,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/grouping/verification_lint.py",
+      "added": 119,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "skills/orchestrator-deepen/SKILL.md",
+      "added": 12,
+      "deleted": 10,
+      "group_id": "g8"
+    },
+    {
+      "path": "skills/orchestrator-run/SKILL.md",
+      "added": 47,
+      "deleted": 29,
+      "group_id": "g8"
+    },
+    {
+      "path": "tests/test_export.py",
+      "added": 3,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_export_honesty.py",
+      "added": 144,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_goal_symbol_lint.py",
+      "added": 63,
+      "deleted": 0,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_liveness_after_result.py",
+      "added": 66,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "tests/test_named_test_hold.py",
+      "added": 101,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_plan_edit.py",
+      "added": 12,
+      "deleted": 1,
+      "group_id": null
+    },
+    {
+      "path": "tests/test_review_loop.py",
+      "added": 50,
+      "deleted": 5,
+      "group_id": null
+    },
+    {
+      "path": "tests/test_run_phase_lines.py",
+      "added": 66,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_run_recipe_live.py",
+      "added": 7,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_streaming_live.py",
+      "added": 28,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_surprise_board.py",
+      "added": 2,
+      "deleted": 4,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_surprise_own_group.py",
+      "added": 60,
+      "deleted": 0,
+      "group_id": "g4"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear",
+      "recipe": "code",
+      "summary": "`smart-mcps-orchestrate export` counts sessions whose transcript cannot be resolved before writing anything, prints `ex…",
+      "report_summary": "export now computes a transcript census before writing, refuses (exit 1, nothing written) when any session is transcript_missing unless --allow-missing, and refuses an explicit --out already holding ingest.json or events/ unless --clear (which removes only those two). The CLI always prints the census line before 'wrote'. Added transcript_census() in export.py (export_run still returns a Path so existing callers are unchanged); the stale-target guard applies only to an explicit --out, since the default <run_dir>/ingest is idempotently overwritten by existing contract and tests. One existing test in tests/test_export.py was updated to pass allow_missing=True. New tests/test_export_honesty.py added.",
+      "spec": "# Group g1: export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear\n\nMembers:\n- u1-export-honesty: export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U1. export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear\n\n- **Summary**: `smart-mcps-orchestrate export` counts sessions whose transcript cannot be resolved before writing anything, prints `export <run>: <ok>/<total> sessions with transcripts, <missing> transcript_missing`, refuses (exit 1, target untouched) when any is missing unless `--allow-missing`, and refuses a `--out` that already holds `ingest.json` or `events/` unless `--clear` removes those two first.\n- **Goal**: `export_run` gains `allow_missing: bool = False` and `clear: bool = False` and returns, beside the package directory, the census it computed (a small `TranscriptCensus(total: int, missing: list[str])` dataclass, or a tuple — the CLI prints it). Before `build_export` runs it computes the census over the same sessions `build_export` will export — one `(session_id, recorded_path)` pair per session of `build_snapshot(paths, project).groups`, resolved with the existing `_resolve_transcript` rule — and raises `ExportError(\"<missing>/<total> sessions transcript_missing (<ids>); pass --allow-missing to export metadata only\")` when `missing > 0 and not allow_missing`. It then checks the target: if `package_dir / \"ingest.json\"` or `package_dir / \"events\"` exists and `clear` is false, it raises `ExportError` naming the directory and `--clear`; with `clear` it removes exactly those two entries and nothing else in the directory. Only then does it build and write. `_cmd_export` gains `--allow-missing` and `--clear`, always prints the census line (stdout) before `wrote <dir>`, and prints the `ExportError` on stderr with exit 1 as today.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/export.py`, `orchestrator/cli.py`, `tests/test_export_honesty.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_honesty.py -q` Pass: green; the file builds a two-session run with `_write_run` from `tests/test_export.py` and covers: both transcripts present → `export_run` writes and the CLI prints `2/2 sessions with transcripts, 0 transcript_missing`; one transcript absent → `ExportError` names `1/2`, no `ingest.json` and no `events/` exist afterwards; the same with `allow_missing=True` → written, session marked `transcript_missing`; a target holding a stale `events/stale.jsonl.gz` and a sibling `notes.txt` → refused naming the directory, and with `clear=True` the stale file is gone, `notes.txt` survives, the new package is written.\n  - Run: `uv run python -c \"import shutil,subprocess,sys,pathlib; src=pathlib.Path('tests/fixtures/runs/r20260828-220035'); root=pathlib.Path('.coder-scratch/u1-repo'); dst=root/'.orchestrator'/'runs'/src.name; shutil.rmtree(root, ignore_errors=True); shutil.copytree(src, dst); p=subprocess.run([sys.executable,'-m','orchestrator.cli','export',src.name,'--repo',str(root),'--out','.coder-scratch/u1-out'],capture_output=True,text=True); print(p.returncode); print(p.stdout); print(p.stderr); sys.exit(0 if p.returncode==1 and 'transcript_missing' in p.stdout+p.stderr and not pathlib.Path('.coder-scratch/u1-out/ingest.json').exists() else 1)\"` Pass: prints `1`, the census line names every fixture session as missing, and no `ingest.json` was written — the CLI under test on the real fixture run, whose transcripts exist on no machine.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "f6b831cf9c1f0d4e95ee300540942b9817b0a536",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-export-honesty"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/execution/export.py",
+        "tests/test_export_honesty.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/export.py",
+        "tests/test_export.py",
+        "tests/test_export_honesty.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:30:36.378164+00:00",
+          "ended_at": "2026-10-07T06:35:50.504+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 28,
+            "output": 10093,
+            "cache_creation": 89471
+          },
+          "cache_read_tokens": 1045160
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2264,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g2",
+      "name": "result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result",
+      "recipe": "code",
+      "summary": "`sign_of_life` no longer counts advancing CPU ticks as a Sign of Life once a child's newest stream event is `result`, s…",
+      "report_summary": "sign_of_life now skips the CPU signal when the child's last_event_type is 'result', returning signal None with evidence 'idle after result' (cpu_ticks still returned). Signals (a) and (b) are unchanged. CONTEXT.md's Sign of Life entry has the new sentence. Added tests/test_liveness_after_result.py with real-/proc busy-child tests. Committed; tree clean.",
+      "spec": "# Group g2: result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result\n\nMembers:\n- u2-result-aware-liveness: result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U2. result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result\n\n- **Summary**: `sign_of_life` no longer counts advancing CPU ticks as a Sign of Life once a child's newest stream event is `result`, so an idle child that never exited is reported `not live` after one Liveness Window instead of \"cpu advancing\" for hours; `CONTEXT.md`'s Sign of Life entry says so.\n- **Goal**: in `sign_of_life` (liveness.py), signal (c) is evaluated only when `child.last_event_type != \"result\"`; when it is skipped and no other signal fired, the returned evidence is `idle after result` (with `cpu_ticks` still returned so the next tick's `prev_cpu` stays correct). Signals (a) and (b) are unchanged, so a `result` inside the window still reads as `event result Ns ago` and a tool child still counts. `CONTEXT.md`'s **Sign of Life** entry (line 287) gains one sentence: after a `result` event CPU ticks are not evidence — a child that finished its turn and is still alive is idle, not working.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/liveness.py`, `CONTEXT.md`, `tests/test_liveness_after_result.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_liveness_after_result.py -q` Pass: green; the file spawns a real busy child (`python -c \"while True: pass\"`), builds a `ChildActivity` whose `last_event_at` is older than the window, and asserts against the real `/proc`: with `last_event_type=\"assistant\"` two consecutive `sign_of_life` calls yield `signal == \"cpu\"`; with `last_event_type=\"result\"` they yield `signal is None` and evidence `idle after result`; with `last_event_type=\"result\"` and `last_event_at` inside the window the signal is `event`; the child is killed in a `finally`.\n  - Run: `uv run pytest tests/test_liveness.py tests/test_liveness_wiring.py tests/test_heartbeat.py -q` Pass: green, unchanged — the fake-`/proc` suites still pass, proving (a) and (b) and the `cpu flat`/`no signal` evidence are untouched.\n  - Run: `grep -n \"idle after result\\|not evidence\" CONTEXT.md` Pass: the Sign of Life entry carries the new sentence.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "4144f6adb4bf552207b49e3380cb27e88c26fadb",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u2-result-aware-liveness"
+      ],
+      "planned_files": [
+        "CONTEXT.md",
+        "orchestrator/execution/liveness.py",
+        "tests/test_liveness_after_result.py"
+      ],
+      "touched_files": [
+        "CONTEXT.md",
+        "orchestrator/execution/liveness.py",
+        "tests/test_liveness_after_result.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:35:52.977922+00:00",
+          "ended_at": "2026-10-07T06:40:06.876+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 12,
+            "output": 3561,
+            "cache_creation": 57136
+          },
+          "cache_read_tokens": 352399
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2266,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g3",
+      "name": "run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log",
+      "recipe": "code",
+      "summary": "a `run` recipe writes one `run.log` line per command (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`) and one pe…",
+      "report_summary": "Added _log_command and an attempt-start log line in run_executor.py (run.log gets 'command n/total: exit k (N.Ns)' per command, including the TimedOut/CommandDied branch, and 'run recipe attempt a starting at command s/total'). Added tests/test_run_phase_lines.py (2 tests) and a run.log assertion in tests/test_run_recipe_live.py. The new tests pass and the existing test_run_executor.py suite stays green; the live llm test was not run.",
+      "spec": "# Group g3: run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log\n\nMembers:\n- u3-run-phase-lines: run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U3. run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log\n\n- **Summary**: a `run` recipe writes one `run.log` line per command (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`) and one per attempt start (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`), so a plan item or a driver can grep the phases instead of reading heartbeat labels and `attempt-*/n.result.json`.\n- **Goal**: in `_RunExecution.execute` (run_executor.py), after `attempt_no, start_idx, results = self._start_attempt(run_dir)` and the worktree line, write the attempt line through `log_event` with `start_idx + 1` and `len(self.args.commands)`; after every `write_result` (success or non-zero exit, before the triage call), write the command line with `result.exit_status` and `result.duration_s` formatted `.1f`; the TimedOut/CommandDied branch writes the same shape with its synthesised `CommandResult` before its existing failure line. `tests/test_run_recipe_live.py` gains one assertion that `logs/run.log` of its completed run contains a line matching `command 1/\\d+: exit 0 \\(`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/run_executor.py`, `tests/test_run_recipe_live.py`, `tests/test_run_phase_lines.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_run_phase_lines.py -q` Pass: green; the file reuses `repo`, `make_group`, `make_deps` and `_run` from `tests/test_run_executor.py` and asserts, on a two-command unit, that `run.log` holds `run recipe attempt 1 starting at command 1/2`, `command 1/2: exit 0 (`, `command 2/2: exit 0 (` in that order; on a unit whose second command exits 3 the line reads `command 2/2: exit 3 (` and precedes the existing `exited 3` failure line; on a `retry` after that failure the new attempt line reads `attempt 2 starting at command 2/2`.\n  - Run (driver): `uv run pytest tests/test_run_recipe_live.py -m llm -q --basetemp=.orchestrator/live-u3` Pass: green including the new `run.log` assertion — a real two-group run through the CLI, the only oracle that exercises the real `log_event` path end to end.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "e6093b52e67938087f230f319df20b819f11ff2b",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-run-phase-lines"
+      ],
+      "planned_files": [
+        "orchestrator/execution/run_executor.py",
+        "tests/test_run_phase_lines.py",
+        "tests/test_run_recipe_live.py"
+      ],
+      "touched_files": [
+        "tests/test_run_phase_lines.py",
+        "tests/test_run_recipe_live.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:40:09.635511+00:00",
+          "ended_at": "2026-10-07T06:45:50.884+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 22,
+            "output": 5835,
+            "cache_creation": 67196
+          },
+          "cache_read_tokens": 760050
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2268,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g4",
+      "name": "own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"",
+      "recipe": "code",
+      "summary": "`SurpriseBoard.mark` drops a surprise whose every target resolves to its own source group, writing one `SURPRISE … → (o…",
+      "report_summary": "SurpriseBoard.mark now drops a surprise whose every target resolves to its own source group, logging the own-group anchor line and persisting nothing; empty affected_groups and unknown ids still go to __run__. REASON_UNKNOWN_GROUP now reads 'no target group named, or an unknown id'. Added tests/test_surprise_own_group.py and updated one existing test that pinned the old own-task-to-run-level behaviour.",
+      "spec": "# Group g4: own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"\n\nMembers:\n- u4-own-group-surprise: own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U4. own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"\n\n- **Summary**: `SurpriseBoard.mark` drops a surprise whose every target resolves to its own source group, writing one `SURPRISE … → (own group; already in its report)` anchor to `run.log` and persisting nothing, and the residue reason for the `__run__` bucket reads \"no target group named, or an unknown id\" so `finish` stops reporting a resolved group's own finding as an unknown id.\n- **Goal**: in `mark` (surprises.py), distinguish \"no targets were named\" (`not surprise.affected_groups`) from \"every named target was the source\": the latter writes the own-group anchor through the existing `_log_late_surprise` path (a new branch for that case, line shape `SURPRISE [<kind>] group <src> → (own group; already in its report): <desc>`) and returns before `_append`/`_persist`; the former keeps today's `RUN_LEVEL` behaviour. The value of `REASON_UNKNOWN_GROUP` becomes `\"no target group named, or an unknown id\"` (the constant name stays). `_log_late_surprise`'s docstring lists the new form.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/surprises.py`, `tests/test_surprise_own_group.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_surprise_own_group.py -q` Pass: green; the file builds a board with real `RunPaths` under a temp dir (group list `g1`, `g2`) and asserts: `mark(Surprise(kind=\"other\", description=\"…\", affected_groups=[\"g1\"]), source_group=\"g1\")` leaves `surprises.json` absent or without any bucket and writes a `run.log` line containing `group g1 → (own group; already in its report)`; `affected_groups=[]` from `g1` lands in `__run__` and `surprise_residue` labels it with the new reason text; `affected_groups=[\"g2\"]` from `g1` still lands in `g2`; `affected_groups=[\"zzz\"]` lands in `__run__`.\n  - Run: `uv run pytest tests/test_surprise_board.py tests/test_informational_surprise.py tests/test_finish.py -q` Pass: green — every existing bucket, dedup, task-alias and residue behaviour is unchanged except the one reason string, which those tests are updated to match if they pin it.\n  - Run: `uv run python -c \"import json,pathlib,tempfile; from orchestrator.execution.manifest import RunPaths; from orchestrator.execution.surprises import SurpriseBoard, surprise_residue, format_residue_report; from orchestrator.model import Surprise; pathlib.Path('.coder-scratch').mkdir(exist_ok=True); d=pathlib.Path(tempfile.mkdtemp(dir='.coder-scratch')); paths=RunPaths(d,'rX'); paths.run_dir.mkdir(parents=True); paths.surprises_path.write_text(json.dumps({'__run__':[{'kind':'other','description':'future work','affected_groups':[]}]})); print(format_residue_report(surprise_residue(paths, None)))\"` Pass: the printed report reads `__run__: 1 pending — no target group named, or an unknown id` — the real residue renderer over a real `surprises.json`.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "e67c718710f92607bc4be0ebee799bcfa8f69a45",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u4-own-group-surprise"
+      ],
+      "planned_files": [
+        "orchestrator/execution/surprises.py",
+        "tests/test_surprise_own_group.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/surprises.py",
+        "tests/test_surprise_board.py",
+        "tests/test_surprise_own_group.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:45:53.373740+00:00",
+          "ended_at": "2026-10-07T06:50:16.814+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 16,
+            "output": 5158,
+            "cache_creation": 64957
+          },
+          "cache_read_tokens": 526842
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2273,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g4/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g5",
+      "name": "live-tier-guard — the streaming live suite gains a two-follow-up termination test",
+      "recipe": "code",
+      "summary": "`tests/test_streaming_live.py` gains a test that sends two follow-ups mid-turn and asserts the round still terminates,…",
+      "report_summary": "Added test_two_followups_mid_turn_still_terminate to tests/test_streaming_live.py (two back-to-back send() calls from the first on_turn; asserts termination, returncode 0, envelope present; no folding/result-count assertions, docstring explains why). Committed. Collect-only lists it beside the existing tests.",
+      "spec": "# Group g5: live-tier-guard — the streaming live suite gains a two-follow-up termination test\n\nMembers:\n- u5-live-tier-guard: live-tier-guard — the streaming live suite gains a two-follow-up termination test\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U5. live-tier-guard — the streaming live suite gains a two-follow-up termination test\n\n- **Summary**: `tests/test_streaming_live.py` gains a test that sends two follow-ups mid-turn and asserts the round still terminates, whatever the CLI folds — the live guard for the wedge that `RESULT_GRACE_S` closes.\n- **Goal**: `tests/test_streaming_live.py` gains `test_two_followups_mid_turn_still_terminate`: from the first `on_turn` it calls `stream.send(...)` twice back to back (two different one-word replies requested), then asserts `elapsed < ROUND_TIMEOUT_S`, `outcome.returncode == 0` and `outcome.envelope is not None`; it must not assert how many `result` events arrived or whether the replies were folded, and its docstring says why (folding is timing-dependent on the CLI side; termination is the contract).\n- **Recipe**: —\n- **Files**: `tests/test_streaming_live.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_streaming_live.py -m llm --collect-only -q` Pass: lists `test_two_followups_mid_turn_still_terminate` beside the four existing tests (zero tokens).\n  - Run (driver): `uv run pytest -m llm tests/test_streaming_live.py -q --basetemp=.orchestrator/live-u5` Pass: green, the new test included — the real CLI is the oracle.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "55796ac2be7d8d334acb9dc161b30358596eb939",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u5-live-tier-guard"
+      ],
+      "planned_files": [
+        "tests/test_streaming_live.py"
+      ],
+      "touched_files": [
+        "tests/test_streaming_live.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:50:19.726847+00:00",
+          "ended_at": "2026-10-07T06:54:12.826+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 8,
+            "output": 1504,
+            "cache_creation": 55019
+          },
+          "cache_read_tokens": 212542
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2273,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g5/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g6",
+      "name": "named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate",
+      "recipe": "code",
+      "summary": "`_settle_round`'s report-level gate gains `driver_items_naming_missing_tests(items, results, worktree)`, which turns ev…",
+      "report_summary": "Added orchestrator/execution/driver_items.py with driver_items_naming_missing_tests, wired it into _settle_round (code groups only) right after unmet_required_verification, and added tests/test_named_test_hold.py including a Harness-based test showing the gap reaches the changes_required verdict's required_changes. All verification items pass; work committed.",
+      "spec": "# Group g6: named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate\n\nMembers:\n- u6-named-test-hold: named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U6. named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate\n\n- **Summary**: `_settle_round`'s report-level gate gains `driver_items_naming_missing_tests(items, results, worktree)`, which turns every required `Run (driver):` item whose `Run:` is a pytest invocation naming a file (or `file::name`) that does not exist in the worktree into a `changes_required` gap telling the coder to write the test or report the item `skipped` with the reason, so a driver item with no test behind it is caught while a coder can still act.\n- **Goal**: new module `orchestrator/execution/driver_items.py` with `driver_items_naming_missing_tests(items: list[VerificationItem], results: list[VerificationResult], worktree: Path) -> list[str]`: for each item with `required and driver_run` whose result (if any) is not `skipped` with non-empty notes, extract the `Run:` command with `_RUN_ITEM_RE` from `orchestrator/recipes/run.py`, split on the shell operators `&&`, `||`, `;`, `|`, and for a segment whose program is `pytest` (bare, `uv run pytest`, `python -m pytest`) take every argument matching `[\\w./-]+\\.py(::[\\w\\[\\]-]+)*`; a file absent from the worktree, or a `::name` whose first segment is not found as `def <name>` / `class <name>` in that file, yields one gap string `driver item <id> names <path> which does not exist in the worktree — write it (the driver runs it after the merge) or report the item skipped with the reason`. `_settle_round` (generation.py) extends `gaps` with it right after `unmet_required_verification`, for `code` groups only.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/driver_items.py` *(new, small)*, `orchestrator/execution/generation.py`, `tests/test_named_test_hold.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_named_test_hold.py -q` Pass: green; the file writes a temp worktree with `tests/test_a.py` containing `def test_one` and asserts, for a required driver item whose Run line is `uv run pytest tests/test_a.py::test_one -m llm`: no gap; the same naming `tests/test_b.py`: one gap naming `tests/test_b.py`; the same naming `tests/test_a.py::test_two`: one gap naming `::test_two`; a driver item whose Run line is not pytest: no gap; an optional item: no gap; a required non-driver item: no gap (that is `unmet_required_verification`'s job); an item whose latest result is `skipped` with notes \"no fixture available\": no gap; and, through `make_deps`-style wiring or a direct call of the gate code path, that the gap text reaches the `changes_required` verdict's `required_changes`.\n  - Run: `uv run pytest tests/test_driver_run_items.py tests/test_merge.py -q` Pass: green — a driver item with a real test still passes the gate untouched and the merge-time logging is unchanged.\n  - Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.driver_items import driver_items_naming_missing_tests as f; from orchestrator.model import VerificationItem as V; print(f([V(id='x', description='Run (driver): uv run pytest tests/test_read_roots.py::test_a_copy_through_a_data_symlink_runs_only_with_the_target_as_add_dir -m llm'), V(id='y', description='Run (driver): uv run pytest tests/test_nope.py -m llm')], [], Path('.')))\"` Pass: prints a one-element list naming `tests/test_nope.py` — the real repo tree as the oracle (the Run line without backticks is the second form `_RUN_ITEM_RE` accepts).\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "d07e4965cb3ed060151b2523a710206439d16bd9",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u6-named-test-hold"
+      ],
+      "planned_files": [
+        "orchestrator/execution/driver_items.py",
+        "orchestrator/execution/generation.py",
+        "tests/test_named_test_hold.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/driver_items.py",
+        "orchestrator/execution/generation.py",
+        "tests/test_named_test_hold.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T06:54:15.358990+00:00",
+          "ended_at": "2026-10-07T07:04:01.314+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 22,
+            "output": 7549,
+            "cache_creation": 68855
+          },
+          "cache_read_tokens": 751085
+        }
+      ],
+      "escalations": [
+        {
+          "id": "9f5d036ceabc",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g6: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261007-082701/groups/g6/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261007-082701/groups/g6/preflight-check-pytest.log",
+          "created_at": "2026-10-07T06:59:02.258912Z",
+          "request_path": "escalations/request-9f5d036ceabc.json",
+          "response_path": "escalations/response-9f5d036ceabc.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2284,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g6/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g7",
+      "name": "goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files",
+      "recipe": "code",
+      "summary": "`plan-check` gains a zero-codegraph lint that reads every unit's Goal for a backticked identifier used as the subject o…",
+      "report_summary": "Added lint_goal_symbols to orchestrator/grouping/verification_lint.py (subject-verb backticked-name detection, definitions index via git ls-files with rglob fallback, warn when defining files are outside the unit's task-map files) and wired it into _cmd_plan_check as warnings. Added tests/test_goal_symbol_lint.py. All three verification items pass; committed.",
+      "spec": "# Group g7: goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files\n\nMembers:\n- u7-goal-symbol-lint: goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g8 consumes `u8-docs-sweep` — u8-docs-sweep: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U7. goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files\n\n- **Summary**: `plan-check` gains a zero-codegraph lint that reads every unit's Goal for a backticked identifier used as the subject of a change verb (\"X gains\", \"X becomes\", \"X now prints\"), finds that symbol's `def`/`class` definition by scanning the repo's tracked Python files, and warns \"U<N>: Goal changes X, defined in <file>, which is not in its Files\" when none of the defining files is listed — so a unit that will edit a file without listing it is flagged before grouping.\n- **Goal**: new function `lint_goal_symbols(plan_text: str, repo_root: Path) -> list[str]` in `orchestrator/grouping/verification_lint.py`: per unit (`_safe_split_units`, bullets via `_split_bullets` from `plan_sections.py`), find in the `Goal` text every backticked span whose entire content matches `[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*` (a path, a flag or a call with parentheses never qualifies) and that is immediately followed (after the closing backtick and whitespace, with an optional possessive `'s`) by a change verb from one module-level constant `_CHANGE_VERBS` (`gains`, `becomes`, `now`, `no longer`, `extends`, `accepts`, `emits`, `prints`, `logs`, `raises`, `returns`, `refuses`, `drops`, `writes`, `reads`, `stops`, `is`, `are`); take the first and last dotted segment as candidate names (skip names shorter than 4 characters and Python keywords). Build one definitions index per call from `git -C <repo> ls-files -z -- '*.py'` (fallback: `rglob('*.py')` excluding `.venv`, `.worktrees`, `node_modules`, `.git`) by matching `^\\s*(?:async\\s+def|def|class)\\s+(\\w+)\\b`. A candidate with at least one defining file, none of which is in the unit's task-map `files` (and no file in `files` defining it), yields one warning per (unit, symbol) naming the symbol, the defining file(s) and the verb that made it a change. A symbol defined nowhere is prospective and silent; a token that is only mentioned (no change verb after it) is silent — the lint reads subject-verb, never every mention. `_cmd_plan_check` (cli.py) prints these with the existing warnings (exit 0).\n- **Recipe**: —\n- **Files**: `orchestrator/grouping/verification_lint.py`, `orchestrator/cli.py`, `tests/test_goal_symbol_lint.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_goal_symbol_lint.py -q` Pass: green; the file writes a temp git repo with `pkg/a.py` (`class Runner`, `def helper`) and `pkg/b.py` (`def other`) and a minimal plan, and asserts: a Goal reading \"Runner.start gains a flag\" (the name backticked) with Files `[pkg/b.py]` → one warning naming `pkg/a.py` and `gains`; the same with Files `[pkg/a.py]` → none; a Goal reading \"calls Runner.start before helper\" (both backticked, no change verb) → none; a Goal reading \"nowhere_fn gains\" → none (prospective); a name shorter than 4 characters → none; a plan without a task map → no crash, no warnings.\n  - Run: `uv run python -c \"import pathlib,subprocess,sys; src=pathlib.Path('docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md').read_text(); mutated=src.replace('      - orchestrator/execution/export.py\\n', '', 1); assert mutated != src; p=pathlib.Path('.coder-scratch/u7-mutated-plan.md'); p.parent.mkdir(exist_ok=True); p.write_text(mutated); r=subprocess.run([sys.executable,'-m','orchestrator.cli','plan-check',str(p)],capture_output=True,text=True); print(r.stdout, r.stderr); sys.exit(0 if 'export_run' in r.stdout and 'orchestrator/execution/export.py' in r.stdout else 1)\"` Pass: exits 0 — this very plan with `export.py` removed from the first unit's map entry makes plan-check name `export_run` (\"export_run gains …\" in that Goal) and `orchestrator/execution/export.py`; the real repo tree and the CLI under test are the oracle.\n  - Run: `uv run python -m orchestrator.cli plan-check docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md` Pass: exit 0 and no \"Goal changes\" warning — the plan that ships the lint is clean under it.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "9f0b7c7d332c412e59fbf68bce331c63274c71c1",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u7-goal-symbol-lint"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/verification_lint.py",
+        "tests/test_goal_symbol_lint.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/grouping/verification_lint.py",
+        "tests/test_goal_symbol_lint.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T07:04:04.063477+00:00",
+          "ended_at": "2026-10-07T07:13:33.023+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 22,
+            "output": 10123,
+            "cache_creation": 74408
+          },
+          "cache_read_tokens": 803514
+        }
+      ],
+      "escalations": [
+        {
+          "id": "1b8bf51444af",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g7: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261007-082701/groups/g7/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261007-082701/groups/g7/preflight-check-pytest.log",
+          "created_at": "2026-10-07T07:08:51.639357Z",
+          "request_path": "escalations/request-1b8bf51444af.json",
+          "response_path": "escalations/response-1b8bf51444af.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2290,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g7/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g8",
+      "name": "docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass",
+      "recipe": "code",
+      "summary": "the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the…",
+      "report_summary": "Joined the split f-string in run_executor._log_command so ': exit ' is contiguous in source (the emitted line is byte-identical). g8-5 now prints ok; tests/test_run_executor.py passes (24 tests). The doc edits from the first round are unchanged, and g8-1 to g8-4 were not re-run after this edit.",
+      "spec": "# Group g8: docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass\n\nMembers:\n- u8-docs-sweep: docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g1 provides `u1-export-honesty` — u1-export-honesty: `smart-mcps-orchestrate export` counts sessions whose transcript cannot be resolved before writing anything, prints `export <run>: <ok>/<total> sessions with transcripts, <missing> transcript_missing`, refuses (exit 1, target untouched) when any is missing unless `--allow-missing`, and refuses a `--out` that already holds `ingest.json` or `events/` unless `--clear` removes those two first.\n- g2 provides `u2-result-aware-liveness` — u2-result-aware-liveness: `sign_of_life` no longer counts advancing CPU ticks as a Sign of Life once a child's newest stream event is `result`, so an idle child that never exited is reported `not live` after one Liveness Window instead of \"cpu advancing\" for hours; `CONTEXT.md`'s Sign of Life entry says so.\n- g3 provides `u3-run-phase-lines` — u3-run-phase-lines: a `run` recipe writes one `run.log` line per command (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`) and one per attempt start (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`), so a plan item or a driver can grep the phases instead of reading heartbeat labels and `attempt-*/n.result.json`.\n- g4 provides `u4-own-group-surprise` — u4-own-group-surprise: `SurpriseBoard.mark` drops a surprise whose every target resolves to its own source group, writing one `SURPRISE … → (own group; already in its report)` anchor to `run.log` and persisting nothing, and the residue reason for the `__run__` bucket reads \"no target group named, or an unknown id\" so `finish` stops reporting a resolved group's own finding as an unknown id.\n- g5 provides `u5-live-tier-guard` — u5-live-tier-guard: `tests/test_streaming_live.py` gains a test that sends two follow-ups mid-turn and asserts the round still terminates, whatever the CLI folds — the live guard for the wedge that `RESULT_GRACE_S` closes.\n- g6 provides `u6-named-test-hold` — u6-named-test-hold: `_settle_round`'s report-level gate gains `driver_items_naming_missing_tests(items, results, worktree)`, which turns every required `Run (driver):` item whose `Run:` is a pytest invocation naming a file (or `file::name`) that does not exist in the worktree into a `changes_required` gap telling the coder to write the test or report the item `skipped` with the reason, so a driver item with no test behind it is caught while a coder can still act.\n- g7 provides `u7-goal-symbol-lint` — u7-goal-symbol-lint: `plan-check` gains a zero-codegraph lint that reads every unit's Goal for a backticked identifier used as the subject of a change verb (\"X gains\", \"X becomes\", \"X now prints\"), finds that symbol's `def`/`class` definition by scanning the repo's tracked Python files, and warns \"U<N>: Goal changes X, defined in <file>, which is not in its Files\" when none of the defining files is listed — so a unit that will edit a file without listing it is flagged before grouping.\n\nDownstream groups:\n- (none)\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U8. docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass\n\n- **Summary**: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n- **Goal**: `docs/run-bundle-contract.md` (beside the `transcript_missing` row, line 118) documents the census line, the refusal on any missing session, `--allow-missing`, and the non-empty `--out` refusal with `--clear`. `skills/orchestrator-run/SKILL.md`: Phase 0 gains check 7, **Worker-seam live tests are green on the installed tool's source** — `uv run pytest -m llm tests/test_streaming_live.py tests/test_read_roots.py tests/test_permission_patterns_live.py -q --basetemp=.orchestrator/live-preflight` (a few minutes, well under a dollar; what each file guards: follow-up termination, data/run-dir read roots, allowlist patterns; red is a stop, not a note) and the report block asks for \"the seven results\"; the anchor table gains rows `run attempt started` (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`) and `run command done` (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`), the `group not live` row lists `idle after result` as an evidence value meaning the child finished its turn and never exited (`kill -INT -<pgid>` then `resume` warm-resumes the same coder session, as seen twice on r20261006-162245), and the `late surprise` row lists the `(own group; already in its report)` form; the `retry` paragraph for run groups (around line 337) says the `run recipe attempt <a> starting at command` line shows where the new attempt started; the Phase 4 export mention (line 488) says to read the census line and that a re-export into an existing bundle needs `--clear`. `skills/orchestrator-deepen/SKILL.md` *Existence* (lines 322-325) says the report-level gate now holds a required driver item naming a pytest path absent from the worktree, so \"the driver finds the gap only at finish\" is no longer true. `docs/orchestrator-grouping.md`'s `plan-check` bullet (lines 509-517) lists the Goal-symbol lint, its subject-verb rule, and keeps the \"no LLM call and no codegraph call\" promise.\n- **Recipe**: —\n- **Files**: `docs/run-bundle-contract.md`, `skills/orchestrator-run/SKILL.md`, `skills/orchestrator-deepen/SKILL.md`, `docs/orchestrator-grouping.md`\n- **Symbols**: —\n- **Depends-on**: U1, U2, U3, U4, U5, U6, U7\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `grep -c \"allow-missing\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` Pass: both counts are at least 1, and `grep -n \"\\-\\-clear\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` finds both files.\n  - Run: `grep -n \"live-preflight\\|seven results\\|run attempt started\\|run command done\\|idle after result\\|own group; already in its report\" skills/orchestrator-run/SKILL.md` Pass: six distinct matches, one per string.\n  - Run: `grep -n \"report-level gate\\|absent from the worktree\" skills/orchestrator-deepen/SKILL.md` Pass: at least one match inside the *Existence* paragraph, and the sentence \"the driver finds the gap only at finish\" is gone (`grep -c \"only at finish\" skills/orchestrator-deepen/SKILL.md` prints 0).\n  - Run: `grep -n \"Goal changes\\|subject-verb\\|no codegraph call\" docs/orchestrator-grouping.md` Pass: all three strings present.\n  - Run: `uv run python -c \"import re,pathlib,subprocess; src=pathlib.Path('orchestrator/execution/run_executor.py').read_text(); doc=pathlib.Path('skills/orchestrator-run/SKILL.md').read_text(); assert 'starting at command' in src and 'starting at command' in doc; assert ': exit ' in src and ': exit <k>' in doc; print('ok')\"` Pass: prints `ok` — the documented anchor strings are the ones the merged code writes.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "merge_sha": "c011d0cb13114781beb814b4e751be9ebf6b2959",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u8-docs-sweep"
+      ],
+      "planned_files": [
+        "docs/orchestrator-grouping.md",
+        "docs/run-bundle-contract.md",
+        "skills/orchestrator-deepen/SKILL.md",
+        "skills/orchestrator-run/SKILL.md"
+      ],
+      "touched_files": [
+        "docs/orchestrator-grouping.md",
+        "docs/run-bundle-contract.md",
+        "orchestrator/execution/run_executor.py",
+        "skills/orchestrator-deepen/SKILL.md",
+        "skills/orchestrator-run/SKILL.md"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T07:13:35.512765+00:00",
+          "ended_at": "2026-10-07T07:16:13.849711+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 30,
+            "output": 8662,
+            "cache_creation": 73956
+          },
+          "cache_read_tokens": 1134387
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-07T07:16:13.849711+00:00",
+          "ended_at": "2026-10-07T07:19:47.380+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 4,
+            "output": 1159,
+            "cache_creation": 54897
+          },
+          "cache_read_tokens": 78236
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "g8-5's assertion `': exit ' in src` cannot pass against the merged run_executor.py, because the phase-line f-string is split across two literals (lines 215-217). Either join the literal in _log_command or rewrite the item to check the emitted line.",
+          "affected_groups": [
+            "u3-run-phase-lines"
+          ],
+          "path": "groups/g8/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [
+        "[g8-5] reported fail: Run: `uv run python -c \"import re,pathlib,subprocess; src=pathlib.Path('orchestrator/execution/run_executor.py').read_text(); doc=pathlib.Path('skills/orchestrator-run/SKILL.md').read_text(); assert 'starting at command' in src and 'starting at command' in doc; assert ': exit ' in src and ': exit <k>' in doc; print('ok')\"` Pass: prints `ok` — the documented anchor strings are the ones the merged code writes. — AssertionError on `': exit ' in src`. 'starting at command' is in both the code and the doc. The code writes `command {n}/{total}: ` and `exit {status} ({N.N}s)` as separate f-string literals, so the contiguous check cannot match even though the emitted line is 'command n/total: exit k (N.Ns)', which matches the doc. The item's check is wrong for this code layout; fixing it needs a change to run_executor.py (outside this unit's Files) or to the item."
+      ],
+      "required_change_paths": [
+        "groups/g8/verdict-g1-r1.json"
+      ],
+      "tests": {
+        "ran": true,
+        "total": 2290,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g8/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-export-honesty",
+      "group_id": "g1",
+      "title": "export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear",
+      "summary": "`smart-mcps-orchestrate export` counts sessions whose transcript cannot be resolved before writing anything, prints `export <run>: <ok>/<total> sessions with transcripts, <missing> transcript_missing`, refuses (exit 1, target untouched) when any is missing unless `--allow-missing`, and refuses a `--out` that already holds `ingest.json` or `events/` unless `--clear` removes those two first.",
+      "goal": "`export_run` gains `allow_missing: bool = False` and `clear: bool = False` and returns, beside the package directory, the census it computed (a small `TranscriptCensus(total: int, missing: list[str])` dataclass, or a tuple — the CLI prints it). Before `build_export` runs it computes the census over the same sessions `build_export` will export — one `(session_id, recorded_path)` pair per session of `build_snapshot(paths, project).groups`, resolved with the existing `_resolve_transcript` rule — and raises `ExportError(\"<missing>/<total> sessions transcript_missing (<ids>); pass --allow-missing to export metadata only\")` when `missing > 0 and not allow_missing`. It then checks the target: if `package_dir / \"ingest.json\"` or `package_dir / \"events\"` exists and `clear` is false, it raises `ExportError` naming the directory and `--clear`; with `clear` it removes exactly those two entries and nothing else in the directory. Only then does it build and write. `_cmd_export` gains `--allow-missing` and `--clear`, always prints the census line (stdout) before `wrote <dir>`, and prints the `ExportError` on stderr with exit 1 as today.",
+      "section_text": "### U1. export-honesty — export prints N/M sessions transcript_missing, refuses a metadata-only bundle without --allow-missing, refuses a non-empty --out without --clear\n\n- **Summary**: `smart-mcps-orchestrate export` counts sessions whose transcript cannot be resolved before writing anything, prints `export <run>: <ok>/<total> sessions with transcripts, <missing> transcript_missing`, refuses (exit 1, target untouched) when any is missing unless `--allow-missing`, and refuses a `--out` that already holds `ingest.json` or `events/` unless `--clear` removes those two first.\n- **Goal**: `export_run` gains `allow_missing: bool = False` and `clear: bool = False` and returns, beside the package directory, the census it computed (a small `TranscriptCensus(total: int, missing: list[str])` dataclass, or a tuple — the CLI prints it). Before `build_export` runs it computes the census over the same sessions `build_export` will export — one `(session_id, recorded_path)` pair per session of `build_snapshot(paths, project).groups`, resolved with the existing `_resolve_transcript` rule — and raises `ExportError(\"<missing>/<total> sessions transcript_missing (<ids>); pass --allow-missing to export metadata only\")` when `missing > 0 and not allow_missing`. It then checks the target: if `package_dir / \"ingest.json\"` or `package_dir / \"events\"` exists and `clear` is false, it raises `ExportError` naming the directory and `--clear`; with `clear` it removes exactly those two entries and nothing else in the directory. Only then does it build and write. `_cmd_export` gains `--allow-missing` and `--clear`, always prints the census line (stdout) before `wrote <dir>`, and prints the `ExportError` on stderr with exit 1 as today.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/export.py`, `orchestrator/cli.py`, `tests/test_export_honesty.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_export_honesty.py -q` Pass: green; the file builds a two-session run with `_write_run` from `tests/test_export.py` and covers: both transcripts present → `export_run` writes and the CLI prints `2/2 sessions with transcripts, 0 transcript_missing`; one transcript absent → `ExportError` names `1/2`, no `ingest.json` and no `events/` exist afterwards; the same with `allow_missing=True` → written, session marked `transcript_missing`; a target holding a stale `events/stale.jsonl.gz` and a sibling `notes.txt` → refused naming the directory, and with `clear=True` the stale file is gone, `notes.txt` survives, the new package is written.\n  - Run: `uv run python -c \"import shutil,subprocess,sys,pathlib; src=pathlib.Path('tests/fixtures/runs/r20260828-220035'); root=pathlib.Path('.coder-scratch/u1-repo'); dst=root/'.orchestrator'/'runs'/src.name; shutil.rmtree(root, ignore_errors=True); shutil.copytree(src, dst); p=subprocess.run([sys.executable,'-m','orchestrator.cli','export',src.name,'--repo',str(root),'--out','.coder-scratch/u1-out'],capture_output=True,text=True); print(p.returncode); print(p.stdout); print(p.stderr); sys.exit(0 if p.returncode==1 and 'transcript_missing' in p.stdout+p.stderr and not pathlib.Path('.coder-scratch/u1-out/ingest.json').exists() else 1)\"` Pass: prints `1`, the census line names every fixture session as missing, and no `ingest.json` was written — the CLI under test on the real fixture run, whose transcripts exist on no machine.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "Run: `uv run pytest tests/test_export_honesty.py -q` Pass: green; the file builds a two-session run with `_write_run` from `tests/test_export.py` and covers: both transcripts present → `export_run` writes and the CLI prints `2/2 sessions with transcripts, 0 transcript_missing`; one transcript absent → `ExportError` names `1/2`, no `ingest.json` and no `events/` exist afterwards; the same with `allow_missing=True` → written, session marked `transcript_missing`; a target holding a stale `events/stale.jsonl.gz` and a sibling `notes.txt` → refused naming the directory, and with `clear=True` the stale file is gone, `notes.txt` survives, the new package is written.",
+          "status": "pass",
+          "evidence": "tests/test_export_honesty.py green; with test_export.py, test_export_v3.py and test_cli.py 156 passed"
+        },
+        {
+          "item_id": "g1-2",
+          "description": "Run: `uv run python -c \"import shutil,subprocess,sys,pathlib; src=pathlib.Path('tests/fixtures/runs/r20260828-220035'); root=pathlib.Path('.coder-scratch/u1-repo'); dst=root/'.orchestrator'/'runs'/src.name; shutil.rmtree(root, ignore_errors=True); shutil.copytree(src, dst); p=subprocess.run([sys.executable,'-m','orchestrator.cli','export',src.name,'--repo',str(root),'--out','.coder-scratch/u1-out'],capture_output=True,text=True); print(p.returncode); print(p.stdout); print(p.stderr); sys.exit(0 if p.returncode==1 and 'transcript_missing' in p.stdout+p.stderr and not pathlib.Path('.coder-scratch/u1-out/ingest.json').exists() else 1)\"` Pass: prints `1`, the census line names every fixture session as missing, and no `ingest.json` was written — the CLI under test on the real fixture run, whose transcripts exist on no machine.",
+          "status": "pass",
+          "evidence": "CLI on fixture r20260828-220035 printed '0/11 sessions with transcripts, 11 transcript_missing', exit 1, no ingest.json written"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-result-aware-liveness",
+      "group_id": "g2",
+      "title": "result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result",
+      "summary": "`sign_of_life` no longer counts advancing CPU ticks as a Sign of Life once a child's newest stream event is `result`, so an idle child that never exited is reported `not live` after one Liveness Window instead of \"cpu advancing\" for hours; `CONTEXT.md`'s Sign of Life entry says so.",
+      "goal": "in `sign_of_life` (liveness.py), signal (c) is evaluated only when `child.last_event_type != \"result\"`; when it is skipped and no other signal fired, the returned evidence is `idle after result` (with `cpu_ticks` still returned so the next tick's `prev_cpu` stays correct). Signals (a) and (b) are unchanged, so a `result` inside the window still reads as `event result Ns ago` and a tool child still counts. `CONTEXT.md`'s **Sign of Life** entry (line 287) gains one sentence: after a `result` event CPU ticks are not evidence — a child that finished its turn and is still alive is idle, not working.",
+      "section_text": "### U2. result-aware-liveness — CPU ticks alone are not a Sign of Life after the child's last event is a result\n\n- **Summary**: `sign_of_life` no longer counts advancing CPU ticks as a Sign of Life once a child's newest stream event is `result`, so an idle child that never exited is reported `not live` after one Liveness Window instead of \"cpu advancing\" for hours; `CONTEXT.md`'s Sign of Life entry says so.\n- **Goal**: in `sign_of_life` (liveness.py), signal (c) is evaluated only when `child.last_event_type != \"result\"`; when it is skipped and no other signal fired, the returned evidence is `idle after result` (with `cpu_ticks` still returned so the next tick's `prev_cpu` stays correct). Signals (a) and (b) are unchanged, so a `result` inside the window still reads as `event result Ns ago` and a tool child still counts. `CONTEXT.md`'s **Sign of Life** entry (line 287) gains one sentence: after a `result` event CPU ticks are not evidence — a child that finished its turn and is still alive is idle, not working.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/liveness.py`, `CONTEXT.md`, `tests/test_liveness_after_result.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_liveness_after_result.py -q` Pass: green; the file spawns a real busy child (`python -c \"while True: pass\"`), builds a `ChildActivity` whose `last_event_at` is older than the window, and asserts against the real `/proc`: with `last_event_type=\"assistant\"` two consecutive `sign_of_life` calls yield `signal == \"cpu\"`; with `last_event_type=\"result\"` they yield `signal is None` and evidence `idle after result`; with `last_event_type=\"result\"` and `last_event_at` inside the window the signal is `event`; the child is killed in a `finally`.\n  - Run: `uv run pytest tests/test_liveness.py tests/test_liveness_wiring.py tests/test_heartbeat.py -q` Pass: green, unchanged — the fake-`/proc` suites still pass, proving (a) and (b) and the `cpu flat`/`no signal` evidence are untouched.\n  - Run: `grep -n \"idle after result\\|not evidence\" CONTEXT.md` Pass: the Sign of Life entry carries the new sentence.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "Run: `uv run pytest tests/test_liveness_after_result.py -q` Pass: green; the file spawns a real busy child (`python -c \"while True: pass\"`), builds a `ChildActivity` whose `last_event_at` is older than the window, and asserts against the real `/proc`: with `last_event_type=\"assistant\"` two consecutive `sign_of_life` calls yield `signal == \"cpu\"`; with `last_event_type=\"result\"` they yield `signal is None` and evidence `idle after result`; with `last_event_type=\"result\"` and `last_event_at` inside the window the signal is `event`; the child is killed in a `finally`.",
+          "status": "pass",
+          "evidence": "2 passed against a real busy child and real /proc"
+        },
+        {
+          "item_id": "g2-2",
+          "description": "Run: `uv run pytest tests/test_liveness.py tests/test_liveness_wiring.py tests/test_heartbeat.py -q` Pass: green, unchanged — the fake-`/proc` suites still pass, proving (a) and (b) and the `cpu flat`/`no signal` evidence are untouched.",
+          "status": "pass",
+          "evidence": "78 passed across test_liveness, test_liveness_wiring and test_heartbeat"
+        },
+        {
+          "item_id": "g2-3",
+          "description": "Run: `grep -n \"idle after result\\|not evidence\" CONTEXT.md` Pass: the Sign of Life entry carries the new sentence.",
+          "status": "pass",
+          "evidence": "CONTEXT.md line 292 matches 'not evidence'"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-run-phase-lines",
+      "group_id": "g3",
+      "title": "run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log",
+      "summary": "a `run` recipe writes one `run.log` line per command (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`) and one per attempt start (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`), so a plan item or a driver can grep the phases instead of reading heartbeat labels and `attempt-*/n.result.json`.",
+      "goal": "in `_RunExecution.execute` (run_executor.py), after `attempt_no, start_idx, results = self._start_attempt(run_dir)` and the worktree line, write the attempt line through `log_event` with `start_idx + 1` and `len(self.args.commands)`; after every `write_result` (success or non-zero exit, before the triage call), write the command line with `result.exit_status` and `result.duration_s` formatted `.1f`; the TimedOut/CommandDied branch writes the same shape with its synthesised `CommandResult` before its existing failure line. `tests/test_run_recipe_live.py` gains one assertion that `logs/run.log` of its completed run contains a line matching `command 1/\\d+: exit 0 \\(`.",
+      "section_text": "### U3. run-phase-lines — every Run Child command writes \"command n/total: exit k (Ns)\" to run.log\n\n- **Summary**: a `run` recipe writes one `run.log` line per command (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`) and one per attempt start (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`), so a plan item or a driver can grep the phases instead of reading heartbeat labels and `attempt-*/n.result.json`.\n- **Goal**: in `_RunExecution.execute` (run_executor.py), after `attempt_no, start_idx, results = self._start_attempt(run_dir)` and the worktree line, write the attempt line through `log_event` with `start_idx + 1` and `len(self.args.commands)`; after every `write_result` (success or non-zero exit, before the triage call), write the command line with `result.exit_status` and `result.duration_s` formatted `.1f`; the TimedOut/CommandDied branch writes the same shape with its synthesised `CommandResult` before its existing failure line. `tests/test_run_recipe_live.py` gains one assertion that `logs/run.log` of its completed run contains a line matching `command 1/\\d+: exit 0 \\(`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/run_executor.py`, `tests/test_run_recipe_live.py`, `tests/test_run_phase_lines.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_run_phase_lines.py -q` Pass: green; the file reuses `repo`, `make_group`, `make_deps` and `_run` from `tests/test_run_executor.py` and asserts, on a two-command unit, that `run.log` holds `run recipe attempt 1 starting at command 1/2`, `command 1/2: exit 0 (`, `command 2/2: exit 0 (` in that order; on a unit whose second command exits 3 the line reads `command 2/2: exit 3 (` and precedes the existing `exited 3` failure line; on a `retry` after that failure the new attempt line reads `attempt 2 starting at command 2/2`.\n  - Run (driver): `uv run pytest tests/test_run_recipe_live.py -m llm -q --basetemp=.orchestrator/live-u3` Pass: green including the new `run.log` assertion — a real two-group run through the CLI, the only oracle that exercises the real `log_event` path end to end.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g3-1",
+          "description": "Run: `uv run pytest tests/test_run_phase_lines.py -q` Pass: green; the file reuses `repo`, `make_group`, `make_deps` and `_run` from `tests/test_run_executor.py` and asserts, on a two-command unit, that `run.log` holds `run recipe attempt 1 starting at command 1/2`, `command 1/2: exit 0 (`, `command 2/2: exit 0 (` in that order; on a unit whose second command exits 3 the line reads `command 2/2: exit 3 (` and precedes the existing `exited 3` failure line; on a `retry` after that failure the new attempt line reads `attempt 2 starting at command 2/2`.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_run_phase_lines.py -q: 2 passed; tests/test_run_executor.py also green (25 passed alongside)"
+        },
+        {
+          "item_id": "g3-2",
+          "description": "Run (driver): `uv run pytest tests/test_run_recipe_live.py -m llm -q --basetemp=.orchestrator/live-u3` Pass: green including the new `run.log` assertion — a real two-group run through the CLI, the only oracle that exercises the real `log_event` path end to end.",
+          "status": "driver-run",
+          "evidence": "driver-run: the item uses -m llm, which spawns nested claude, so I did not run it"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-own-group-surprise",
+      "group_id": "g4",
+      "title": "own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"",
+      "summary": "`SurpriseBoard.mark` drops a surprise whose every target resolves to its own source group, writing one `SURPRISE … → (own group; already in its report)` anchor to `run.log` and persisting nothing, and the residue reason for the `__run__` bucket reads \"no target group named, or an unknown id\" so `finish` stops reporting a resolved group's own finding as an unknown id.",
+      "goal": "in `mark` (surprises.py), distinguish \"no targets were named\" (`not surprise.affected_groups`) from \"every named target was the source\": the latter writes the own-group anchor through the existing `_log_late_surprise` path (a new branch for that case, line shape `SURPRISE [<kind>] group <src> → (own group; already in its report): <desc>`) and returns before `_append`/`_persist`; the former keeps today's `RUN_LEVEL` behaviour. The value of `REASON_UNKNOWN_GROUP` becomes `\"no target group named, or an unknown id\"` (the constant name stays). `_log_late_surprise`'s docstring lists the new form.",
+      "section_text": "### U4. own-group-surprise — a surprise naming only its own group is dropped with a log line, never bucketed as \"__run__ — unknown group id\"\n\n- **Summary**: `SurpriseBoard.mark` drops a surprise whose every target resolves to its own source group, writing one `SURPRISE … → (own group; already in its report)` anchor to `run.log` and persisting nothing, and the residue reason for the `__run__` bucket reads \"no target group named, or an unknown id\" so `finish` stops reporting a resolved group's own finding as an unknown id.\n- **Goal**: in `mark` (surprises.py), distinguish \"no targets were named\" (`not surprise.affected_groups`) from \"every named target was the source\": the latter writes the own-group anchor through the existing `_log_late_surprise` path (a new branch for that case, line shape `SURPRISE [<kind>] group <src> → (own group; already in its report): <desc>`) and returns before `_append`/`_persist`; the former keeps today's `RUN_LEVEL` behaviour. The value of `REASON_UNKNOWN_GROUP` becomes `\"no target group named, or an unknown id\"` (the constant name stays). `_log_late_surprise`'s docstring lists the new form.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/surprises.py`, `tests/test_surprise_own_group.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_surprise_own_group.py -q` Pass: green; the file builds a board with real `RunPaths` under a temp dir (group list `g1`, `g2`) and asserts: `mark(Surprise(kind=\"other\", description=\"…\", affected_groups=[\"g1\"]), source_group=\"g1\")` leaves `surprises.json` absent or without any bucket and writes a `run.log` line containing `group g1 → (own group; already in its report)`; `affected_groups=[]` from `g1` lands in `__run__` and `surprise_residue` labels it with the new reason text; `affected_groups=[\"g2\"]` from `g1` still lands in `g2`; `affected_groups=[\"zzz\"]` lands in `__run__`.\n  - Run: `uv run pytest tests/test_surprise_board.py tests/test_informational_surprise.py tests/test_finish.py -q` Pass: green — every existing bucket, dedup, task-alias and residue behaviour is unchanged except the one reason string, which those tests are updated to match if they pin it.\n  - Run: `uv run python -c \"import json,pathlib,tempfile; from orchestrator.execution.manifest import RunPaths; from orchestrator.execution.surprises import SurpriseBoard, surprise_residue, format_residue_report; from orchestrator.model import Surprise; pathlib.Path('.coder-scratch').mkdir(exist_ok=True); d=pathlib.Path(tempfile.mkdtemp(dir='.coder-scratch')); paths=RunPaths(d,'rX'); paths.run_dir.mkdir(parents=True); paths.surprises_path.write_text(json.dumps({'__run__':[{'kind':'other','description':'future work','affected_groups':[]}]})); print(format_residue_report(surprise_residue(paths, None)))\"` Pass: the printed report reads `__run__: 1 pending — no target group named, or an unknown id` — the real residue renderer over a real `surprises.json`.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g4-1",
+          "description": "Run: `uv run pytest tests/test_surprise_own_group.py -q` Pass: green; the file builds a board with real `RunPaths` under a temp dir (group list `g1`, `g2`) and asserts: `mark(Surprise(kind=\"other\", description=\"…\", affected_groups=[\"g1\"]), source_group=\"g1\")` leaves `surprises.json` absent or without any bucket and writes a `run.log` line containing `group g1 → (own group; already in its report)`; `affected_groups=[]` from `g1` lands in `__run__` and `surprise_residue` labels it with the new reason text; `affected_groups=[\"g2\"]` from `g1` still lands in `g2`; `affected_groups=[\"zzz\"]` lands in `__run__`.",
+          "status": "pass",
+          "evidence": "tests/test_surprise_own_group.py green (5 tests)"
+        },
+        {
+          "item_id": "g4-2",
+          "description": "Run: `uv run pytest tests/test_surprise_board.py tests/test_informational_surprise.py tests/test_finish.py -q` Pass: green — every existing bucket, dedup, task-alias and residue behaviour is unchanged except the one reason string, which those tests are updated to match if they pin it.",
+          "status": "pass",
+          "evidence": "test_surprise_board, test_informational_surprise, test_finish green after updating one test that pinned the superseded own-task-to-__run__ behaviour"
+        },
+        {
+          "item_id": "g4-3",
+          "description": "Run: `uv run python -c \"import json,pathlib,tempfile; from orchestrator.execution.manifest import RunPaths; from orchestrator.execution.surprises import SurpriseBoard, surprise_residue, format_residue_report; from orchestrator.model import Surprise; pathlib.Path('.coder-scratch').mkdir(exist_ok=True); d=pathlib.Path(tempfile.mkdtemp(dir='.coder-scratch')); paths=RunPaths(d,'rX'); paths.run_dir.mkdir(parents=True); paths.surprises_path.write_text(json.dumps({'__run__':[{'kind':'other','description':'future work','affected_groups':[]}]})); print(format_residue_report(surprise_residue(paths, None)))\"` Pass: the printed report reads `__run__: 1 pending — no target group named, or an unknown id` — the real residue renderer over a real `surprises.json`.",
+          "status": "pass",
+          "evidence": "printed '__run__: 1 pending — no target group named, or an unknown id'"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u5",
+      "task_id": "u5-live-tier-guard",
+      "group_id": "g5",
+      "title": "live-tier-guard — the streaming live suite gains a two-follow-up termination test",
+      "summary": "`tests/test_streaming_live.py` gains a test that sends two follow-ups mid-turn and asserts the round still terminates, whatever the CLI folds — the live guard for the wedge that `RESULT_GRACE_S` closes.",
+      "goal": "`tests/test_streaming_live.py` gains `test_two_followups_mid_turn_still_terminate`: from the first `on_turn` it calls `stream.send(...)` twice back to back (two different one-word replies requested), then asserts `elapsed < ROUND_TIMEOUT_S`, `outcome.returncode == 0` and `outcome.envelope is not None`; it must not assert how many `result` events arrived or whether the replies were folded, and its docstring says why (folding is timing-dependent on the CLI side; termination is the contract).",
+      "section_text": "### U5. live-tier-guard — the streaming live suite gains a two-follow-up termination test\n\n- **Summary**: `tests/test_streaming_live.py` gains a test that sends two follow-ups mid-turn and asserts the round still terminates, whatever the CLI folds — the live guard for the wedge that `RESULT_GRACE_S` closes.\n- **Goal**: `tests/test_streaming_live.py` gains `test_two_followups_mid_turn_still_terminate`: from the first `on_turn` it calls `stream.send(...)` twice back to back (two different one-word replies requested), then asserts `elapsed < ROUND_TIMEOUT_S`, `outcome.returncode == 0` and `outcome.envelope is not None`; it must not assert how many `result` events arrived or whether the replies were folded, and its docstring says why (folding is timing-dependent on the CLI side; termination is the contract).\n- **Recipe**: —\n- **Files**: `tests/test_streaming_live.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_streaming_live.py -m llm --collect-only -q` Pass: lists `test_two_followups_mid_turn_still_terminate` beside the four existing tests (zero tokens).\n  - Run (driver): `uv run pytest -m llm tests/test_streaming_live.py -q --basetemp=.orchestrator/live-u5` Pass: green, the new test included — the real CLI is the oracle.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g5-1",
+          "description": "Run: `uv run pytest tests/test_streaming_live.py -m llm --collect-only -q` Pass: lists `test_two_followups_mid_turn_still_terminate` beside the four existing tests (zero tokens).",
+          "status": "pass",
+          "evidence": "collect-only listed 5 tests including test_two_followups_mid_turn_still_terminate"
+        },
+        {
+          "item_id": "g5-2",
+          "description": "Run (driver): `uv run pytest -m llm tests/test_streaming_live.py -q --basetemp=.orchestrator/live-u5` Pass: green, the new test included — the real CLI is the oracle.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u6",
+      "task_id": "u6-named-test-hold",
+      "group_id": "g6",
+      "title": "named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate",
+      "summary": "`_settle_round`'s report-level gate gains `driver_items_naming_missing_tests(items, results, worktree)`, which turns every required `Run (driver):` item whose `Run:` is a pytest invocation naming a file (or `file::name`) that does not exist in the worktree into a `changes_required` gap telling the coder to write the test or report the item `skipped` with the reason, so a driver item with no test behind it is caught while a coder can still act.",
+      "goal": "new module `orchestrator/execution/driver_items.py` with `driver_items_naming_missing_tests(items: list[VerificationItem], results: list[VerificationResult], worktree: Path) -> list[str]`: for each item with `required and driver_run` whose result (if any) is not `skipped` with non-empty notes, extract the `Run:` command with `_RUN_ITEM_RE` from `orchestrator/recipes/run.py`, split on the shell operators `&&`, `||`, `;`, `|`, and for a segment whose program is `pytest` (bare, `uv run pytest`, `python -m pytest`) take every argument matching `[\\w./-]+\\.py(::[\\w\\[\\]-]+)*`; a file absent from the worktree, or a `::name` whose first segment is not found as `def <name>` / `class <name>` in that file, yields one gap string `driver item <id> names <path> which does not exist in the worktree — write it (the driver runs it after the merge) or report the item skipped with the reason`. `_settle_round` (generation.py) extends `gaps` with it right after `unmet_required_verification`, for `code` groups only.",
+      "section_text": "### U6. named-test-hold — a required driver-run item naming a pytest path absent from the worktree is a gap at the report gate\n\n- **Summary**: `_settle_round`'s report-level gate gains `driver_items_naming_missing_tests(items, results, worktree)`, which turns every required `Run (driver):` item whose `Run:` is a pytest invocation naming a file (or `file::name`) that does not exist in the worktree into a `changes_required` gap telling the coder to write the test or report the item `skipped` with the reason, so a driver item with no test behind it is caught while a coder can still act.\n- **Goal**: new module `orchestrator/execution/driver_items.py` with `driver_items_naming_missing_tests(items: list[VerificationItem], results: list[VerificationResult], worktree: Path) -> list[str]`: for each item with `required and driver_run` whose result (if any) is not `skipped` with non-empty notes, extract the `Run:` command with `_RUN_ITEM_RE` from `orchestrator/recipes/run.py`, split on the shell operators `&&`, `||`, `;`, `|`, and for a segment whose program is `pytest` (bare, `uv run pytest`, `python -m pytest`) take every argument matching `[\\w./-]+\\.py(::[\\w\\[\\]-]+)*`; a file absent from the worktree, or a `::name` whose first segment is not found as `def <name>` / `class <name>` in that file, yields one gap string `driver item <id> names <path> which does not exist in the worktree — write it (the driver runs it after the merge) or report the item skipped with the reason`. `_settle_round` (generation.py) extends `gaps` with it right after `unmet_required_verification`, for `code` groups only.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/driver_items.py` *(new, small)*, `orchestrator/execution/generation.py`, `tests/test_named_test_hold.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_named_test_hold.py -q` Pass: green; the file writes a temp worktree with `tests/test_a.py` containing `def test_one` and asserts, for a required driver item whose Run line is `uv run pytest tests/test_a.py::test_one -m llm`: no gap; the same naming `tests/test_b.py`: one gap naming `tests/test_b.py`; the same naming `tests/test_a.py::test_two`: one gap naming `::test_two`; a driver item whose Run line is not pytest: no gap; an optional item: no gap; a required non-driver item: no gap (that is `unmet_required_verification`'s job); an item whose latest result is `skipped` with notes \"no fixture available\": no gap; and, through `make_deps`-style wiring or a direct call of the gate code path, that the gap text reaches the `changes_required` verdict's `required_changes`.\n  - Run: `uv run pytest tests/test_driver_run_items.py tests/test_merge.py -q` Pass: green — a driver item with a real test still passes the gate untouched and the merge-time logging is unchanged.\n  - Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.driver_items import driver_items_naming_missing_tests as f; from orchestrator.model import VerificationItem as V; print(f([V(id='x', description='Run (driver): uv run pytest tests/test_read_roots.py::test_a_copy_through_a_data_symlink_runs_only_with_the_target_as_add_dir -m llm'), V(id='y', description='Run (driver): uv run pytest tests/test_nope.py -m llm')], [], Path('.')))\"` Pass: prints a one-element list naming `tests/test_nope.py` — the real repo tree as the oracle (the Run line without backticks is the second form `_RUN_ITEM_RE` accepts).\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g6-1",
+          "description": "Run: `uv run pytest tests/test_named_test_hold.py -q` Pass: green; the file writes a temp worktree with `tests/test_a.py` containing `def test_one` and asserts, for a required driver item whose Run line is `uv run pytest tests/test_a.py::test_one -m llm`: no gap; the same naming `tests/test_b.py`: one gap naming `tests/test_b.py`; the same naming `tests/test_a.py::test_two`: one gap naming `::test_two`; a driver item whose Run line is not pytest: no gap; an optional item: no gap; a required non-driver item: no gap (that is `unmet_required_verification`'s job); an item whose latest result is `skipped` with notes \"no fixture available\": no gap; and, through `make_deps`-style wiring or a direct call of the gate code path, that the gap text reaches the `changes_required` verdict's `required_changes`.",
+          "status": "pass",
+          "evidence": "tests/test_named_test_hold.py green, includes Harness path to required_changes"
+        },
+        {
+          "item_id": "g6-2",
+          "description": "Run: `uv run pytest tests/test_driver_run_items.py tests/test_merge.py -q` Pass: green — a driver item with a real test still passes the gate untouched and the merge-time logging is unchanged.",
+          "status": "pass",
+          "evidence": "test_driver_run_items.py and test_merge.py green (32 passed with the new file)"
+        },
+        {
+          "item_id": "g6-3",
+          "description": "Run: `uv run python -c \"from pathlib import Path; from orchestrator.execution.driver_items import driver_items_naming_missing_tests as f; from orchestrator.model import VerificationItem as V; print(f([V(id='x', description='Run (driver): uv run pytest tests/test_read_roots.py::test_a_copy_through_a_data_symlink_runs_only_with_the_target_as_add_dir -m llm'), V(id='y', description='Run (driver): uv run pytest tests/test_nope.py -m llm')], [], Path('.')))\"` Pass: prints a one-element list naming `tests/test_nope.py` — the real repo tree as the oracle (the Run line without backticks is the second form `_RUN_ITEM_RE` accepts).",
+          "status": "pass",
+          "evidence": "ran it: printed a one-element list naming tests/test_nope.py; no nested claude, no writes outside the sandbox"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u7",
+      "task_id": "u7-goal-symbol-lint",
+      "group_id": "g7",
+      "title": "goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files",
+      "summary": "`plan-check` gains a zero-codegraph lint that reads every unit's Goal for a backticked identifier used as the subject of a change verb (\"X gains\", \"X becomes\", \"X now prints\"), finds that symbol's `def`/`class` definition by scanning the repo's tracked Python files, and warns \"U<N>: Goal changes X, defined in <file>, which is not in its Files\" when none of the defining files is listed — so a unit that will edit a file without listing it is flagged before grouping.",
+      "goal": "new function `lint_goal_symbols(plan_text: str, repo_root: Path) -> list[str]` in `orchestrator/grouping/verification_lint.py`: per unit (`_safe_split_units`, bullets via `_split_bullets` from `plan_sections.py`), find in the `Goal` text every backticked span whose entire content matches `[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*` (a path, a flag or a call with parentheses never qualifies) and that is immediately followed (after the closing backtick and whitespace, with an optional possessive `'s`) by a change verb from one module-level constant `_CHANGE_VERBS` (`gains`, `becomes`, `now`, `no longer`, `extends`, `accepts`, `emits`, `prints`, `logs`, `raises`, `returns`, `refuses`, `drops`, `writes`, `reads`, `stops`, `is`, `are`); take the first and last dotted segment as candidate names (skip names shorter than 4 characters and Python keywords). Build one definitions index per call from `git -C <repo> ls-files -z -- '*.py'` (fallback: `rglob('*.py')` excluding `.venv`, `.worktrees`, `node_modules`, `.git`) by matching `^\\s*(?:async\\s+def|def|class)\\s+(\\w+)\\b`. A candidate with at least one defining file, none of which is in the unit's task-map `files` (and no file in `files` defining it), yields one warning per (unit, symbol) naming the symbol, the defining file(s) and the verb that made it a change. A symbol defined nowhere is prospective and silent; a token that is only mentioned (no change verb after it) is silent — the lint reads subject-verb, never every mention. `_cmd_plan_check` (cli.py) prints these with the existing warnings (exit 0).",
+      "section_text": "### U7. goal-symbol-lint — plan-check warns when a unit's Goal changes a symbol defined in a file outside that unit's Files\n\n- **Summary**: `plan-check` gains a zero-codegraph lint that reads every unit's Goal for a backticked identifier used as the subject of a change verb (\"X gains\", \"X becomes\", \"X now prints\"), finds that symbol's `def`/`class` definition by scanning the repo's tracked Python files, and warns \"U<N>: Goal changes X, defined in <file>, which is not in its Files\" when none of the defining files is listed — so a unit that will edit a file without listing it is flagged before grouping.\n- **Goal**: new function `lint_goal_symbols(plan_text: str, repo_root: Path) -> list[str]` in `orchestrator/grouping/verification_lint.py`: per unit (`_safe_split_units`, bullets via `_split_bullets` from `plan_sections.py`), find in the `Goal` text every backticked span whose entire content matches `[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*` (a path, a flag or a call with parentheses never qualifies) and that is immediately followed (after the closing backtick and whitespace, with an optional possessive `'s`) by a change verb from one module-level constant `_CHANGE_VERBS` (`gains`, `becomes`, `now`, `no longer`, `extends`, `accepts`, `emits`, `prints`, `logs`, `raises`, `returns`, `refuses`, `drops`, `writes`, `reads`, `stops`, `is`, `are`); take the first and last dotted segment as candidate names (skip names shorter than 4 characters and Python keywords). Build one definitions index per call from `git -C <repo> ls-files -z -- '*.py'` (fallback: `rglob('*.py')` excluding `.venv`, `.worktrees`, `node_modules`, `.git`) by matching `^\\s*(?:async\\s+def|def|class)\\s+(\\w+)\\b`. A candidate with at least one defining file, none of which is in the unit's task-map `files` (and no file in `files` defining it), yields one warning per (unit, symbol) naming the symbol, the defining file(s) and the verb that made it a change. A symbol defined nowhere is prospective and silent; a token that is only mentioned (no change verb after it) is silent — the lint reads subject-verb, never every mention. `_cmd_plan_check` (cli.py) prints these with the existing warnings (exit 0).\n- **Recipe**: —\n- **Files**: `orchestrator/grouping/verification_lint.py`, `orchestrator/cli.py`, `tests/test_goal_symbol_lint.py` *(new, small)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run pytest tests/test_goal_symbol_lint.py -q` Pass: green; the file writes a temp git repo with `pkg/a.py` (`class Runner`, `def helper`) and `pkg/b.py` (`def other`) and a minimal plan, and asserts: a Goal reading \"Runner.start gains a flag\" (the name backticked) with Files `[pkg/b.py]` → one warning naming `pkg/a.py` and `gains`; the same with Files `[pkg/a.py]` → none; a Goal reading \"calls Runner.start before helper\" (both backticked, no change verb) → none; a Goal reading \"nowhere_fn gains\" → none (prospective); a name shorter than 4 characters → none; a plan without a task map → no crash, no warnings.\n  - Run: `uv run python -c \"import pathlib,subprocess,sys; src=pathlib.Path('docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md').read_text(); mutated=src.replace('      - orchestrator/execution/export.py\\n', '', 1); assert mutated != src; p=pathlib.Path('.coder-scratch/u7-mutated-plan.md'); p.parent.mkdir(exist_ok=True); p.write_text(mutated); r=subprocess.run([sys.executable,'-m','orchestrator.cli','plan-check',str(p)],capture_output=True,text=True); print(r.stdout, r.stderr); sys.exit(0 if 'export_run' in r.stdout and 'orchestrator/execution/export.py' in r.stdout else 1)\"` Pass: exits 0 — this very plan with `export.py` removed from the first unit's map entry makes plan-check name `export_run` (\"export_run gains …\" in that Goal) and `orchestrator/execution/export.py`; the real repo tree and the CLI under test are the oracle.\n  - Run: `uv run python -m orchestrator.cli plan-check docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md` Pass: exit 0 and no \"Goal changes\" warning — the plan that ships the lint is clean under it.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g7-1",
+          "description": "Run: `uv run pytest tests/test_goal_symbol_lint.py -q` Pass: green; the file writes a temp git repo with `pkg/a.py` (`class Runner`, `def helper`) and `pkg/b.py` (`def other`) and a minimal plan, and asserts: a Goal reading \"Runner.start gains a flag\" (the name backticked) with Files `[pkg/b.py]` → one warning naming `pkg/a.py` and `gains`; the same with Files `[pkg/a.py]` → none; a Goal reading \"calls Runner.start before helper\" (both backticked, no change verb) → none; a Goal reading \"nowhere_fn gains\" → none (prospective); a name shorter than 4 characters → none; a plan without a task map → no crash, no warnings.",
+          "status": "pass",
+          "evidence": "tests/test_goal_symbol_lint.py green (6 cases); test_verification_lint.py still green"
+        },
+        {
+          "item_id": "g7-2",
+          "description": "Run: `uv run python -c \"import pathlib,subprocess,sys; src=pathlib.Path('docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md').read_text(); mutated=src.replace('      - orchestrator/execution/export.py\\n', '', 1); assert mutated != src; p=pathlib.Path('.coder-scratch/u7-mutated-plan.md'); p.parent.mkdir(exist_ok=True); p.write_text(mutated); r=subprocess.run([sys.executable,'-m','orchestrator.cli','plan-check',str(p)],capture_output=True,text=True); print(r.stdout, r.stderr); sys.exit(0 if 'export_run' in r.stdout and 'orchestrator/execution/export.py' in r.stdout else 1)\"` Pass: exits 0 — this very plan with `export.py` removed from the first unit's map entry makes plan-check name `export_run` (\"export_run gains …\" in that Goal) and `orchestrator/execution/export.py`; the real repo tree and the CLI under test are the oracle.",
+          "status": "pass",
+          "evidence": "mutated plan yields warning naming export_run and orchestrator/execution/export.py, exit 0"
+        },
+        {
+          "item_id": "g7-3",
+          "description": "Run: `uv run python -m orchestrator.cli plan-check docs/plans/2026-10-07-001-fix-run-r20261006-162245-stops-plan.md` Pass: exit 0 and no \"Goal changes\" warning — the plan that ships the lint is clean under it.",
+          "status": "pass",
+          "evidence": "real plan: exit 0, no 'Goal changes' warning"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u8",
+      "task_id": "u8-docs-sweep",
+      "group_id": "g8",
+      "title": "docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass",
+      "summary": "the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.",
+      "goal": "`docs/run-bundle-contract.md` (beside the `transcript_missing` row, line 118) documents the census line, the refusal on any missing session, `--allow-missing`, and the non-empty `--out` refusal with `--clear`. `skills/orchestrator-run/SKILL.md`: Phase 0 gains check 7, **Worker-seam live tests are green on the installed tool's source** — `uv run pytest -m llm tests/test_streaming_live.py tests/test_read_roots.py tests/test_permission_patterns_live.py -q --basetemp=.orchestrator/live-preflight` (a few minutes, well under a dollar; what each file guards: follow-up termination, data/run-dir read roots, allowlist patterns; red is a stop, not a note) and the report block asks for \"the seven results\"; the anchor table gains rows `run attempt started` (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`) and `run command done` (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`), the `group not live` row lists `idle after result` as an evidence value meaning the child finished its turn and never exited (`kill -INT -<pgid>` then `resume` warm-resumes the same coder session, as seen twice on r20261006-162245), and the `late surprise` row lists the `(own group; already in its report)` form; the `retry` paragraph for run groups (around line 337) says the `run recipe attempt <a> starting at command` line shows where the new attempt started; the Phase 4 export mention (line 488) says to read the census line and that a re-export into an existing bundle needs `--clear`. `skills/orchestrator-deepen/SKILL.md` *Existence* (lines 322-325) says the report-level gate now holds a required driver item naming a pytest path absent from the worktree, so \"the driver finds the gap only at finish\" is no longer true. `docs/orchestrator-grouping.md`'s `plan-check` bullet (lines 509-517) lists the Goal-symbol lint, its subject-verb rule, and keeps the \"no LLM call and no codegraph call\" promise.",
+      "section_text": "### U8. docs-sweep — every skill, contract and grouping-doc line the seven fixes introduce, in one pass\n\n- **Summary**: the run-driver skill, the deepen skill, the Run Bundle contract and the grouping doc describe what U1–U7 shipped — the export census line and its two flags, the `idle after result` evidence, the two run-recipe anchor rows, the own-group surprise anchor, the seventh preflight check that runs the worker-seam live tests, the gate-time named-test hold, and the Goal-symbol lint — so a driver reading the docs sees exactly the lines the code now writes.\n- **Goal**: `docs/run-bundle-contract.md` (beside the `transcript_missing` row, line 118) documents the census line, the refusal on any missing session, `--allow-missing`, and the non-empty `--out` refusal with `--clear`. `skills/orchestrator-run/SKILL.md`: Phase 0 gains check 7, **Worker-seam live tests are green on the installed tool's source** — `uv run pytest -m llm tests/test_streaming_live.py tests/test_read_roots.py tests/test_permission_patterns_live.py -q --basetemp=.orchestrator/live-preflight` (a few minutes, well under a dollar; what each file guards: follow-up termination, data/run-dir read roots, allowlist patterns; red is a stop, not a note) and the report block asks for \"the seven results\"; the anchor table gains rows `run attempt started` (`group <gid>: run recipe attempt <a> starting at command <s>/<total>`) and `run command done` (`group <gid>: command <n>/<total>: exit <k> (<N.N>s)`), the `group not live` row lists `idle after result` as an evidence value meaning the child finished its turn and never exited (`kill -INT -<pgid>` then `resume` warm-resumes the same coder session, as seen twice on r20261006-162245), and the `late surprise` row lists the `(own group; already in its report)` form; the `retry` paragraph for run groups (around line 337) says the `run recipe attempt <a> starting at command` line shows where the new attempt started; the Phase 4 export mention (line 488) says to read the census line and that a re-export into an existing bundle needs `--clear`. `skills/orchestrator-deepen/SKILL.md` *Existence* (lines 322-325) says the report-level gate now holds a required driver item naming a pytest path absent from the worktree, so \"the driver finds the gap only at finish\" is no longer true. `docs/orchestrator-grouping.md`'s `plan-check` bullet (lines 509-517) lists the Goal-symbol lint, its subject-verb rule, and keeps the \"no LLM call and no codegraph call\" promise.\n- **Recipe**: —\n- **Files**: `docs/run-bundle-contract.md`, `skills/orchestrator-run/SKILL.md`, `skills/orchestrator-deepen/SKILL.md`, `docs/orchestrator-grouping.md`\n- **Symbols**: —\n- **Depends-on**: U1, U2, U3, U4, U5, U6, U7\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `grep -c \"allow-missing\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` Pass: both counts are at least 1, and `grep -n \"\\-\\-clear\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` finds both files.\n  - Run: `grep -n \"live-preflight\\|seven results\\|run attempt started\\|run command done\\|idle after result\\|own group; already in its report\" skills/orchestrator-run/SKILL.md` Pass: six distinct matches, one per string.\n  - Run: `grep -n \"report-level gate\\|absent from the worktree\" skills/orchestrator-deepen/SKILL.md` Pass: at least one match inside the *Existence* paragraph, and the sentence \"the driver finds the gap only at finish\" is gone (`grep -c \"only at finish\" skills/orchestrator-deepen/SKILL.md` prints 0).\n  - Run: `grep -n \"Goal changes\\|subject-verb\\|no codegraph call\" docs/orchestrator-grouping.md` Pass: all three strings present.\n  - Run: `uv run python -c \"import re,pathlib,subprocess; src=pathlib.Path('orchestrator/execution/run_executor.py').read_text(); doc=pathlib.Path('skills/orchestrator-run/SKILL.md').read_text(); assert 'starting at command' in src and 'starting at command' in doc; assert ': exit ' in src and ': exit <k>' in doc; print('ok')\"` Pass: prints `ok` — the documented anchor strings are the ones the merged code writes.\n- **Edge cases**: —\n- **Non-goals / must-not**: —\n\n",
+      "verification": [
+        {
+          "item_id": "g8-1",
+          "description": "Run: `grep -c \"allow-missing\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` Pass: both counts are at least 1, and `grep -n \"\\-\\-clear\" docs/run-bundle-contract.md skills/orchestrator-run/SKILL.md` finds both files.",
+          "status": "pass",
+          "evidence": "allow-missing and --clear present in both files"
+        },
+        {
+          "item_id": "g8-2",
+          "description": "Run: `grep -n \"live-preflight\\|seven results\\|run attempt started\\|run command done\\|idle after result\\|own group; already in its report\" skills/orchestrator-run/SKILL.md` Pass: six distinct matches, one per string.",
+          "status": "pass",
+          "evidence": "all six strings present"
+        },
+        {
+          "item_id": "g8-3",
+          "description": "Run: `grep -n \"report-level gate\\|absent from the worktree\" skills/orchestrator-deepen/SKILL.md` Pass: at least one match inside the *Existence* paragraph, and the sentence \"the driver finds the gap only at finish\" is gone (`grep -c \"only at finish\" skills/orchestrator-deepen/SKILL.md` prints 0).",
+          "status": "pass",
+          "evidence": "Existence paragraph updated; 'only at finish' count 0"
+        },
+        {
+          "item_id": "g8-4",
+          "description": "Run: `grep -n \"Goal changes\\|subject-verb\\|no codegraph call\" docs/orchestrator-grouping.md` Pass: all three strings present.",
+          "status": "pass",
+          "evidence": "all three strings present"
+        },
+        {
+          "item_id": "g8-5",
+          "description": "Run: `uv run python -c \"import re,pathlib,subprocess; src=pathlib.Path('orchestrator/execution/run_executor.py').read_text(); doc=pathlib.Path('skills/orchestrator-run/SKILL.md').read_text(); assert 'starting at command' in src and 'starting at command' in doc; assert ': exit ' in src and ': exit <k>' in doc; print('ok')\"` Pass: prints `ok` — the documented anchor strings are the ones the merged code writes.",
+          "status": "pass",
+          "evidence": "prints ok after joining the f-string literal in run_executor.py"
+        }
+      ],
+      "landed": true
+    }
+  ],
+  "rids": [],
+  "timeline": [
+    {
+      "at": "2026-10-07T06:30:36.378164+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:35:50.504+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:35:52.977922+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:40:06.876+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:40:09.635511+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:45:50.884+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:45:53.373740+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:50:16.814+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:50:19.726847+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:54:12.826+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:54:15.358990+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T06:59:02.258912Z",
+      "kind": "escalation",
+      "group_id": "g6",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-10-07T07:04:01.314+00:00",
+      "kind": "session_end",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T07:04:04.063477+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T07:08:51.639357Z",
+      "kind": "escalation",
+      "group_id": "g7",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-10-07T07:13:33.023+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T07:13:35.512765+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T07:16:13.849711+00:00",
+      "kind": "session_end",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-07T07:16:13.849711+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-07T07:19:47.380+00:00",
+      "kind": "session_end",
+      "group_id": "g8",
+      "label": "reviewer"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": true,
+  "base_context_path": "base-context.md"
+}
