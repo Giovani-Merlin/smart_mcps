@@ -52,6 +52,7 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    copy) differs from the source it was installed from, naming the
    `uv tool install --reinstall <repo>` command — reinstall rather than
    passing `--allow-stale-install`, unless running old code is the point.
+
 2. **Config exists and names the data.** `.orchestrator/config.toml` must
    exist — print the absolute path you actually read
    (`realpath .orchestrator/config.toml`; F6, r20260924: a driver launched
@@ -67,6 +68,7 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    (EPUBs, renders, media) must land under a `data_dirs` path — anything
    git-ignored elsewhere is only rescued as a capped copy into
    `.orchestrator/runs/$RUN/groups/<gid>/ignored-outputs/`.
+
 3. **Grouping exists and is current.** `smart-mcps-orchestrate groupings`.
    If the plan file is newer than the grouping's `groups.json`, or the plan
    was deepened since, regenerate: `smart-mcps-orchestrate plan-check <plan>`
@@ -76,16 +78,19 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    the item `Run (driver):` in the plan and regroup, or confirm the grant. The launch below selects the
    grouping by `--plan "$PLAN"`; that still errors when two groupings were
    built from the same plan — then pick one with `--grouping NAME` instead.
+
 4. **The environment builds on the launch branch.** Read
    `[session] provision_args` (default `["--all-extras"]`) and run
    `uv sync <those args>` yourself. This catches the `tts`-extra class of
    failure before the CLI does, with the full stderr in hand. If it fails,
    fix `pyproject.toml`/`uv.lock` and commit; do not launch on a red build.
+
 5. **No unfinished run is silently abandoned.** `smart-mcps-orchestrate status`
    (no id shows the single unfinished run). If one exists, `resume` it — or,
    if the human clearly wants a fresh run, say so and pass `--run-id`
    explicitly. A non-tty launch skips the CLI's `[y/N]` prompt, so this check
    is yours, not the CLI's.
+
 6. **Every non-`code` recipe the grouping uses is allow-listed.** If any group
    in `groups.json` carries a `recipe` other than `code` (a `run` group,
    plan U1/U4), its name must appear in `.orchestrator/config.toml`'s
@@ -94,7 +99,13 @@ surface twenty minutes into the run as a `coder_blocked` on every group.
    trip; a plan declaring a non-enabled recipe fails naming the units and the
    config key.
 
-Report the six results in one short block, with two explicit lines from
+7. **Worker-seam live tests are green on the installed tool's source.**
+   `uv run pytest -m llm tests/test_streaming_live.py tests/test_read_roots.py tests/test_permission_patterns_live.py -q --basetemp=.orchestrator/live-preflight`
+   (a few minutes, well under a dollar). Each file guards one seam:
+   follow-up termination (streaming), data/run-dir read roots, and allowlist
+   patterns. Red is a stop, not a note.
+
+Report the seven results in one short block, with two explicit lines from
 item 2: the config path read, and "`[docs] formats` present: …" — an
 absent formats line is silent everywhere except the launch warning nobody
 reads back. Refuse to continue on any red item; do not "launch and see".
@@ -183,32 +194,34 @@ Live — wait it out.
 
 Greppable anchors, all in `logs/run.log`:
 
-| event                | line                                                                                                                                |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)                                                                        |
-| escalation answered  | `ESCALATION <id> answered: <action>`                                                                                                |
-| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                          |
-| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                                        |
-| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                              |
-| worker launched      | `group <gid> generation <n>: <role> launching, …` (`coder`, `researcher`; a `run` group has none)                                                                                    |
-| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                            |
-| reviewer verdict     | `… reviewer verdict <status>`                                                                                                       |
-| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                              |
-| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>`                                                              |
-| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                                                                                |
-| group not live       | `group <gid> generation <n>: not live for <age> in <phase> — <evidence>`                                                            |
-| group live again     | `group <gid> generation <n>: live again: <signal> <age> ago` (or `child exited`)                                                    |
-| machine suspend      | `machine suspend detected: <gap>`                                                                                                   |
-| suspend cure         | `group <gid> generation <n>: suspend cure <k>/<max> — no sign of life since wake at <ts>; killing session <sid> pid <pid>`          |
-| cures exhausted      | `group <gid> generation <n>: cures exhausted (<k>/<max>); reporting only`                                                           |
-| group done           | `group <gid>: completed`                                                                                                            |
-| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                              |
-| run ended by you     | `run <id> aborted by operator: …`                                                                                                   |
-| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                               |
-| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)                      |
-| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                                |
-| run recipe done      | `group <gid>: run recipe completed`                                                                                                 |
-| late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` (non-blocking; read it now, not at finish) |
+| event                | line                                                                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| escalation raised    | `ESCALATION <id> [<kind>] group <gid>` (+ `blocks …` if any)                                                                                                                                                                                                  |
+| escalation answered  | `ESCALATION <id> answered: <action>`                                                                                                                                                                                                                          |
+| escalation timed out | `ESCALATION <id> timed out → <on_timeout>`                                                                                                                                                                                                                    |
+| retry relaunch       | `group <gid> generation <n>: relaunching on the same spec …`                                                                                                                                                                                                  |
+| spec rewrite         | `group <gid> generation <n>: rewriting spec (<why>) …`                                                                                                                                                                                                        |
+| worker launched      | `group <gid> generation <n>: <role> launching, …` (`coder`, `researcher`; a `run` group has none)                                                                                                                                                             |
+| round ended          | `group <gid> generation <n> round <r>: ended (<status>)`                                                                                                                                                                                                      |
+| reviewer verdict     | `… reviewer verdict <status>`                                                                                                                                                                                                                                 |
+| coder retired        | `group <gid> generation <n>: coder retired (<reason>)`                                                                                                                                                                                                        |
+| session cost         | `group <gid> generation <n>: coder session ended — <r> rounds, $<usd>`                                                                                                                                                                                        |
+| usage-limit pause    | `usage limit: pausing …` / `usage limit: resuming …`                                                                                                                                                                                                          |
+| group not live       | `group <gid> generation <n>: not live for <age> in <phase> — <evidence>` (evidence `idle after result` = the child finished its turn and never exited: `kill -INT -<pgid>` then `resume` warm-resumes the same coder session, seen twice on r20261006-162245) |
+| group live again     | `group <gid> generation <n>: live again: <signal> <age> ago` (or `child exited`)                                                                                                                                                                              |
+| machine suspend      | `machine suspend detected: <gap>`                                                                                                                                                                                                                             |
+| suspend cure         | `group <gid> generation <n>: suspend cure <k>/<max> — no sign of life since wake at <ts>; killing session <sid> pid <pid>`                                                                                                                                    |
+| cures exhausted      | `group <gid> generation <n>: cures exhausted (<k>/<max>); reporting only`                                                                                                                                                                                     |
+| group done           | `group <gid>: completed`                                                                                                                                                                                                                                      |
+| group failed         | `group <gid>: failed (<reason>)` / `terminal failed — … retry with: …`                                                                                                                                                                                        |
+| run ended by you     | `run <id> aborted by operator: …`                                                                                                                                                                                                                             |
+| run recipe worktree  | `group <gid>: run recipe worktree ready at <path>` (`run` groups only — no coder launch line follows)                                                                                                                                                         |
+| run child re-adopted | `group <gid>: re-adopted run child pid <pid> for command <n>` (crash re-entry mid-command, not a fresh launch)                                                                                                                                                |
+| run attempt started  | `group <gid>: run recipe attempt <a> starting at command <s>/<total>` (a retry carrying commands forward starts at `<s>` > 1)                                                                                                                                 |
+| run command done     | `group <gid>: command <n>/<total>: exit <k> (<N.N>s)` (one per command, success or failure)                                                                                                                                                                   |
+| run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                                                                                                                                                          |
+| run recipe done      | `group <gid>: run recipe completed`                                                                                                                                                                                                                           |
+| late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` / `… → (own group; already in its report): …` (non-blocking; read it now, not at finish)                                                                             |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
   `triage-guide.md`, "When status reports Not Live", for the three cases and
@@ -340,7 +353,9 @@ Either way, fix the underlying cause (environment, a bad command, a wrong
    `--from-start` flag as an argument. To force every command to re-run from
    the beginning instead, write a file containing `--from-start` to
    `<group_dir>/run/retry-note.txt` **before** issuing `retry` — the next
-   attempt reads and deletes that file itself.
+   attempt reads and deletes that file itself. The
+   `run recipe attempt <a> starting at command` line in `run.log` shows where
+   the new attempt started.
 3. `smart-mcps-orchestrate resume $RUN`.
 
 ### Driving an `optimize` group
@@ -486,7 +501,10 @@ When the process exits (signal **(b)**):
       or updates a PR whose body is the one-pager plus the run-record lines. To also record the run in `docs/RUNLOG.md`,
       run `report $RUN --format changelog --update-runlog` in the main
       checkout and commit it there. `smart-mcps-orchestrate export $RUN`
-      writes the ingest bundle if the repo's workflow ingests runs.
+      writes the ingest bundle if the repo's workflow ingests runs. Read its
+      census line (`<ok>/<total> sessions with transcripts`): any missing
+      session refuses unless `--allow-missing`, and a re-export into an
+      existing bundle needs `--clear`.
 4. Keep `.orchestrator/notes-<run_id>.md` as your own triage notes as you go
    (every escalation and how it was resolved, anything you fixed on the
    integration branch) — it is scratch for *you* and the raw material for the

@@ -297,14 +297,14 @@ materialises.** Four of r20261006-050234's driver items could never pass as
 written because they grepped for things that do not exist. What the run
 persists, and what it does not:
 
-| the item wants to prove…                                | read it from                                                                                      | never from                                              |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| a session's role (`researcher`, `coder`)                | `manifest.json` → `groups.<gid>.sessions[].role`, or the `<role> launching` line in `run.log`     | the word `researcher` anywhere else in `run.log`        |
-| what a worker was told (a manifest entry, a refinement) | `groups/<gid>/spec-gen<N>.json` (`spec` text), `artifacts.json` entries                           | `groups/<gid>/prompt*.md` — no prompt file is persisted |
-| a `run` group's command progress                        | `groups/<gid>/run/attempt-<k>/<n>.result.json` (`exit_status`, `duration_s`)                      | `command N/M` lines — heartbeat phases are not logged   |
-| a rewrite was free (`spec_refinement` only)             | `state.json` → `groups.<gid>.rewrites` / `last_rewrite_counted` (persisted since run r20261006-115802), or the `(spec refinement, not counted)` suffix in `run.log` | a `rewrites:` line in `status` for a group with none  |
-| the exported bundle                                     | `smart-mcps-orchestrate export <run> --repo <main checkout>` — a worktree has no `.orchestrator/` | `--repo .` from inside a worktree                       |
-| a `run` unit's prompt                                   | nothing — a `run` group has no coder and no prompt; assert on its `artifacts.json` entry instead  | any prompt                                              |
+| the item wants to prove…                                | read it from                                                                                                                                                        | never from                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| a session's role (`researcher`, `coder`)                | `manifest.json` → `groups.<gid>.sessions[].role`, or the `<role> launching` line in `run.log`                                                                       | the word `researcher` anywhere else in `run.log`        |
+| what a worker was told (a manifest entry, a refinement) | `groups/<gid>/spec-gen<N>.json` (`spec` text), `artifacts.json` entries                                                                                             | `groups/<gid>/prompt*.md` — no prompt file is persisted |
+| a `run` group's command progress                        | `groups/<gid>/run/attempt-<k>/<n>.result.json` (`exit_status`, `duration_s`)                                                                                        | `command N/M` lines — heartbeat phases are not logged   |
+| a rewrite was free (`spec_refinement` only)             | `state.json` → `groups.<gid>.rewrites` / `last_rewrite_counted` (persisted since run r20261006-115802), or the `(spec refinement, not counted)` suffix in `run.log` | a `rewrites:` line in `status` for a group with none    |
+| the exported bundle                                     | `smart-mcps-orchestrate export <run> --repo <main checkout>` — a worktree has no `.orchestrator/`                                                                   | `--repo .` from inside a worktree                       |
+| a `run` unit's prompt                                   | nothing — a `run` group has no coder and no prompt; assert on its `artifacts.json` entry instead                                                                    | any prompt                                              |
 
 **A live item's oracle is a side effect, and its control removes the
 mechanism.** Two of r20261006-115802's driver items were unprovable as
@@ -321,8 +321,10 @@ written and had to be rewritten by the run driver:
   `/tmp` freely with `Bash(ls *)` granted, so the control itself was false.
 - *Existence.* Every `Run (driver):` item names a test or command that
   exists in the unit's `Files` when the group merges. A coder reporting
-  "driver-run, not run" for a test it never wrote passes the merge gate; the
-  driver finds the gap only at finish.
+  "driver-run, not run" for a test it never wrote used to pass the merge
+  gate. The report-level gate now holds a required driver item whose `Run:` is
+  a pytest invocation naming a path absent from the worktree, sending the
+  coder back to write the test or report it `skipped` with the reason.
 
 Write the decision into the plan:
 

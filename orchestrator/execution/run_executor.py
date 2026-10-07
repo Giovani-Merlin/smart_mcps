@@ -213,8 +213,8 @@ class _RunExecution:
     def _log_command(self, n: int, result: CommandResult) -> None:
         log_event(
             self.paths,
-            f"group {self.gid}: command {n}/{len(self.args.commands)}: "
-            f"exit {result.exit_status} ({result.duration_s:.1f}s)",
+            f"group {self.gid}: command {n}/{len(self.args.commands)}"
+            f": exit {result.exit_status} ({result.duration_s:.1f}s)",
         )
 
     # ---------------------------------------------------- runner session
