@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -182,6 +183,12 @@ def test_both_groups_completed(completed_run):
     state = json.loads(RunPaths(repo, run_id).state_path.read_text())
     assert state["groups"]["g1"]["state"] == "completed", output
     assert state["groups"]["g2"]["state"] == "completed", output
+
+
+def test_run_log_carries_a_phase_line_per_command(completed_run):
+    repo, run_id, output = completed_run
+    log = (RunPaths(repo, run_id).run_dir / "logs" / "run.log").read_text()
+    assert re.search(r"command 1/\d+: exit 0 \(", log), output
 
 
 def test_run_group_committed_its_declared_output(completed_run):
