@@ -71,7 +71,7 @@ each a mixin composed onto `_GroupExecution`:
 | `execution/generation.py`   | the generation lifecycle: launch/re-entry, the round loop, the breaker, handoff | `coder_sid`, `coder_entry`, `handoff_prompt`, `_heartbeat` |
 | `execution/reviewer.py`     | the reviewer round and its scratch archive                                      | `reviewer_sid`, `workspace`, `extra_pass_done`             |
 | `execution/records.py`      | session records, usage bookkeeping, transcript watching                         | `coder_sid`, `coder_entry`, `_heartbeat`                   |
-| `execution/merge_ladder.py` | the merge gate, untracked ladder, flake re-run, conflict resolution             | `coder_sid`, `_flake_reruns`, `_untracked_strikes`         |
+| `execution/merge_ladder.py` | the merge gate, untracked ladder, flake re-run, conflict resolution             | `coder_sid`, `_flake_reruns`                               |
 | `execution/escalating.py`   | escalation, approval gates, the coder-question channel, rewrite, relaunch       | `rewrites`, `sessions_spawned`, `handoff_prompt`           |
 | `execution/surprises.py`    | the cross-group `SurpriseBoard` and the prompt-note channels                    | `_briefing_notes`, `_operator_notes`, `_env_failure`       |
 
