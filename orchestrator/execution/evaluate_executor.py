@@ -3,8 +3,8 @@ commands, plus a hash-checked harness and an optional smoke gate before them,
 and a KPI/guard extraction after measurements are read.
 
 The harness hash baseline lives at ``<group_dir>/eval/harness.sha256`` — a
-JSON snapshot (``{"combined": ..., "paths": {path: sha256}}``) written on the
-first evaluation and compared on every later one; a mismatch names the first
+JSON snapshot (``{"combined": ..., "paths": {path: sha256}}``) written once the
+smoke and the first scoring command exit 0, and compared whenever present; a mismatch names the first
 differing path and fails the attempt without spending a triage call (the
 harness itself is untrustworthy, so there is nothing for triage to diagnose).
 """
@@ -62,6 +62,7 @@ class EvaluateExecution(_RunExecution):
         super().__init__(deps, ctx)
         self.args: EvaluateArgs = self.args
         self._harness_hash = ""
+        self._snapshot: dict[str, str] = {}
         self._kpi_value: float | None = None
         self._guard_values: dict[str, float] = {}
         self._threshold_cleared: bool | None = None
@@ -91,14 +92,22 @@ class EvaluateExecution(_RunExecution):
                 log_event(self.paths, f"group {self.gid}: evaluate failure — {message}")
                 self._commands.write_settled(attempt_dir, "failed", message)
                 raise GroupFailure(message)
-        else:
-            baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(
-                baseline_path,
-                json.dumps({"combined": combined, "paths": snapshot}, indent=2) + "\n",
-            )
+        self._snapshot = snapshot
         self._harness_hash = combined
         await self._run_smoke(attempt_dir)
+
+    def _pin_harness(self) -> None:
+        """Write the harness baseline once the smoke and the first scoring
+        command exited 0 — a failed smoke scored nothing, so it pins nothing."""
+        baseline_path = self._eval_dir() / "harness.sha256"
+        if baseline_path.is_file():
+            return
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            baseline_path,
+            json.dumps({"combined": self._harness_hash, "paths": self._snapshot}, indent=2)
+            + "\n",
+        )
 
     async def _run_smoke(self, attempt_dir: Path) -> None:
         smoke = self.args.kpi.smoke
@@ -126,6 +135,7 @@ class EvaluateExecution(_RunExecution):
 
     async def _after_measurements(self, measurements: dict, measurements_missing: bool) -> None:
         kpi = self.args.kpi
+        self._pin_harness()
         value = measurements.get(kpi.key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             await self._triage_and_fail(

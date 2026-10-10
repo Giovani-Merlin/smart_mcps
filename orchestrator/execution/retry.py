@@ -9,6 +9,7 @@ point is to build on the work, not discard it.
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -139,6 +140,21 @@ def _retry_failed(
         paths,
         f"group {group_id}: retried by operator — refreshed onto {integration}, reset to pending",
     )
+    _reset_harness_pin(paths, group_id)
+
+
+def _reset_harness_pin(paths: RunPaths, group_id: str) -> None:
+    """Delete an evaluate/optimize group's harness pin: retry is the operator's
+    explicit "I changed the world", so the next attempt re-pins."""
+    pin = paths.group_dir(group_id) / "run" / "eval" / "harness.sha256"
+    if not pin.is_file():
+        return
+    try:
+        combined = str(json.loads(pin.read_text()).get("combined", ""))
+    except (OSError, ValueError, AttributeError):
+        combined = ""
+    pin.unlink()
+    log_event(paths, f"group {group_id}: harness pin reset by retry (was {combined[:12]})")
 
 
 def _retry_quarantined(

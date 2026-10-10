@@ -38,11 +38,14 @@ follow from that:
   fixture inputs from a committed file or the run's shared data directory,
   content-hashed alongside the harness itself — never from a live codegraph
   query, which can drift mid-loop as the candidate's own commits land.
-- **The harness paths are hashed once, at first use.** `recipe_args.kpi.harness_paths`
+- **The harness paths are pinned once the first scoring succeeds.** `recipe_args.kpi.harness_paths`
   names every file the hash covers. The evaluate child (or the optimize
-  loop's settle step) computes the hash in the worktree at the first scoring
-  run — the integration tip the group launched from — and every later
-  scoring run in that same group compares against it. A mismatch is a Work
+  loop's settle step) computes the hash in the worktree at every scoring run,
+  compares it against the pin whenever one exists, and writes the pin only
+  once the smoke and the first scoring command exit 0 (a failed smoke scored
+  nothing, so it pins nothing). `retry` deletes the pin and logs
+  `harness pin reset by retry (was <hash>)`, so a harness fixed by the operator
+  is re-pinned on the next attempt. A mismatch is a Work
   Failure naming the path: the harness itself changed mid-loop, which
   invalidates every earlier delta, so the loop stops rather than silently
   rescaling.
