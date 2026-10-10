@@ -66,7 +66,6 @@ class MergeLadder:
     coder_sid: str
     coder_entry: SessionEntry | None
     _flake_reruns: int
-    _untracked_strikes: int
     _last_report: CoderReport | None
     _heartbeat: RoundHeartbeat
     _log: Callable[[str], None]
@@ -351,40 +350,13 @@ class MergeLadder:
         re-run (the tree was cleaned in place, by the operator or by archiving),
         False when a fresh coder was relaunched on the same spec.
 
-        First strike: attributable to the coder, but cheap — no rewrite, no
-        speccer; a same-spec relaunch carrying an operator note that names the
-        paths. Second consecutive strike: the leftovers are moved to the
-        group's ``untracked/`` archive, a surprise records it for the report,
-        and the merge proceeds.
+        One strike, one outcome: declared files left untracked are committed,
+        the rest are archived to the group's ``untracked/`` dir with an
+        informational surprise, and the gate re-runs. Only an operator
+        ``retry`` carrying text relaunches a fresh coder.
         """
         assert self.workspace is not None
-        self._untracked_strikes += 1
         paths = ", ".join(exc.paths)
-        note = (
-            f"untracked files left in the worktree: {paths} — commit them, move them "
-            f"into {CODER_SCRATCH_DIRNAME}/, or delete them"
-        )
-        if self._untracked_strikes >= 2:
-            archive = self.deps.store.paths.untracked_archive_dir(self.gid)
-            _move_paths(self.workspace, exc.paths, archive)
-            self._log(
-                f"group {self.gid}: UNTRACKED FILES ARCHIVED after a second consecutive "
-                f"untracked-only gate failure — moved to {archive}: {paths}; merging anyway"
-            )
-            self._spread(
-                [
-                    Surprise(
-                        kind="informational",
-                        description=(
-                            f"group {self.gid} left untracked files twice; archived to "
-                            f"{archive} and merged without them: {paths}"
-                        ),
-                        affected_groups=[self.gid],
-                    )
-                ]
-            )
-            self._log_remerge("untracked leftovers archived")
-            return True
         response = await self._escalate(
             EscalationKind.PREFLIGHT_FAILED,
             prompt=f"preflight failed for {self.gid} (untracked files): {exc}",
@@ -392,10 +364,58 @@ class MergeLadder:
         if _is_retry(response) and not response.answer.strip():
             self._log_remerge("operator retry with no text")
             return True
-        if response is not None and response.answer.strip():
-            note = f"{note}\n[operator] {response.answer}"
-        await self._relaunch(note, f"untracked files left in the worktree: {paths}")
-        return False
+        if _is_retry(response) and response.answer.strip():
+            note = (
+                f"untracked files left in the worktree: {paths} — commit them or git mv "
+                f"them into {CODER_SCRATCH_DIRNAME}/\n[operator] {response.answer}"
+            )
+            await self._relaunch(note, f"untracked files left in the worktree: {paths}")
+            return False
+        remaining = self._commit_declared_untracked(exc.paths)
+        if remaining:
+            archive = self.deps.store.paths.untracked_archive_dir(self.gid)
+            _move_paths(self.workspace, remaining, archive)
+            moved = ", ".join(remaining)
+            self._log(
+                f"group {self.gid}: UNTRACKED FILES ARCHIVED — moved to {archive}: {moved}; merging"
+            )
+            self._spread(
+                [
+                    Surprise(
+                        kind="informational",
+                        description=(
+                            f"group {self.gid} left untracked files; archived to "
+                            f"{archive} and merged without them: {moved}"
+                        ),
+                        affected_groups=[self.gid],
+                    )
+                ]
+            )
+        self._log_remerge("untracked leftovers handled")
+        return True
+
+    def _commit_declared_untracked(self, paths: list[str]) -> list[str]:
+        """Commit every untracked path that exactly matches a declared file;
+        return the rest (to be archived)."""
+        assert self.workspace is not None
+        declared = set(self.group.files)
+        keep = [p for p in paths if p in declared]
+        if not keep:
+            return list(paths)
+        _git_ok(self.workspace, "add", "--", *keep)
+        _git_ok(
+            self.workspace,
+            "commit",
+            "-m",
+            f"code({self.gid}): commit declared file left untracked",
+            "--",
+            *keep,
+        )
+        self._log(
+            f"group {self.gid}: committed {len(keep)} declared file(s) left untracked — "
+            f"{', '.join(keep)}"
+        )
+        return [p for p in paths if p not in declared]
 
     def _archive_coder_scratch(self) -> None:
         """Exclude and archive the coder's scratch directory before the gate
