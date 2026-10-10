@@ -227,3 +227,34 @@ def test_passing_smoke_command_lets_the_real_commands_run(tmp_path, repo):
     assert state == GroupState.COMPLETED
     entry = deps.artifacts.load().entries["g11"]
     assert entry.measurements["score"] == 3
+
+
+# ------------------------------------------------------- pin only on success
+
+
+def test_failed_smoke_writes_no_pin_and_the_next_attempt_completes(tmp_path, repo):
+    run_dir = tmp_path / "run"
+    pin = run_dir / "groups" / "g11" / "run" / "eval" / "harness.sha256"
+    deps = make_deps(
+        repo,
+        run_dir,
+        repo,
+        triage=lambda p: {"verdict": "work_failure", "diagnosis": "smoke failed"},
+    )
+    kpi = {**base_args()["kpi"], "smoke": "test -f ok.flag"}
+    with pytest.raises(GroupFailure):
+        asyncio.run(_run(deps, make_group(base_args(kpi=kpi))))
+    assert not pin.exists()
+
+    # the operator fixes the fixture (and the harness) and the group re-runs
+    (repo / "ok.flag").write_text("ok\n")
+    (repo / "scripts" / "score.sh").write_text(
+        '#!/bin/sh\necho \'{"score": 5, "guard": 1}\' > measurements.json\n'
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fix fixture")
+    state, _ctx = asyncio.run(_run(deps, make_group(base_args(kpi=kpi)), generation=1))
+
+    assert state == GroupState.COMPLETED
+    assert deps.artifacts.load().entries["g11"].measurements["score"] == 5
+    assert pin.is_file()

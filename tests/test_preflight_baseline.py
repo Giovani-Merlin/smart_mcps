@@ -35,6 +35,9 @@ def _init_repo(worktree: Path) -> None:
 def _pytest_project(worktree: Path, test_body: str) -> None:
     (worktree / "pyproject.toml").write_text(
         "[project]\nname = 'sample'\nversion = '0'\nrequires-python = '>=3.11'\n"
+        # an ini section pins the sample's own rootdir, so a tmp dir nested in
+        # an outer repo (a worktree's .coder-scratch) cannot adopt that repo's
+        "\n[tool.pytest.ini_options]\n"
     )
     (worktree / "test_sample.py").write_text(test_body)
     (worktree / ".gitignore").write_text("__pycache__/\n")

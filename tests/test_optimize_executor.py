@@ -541,3 +541,15 @@ def test_promising_candidate_rejected_by_cheat_reviewer_is_discarded(tmp_path, r
     assert last.outcome == "discard"
     assert "looks tuned to the seed" in last.why
     assert (repo / "value.txt").read_text().strip() == "5"
+def test_first_successful_evaluation_writes_the_harness_pin(tmp_path, repo, fake_home):
+    run_dir = tmp_path / "run"
+    runner = make_runner(fake_home)
+    deps = make_deps(repo, run_dir, repo, runner)
+    group = make_group(base_optimize_args(evaluations=1))
+    script_session(fake_home, coder_name(group.id), candidate_round("9", "round1"))
+
+    state, _ctx = asyncio.run(_run(deps, group))
+
+    assert state == GroupState.COMPLETED
+    pin = run_dir / "groups" / group.id / "eval" / "harness.sha256"
+    assert pin.is_file()
