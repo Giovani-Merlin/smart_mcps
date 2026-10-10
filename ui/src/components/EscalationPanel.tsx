@@ -28,6 +28,7 @@ const KIND_LABELS: Record<EscalationKind, string> = {
   group_start: "Group start",
   respawn: "Respawn",
   merge_approve: "Merge approve",
+  driver_items_pending: "Driver items pending",
 };
 
 const ACTIONS: readonly HumanAction[] = ["answer", "retry", "skip", "abort"];
