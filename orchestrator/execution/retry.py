@@ -146,15 +146,20 @@ def _retry_failed(
 def _reset_harness_pin(paths: RunPaths, group_id: str) -> None:
     """Delete an evaluate/optimize group's harness pin: retry is the operator's
     explicit "I changed the world", so the next attempt re-pins."""
-    pin = paths.group_dir(group_id) / "run" / "eval" / "harness.sha256"
-    if not pin.is_file():
-        return
-    try:
-        combined = str(json.loads(pin.read_text()).get("combined", ""))
-    except (OSError, ValueError, AttributeError):
-        combined = ""
-    pin.unlink()
-    log_event(paths, f"group {group_id}: harness pin reset by retry (was {combined[:12]})")
+    group_dir = paths.group_dir(group_id)
+    # evaluate pins under run/eval, optimize directly under eval
+    for pin in (
+        group_dir / "run" / "eval" / "harness.sha256",
+        group_dir / "eval" / "harness.sha256",
+    ):
+        if not pin.is_file():
+            continue
+        try:
+            combined = str(json.loads(pin.read_text()).get("combined", ""))
+        except (OSError, ValueError, AttributeError):
+            combined = ""
+        pin.unlink()
+        log_event(paths, f"group {group_id}: harness pin reset by retry (was {combined[:12]})")
 
 
 def _retry_quarantined(

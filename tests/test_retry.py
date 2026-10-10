@@ -430,6 +430,8 @@ def test_retry_cli_then_status_shows_release(repo, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "failure: released by operator at" in out
+
+
 # ------------------------------------------------------------- harness pin
 
 
@@ -454,6 +456,19 @@ def test_retry_deletes_the_harness_pin_and_logs_it(repo):
     assert not pin.exists()
     log = (paths.run_dir / "logs" / "run.log").read_text()
     assert "group g1: harness pin reset by retry (was abcdef012345)" in log
+
+
+def test_retry_deletes_an_optimize_groups_harness_pin(repo):
+    paths, group = _failed_group_with_worktree(repo)
+    pin = paths.group_dir(group.id) / "eval" / "harness.sha256"
+    pin.parent.mkdir(parents=True)
+    pin.write_text('{"combined": "0123456789abffff", "paths": {}}\n')
+
+    retry_group(repo, "r1", group.id)
+
+    assert not pin.exists()
+    log = (paths.run_dir / "logs" / "run.log").read_text()
+    assert "group g1: harness pin reset by retry (was 0123456789ab)" in log
 
 
 def test_retry_without_a_pin_logs_no_pin_reset(repo):
