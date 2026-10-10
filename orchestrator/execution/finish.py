@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Callable
 
 from orchestrator.config import ExecutionConfig, load_config
+from orchestrator.execution.driver_items import pending_driver_items
 from orchestrator.execution.manifest import (
     ManifestStore,
     RunPaths,
     archive_review_scratch,
     effective_group,
-    latest_report,
 )
 from orchestrator.execution.prompting import CODER_SCRATCH_DIRNAME, REVIEW_SCRATCH_DIRNAME
 from orchestrator.execution.surprises import SurpriseBoard, format_residue_report, surprise_residue
@@ -95,24 +95,10 @@ def pending_driver_run_items(repo_root: Path, run_id: str) -> dict[str, list[str
     grouping = GroupingResult.model_validate_json(paths.groups_path.read_text())
     pending: dict[str, list[str]] = {}
     for group in grouping.groups:
-        items = effective_group(paths, group).verification
-        passed = _passed_item_ids(latest_report(paths, group.id))
-        ids = [
-            item.id for item in items if item.driver_run and item.required and item.id not in passed
-        ]
+        ids = pending_driver_items(paths, group)
         if ids:
             pending[group.id] = ids
     return pending
-
-
-def _passed_item_ids(report: dict | None) -> set[str]:
-    if not report:
-        return set()
-    return {
-        r.get("item_id")
-        for r in report.get("verification_results") or []
-        if isinstance(r, dict) and r.get("status") == "pass"
-    }
 
 
 def _group_is_merged(repo_root: Path, run_id: str, tip: str, gid: str, entry) -> bool:

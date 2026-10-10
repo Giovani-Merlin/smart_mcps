@@ -159,3 +159,13 @@ def test_a_sandbox_safe_item_still_never_holds_the_gate():
     assert unmet_required_verification(items, skipped) == []
     failed = results + [VerificationResult(item_id="g4-6", status="fail", notes="1 failed")]
     assert unmet_required_verification(items, failed) == []
+
+
+def test_a_run_group_command_extending_a_driver_marked_item_satisfies_it():
+    from orchestrator.recipes.run import RunCommand, run_command_for_item
+
+    declared = [RunCommand(cmd="uv run python s.py --fixture a.json --out m.json", wall_clock_min=1)]
+    item = "Fixture scores. Run (driver, sandbox-safe): `uv run python s.py --fixture a.json`"
+    smoke = "Smoke. Run (driver): `uv run python s.py --fixture a.json --smoke`"
+    assert run_command_for_item(item, declared) is declared[0]
+    assert run_command_for_item(smoke, declared) is None
