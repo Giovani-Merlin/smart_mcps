@@ -48,6 +48,9 @@ class GitRangeFacts(BaseModel):
     base_sha: str | None = None
     tip_sha: str | None = None
     available: bool = False
+    #: 8-character prefixes of ``git rev-list base..tip`` plus ``base``, oldest
+    #: first — so a pointer written before the one-pager commit still validates.
+    commits: list[str] = Field(default_factory=list)
 
 
 class ChangedFileFacts(BaseModel):
@@ -246,7 +249,12 @@ def _resolve_git_range(paths: RunPaths, repo_root: Path, run_id: str) -> GitRang
         and _git_commit_exists(repo_root, base_sha)
         and _git_commit_exists(repo_root, tip_sha)
     )
-    return GitRangeFacts(base_sha=base_sha, tip_sha=tip_sha, available=available)
+    commits: list[str] = []
+    if available:
+        listing = _run_git(repo_root, "rev-list", "--reverse", f"{base_sha}..{tip_sha}")
+        if listing is not None:
+            commits = [str(base_sha)[:8], *(line[:8] for line in listing.split())]
+    return GitRangeFacts(base_sha=base_sha, tip_sha=tip_sha, available=available, commits=commits)
 
 
 def _merge_commits(
