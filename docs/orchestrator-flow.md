@@ -78,13 +78,19 @@ each a mixin composed onto `_GroupExecution`:
 ## 7. Resume / resolve / finish
 
 **Drivers:** `smart-mcps-orchestrate resume`, `status`, `answer`, `retry`,
-`finish`.
+`finish`, `driver-item`, `data-step`.
 `resume` restarts a crashed or interrupted run; `status` shows run state and
 sessions; `answer` answers a pending HITL escalation; `retry` releases a
 terminally failed or quarantined group for another attempt
 (`adr/0004` — the orchestrator resolves a failed group's stranded work rather
 than discarding it). `finish` pushes the integration branch, opens a PR, and
-tears down merged groups' worktrees.
+tears down merged groups' worktrees. `driver-item <run> <gid> <item_id>
+--status pass|fail|skipped` records the outcome of a `Run (driver):` item the
+driver ran (`groups/<gid>/driver-items.json`); the scheduler holds dependents of
+a group with unrecorded items, and auto-finish reads the same record.
+`data-step <run> -- <cmd…>` runs a data-writing command under the run's
+`data-step.lock`, which merge gates also take, so a driver write never races a
+gate reading the live data layer.
 
 ## 8. Report
 

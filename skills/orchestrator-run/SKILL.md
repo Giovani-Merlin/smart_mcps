@@ -170,7 +170,11 @@ Never poll on a fixed interval. Use the `Monitor` tool with an until-condition
 that fires on any of:
 
 - **(a)** a new `.orchestrator/runs/$RUN/escalations/request-*.json` with no
-  matching `response-*.json` (the primary signal);
+  matching `response-*.json` (the primary signal), **or** an
+  `ESCALATION <id> timed out` line in `logs/run.log`. A request file with no
+  response is "answered, timed out, or still pending" — a timed-out request
+  keeps its file and never gets a response, so the file alone false-alarms;
+  `status $RUN` is the truth;
 - **(b)** the run process exiting (`kill -0 <pid>` fails);
 - **(c)** a new terminal group line in `logs/run.log` —
   `group <gid>: completed`, `group <gid>: failed (…)`,
@@ -221,6 +225,12 @@ Greppable anchors, all in `logs/run.log`:
 | run command done     | `group <gid>: command <n>/<total>: exit <k> (<N.N>s)` (one per command, success or failure)                                                                                                                                                                   |
 | run recipe failure   | `group <gid>: run failure — <summary>` (precedes the group's terminal `failed` line)                                                                                                                                                                          |
 | run recipe done      | `group <gid>: run recipe completed`                                                                                                                                                                                                                           |
+| dependents held      | `group <gid>: held — dependency <dep> has N driver-run item(s) unrecorded (<ids>); record them with smart-mcps-orchestrate driver-item …` (dependents wait on exactly that record) |
+| driver item recorded | `group <gid>: driver item <id> recorded <status> by the driver`                                                                                                                                                                                               |
+| data step            | `data step started: <cmd>` / `data step finished (exit <k>): <cmd>`                                                                                                                                                                                           |
+| gate waits for data  | `group <gid> waiting for driver data step (…)` — a merge gate is queued behind your `data-step`; `data step waiting for the merge gate` is the reverse                                                                                                          |
+| untracked archived   | `group <gid>: UNTRACKED FILES ARCHIVED — moved to <dir>: <paths>; merging` (informational surprise follows; nothing to do unless a path matters)                                                                                                                |
+| harness pin reset    | `harness pin reset by retry` — `retry` on an evaluate/optimize group dropped the old harness hash; the next attempt pins afresh after its smoke succeeds                                                                                                          |
 | late surprise        | `SURPRISE [<kind>] group <src> → <gid> (already merged): …` / `… → (no target group): …` / `… → (own group; already in its report): …` (non-blocking; read it now, not at finish)                                                                             |
 
 - **`not live for`** is evidence, not an alarm to act on by itself — see
@@ -297,10 +307,30 @@ it blocks (the `blocks` clause on the raise line):
 | `preflight_failed`                          | a flake, or you fixed the world by hand (tree unchanged)  | `--action retry` with **no text**: re-runs the gate, no coder, no rewrite                                                                                            |
 | same                                        | a fix you must commit (fixture, dep, config)              | commit on the **integration branch only** — the retry re-merges it into the group branch before the gate; a worktree commit too leaves duplicates (triage-guide)     |
 | same                                        | you changed a test/fixture the coder must know about      | `--action retry --text …`: fresh coder, same spec, your text as its note                                                                                             |
-| same                                        | the diff is really wrong                                  | `answer` (rewrite); untracked leftovers are handled for you (relaunch, then archive)                                                                                 |
+| same                                        | the diff is really wrong                                  | `answer` (rewrite). Untracked leftovers need no action: the gate archives them to `groups/<gid>/untracked/` and merges; `retry --text` is the explicit relaunch  |
+| `driver_items_pending`                      | a dependency's `Run (driver):` items are unrecorded       | names the **dependency**, not the waiting groups: run the listed items (below), record each with `driver-item`; `answer --action retry` only to release without evidence |
 | `caps_exhausted`                            | visible progress in the diff                              | `answer` (grants one more generation/rewrite); no progress → `skip`                                                                                                  |
 | `group_resolve`                             | a FAILED group's stranded work                            | inspect the worktree; commit what is salvageable; `answer`. **Never clean it.**                                                                                      |
 | `respawn` / `group_start` / `merge_approve` | interactive tier only                                     | not raised at `on_stuck`; if seen, `answer` = proceed                                                                                                                |
+
+### Driver items and data steps
+
+- **Run every `Run (driver):` item from the integration worktree at a tip that
+  includes the dependency's merge** (`.worktrees/$RUN/integration`) — never
+  from the main checkout or the group's own worktree. Record the outcome the
+  moment the command returns:
+  `smart-mcps-orchestrate driver-item $RUN <gid> <item_id> --status pass|fail|skipped [--notes "…" | --notes-file FILE] [--repo .]`.
+  Use `skipped` with the reason when the item is moot (a RESOLVED group's, say).
+  A `held — dependency <dep> …` line means dependents are waiting on exactly
+  this record; recording the last pending item releases them, and the
+  auto-finish check reads the same record.
+- **Wrap every step that writes the shared data layer** in
+  `smart-mcps-orchestrate data-step $RUN [--repo .] -- <cmd…>`, run from the
+  integration worktree. It excludes merge gates (which read the live data
+  dirs); expect a long one to hold every merge for its whole duration.
+- **A halted run only arises from `--on-failure halt`.** The default is
+  `overlap` (dependents and file-overlapping groups are held, the rest keep
+  going). Pass `--on-failure halt` only when the human wants fail-fast.
 
 Rules that override the table:
 
@@ -475,9 +505,9 @@ When the process exits (signal **(b)**):
       merge log lists only the items the coder did not pass (a coder may
       attempt a sandbox-safe one; a nested `claude` cannot write its
       transcript from inside a confined worktree, so those it always leaves
-      to you). A `passed by the coder` line needs nothing. Run each from the group's
-      worktree, or from the integration worktree once merged, and paste the
-      result into the one-pager's Run notes. Run a live-tier pytest item with
+      to you). A `passed by the coder` line needs nothing. Run each from the
+      integration worktree once merged, record it with `driver-item` (above),
+      and paste the result into the one-pager's Run notes. Run a live-tier pytest item with
       `--basetemp=.orchestrator/runs/$RUN/live-<item>` and its output to a log
       beside it: pytest's default temp dir is under `/tmp`, and a reboot
       mid-item wiped r20260927-100604's scratch repos with the evidence. A live-tier item costs real

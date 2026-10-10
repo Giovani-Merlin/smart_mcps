@@ -276,8 +276,8 @@ so only the exporter — which knows the exact bytes — can dedup it.
 
 **Failure Policy**:
 What the run does about *other* groups once one has ended without landing its
-work — `halt` (the default: admit nothing further) or `overlap` (admit anything
-not sharing a declared file, the pre-2026-08-19 behaviour). Both \[[Work Failure]\]
+work — overlap (the default: admit anything not sharing a declared file) or `halt`
+(admit nothing further; opt-in with `--on-failure halt`). Both \[[Work Failure]\]
 and Interrupted trigger it, because both leave the same hole in the integration
 tip. In-flight groups are never cancelled to effect a halt; they run to their own
 outcome first.
@@ -418,3 +418,17 @@ worsened) or `crash`. The coder proposes; the orchestrator decides and moves the
 \[[Champion]\]. The single deliberate divergence from autoresearch, where the
 agent decides.
 _Avoid_: accept/reject (two-valued; hides `inconclusive` and `promising`)
+
+**Driver Item Record**:
+The run's own memory of which `Run (driver):` verification items the run driver
+has executed, kept in `groups/<gid>/driver-items.json` and written by the
+`driver-item` subcommand. The scheduler holds dependents of a group whose items
+are unrecorded, and auto-finish waits on the same record.
+_Avoid_: driver log (a log is not read back), sign-off (nobody approves; the
+record is evidence)
+
+**Data Step**:
+A driver command that writes the shared data layer (`[workspace] data_dirs`),
+run through `data-step` so it holds the run's `data-step.lock` and no merge gate
+reads the data while it writes. A long one holds every merge for its duration.
+_Avoid_: ingest (one kind of data step), driver item (a verification, not a write)
