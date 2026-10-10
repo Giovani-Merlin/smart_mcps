@@ -416,13 +416,13 @@ class ExecutionConfig(BaseModel):
     # ahead of the proven (but expensive) rewrite path.
     max_conflict_resolve_attempts: int = 1
     # What admission does once a group has ended unsuccessfully (plan U3/R41).
-    # "halt": no further group is admitted once any group is FAILED or
-    # INTERRUPTED — in-flight groups still run to their own terminal state, they
-    # are just never joined by a new one forking from a tip that may carry a hole
-    # or unverified resolve-merged work. "overlap" keeps the pre-U3 behaviour:
-    # only groups whose declared files overlap the failed/interrupted group are
-    # held.
-    on_group_failure: Literal["halt", "overlap"] = "halt"
+    # "overlap" (default): only groups whose declared files overlap, or that
+    # depend on, the failed/interrupted group are held; disjoint siblings keep
+    # running. "halt" (the escape hatch, --on-failure halt): no further group is
+    # admitted once any group is FAILED or INTERRUPTED — in-flight groups still
+    # run to their own terminal state, they are just never joined by a new one
+    # forking from a tip that may carry a hole or unverified resolve-merged work.
+    on_group_failure: Literal["halt", "overlap"] = "overlap"
     # Reviewer scratch archive cap (plan U6): files beyond this many bytes are
     # left out of the archive (and named, with their size, in skipped.txt)
     # rather than silently dropped or grown without bound.
@@ -650,7 +650,7 @@ class EscalationConfig(BaseModel):
     the grounds that a group ending failed or interrupted must never let an
     overlapping successor start silently, and that gate needs an operator
     channel. That rationale is stale: U3 shipped
-    ``ExecutionConfig.on_group_failure``, defaulting to ``"halt"``, which stops
+    ``ExecutionConfig.on_group_failure``, which (under ``"halt"``) stops
     admission on a failure mechanically, with no operator involved. The safety
     case HITL-on was defending is now covered without blocking an unattended run.
 

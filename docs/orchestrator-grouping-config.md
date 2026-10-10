@@ -348,7 +348,7 @@ repo (199 vitest tests in ~6s, `tsc` in ~3s).
 `ui/node_modules` is provisioned by `provision_node_env` (`npm ci`) alongside
 `uv sync`, for group and integration worktrees alike. When it is **missing the
 UI steps are skipped, never failed** — an `env`-kind preflight failure raises
-`GroupFailure`, which under `--on-failure halt` kills the run, and a machine
+`GroupFailure`, which under `--on-failure halt` (the opt-in; `overlap` is the default) kills the run, and a machine
 without npm must not be able to do that. The asymmetry is logged instead:
 `preflight: step 'vitest' was in the baseline but is skipped here (no ui/node_modules)`.
 
