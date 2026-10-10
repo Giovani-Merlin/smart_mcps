@@ -874,7 +874,7 @@ def test_unknown_dependency_is_rejected_at_construction(tmp_path):
 
 @pytest.mark.asyncio
 async def test_halt_blocks_admission_of_a_disjoint_group_after_a_failure(tmp_path):
-    """The default policy halts admission even for a group sharing no declared
+    """The halt policy halts admission even for a group sharing no declared
     file and having no DAG edge with the failed one (plan U3/R41)."""
 
     async def executor(ctx):
@@ -886,6 +886,7 @@ async def test_halt_blocks_admission_of_a_disjoint_group_after_a_failure(tmp_pat
         groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
+        config=ExecutionConfig(on_group_failure="halt"),
     )
     states = await scheduler.run()
     assert states["g1"] == GroupState.FAILED
@@ -903,6 +904,7 @@ async def test_halt_also_triggers_on_an_interrupted_group(tmp_path):
         groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
+        config=ExecutionConfig(on_group_failure="halt"),
     )
     states = await scheduler.run()
     assert states["g1"] == GroupState.INTERRUPTED
@@ -929,7 +931,7 @@ async def test_halt_does_not_cancel_in_flight_groups(tmp_path):
         groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
-        config=ExecutionConfig(concurrency=2),
+        config=ExecutionConfig(concurrency=2, on_group_failure="halt"),
     )
     run_task = asyncio.create_task(scheduler.run())
     await wait_until(lambda: started.is_set())
@@ -956,6 +958,7 @@ async def test_halt_returns_cleanly_without_no_progress_error(tmp_path):
         groups=[make_group("g1", files=["a.py"]), make_group("g2", files=["b.py"])],
         paths=RunPaths(tmp_path, "r1"),
         executor=executor,
+        config=ExecutionConfig(on_group_failure="halt"),
     )
     states = await scheduler.run()  # must not raise
     assert states["g1"] == GroupState.FAILED
@@ -999,6 +1002,7 @@ async def test_resuming_a_halted_run_with_only_a_failed_group_halts_again(tmp_pa
         paths=paths,
         executor=completing_executor(),
         resume=True,
+        config=ExecutionConfig(on_group_failure="halt"),
     )
     states = await scheduler.run()
     assert states["g1"] == GroupState.FAILED
