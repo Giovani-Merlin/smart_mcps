@@ -261,6 +261,21 @@ class RunPaths:
         the merge can proceed (the merge gate's untracked ladder)."""
         return self.group_dir(group_id) / "untracked"
 
+    def driver_items_path(self, group_id: str) -> Path:
+        """What the run driver recorded for the group's ``Run (driver):`` items
+        (``driver-item`` subcommand): ``{item_id: {status, notes, ...}}``."""
+        return self.group_dir(group_id) / "driver-items.json"
+
+    @property
+    def data_step_lock_path(self) -> Path:
+        """Run-level flock excluding the merge gate and driver data steps."""
+        return self.run_dir / "data-step.lock"
+
+    @property
+    def data_step_record_path(self) -> Path:
+        """Evidence of which data step holds ``data_step_lock_path``."""
+        return self.run_dir / "data-step.json"
+
     @property
     def driver_lock_path(self) -> Path:
         """The advisory lock a driver process holds for its lifetime (plan U11).

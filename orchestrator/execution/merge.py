@@ -17,6 +17,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from orchestrator.config import ExecutionConfig, PreflightConfig, WorkspaceConfig
+from orchestrator.execution.data_step import hold_data_step_lock
+from orchestrator.execution.manifest import RunPaths
 from orchestrator.execution.preflight import PreflightBaseline, run_preflight
 from orchestrator.execution.worktrees import (
     IGNORED_OUTPUTS_DIRNAME,
@@ -251,15 +253,18 @@ class IntegrationMerger:
                     f"group {group.id} branch {branch} has no commits ahead of "
                     f"{self.branch} — refusing to merge nothing"
                 )
-            run_preflight(
-                worktree,
-                config=self._preflight_config,
-                output_dir=self._preflight_output_dir(group.id),
-                log=self._log,
-                declared_files=group.files,
-                baseline=self._preflight_baseline,
-                uv_run_args=self._provision_args,
-            )
+            with hold_data_step_lock(
+                RunPaths(self.repo_root, self.run_id), f"group {group.id}: gate", self._log
+            ):
+                run_preflight(
+                    worktree,
+                    config=self._preflight_config,
+                    output_dir=self._preflight_output_dir(group.id),
+                    log=self._log,
+                    declared_files=group.files,
+                    baseline=self._preflight_baseline,
+                    uv_run_args=self._provision_args,
+                )
             message = f"merge({self.run_id}): {group.id} {group.name}"
             tip_before = _git_ok(integration_wt, "rev-parse", "HEAD").strip()
             result = _git(integration_wt, "merge", "--no-ff", "-m", message, branch)

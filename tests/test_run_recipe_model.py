@@ -57,8 +57,27 @@ def test_run_command_for_item_normalises_whitespace_and_ignores_the_marker_paren
 def test_run_command_for_item_is_none_for_a_missing_or_foreign_command():
     assert run_command_for_item("The output exists.", COMMANDS) is None
     assert run_command_for_item("Run: `cd web && uv run pytest tests/ -q`", COMMANDS) is None
-    assert run_command_for_item("Run: `uv run python bench.py`", COMMANDS) is None
+    assert run_command_for_item("Run: `uv run python other.py`", COMMANDS) is None
     assert run_command_for_item("Run: ``", COMMANDS) is None
+
+
+def test_run_command_for_item_matches_a_declared_command_that_extends_the_item():
+    declared = [
+        RunCommand(cmd="uv run python s.py --fixture a.json --out m.json", wall_clock_min=1)
+    ]
+    assert (
+        run_command_for_item("Run: `uv run python s.py --fixture a.json`", declared) is declared[0]
+    )
+    # The extra flag is not in the declared command.
+    assert (
+        run_command_for_item("Run: `uv run python s.py --fixture a.json --smoke`", declared) is None
+    )
+
+
+def test_run_command_for_item_runner_only_item_never_matches_a_longer_command():
+    declared = [RunCommand(cmd="uv run python scripts/x.py --out m.json", wall_clock_min=1)]
+    assert run_command_for_item("Run: `uv run python`", declared) is None
+    assert run_command_for_item("Run: `uv run python scripts/x.py`", declared) is declared[0]
 
 
 def test_run_verification_report_round_trips_with_no_extra_keys():

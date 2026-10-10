@@ -8,12 +8,85 @@ coder can still write the test, so a missing named test is a gap here.
 
 from __future__ import annotations
 
+import datetime
+import json
 import re
 import shlex
 from pathlib import Path
 
-from orchestrator.model import VerificationItem, VerificationResult
+from orchestrator.execution.manifest import (
+    RunPaths,
+    atomic_write_text,
+    effective_group,
+    latest_report,
+    log_event,
+)
+from orchestrator.model import Group, VerificationItem, VerificationResult
 from orchestrator.recipes.run import _RUN_ITEM_RE
+
+DRIVER_ITEM_STATUSES = ("pass", "fail", "skipped")
+
+
+class DriverItemError(ValueError):
+    """The driver recorded an item the group's spec does not have, or a status
+    outside ``pass|fail|skipped``."""
+
+
+def read_driver_items(paths: RunPaths, group_id: str) -> dict[str, dict]:
+    """The driver's recorded outcomes for a group, ``{}`` when absent or unreadable."""
+    try:
+        payload = json.loads(paths.driver_items_path(group_id).read_text())
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def record_driver_item(
+    paths: RunPaths, group: Group, item_id: str, status: str, notes: str = ""
+) -> None:
+    """Write (or overwrite) the driver's outcome for one ``Run (driver):`` item.
+
+    The id is validated against the spec in force, so a typo cannot silently
+    "settle" nothing. A recorded ``fail`` stays pending in
+    ``pending_driver_items``; ``pass`` and ``skipped`` settle the item."""
+    known = [item.id for item in effective_group(paths, group).verification]
+    if item_id not in known:
+        raise DriverItemError(
+            f"group {group.id} has no verification item {item_id!r}; known ids: {', '.join(known)}"
+        )
+    if status not in DRIVER_ITEM_STATUSES:
+        raise DriverItemError(f"status {status!r} is not one of {', '.join(DRIVER_ITEM_STATUSES)}")
+    records = read_driver_items(paths, group.id)
+    records[item_id] = {
+        "status": status,
+        "notes": notes,
+        "recorded_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "by": "driver",
+    }
+    atomic_write_text(paths.driver_items_path(group.id), json.dumps(records, indent=2) + "\n")
+    log_event(paths, f"group {group.id}: driver item {item_id} recorded {status} by the driver")
+
+
+def pending_driver_items(paths: RunPaths, group: Group) -> list[str]:
+    """Required ``driver_run`` items of the group's spec in force that neither
+    the coder's latest report passed nor the driver recorded ``pass``/``skipped``."""
+    report = latest_report(paths, group.id)
+    settled = {
+        r.get("item_id")
+        for r in (report.get("verification_results") if report else None) or []
+        if isinstance(r, dict) and r.get("status") == "pass"
+    }
+    settled |= {
+        item_id
+        for item_id, record in read_driver_items(paths, group.id).items()
+        if isinstance(record, dict) and record.get("status") in ("pass", "skipped")
+    }
+    return [
+        item.id
+        for item in effective_group(paths, group).verification
+        if item.driver_run and item.required and item.id not in settled
+    ]
+
 
 _SHELL_OPERATORS_RE = re.compile(r"&&|\|\||;|\|")
 _TEST_ARG_RE = re.compile(r"^([\w./-]+\.py)((?:::[\w\[\]-]+)*)$")

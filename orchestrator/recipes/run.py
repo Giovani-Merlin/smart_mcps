@@ -122,19 +122,28 @@ _RUN_ITEM_RE = re.compile(
 )
 
 
+_RUNNER_TOKENS = frozenset({"uv", "run", "python", "python3", "-m", "pytest", "npm", "npx"})
+
+
 def run_command_for_item(description: str, commands: Iterable[RunCommand]) -> RunCommand | None:
     """The declared command a verification item's ``Run:`` names, by
-    whitespace-normalised equality with ``cmd.cmd``; ``None`` when the item
+    whitespace-normalised argv prefix of ``cmd.cmd``; ``None`` when the item
     has no ``Run:`` or names something else (a ``cd <cwd> && …`` rewrite is
     a non-goal — the plan writes the command as declared)."""
     match = _RUN_ITEM_RE.search(description)
     if match is None:
         return None
-    wanted = " ".join((match.group(1) or match.group(2) or "").split())
+    wanted = (match.group(1) or match.group(2) or "").split()
     if not wanted:
         return None
+    # The recipe appends flags the plan does not spell (g9-1: ``--out``), so an
+    # item is satisfied by a declared command whose argv *starts with* the
+    # item's. The item must reach past the runner (``uv run python`` alone
+    # would match every command), so a bare runner prefix matches nothing.
+    reaches_past_runner = any(token not in _RUNNER_TOKENS for token in wanted)
     for command in commands:
-        if " ".join(command.cmd.split()) == wanted:
+        declared = command.cmd.split()
+        if declared == wanted or (reaches_past_runner and declared[: len(wanted)] == wanted):
             return command
     return None
 
