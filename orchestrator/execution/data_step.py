@@ -102,9 +102,10 @@ def hold_data_step_lock(paths: RunPaths, label: str, log: Callable[[str], None])
 
 
 def run_data_step(repo_root: Path, run_id: str, cmd: str) -> int:
-    """Run ``cmd`` (``sh -c``, in the repo root, output passed through) while
+    """Run ``cmd`` (``sh -c``, in the caller's cwd, output passed through) while
     holding the data-step lock; returns the command's exit status."""
     paths = RunPaths(repo_root, run_id)
+    cwd = Path.cwd()  # the driver's directory — repo_root only locates the run dir
 
     def log(text: str) -> None:
         log_event(paths, text)
@@ -116,11 +117,12 @@ def run_data_step(repo_root: Path, run_id: str, cmd: str) -> int:
     ):
         atomic_write_text(
             paths.data_step_record_path,
-            json.dumps({"cmd": cmd, "pid": os.getpid(), "started_at": _now()}) + "\n",
+            json.dumps({"cmd": cmd, "cwd": str(cwd), "pid": os.getpid(), "started_at": _now()})
+            + "\n",
         )
         log(f"data step started: {cmd}")
         try:
-            code = subprocess.run(["sh", "-c", cmd], cwd=repo_root, check=False).returncode
+            code = subprocess.run(["sh", "-c", cmd], cwd=cwd, check=False).returncode
         finally:
             paths.data_step_record_path.unlink(missing_ok=True)
         log(f"data step finished (exit {code}): {cmd}")

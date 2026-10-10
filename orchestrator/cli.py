@@ -17,6 +17,7 @@ import asyncio
 import functools
 import json
 import os
+import shlex
 import signal
 import sys
 import time
@@ -85,6 +86,13 @@ from orchestrator.execution.manifest import (
     validate_grouping_name,
 )
 from orchestrator.execution.calibrate import calibrate_run, format_calibration
+from orchestrator.execution.data_step import data_dirs_gate_warning, run_data_step
+from orchestrator.execution.driver_items import (
+    DRIVER_ITEM_STATUSES,
+    DriverItemError,
+    read_driver_items,
+    record_driver_item,
+)
 from orchestrator.execution.finish import (
     FinishError,
     finish_run,
@@ -430,6 +438,33 @@ def main(
     status_cmd.add_argument("run_id", nargs="?", default=None, help="run to show (default: list)")
     status_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
 
+    driver_item_cmd = subparsers.add_parser(
+        "driver-item", help="record the outcome of a `Run (driver):` verification item"
+    )
+    driver_item_cmd.add_argument("run_id", help="the run holding the group")
+    driver_item_cmd.add_argument("group_id", help="the group whose item the driver ran")
+    driver_item_cmd.add_argument("item_id", help="the verification item id (e.g. g1-2)")
+    driver_item_cmd.add_argument(
+        "--status", required=True, choices=list(DRIVER_ITEM_STATUSES), help="the item's outcome"
+    )
+    driver_notes = driver_item_cmd.add_mutually_exclusive_group()
+    driver_notes.add_argument("--notes", default="", help="what the driver observed")
+    driver_notes.add_argument(
+        "--notes-file",
+        type=Path,
+        default=None,
+        help="read the notes from a file, or `-` for stdin",
+    )
+    driver_item_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+
+    data_step_cmd = subparsers.add_parser(
+        "data-step",
+        help="run a driver data step under the run's data-step lock (excludes the merge gate)",
+    )
+    data_step_cmd.add_argument("run_id", help="the run whose data layer the step writes")
+    data_step_cmd.add_argument("--repo", type=Path, default=Path.cwd(), help="target repo root")
+    data_step_cmd.add_argument("cmd", nargs="*", help="-- <command…> run in the current directory")
+
     answer_cmd = subparsers.add_parser("answer", help="answer a pending escalation (HITL)")
     answer_cmd.add_argument("run_id", help="the run holding the escalation")
     answer_cmd.add_argument("esc_id", help="the escalation id (see `status`)")
@@ -580,7 +615,16 @@ def main(
         help="target repo root; served as a fallback project when no registry file exists",
     )
 
-    args = parser.parse_args(argv)
+    # argparse.REMAINDER swallows an option placed after the positional run id
+    # (`data-step <run> --repo X -- cmd`), so split at the first `--` ourselves.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    data_step_cmd_argv: list[str] | None = None
+    if raw_argv[:1] == ["data-step"] and "--" in raw_argv:
+        split_at = raw_argv.index("--")
+        raw_argv, data_step_cmd_argv = raw_argv[:split_at], raw_argv[split_at + 1 :]
+    args = parser.parse_args(raw_argv)
+    if data_step_cmd_argv is not None:
+        args.cmd = data_step_cmd_argv
     if args.command == "group":
         return _cmd_group(args, llm_runner, client)
     if args.command == "run":
@@ -595,6 +639,10 @@ def main(
         return _cmd_plan_split(args)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "driver-item":
+        return _cmd_driver_item(args)
+    if args.command == "data-step":
+        return _cmd_data_step(args)
     if args.command == "answer":
         return _cmd_answer(args)
     if args.command == "retry":
@@ -2158,6 +2206,9 @@ def _cmd_run(
         # reading logs/run.log after the fact must be able to tell whether a halted
         # run was the default or an explicit --on-failure override.
         log_event(paths, f"run {run_id}: on_group_failure={config.execution.on_group_failure}")
+        data_warning = data_dirs_gate_warning(config.workspace, run_id)
+        if data_warning is not None:
+            log_event(paths, data_warning)
         if not config.docs.formats:
             # Opt-in by design, but an empty list looks exactly like a run with
             # nothing to report: every learning_podcast run through r20260908
@@ -3214,6 +3265,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
         if entry.rewrites:
             kind = "counted" if entry.last_rewrite_counted else "spec refinement"
             line += f"\n  rewrites: {entry.rewrites} (last: {kind})"
+        recorded = read_driver_items(paths, gid)
+        if recorded:
+            line += "\n  driver items: " + ", ".join(
+                f"{item_id} {record.get('status', '?') if isinstance(record, dict) else '?'}"
+                for item_id, record in recorded.items()
+            )
         print(line)
         group_entry = manifest.groups.get(gid) if manifest is not None else None
         if group_entry is not None:
@@ -3234,6 +3291,49 @@ def _cmd_status(args: argparse.Namespace) -> int:
         for request in pending:
             print(f"  {request.id} [{request.kind.value}] {request.group_id}: {request.prompt}")
     return 0
+
+
+# ---------------------------------------------------- driver-item / data-step
+
+
+def _cmd_driver_item(args: argparse.Namespace) -> int:
+    """Record the driver's outcome for one ``Run (driver):`` item."""
+    paths = RunPaths(args.repo.resolve(), args.run_id)
+    notes = args.notes
+    if args.notes_file is not None:
+        try:
+            notes = sys.stdin.read() if str(args.notes_file) == "-" else args.notes_file.read_text()
+        except OSError as exc:
+            print(f"error: cannot read --notes-file: {exc}", file=sys.stderr)
+            return 1
+    if not paths.groups_path.is_file():
+        print(f"error: no run grouping at {paths.groups_path}", file=sys.stderr)
+        return 1
+    grouping = GroupingResult.model_validate_json(paths.groups_path.read_text())
+    group = next((g for g in grouping.groups if g.id == args.group_id), None)
+    if group is None:
+        known = ", ".join(g.id for g in grouping.groups)
+        print(
+            f"error: run {args.run_id} has no group {args.group_id!r}; known: {known}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        record_driver_item(paths, group, args.item_id, args.status, notes)
+    except DriverItemError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"recorded {args.item_id} {args.status} for {args.group_id}")
+    return 0
+
+
+def _cmd_data_step(args: argparse.Namespace) -> int:
+    """Run the command after ``--`` under the data-step lock, in the caller's cwd."""
+    remainder = list(args.cmd)
+    if not remainder:
+        print("error: data-step needs a command: data-step <run_id> -- <cmd…>", file=sys.stderr)
+        return 2
+    return run_data_step(args.repo.resolve(), args.run_id, shlex.join(remainder))
 
 
 # --------------------------------------------------------------------- answer
