@@ -109,6 +109,7 @@ class TestEscalationPolicy:
             EscalationKind.REVIEWER_STRUCTURAL,
             EscalationKind.MERGE_CONFLICT,
             EscalationKind.PREFLIGHT_FAILED,
+            EscalationKind.DRIVER_ITEMS_PENDING,
         }
         for gate in (
             EscalationKind.GROUP_START,
