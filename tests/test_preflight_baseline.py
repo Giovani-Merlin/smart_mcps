@@ -33,13 +33,8 @@ def _init_repo(worktree: Path) -> None:
 
 
 def _pytest_project(worktree: Path, test_body: str) -> None:
-    # The pytest section pins the sample project as its own rootdir. Without it
-    # pytest keeps walking up, adopts the outer repo's [tool.pytest.ini_options]
-    # whenever tmp_path sits inside the repo tree (every confined worker: TMPDIR
-    # is .coder-scratch/), and prefixes the junit ids with the relative path.
     (worktree / "pyproject.toml").write_text(
         "[project]\nname = 'sample'\nversion = '0'\nrequires-python = '>=3.11'\n"
-        "\n[tool.pytest.ini_options]\ntestpaths = ['.']\n"
     )
     (worktree / "test_sample.py").write_text(test_body)
     (worktree / ".gitignore").write_text("__pycache__/\n")
