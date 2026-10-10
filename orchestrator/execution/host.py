@@ -50,7 +50,6 @@ class ExecutionHost(Protocol):
     _briefing_notes: list[str]
     _operator_notes: list[str]
     _env_failure: str | None
-    _untracked_strikes: int
     _flake_reruns: int
     _reentry_entry: SessionEntry | None
     _heartbeat: RoundHeartbeat

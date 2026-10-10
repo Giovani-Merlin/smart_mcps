@@ -103,6 +103,7 @@ def _valid_pointers(facts: RunFacts) -> set[str]:
         pointers.add(facts.git_range.base_sha[:8])
     if facts.git_range.tip_sha:
         pointers.add(facts.git_range.tip_sha[:8])
+    pointers.update(facts.git_range.commits)
     return pointers
 
 

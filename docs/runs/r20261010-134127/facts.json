@@ -1,0 +1,1613 @@
+{
+  "run_id": "r20261010-134127",
+  "plan_path": "docs/plans/2026-10-10-001-fix-run-r20261007-100412-seams-plan.md",
+  "plan_title": "Fixes from run r20261007-100412 — driver-item hold, harness pin on success, untracked archive-first, data-step lock, overlap default, report commit pointers",
+  "plan_objective": "Close the four orchestrator seams the run-driver found driving infinity-skills\nrun r20261007-100412 (handoff\n`docs/handoffs/2026-10-09-orchestrator-seams-from-run-r20261007-100412.md`,\nevidence in `/home/gbm1996/wksp/infinity-skills/.orchestrator/notes-r20261007-100412.md`\nand that run's `logs/run.log`), plus the smaller items from the same run,\nwithout adding any large feature:\n\n1. **No window for a `Run (driver):` step between dependent groups** —\n   `g16: completed` at 10:26:14, `g17 … researcher launching` at 10:26:19\n   (run.log lines 789/794); g17 read a profile g16-3 had not rendered yet.\n2. **Evaluate/optimize pin the harness hash before the smoke** — g9's smoke\n   failed (exit 2), the operator fixed the fixture, and `retry` died at\n   03:01:44 on `harness path changed since the first evaluation`.\n3. **The untracked ladder's relaunch note invites `rm -r`** — ESC\n   8146509c3bb2 timed out, the relaunched coder ran `rm -r ./file:data`, the\n   allowlist denied it, the run halted overnight (run.log 469-478).\n4. **A driver data step races a gate that reads the live data layer** — the\n   driver's `ingest-sessions` wrote `data/corpus.db` while g19's gate ran the\n   server tests over it (ESC fedc4a348855).\n\nSmaller items carried: `report --scaffold` lists the integration tip sha that\nmoves once the one-pager is committed; an evaluate group's own harness command\ndid not satisfy its `Run (driver, sandbox-safe):` item (g9-1, g11-1); the\nrun-driver skill's \"pending escalation\" heuristic false-alarms on a timed-out\nrequest; `on_group_failure` defaults to `halt`, which cost a full\n`retry` + `resume` cycle on every designed fail-fast.\n\nOut of scope (no action needed): the handoff's observation that g16's\npre-launch spec rewrite consumed an upstream surprise and kept its\nverification item ids — that is the 0.21.1 fix working as intended.\n\nEvery seam gets a live-tier test (`-m llm`) that only a real run can prove;\n`uv run pytest -q` stays green; the plugin version bumps to 0.23.0 and the\ndriver reinstalls the tool with `--no-cache` as the last driver item.",
+  "origin": "docs/handoffs/2026-10-09-orchestrator-seams-from-run-r20261007-100412.md",
+  "created_at": "2026-10-10T11:45:06.985557+00:00",
+  "finished_at": null,
+  "pr_url": null,
+  "git_range": {
+    "base_sha": "3a73cd963411c9e7bd6f71908d002243101f8614",
+    "tip_sha": "8e1a7c48eb83faddb9fe6ac0ec027430ab0b0650",
+    "available": true,
+    "commits": [
+      "3a73cd96",
+      "31227820",
+      "19e365f9",
+      "02d25bf0",
+      "a96d8b05",
+      "5e401bd9",
+      "85165b95",
+      "bee857bc",
+      "1dfde6eb",
+      "81d0338f",
+      "cd1623a4",
+      "0d493496",
+      "60c72b1b",
+      "2c96bff8",
+      "48eb3615",
+      "54858776",
+      "e5f9c8b8",
+      "636e4d02",
+      "11303e35",
+      "f9e23c9b",
+      "a3a9b93c",
+      "1b56ace6",
+      "4383862c",
+      "62b0698f",
+      "d1cbe036",
+      "ce73f5e2",
+      "0c57abc9",
+      "2fafd7c7",
+      "3f06f93a",
+      "8e1a7c48"
+    ]
+  },
+  "changed_files": [
+    {
+      "path": ".claude-plugin/plugin.json",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g5"
+    },
+    {
+      "path": "CONTEXT.md",
+      "added": 16,
+      "deleted": 2,
+      "group_id": "g9"
+    },
+    {
+      "path": "docs/orchestrator-flow.md",
+      "added": 9,
+      "deleted": 3,
+      "group_id": "g9"
+    },
+    {
+      "path": "docs/orchestrator-grouping-config.md",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g7"
+    },
+    {
+      "path": "docs/orchestrator-kpi-harness.md",
+      "added": 7,
+      "deleted": 4,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/cli.py",
+      "added": 101,
+      "deleted": 1,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/config.py",
+      "added": 8,
+      "deleted": 8,
+      "group_id": "g7"
+    },
+    {
+      "path": "orchestrator/execution/data_step.py",
+      "added": 140,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "orchestrator/execution/driver_items.py",
+      "added": 74,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/escalation.py",
+      "added": 1,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/execution/evaluate_executor.py",
+      "added": 18,
+      "deleted": 8,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/finish.py",
+      "added": 2,
+      "deleted": 16,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/host.py",
+      "added": 0,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/manifest.py",
+      "added": 15,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/merge.py",
+      "added": 14,
+      "deleted": 9,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/execution/merge_ladder.py",
+      "added": 48,
+      "deleted": 28,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/optimize_executor.py",
+      "added": 6,
+      "deleted": 6,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/retry.py",
+      "added": 21,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "orchestrator/execution/review.py",
+      "added": 0,
+      "deleted": 1,
+      "group_id": "g6"
+    },
+    {
+      "path": "orchestrator/execution/scheduler.py",
+      "added": 136,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/model.py",
+      "added": 3,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "orchestrator/recipes/run.py",
+      "added": 12,
+      "deleted": 3,
+      "group_id": "g1"
+    },
+    {
+      "path": "orchestrator/report/facts.py",
+      "added": 9,
+      "deleted": 1,
+      "group_id": "g8"
+    },
+    {
+      "path": "orchestrator/report/onepager.py",
+      "added": 1,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "skills/orchestrator-run/SKILL.md",
+      "added": 35,
+      "deleted": 5,
+      "group_id": "g9"
+    },
+    {
+      "path": "skills/orchestrator-run/triage-guide.md",
+      "added": 1,
+      "deleted": 1,
+      "group_id": "g9"
+    },
+    {
+      "path": "tests/test_cli_driver_steps.py",
+      "added": 162,
+      "deleted": 0,
+      "group_id": "g2"
+    },
+    {
+      "path": "tests/test_data_step.py",
+      "added": 136,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_data_step_live.py",
+      "added": 133,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_driver_hold_live.py",
+      "added": 157,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_driver_item_record.py",
+      "added": 91,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_driver_items_hold.py",
+      "added": 146,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_driver_run_items.py",
+      "added": 10,
+      "deleted": 0,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_e2e_faults.py",
+      "added": 25,
+      "deleted": 1,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_e2e_stub.py",
+      "added": 10,
+      "deleted": 18,
+      "group_id": null
+    },
+    {
+      "path": "tests/test_escalation.py",
+      "added": 1,
+      "deleted": 0,
+      "group_id": "g4"
+    },
+    {
+      "path": "tests/test_evaluate_recipe.py",
+      "added": 31,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_harness_pin_live.py",
+      "added": 152,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_merge_gate_triage.py",
+      "added": 55,
+      "deleted": 32,
+      "group_id": "g6"
+    },
+    {
+      "path": "tests/test_observatory_escalations.py",
+      "added": 12,
+      "deleted": 0,
+      "group_id": "g3"
+    },
+    {
+      "path": "tests/test_optimize_executor.py",
+      "added": 12,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_preflight_baseline.py",
+      "added": 3,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_report_facts.py",
+      "added": 39,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "tests/test_report_onepager.py",
+      "added": 16,
+      "deleted": 0,
+      "group_id": "g8"
+    },
+    {
+      "path": "tests/test_retry.py",
+      "added": 49,
+      "deleted": 0,
+      "group_id": "g5"
+    },
+    {
+      "path": "tests/test_run_recipe_model.py",
+      "added": 20,
+      "deleted": 1,
+      "group_id": "g1"
+    },
+    {
+      "path": "tests/test_scheduler.py",
+      "added": 6,
+      "deleted": 2,
+      "group_id": "g7"
+    },
+    {
+      "path": "tests/test_untracked_archive_live.py",
+      "added": 95,
+      "deleted": 0,
+      "group_id": "g6"
+    },
+    {
+      "path": "ui/src/components/EscalationPanel.tsx",
+      "added": 1,
+      "deleted": 0,
+      "group_id": null
+    },
+    {
+      "path": "ui/src/types.ts",
+      "added": 3,
+      "deleted": 2,
+      "group_id": null
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item + data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`",
+      "recipe": "code",
+      "summary": "2 units: driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads…",
+      "report_summary": "Implemented the driver item record (record/read/pending functions, driver_items_path, finish delegation, argv-prefix matching with a runner-only guard) and the data-step lock (data_step.py, RunPaths properties, merge_group wrapping run_preflight), with unit tests and a live test file. Targeted tests pass; the full suite has 2 pre-existing, environment-caused failures in test_preflight_baseline.py (pytest tmp path under .coder-scratch leaks into junit classnames). Changed one existing test assertion in test_run_recipe_model.py that contradicted the specified prefix rule.",
+      "spec": "# Group g1: driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item + data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`\n\nMembers:\n- u1-driver-item-record: driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item\n- u5-data-step-lock: data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g2 consumes `driver-items.json` — u10-cli-subcommands: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- g4 consumes `driver-items.json` — u2-driver-items-hold: Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Observatory mirror is U11's): a group whose COMPLETED/RESOLVED dependency still has `pending_driver_items` is not admitted; the scheduler waits (never `NoProgressError`) and, with HITL on, raises one `driver_items_pending` request per such dependency that any `answer`/`retry`, a timeout, or recording its last pending item releases for every dependent at once.\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n\nContracts (cross-group):\n- g1 provides `data-step.lock` — u10-cli-subcommands: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- g1 provides `driver-items.json` — u10-cli-subcommands: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- g1 provides `driver-items.json` — u2-driver-items-hold: Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Observatory mirror is U11's): a group whose COMPLETED/RESOLVED dependency still has `pending_driver_items` is not admitted; the scheduler waits (never `NoProgressError`) and, with HITL on, raises one `driver_items_pending` request per such dependency that any `answer`/`retry`, a timeout, or recording its last pending item releases for every dependent at once.\n\nSlice: (none)\n\n\n### U1. driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item\n\n- **Summary**: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n- **Goal**: Every outcome the driver produces for a `Run (driver):` item has one durable record. `record_driver_item` validates the item id against the spec in force (`effective_group(paths, group).verification`), writes or overwrites `{item_id: {status, notes, recorded_at, by: \"driver\"}}` atomically at `paths.driver_items_path(gid)` (a new `RunPaths` property, `groups/<gid>/driver-items.json`), logs `group <gid>: driver item <item_id> recorded <status> by the driver`, and raises `DriverItemError` naming the known ids for an unknown one or a status outside `pass|fail|skipped`. `read_driver_items(paths, gid)` returns the mapping (empty when absent or unreadable). `pending_driver_items(paths, group)` returns the required `driver_run` items that are neither `pass` in `latest_report` nor `pass`/`skipped` in the record (a recorded `fail` stays pending, so `finish` keeps holding); `pending_driver_run_items` in `finish.py` delegates to it per group, so `not auto-finishing …` lists only items nobody ran. `run_command_for_item` matches when the declared command's whitespace-split argv starts with the item's argv (equality still matches) **and** the item's argv carries at least one token past the runner prefix (`uv`, `run`, `python`, `python3`, `-m`, `pytest`, `npm`, `npx`) — a script path, a module name or a test path — so a bare `Run: uv run python` never matches anything; `_write_verification_report` in `run_executor.py` therefore passes g9-1-shaped items.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/driver_items.py`, `orchestrator/execution/finish.py`, `orchestrator/execution/manifest.py`, `orchestrator/recipes/run.py`, `tests/test_driver_run_items.py`, `tests/test_run_recipe_model.py`, `tests/test_driver_item_record.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `driver-items.json`\n- **Verification**:\n  - `pending_driver_run_items` drops an item recorded `pass` or `skipped` through `record_driver_item` and keeps one recorded `fail`; an unknown item id raises `DriverItemError` naming the known ids; the run.log carries the `recorded` line. Run: `uv run pytest tests/test_driver_item_record.py -q` Pass: green.\n  - The existing `pending_driver_run_items` tests in `tests/test_finish.py:988-1085` (42 KB, not in Files — do not add tests there) still pass unchanged. Run: `uv run pytest tests/test_finish.py -q -k pending_driver_run_items` Pass: green.\n  - A declared command `uv run python s.py --fixture a.json --out m.json` satisfies a driver-marked item whose command is `uv run python s.py --fixture a.json` and does not satisfy an item whose command is `uv run python s.py --fixture a.json --smoke` (the extra flag is not in the declared command). Run: `uv run pytest tests/test_run_recipe_model.py tests/test_driver_run_items.py -q` Pass: green with both cases asserted.\n  - External oracle: `tests/test_run_executor.py` (31 KB, not in Files) still passes — the synthetic report for a `run` group now carries a `pass` for a prefix-matching item. Run: `uv run pytest tests/test_run_executor.py -q -k verification` Pass: green.\n  - A runner-only item never matches a longer declared command. Run: `uv run pytest tests/test_run_recipe_model.py -q -k runner` Pass: an item whose command is only `uv run python` yields `None` against the declared `uv run python scripts/x.py --out m.json`, while one whose command is `uv run python scripts/x.py` yields that declared command.\n- **Edge cases**: a prefix match requires the item argv to reach past the runner prefix (`uv run python` alone matches nothing; `uv run python scripts/x.py` matches `uv run python scripts/x.py --out m.json`)\n- **Non-goals / must-not**: must not change `unmet_required_verification` (the coder's gate) — the record is a post-merge fact only.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n\n\n### U5. data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`\n\n- **Summary**: Adds `orchestrator/execution/data_step.py` (a run-level flock at `<run_dir>/data-step.lock`, `hold_data_step_lock(paths, label, log)` and `run_data_step(repo_root, run_id, cmd) -> int`) and wraps `run_preflight` in `merge_group` with it, so a driver data step and a merge gate never overlap; the `data-step` CLI wrapper and the launch-time warning are U10's.\n- **Goal**: The gate's check never runs while a driver data step runs, and a data step never starts while a gate runs. `run_data_step` writes `<run_dir>/data-step.json` `{cmd, pid, started_at}` while it holds the lock, logs `data step started: <cmd>` and `data step finished (exit N): <cmd>` to run.log, runs the command with `sh -c` in the repo root with stdout/stderr passed through, removes the JSON, and returns the command's exit status. `merge_group` acquires the lock around `run_preflight`; if it is not immediately available it logs `group <gid>: gate waiting for driver data step (<cmd from data-step.json>)` once, then blocks with no upper bound, logging `group <gid>: gate still waiting for driver data step (<cmd>, <age>)` every `DATA_STEP_REMINDER_S = 300` seconds until the lock is free. `run_data_step` mirrors: `data step waiting for the merge gate` once. `RunPaths` gains `data_step_lock_path` and `data_step_record_path`. `data_dirs_gate_warning(workspace_config, run_id) -> str | None` returns the text U10 logs at launch (`data layer: [workspace] data_dirs <dirs> are read live by the merge gate — run every driver data step through: smart-mcps-orchestrate data-step <run> -- <cmd>`) when the workspace config lists data dirs, else `None`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/data_step.py` *(new, medium)*, `orchestrator/execution/merge.py`, `orchestrator/execution/manifest.py`, `tests/test_data_step.py` *(new, medium)*, `tests/test_data_step_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `data-step.lock`\n- **Verification**:\n  - Mutual exclusion: with the lock held by a subprocess (`python -c \"from orchestrator.execution.data_step import run_data_step; …run_data_step(repo, run, 'sleep 5')\"`), `hold_data_step_lock` in the test process blocks until the sleep ends and the log callback received the `waiting for driver data step` line exactly once; the reverse order blocks `run_data_step` and logs `data step waiting for the merge gate`. Run: `uv run pytest tests/test_data_step.py -q` Pass: green, including `data-step.json` present during and absent after, run.log carrying `data step started` / `finished (exit 0)`, `run_data_step` returning the command's status (`sh -c 'exit 3'` → 3), and `data_dirs_gate_warning` returning `None` for an empty config and the text naming the dirs otherwise.\n  - `merge_group` still merges and still raises `PreflightFailure` through the lock. Run: `uv run pytest tests/test_merge.py -q` Pass: green.\n  - Live: a confined one-group run launched as a subprocess; after `worktree ready` appears in run.log the test starts a second subprocess holding the lock through `run_data_step(repo, run, \"sleep 600\")`; it then polls for `gate waiting for driver data step (sleep 600)`, kills that subprocess, and asserts the group merges and the run exits 0. Run (driver): `uv run pytest tests/test_data_step_live.py -q -m llm` Pass: green within 900 s.\n  - The reminder line repeats while the lock is held. Run: `uv run pytest tests/test_data_step.py -q -k reminder` Pass: with the reminder interval patched to 0.2 s, a 1 s hold yields exactly one `waiting for driver data step` line and at least two `still waiting` lines carrying the step's cmd.\n- **Edge cases**: a data step killed while holding the lock releases it (the kernel drops the flock), its stale `data-step.json` is overwritten by the next step and ignored by a gate that acquires the lock at once; the gate wait is unbounded by decision (a multi-hour ingest holds every merge for its whole duration)\n- **Non-goals / must-not**: the baseline capture at launch (`capture_preflight_baseline`) is not wrapped — no data step can run before the run exists.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "merge_sha": "19e365f92670154c92dcdcd44ac2d75834b71cce",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u1-driver-item-record",
+        "u5-data-step-lock"
+      ],
+      "planned_files": [
+        "orchestrator/execution/data_step.py",
+        "orchestrator/execution/driver_items.py",
+        "orchestrator/execution/finish.py",
+        "orchestrator/execution/manifest.py",
+        "orchestrator/execution/merge.py",
+        "orchestrator/recipes/run.py",
+        "tests/test_data_step.py",
+        "tests/test_data_step_live.py",
+        "tests/test_driver_item_record.py",
+        "tests/test_driver_run_items.py",
+        "tests/test_run_recipe_model.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/driver_items.py",
+        "orchestrator/execution/finish.py",
+        "orchestrator/execution/manifest.py",
+        "orchestrator/execution/merge.py",
+        "orchestrator/recipes/run.py",
+        "tests/test_data_step.py",
+        "tests/test_data_step_live.py",
+        "tests/test_driver_item_record.py",
+        "tests/test_driver_run_items.py",
+        "tests/test_run_recipe_model.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T11:45:09.721756+00:00",
+          "ended_at": "2026-10-10T11:53:52.616367+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 44,
+            "output": 22379,
+            "cache_creation": 123436
+          },
+          "cache_read_tokens": 2170616
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T11:53:52.616367+00:00",
+          "ended_at": "2026-10-10T11:57:26.481+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 8,
+            "output": 1370,
+            "cache_creation": 68042
+          },
+          "cache_read_tokens": 237431
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2304,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g1/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g2",
+      "name": "cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning",
+      "recipe": "code",
+      "summary": "Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] […",
+      "report_summary": "Added driver-item and data-step subcommands to orchestrator/cli.py (thin wrappers over record_driver_item and run_data_step), a status 'driver items:' line, and the launch-time data-layer warning. Changed run_data_step to run in the caller's cwd and record cwd in data-step.json. Worked around argparse.REMAINDER swallowing --repo by splitting argv at '--' in main. New tests/test_cli_driver_steps.py (9 tests) pass, as does tests/test_cli.py. The full suite stopped at one failure in tests/test_preflight_baseline.py; it fails two tests when run alone because the pytest tmpdir sits under .coder-scratch (junit names get a path prefix), and I did not run it on the base commit.",
+      "spec": "# Group g2: cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning\n\nMembers:\n- u10-cli-subcommands: cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g1 provides `data-step.lock` — u5-data-step-lock: Adds `orchestrator/execution/data_step.py` (a run-level flock at `<run_dir>/data-step.lock`, `hold_data_step_lock(paths, label, log)` and `run_data_step(repo_root, run_id, cmd) -> int`) and wraps `run_preflight` in `merge_group` with it, so a driver data step and a merge gate never overlap; the `data-step` CLI wrapper and the launch-time warning are U10's.\n- g1 provides `driver-items.json` — u1-driver-item-record: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n\nDownstream groups:\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n- g9 consumes `u8-run-skill-and-docs` — u8-run-skill-and-docs: Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.\n\nContracts (cross-group):\n- g2 consumes `data-step.lock` — u5-data-step-lock: Adds `orchestrator/execution/data_step.py` (a run-level flock at `<run_dir>/data-step.lock`, `hold_data_step_lock(paths, label, log)` and `run_data_step(repo_root, run_id, cmd) -> int`) and wraps `run_preflight` in `merge_group` with it, so a driver data step and a merge gate never overlap; the `data-step` CLI wrapper and the launch-time warning are U10's.\n- g2 consumes `driver-items.json` — u1-driver-item-record: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n\nSlice: (none)\n\n\n### U10. cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning\n\n- **Summary**: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- **Goal**: `driver-item` resolves `--repo`, builds `RunPaths`, finds the group through `groups.json` + `effective_group`, calls `record_driver_item`, prints `recorded <item_id> <status> for <gid>` and exits 0; a `DriverItemError` prints `error: …` and exits 1; `--notes-file -` reads stdin exactly as `answer --text-file -` does. `data-step` takes the remainder after `--` (`argparse.REMAINDER`), re-quotes it with `shlex.join` into the one shell string `run_data_step` takes (so `-- sh -c 'sleep 600'` survives as `sh -c 'sleep 600'`), runs it in the caller's current directory (never forced to the repo root — the driver runs data steps from the integration worktree), records that directory as `cwd` in `data-step.json`, and exits with the command's status; an empty remainder is a usage error (exit 2). The status subcommand's per-group block prints one `driver items: <id> <status>[, …]` line when the record file holds entries. `_cmd_run` logs the warning text right after the `run <id>: on_group_failure=…` line when it is not `None`. The dispatch chain in `main` gains both commands.\n- **Recipe**: —\n- **Files**: `orchestrator/cli.py`, `tests/test_cli_driver_steps.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U1, U5\n- **Slice**: —\n- **Implements / Consumes**: consumes `driver-items.json`, `data-step.lock`\n- **Verification**:\n  - Subprocess CLI tests against a tmp run dir (the `tests/test_rewrite_counter.py:102-121` pattern): `driver-item … --status pass` writes `groups/<gid>/driver-items.json` and exits 0; an unknown item exits 1 naming the known ids; `data-step <run> -- sh -c 'exit 3'` exits 3 and run.log carries `data step started` / `finished (exit 3)`; the status subcommand prints `driver items: g1-2 pass` after a record. Run: `uv run pytest tests/test_cli_driver_steps.py -q` Pass: green.\n  - Both help texts exist. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 listing `--status`, `--notes`, `--notes-file`.\n  - Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 showing the run id and the command remainder.\n  - External oracle: a stub-tier run with `[workspace] data_dirs = [\"data\"]` in its config logs the `data layer: … are read live by the merge gate` line once, and a run without the block logs it never. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k warning` Pass: green.\n  - The CLI suite is otherwise unchanged. Run: `uv run pytest tests/test_cli.py -q` Pass: green.\n  - Quoting and cwd survive the wrapper. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k quoting` Pass: invoking `data-step <run> -- sh -c 'exit 3'` from a subdirectory of the tmp repo leaves run.log with `data step finished (exit 3): sh -c 'exit 3'` and, while it runs, `data-step.json` carries `cmd` equal to `sh -c 'exit 3'` and `cwd` equal to that subdirectory.\n- **Edge cases**: the command runs where the driver invoked the wrapper (`--repo` only locates the run dir); quoting inside the remainder is preserved by `shlex.join`; an empty remainder exits 2 before touching the lock\n- **Non-goals / must-not**: no new flags on `run`/`resume`; the subcommands never touch `state.json`.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "merge_sha": "a96d8b05ad60a2208f2bb8b72bc119e17ad1bd36",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u10-cli-subcommands"
+      ],
+      "planned_files": [
+        "orchestrator/cli.py",
+        "tests/test_cli_driver_steps.py"
+      ],
+      "touched_files": [
+        "orchestrator/cli.py",
+        "orchestrator/execution/data_step.py",
+        "tests/test_cli_driver_steps.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T11:57:29.146987+00:00",
+          "ended_at": "2026-10-10T12:06:45.063+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 68,
+            "output": 16811,
+            "cache_creation": 96201
+          },
+          "cache_read_tokens": 3202643
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2313,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g2/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g4",
+      "name": "driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it",
+      "recipe": "code",
+      "summary": "Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Obser…",
+      "report_summary": "Added HoldReason.DRIVER_ITEMS and EscalationKind.DRIVER_ITEMS_PENDING (in_stuck/interactive tiers). The scheduler holds dependents of a COMPLETED/RESOLVED group with unrecorded driver items, logs the 'held — dependency' line once per held group, raises one escalation per dependency naming all dependents, releases on record/answer/timeout, and polls instead of raising NoProgressError. New tests added, live test written but not run. Full suite is green except the Observatory UI drift test, which awaits g3's types.ts mirror.",
+      "spec": "# Group g4: driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it\n\nMembers:\n- u2-driver-items-hold: driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g1 provides `driver-items.json` — u1-driver-item-record: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n\nDownstream groups:\n- g3 consumes `u11-observatory-kind-mirror` — u11-observatory-kind-mirror: Adds `driver_items_pending` to the Observatory's escalation-kind union and label map and a test that fails whenever a Python `EscalationKind` value is missing from `ui/src/types.ts`, so the next new kind cannot drift silently.\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n\nContracts (cross-group):\n- g4 consumes `driver-items.json` — u1-driver-item-record: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n\nSlice: (none)\n\n\n### U2. driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it\n\n- **Summary**: Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Observatory mirror is U11's): a group whose COMPLETED/RESOLVED dependency still has `pending_driver_items` is not admitted; the scheduler waits (never `NoProgressError`) and, with HITL on, raises one `driver_items_pending` request per such dependency that any `answer`/`retry`, a timeout, or recording its last pending item releases for every dependent at once.\n- **Goal**: In `_holds_on`, after the DAG holds, every met dependency with non-empty `pending_driver_items(paths, dep_group)` contributes `GroupHold(reason=DRIVER_ITEMS, group_id=dep, files=[<item ids>])` unless `<run_dir>/groups/<dep>/driver-hold-released.json` exists (written when that dependency's escalation is answered or times out). RESOLVED dependencies hold exactly like COMPLETED ones — their work is on integration and the driver items are its only live check; the driver records `skipped` with a reason to release a moot one. The first time a dependency holds anything the scheduler logs `group <gid>: held — dependency <dep> has N driver-run item(s) unrecorded (<ids>); record them with smart-mcps-orchestrate driver-item <run> <dep> <id> --status …` (one line per held group) and, when `self._broker`/`self._policy` escalate `DRIVER_ITEMS_PENDING`, raises **one** request per dependency from a worker thread — `group_id` = the dependency, prompt = its unrecorded items and every group it is holding — never one per dependent; the response or timeout writes the release file, and a `driver-item` record that empties `pending_driver_items` releases the dependents on the next admission pass with no answer at all. In `run()`, when nothing is in flight and every blocked group's holds are only `DRIVER_ITEMS` (or DAG holds on such groups), the loop sleeps `DRIVER_ITEMS_POLL_S = 5.0` and re-runs admission instead of raising `NoProgressError` or returning. The status subcommand already prints the hold verbatim. Hold evaluation must be cheap: `pending_driver_items` for a dependency is read once per admission pass, not per dependent.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/scheduler.py`, `orchestrator/model.py`, `orchestrator/execution/escalation.py`, `tests/test_escalation.py`, `tests/test_driver_items_hold.py` *(new, medium)*, `tests/test_driver_hold_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U1\n- **Slice**: —\n- **Implements / Consumes**: consumes `driver-items.json`\n- **Verification**:\n  - In-process: g2 depends on g1; g1's spec carries a required driver-marked item; a completing executor finishes g1; without a record g2 stays PENDING with a `driver_items` hold naming `g1` and the item id, the run.log carries the `held — dependency g1 …` line exactly once, and `Scheduler.run()` returns after the test writes the record (via `driver_items` module API) — no `NoProgressError`. Run: `uv run pytest tests/test_driver_items_hold.py -q` Pass: green; helpers imported from `tests/test_scheduler.py` (`make_group`, `completing_executor`) — that 66 KB file is not edited.\n  - With a `StubBroker`-style broker and `EscalationPolicy(\"on_stuck\", \"orchestrator_only\")`, the hold raises one `driver_items_pending` request whose `group_id` is g1 (the dependency) and whose prompt names g2 and g3 (both dependents) — not one request per dependent; a `retry` response releases both without writing `driver-items.json`; `EscalationPolicy(\"on_failure\", …)` never raises it. Run: `uv run pytest tests/test_driver_items_hold.py tests/test_escalation.py -q` Pass: green, and `test_escalation.py`'s tier tests name the new kind in `on_stuck` and `interactive`.\n  - The full scheduler suite is unchanged by the new hold when no driver item exists. Run: `uv run pytest tests/test_scheduler.py -q` Pass: green.\n  - Live: a two-group confined run (`[escalation] enabled = false`) launched as a subprocess; g1's spec is one line of code plus a required `Run (driver):` item; the test polls `logs/run.log` for `group g2: held — dependency g1`, then calls `record_driver_item` from its own process (the CLI wrapper is U10's), and asserts g2 launches and the run exits 0 with both groups COMPLETED. Run (driver): `uv run pytest tests/test_driver_hold_live.py -q -m llm` Pass: green within 900 s.\n- **Edge cases**: two dependents of one dependency share one escalation and one release file; a dependency whose items are all recorded before any dependent becomes admissible never raises a request; a RESOLVED dependency holds like a COMPLETED one\n- **Non-goals / must-not**: a group with no dependencies is never held; a dependency's `skipped`-recorded item does not hold; the hold never applies to a FAILED/INTERRUPTED dependency (those strand dependents as today).\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "merge_sha": "1dfde6ebd9909dc92b14cfc6bc12ba52ad1bd2fc",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u2-driver-items-hold"
+      ],
+      "planned_files": [
+        "orchestrator/execution/escalation.py",
+        "orchestrator/execution/scheduler.py",
+        "orchestrator/model.py",
+        "tests/test_driver_hold_live.py",
+        "tests/test_driver_items_hold.py",
+        "tests/test_escalation.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/escalation.py",
+        "orchestrator/execution/scheduler.py",
+        "orchestrator/model.py",
+        "tests/test_driver_hold_live.py",
+        "tests/test_driver_items_hold.py",
+        "tests/test_escalation.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:06:47.655858+00:00",
+          "ended_at": "2026-10-10T12:20:44.166+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 38,
+            "output": 18416,
+            "cache_creation": 100982
+          },
+          "cache_read_tokens": 1752783
+        }
+      ],
+      "escalations": [
+        {
+          "id": "006a7b155a75",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g4: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261010-134127/groups/g4/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261010-134127/groups/g4/preflight-check-pytest.log",
+          "created_at": "2026-10-10T12:16:11.376065Z",
+          "request_path": "escalations/request-006a7b155a75.json",
+          "response_path": "escalations/response-006a7b155a75.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [
+        {
+          "kind": "interface_mismatch",
+          "description": "tests/test_observatory_model_drift.py::test_every_escalation_kind_is_known_to_the_ui[driver_items_pending] fails until ui/src/types.ts lists driver_items_pending (u11 / g3 work). Not edited here because the UI files are outside this group's Files.",
+          "affected_groups": [
+            "g3"
+          ],
+          "path": "groups/g4/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2320,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g4/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g3",
+      "name": "observatory-kind-mirror",
+      "recipe": "code",
+      "summary": "Observatory lists driver_items_pending and a label-map drift guard pins every escalation kind to the UI",
+      "report_summary": "The types.ts literal and EscalationPanel label already existed on the base (commit 85165b9), so I only added the label-map drift test to tests/test_observatory_escalations.py, parametrised over EscalationKind and reading EscalationPanel.tsx as text. I confirmed it fails when a label is removed and passes on the real file. The existing drift guard is green, the UI build succeeds, and only the one test file changed in my commit.",
+      "spec": "# Group g3: observatory-kind-mirror — mirror `driver_items_pending` into the Observatory and pin the kind→label map against drift\n\nMembers:\n- u11-observatory-kind-mirror\n\nIntra-group order: single unit, no intra-group dependencies.\n\nUpstream: g4 (`u2-driver-items-hold`) adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` to `orchestrator/model.py` and raises the escalation from the scheduler. That Python-side change is **not** yours — `orchestrator/model.py` is outside this group's Files and must not be touched.\n\nDownstream: g5 (`u9-version-bump`) bumps the plugin version once every unit, including this one, has merged.\n\nRead unit **U11** in the plan document for the authoritative Goal, Files, Edge cases and Non-goals; this spec only adds what the rewrite below changed.\n\n## Rewrite note — the drift guard already exists\n\nThis spec was rewritten mid-run after an upstream group reported an interface mismatch:\n\n> `tests/test_observatory_model_drift.py::test_every_escalation_kind_is_known_to_the_ui[driver_items_pending]` fails until `ui/src/types.ts` lists `driver_items_pending` (u11 / g3 work). Not edited there because the UI files are outside that group's Files.\n\nSo the repo **already carries** the generic drift guard U11 describes: `tests/test_observatory_model_drift.py` parametrises over `EscalationKind` (and `GroupState`, `HumanAction`, `CoderReport.status`) and asserts each value appears as a quoted literal in `ui/src/types.ts`. Do **not** re-implement that guard in `tests/test_observatory_escalations.py` — a second copy of the same assertion is duplication, and that file is in your Files only so you can add the one check the existing guard does *not* make.\n\nWhat this group therefore does:\n\n1. **`ui/src/types.ts`** — add `\"driver_items_pending\"` to the escalation-kind string union, in the file's existing style and ordering. This is the edit that turns the failing parametrised case green.\n2. **`ui/src/components/EscalationPanel.tsx`** — add the label-map entry `driver_items_pending: \"Driver items pending\"`. No other UI behaviour changes.\n3. **`tests/test_observatory_escalations.py`** — add one drift test that closes the gap the existing guard leaves: every `EscalationKind` value must have a **label** in `EscalationPanel.tsx`'s label map, not merely a literal in the type union. Read the component source as text (the same cheap-source-read approach `tests/test_observatory_model_drift.py` uses for `types.ts`), parametrised or looped over `EscalationKind`, with an assertion message naming the missing kind. That way the next new kind cannot ship with a type literal and no human-readable label.\n\n## Constraints\n\n- Python enum, scheduler, hold reasons and CLI are out of scope. Hold reasons stay un-enumerated in the UI (the `status` subcommand already prints them verbatim) — do not add a hold-reason union.\n- If `EscalationKind.DRIVER_ITEMS_PENDING` is not yet present in `orchestrator/model.py` on your branch base (g4 may not have merged yet), the parametrised case for it simply does not exist. Add the `types.ts` literal and the label entry anyway — they are the mirror the upstream expects — and make your new label-map test pass over whatever kinds the enum currently has. Do not add the enum member to unblock yourself.\n- Keep the TypeScript idiomatic for the file: same quoting, same union formatting, same label-map shape as the neighbouring entries.\n\n## Done means\n\n`uv run pytest tests/test_observatory_model_drift.py tests/test_observatory_escalations.py -q` is green, `npm --prefix ui run build` exits 0, and no file outside this group's Files is modified.",
+      "merge_sha": "cd1623a43f4e9c4419e1a327048f07ae314cd3da",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u11-observatory-kind-mirror"
+      ],
+      "planned_files": [
+        "tests/test_observatory_escalations.py",
+        "ui/src/components/EscalationPanel.tsx",
+        "ui/src/types.ts"
+      ],
+      "touched_files": [
+        "tests/test_observatory_escalations.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:21:40.646517+00:00",
+          "ended_at": "2026-10-10T12:25:50.955+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 10,
+            "output": 2233,
+            "cache_creation": 57235
+          },
+          "cache_read_tokens": 288585
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2332,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g3/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g6",
+      "name": "untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks",
+      "recipe": "code",
+      "summary": "`_handle_untracked` escalates as today, then archives the untracked paths to `groups/<gid>/untracked/`, spreads the inf…",
+      "report_summary": "Reworked _handle_untracked so the first untracked-only gate failure commits declared files, archives the rest to groups/<gid>/untracked/, spreads an informational surprise and re-runs the gate. Only an operator retry with text relaunches, with a note using git mv and no 'delete'. Removed _untracked_strikes from the ladder, host, review and the flow doc. Replaced the two old tests with new ones and added the declared-file test plus a live test file. The live test was not run.",
+      "spec": "# Group g6: untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks\n\nMembers:\n- u4-untracked-archive-first: untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n- g9 consumes `u8-run-skill-and-docs` — u8-run-skill-and-docs: Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U4. untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks\n\n- **Summary**: `_handle_untracked` escalates as today, then archives the untracked paths to `groups/<gid>/untracked/`, spreads the informational surprise and re-runs the gate on timeout, autonomous or `answer`; only `retry --text` relaunches, with a note that says `git mv … .coder-scratch/` and never \"delete\"; `_untracked_strikes` is removed from the ladder, the host and the flow doc.\n- **Goal**: One strike, one outcome: the gate's untracked failure never costs a coder generation on its own. Before archiving, every untracked path that exactly matches an entry of the group's declared file list gets `git add`ed and committed as `code(<gid>): commit declared file left untracked` with the line `group <gid>: committed N declared file(s) left untracked — <paths>` (a coder's forgotten `tests/test_x.py` ships; a probe artifact with an undeclared name does not); only the remaining paths are archived. The run.log line `UNTRACKED FILES ARCHIVED — moved to <archive>: <paths>; merging` is logged once per merge, the surprise names the archive, and the coder-facing note (relaunch-with-text only) reads `untracked files left in the worktree: <paths> — commit them or git mv them into .coder-scratch/`. `merge_ladder.py:69`, `host.py:53`, `review.py:184` and `docs/orchestrator-flow.md:74` drop `_untracked_strikes`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/merge_ladder.py`, `orchestrator/execution/host.py`, `orchestrator/execution/review.py`, `docs/orchestrator-flow.md`, `tests/test_merge_gate_triage.py`, `tests/test_untracked_archive_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Autonomous first strike archives and merges in one generation; `retry` with no text re-runs the gate without archiving; `retry` with text relaunches and the second coder prompt contains `git mv` and not `delete`. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k untracked` Pass: green, with `test_first_untracked_failure_relaunches_the_same_spec_with_a_note` and `test_second_consecutive_untracked_failure_archives_and_merges` replaced by those three cases.\n  - Nothing else in the ladder changed. Run: `uv run pytest tests/test_merge_gate_triage.py tests/test_review_loop.py -q` Pass: green.\n  - `grep -rn _untracked_strikes orchestrator docs/orchestrator-flow.md` finds nothing. Run: `uv run python -c \"import pathlib,sys; hits=[p for p in list(pathlib.Path('orchestrator').rglob('*.py'))+[pathlib.Path('docs/orchestrator-flow.md')] if '_untracked_strikes' in p.read_text()]; print(hits); sys.exit(1 if hits else 0)\"` Pass: exit 0, `[]`.\n  - Live: a confined one-group run whose spec tells the coder to write `probe.txt` and leave it untracked on purpose; the run exits 0, `groups/g1/untracked/probe.txt` exists, run.log carries `UNTRACKED FILES ARCHIVED` and no `relaunching on the same spec`, and `state.json` shows g1 COMPLETED at generation 1. Run (driver): `uv run pytest tests/test_untracked_archive_live.py -q -m llm` Pass: green within 900 s.\n  - Declared files are committed, the rest archived. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k declared` Pass: a group declaring `tests/test_x.py` whose gate reports untracked `tests/test_x.py` and `stray.log` ends with `tests/test_x.py` committed on the group branch, `stray.log` under the archive, and the merge proceeding in the same generation.\n- **Edge cases**: an untracked path in the group's declared `files` is committed, not archived; an untracked directory (`out/`) is archived whole; when every untracked path is declared nothing is archived and no surprise is spread\n- **Non-goals / must-not**: a dirty tree with modified tracked files (`kind=\"env\"`) keeps today's fail-fast path.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "merge_sha": "48eb3615bbf8369bda9bf48056c35b56e4965e56",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u4-untracked-archive-first"
+      ],
+      "planned_files": [
+        "docs/orchestrator-flow.md",
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/merge_ladder.py",
+        "orchestrator/execution/review.py",
+        "tests/test_merge_gate_triage.py",
+        "tests/test_untracked_archive_live.py"
+      ],
+      "touched_files": [
+        "orchestrator/execution/host.py",
+        "orchestrator/execution/merge_ladder.py",
+        "orchestrator/execution/review.py",
+        "tests/test_merge_gate_triage.py",
+        "tests/test_untracked_archive_live.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:25:53.385970+00:00",
+          "ended_at": "2026-10-10T12:36:25.276+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 22,
+            "output": 10444,
+            "cache_creation": 84923
+          },
+          "cache_read_tokens": 867188
+        }
+      ],
+      "escalations": [
+        {
+          "id": "047184290ce2",
+          "kind": "preflight_failed",
+          "generation": 1,
+          "prompt": "preflight failed for g6: check command uv run --all-extras pytest -p no:cacheprovider --junitxml=/home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261010-134127/groups/g6/preflight-junit.xml (step 'pytest') exited 1 — output at /home/gbm1996/wksp/smart_mcps/.orchestrator/runs/r20261010-134127/groups/g6/preflight-check-pytest.log",
+          "created_at": "2026-10-10T12:31:05.104951Z",
+          "request_path": "escalations/request-047184290ce2.json",
+          "response_path": "escalations/response-047184290ce2.json",
+          "action": "retry",
+          "answer": "",
+          "binding": true
+        }
+      ],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2333,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g6/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g7",
+      "name": "overlap-default — `on_group_failure` defaults to `overlap`",
+      "recipe": "code",
+      "summary": "Flips `ExecutionConfig.on_group_failure` to `\"overlap\"` and updates every test that silently relied on `halt` being the…",
+      "report_summary": "Flipped ExecutionConfig.on_group_failure default to overlap, updated the config comment and a stale docstring, made the five test_halt_* scheduler tests (plus the resume-halt test) pass halt explicitly, added a mirror e2e test (config overlap, --on-failure halt wins), renamed the two e2e policy tests to include on_group_failure so the -k selector matches them, and added a doc note. Scheduler, e2e-faults and CLI tests pass (200).",
+      "spec": "# Group g7: overlap-default — `on_group_failure` defaults to `overlap`\n\nMembers:\n- u6-overlap-default: overlap-default — `on_group_failure` defaults to `overlap`\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n- g9 consumes `u8-run-skill-and-docs` — u8-run-skill-and-docs: Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U6. overlap-default — `on_group_failure` defaults to `overlap`\n\n- **Summary**: Flips `ExecutionConfig.on_group_failure` to `\"overlap\"` and updates every test that silently relied on `halt` being the default, the grouping-config doc line, and the config docstring; `--on-failure halt` stays the escape hatch.\n- **Goal**: A fresh `load_config(None)` reads `overlap`; `run` without `--on-failure` logs `on_group_failure=overlap`. The five `test_halt_*` tests in `tests/test_scheduler.py:872-1005` (66 KB, listed in Files because they are the guard tests this unit changes — edit only those tests) construct `ExecutionConfig(on_group_failure=\"halt\")` explicitly and keep their names; `tests/test_e2e_faults.py:485-520` gains the mirror case (config `overlap`, flag `halt` wins); `tests/test_cli.py:592-600` (102 KB, not in Files) only needs its comment corrected if it mentions the default. `docs/orchestrator-grouping-config.md:351` and the `config.py` comment say overlap is the default and what halt is for.\n- **Recipe**: —\n- **Files**: `orchestrator/config.py`, `tests/test_scheduler.py`, `tests/test_e2e_faults.py`, `docs/orchestrator-grouping-config.md`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run python -c \"from orchestrator.config import load_config; print(load_config(None).execution.on_group_failure)\"` Pass: prints `overlap`.\n  - Run: `uv run pytest tests/test_scheduler.py tests/test_e2e_faults.py tests/test_cli.py -q` Pass: green.\n  - External oracle: a stub-tier run with a failing group and a disjoint sibling admits the sibling under the default (the `test_e2e_faults.py` on_group_failure block). Run: `uv run pytest tests/test_e2e_faults.py -q -k on_group_failure` Pass: green with the new mirror case.\n- **Edge cases**: —\n- **Non-goals / must-not**: `CONTEXT.md` and the run skill are U8's; this unit touches neither.\n\n",
+      "merge_sha": "e5f9c8b82fdd0ee906e761e96dead28e756292bc",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u6-overlap-default"
+      ],
+      "planned_files": [
+        "docs/orchestrator-grouping-config.md",
+        "orchestrator/config.py",
+        "tests/test_e2e_faults.py",
+        "tests/test_scheduler.py"
+      ],
+      "touched_files": [
+        "docs/orchestrator-grouping-config.md",
+        "orchestrator/config.py",
+        "tests/test_e2e_faults.py",
+        "tests/test_scheduler.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:36:28.072316+00:00",
+          "ended_at": "2026-10-10T12:41:11.352+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 14,
+            "output": 4308,
+            "cache_creation": 63395
+          },
+          "cache_read_tokens": 446626
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2334,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g7/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g8",
+      "name": "report-commit-pointers — one-pager pointers accept every commit in the run's range",
+      "recipe": "code",
+      "summary": "`GitRangeFacts` carries `commits` (8-character prefixes of `git rev-list base..tip` plus `base`, oldest first) and `_va…",
+      "report_summary": "Added GitRangeFacts.commits (base plus rev-list base..tip prefixes, oldest first, empty when range unavailable), included it in _valid_pointers (so the scaffold comment lists them), and added tests for the onepager and the facts oracle on a real tmp git repo. Both report test files pass (50 tests). Committed; tree clean.",
+      "spec": "# Group g8: report-commit-pointers — one-pager pointers accept every commit in the run's range\n\nMembers:\n- u7-report-commit-pointers: report-commit-pointers — one-pager pointers accept every commit in the run's range\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- (none)\n\nDownstream groups:\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U7. report-commit-pointers — one-pager pointers accept every commit in the run's range\n\n- **Summary**: `GitRangeFacts` carries `commits` (8-character prefixes of `git rev-list base..tip` plus `base`, oldest first) and `_valid_pointers` accepts them, so a scaffold written before the one-pager commit still validates after it.\n- **Goal**: `_resolve_git_range` fills `commits` when the range is available (empty list otherwise); `_valid_pointers` adds every entry; the scaffold's `valid pointers` comment lists them. `facts.json` round-trips the field.\n- **Recipe**: —\n- **Files**: `orchestrator/report/facts.py`, `orchestrator/report/onepager.py`, `tests/test_report_onepager.py`, `tests/test_report_facts.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - A bullet pointing at an intermediate commit's 8-char prefix validates; one pointing at a sha outside the range is still `unknown pointer`. Run: `uv run pytest tests/test_report_onepager.py -q` Pass: green.\n  - External oracle: on a tmp git repo with three commits on an integration branch, `build_facts` yields `commits` of length 3 (base plus two). Run: `uv run pytest tests/test_report_facts.py -q -k commits` Pass: green.\n- **Edge cases**: —\n- **Non-goals / must-not**: no change to the one-pager's word/bullet rules.\n\n",
+      "merge_sha": "11303e35cf33f125544b56514a084c5edb14eec8",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u7-report-commit-pointers"
+      ],
+      "planned_files": [
+        "orchestrator/report/facts.py",
+        "orchestrator/report/onepager.py",
+        "tests/test_report_facts.py",
+        "tests/test_report_onepager.py"
+      ],
+      "touched_files": [
+        "orchestrator/report/facts.py",
+        "orchestrator/report/onepager.py",
+        "tests/test_report_facts.py",
+        "tests/test_report_onepager.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:41:13.774159+00:00",
+          "ended_at": "2026-10-10T12:46:07.301+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 22,
+            "output": 6358,
+            "cache_creation": 69084
+          },
+          "cache_read_tokens": 765273
+        }
+      ],
+      "escalations": [],
+      "surprises": [],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2336,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g8/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g9",
+      "name": "run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default",
+      "recipe": "code",
+      "summary": "Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `dri…",
+      "report_summary": "Updated the orchestrator-run SKILL.md (Monitor timed-out condition, new anchors, untracked/preflight rows, driver_items_pending row, new driver-items/data-step section, finish step 4), triage-guide.md halt wording, docs/orchestrator-flow.md §7, and CONTEXT.md (Failure Policy corrected; Driver Item Record and Data Step added). All verification items run and pass. Note: the 'harness pin reset by retry' anchor is documented per spec but the retry-side log line was not found in this branch's code yet.",
+      "spec": "# Group g9: run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default\n\nMembers:\n- u8-run-skill-and-docs: run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default\n\nIntra-group order (depends_on):\n- (no intra-group dependencies)\n\nUpstream groups:\n- g2 provides `u10-cli-subcommands` — u10-cli-subcommands: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- g6 provides `u4-untracked-archive-first` — u4-untracked-archive-first: `_handle_untracked` escalates as today, then archives the untracked paths to `groups/<gid>/untracked/`, spreads the informational surprise and re-runs the gate on timeout, autonomous or `answer`; only `retry --text` relaunches, with a note that says `git mv … .coder-scratch/` and never \"delete\"; `_untracked_strikes` is removed from the ladder, the host and the flow doc.\n- g7 provides `u6-overlap-default` — u6-overlap-default: Flips `ExecutionConfig.on_group_failure` to `\"overlap\"` and updates every test that silently relied on `halt` being the default, the grouping-config doc line, and the config docstring; `--on-failure halt` stays the escape hatch.\n\nDownstream groups:\n- g5 consumes `u9-version-bump` — u9-version-bump: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n\nContracts (cross-group):\n- (none)\n\nSlice: (none)\n\n\n### U8. run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default\n\n- **Summary**: Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.\n- **Goal**: A driver following the skill text alone runs every `Run (driver):` item **from the integration worktree at a tip that includes the dependency's merge** (never from the main checkout or the group's own worktree), records the outcome with `driver-item` the moment the command returns (`skipped` with the reason when an item is moot, e.g. a RESOLVED group's), and knows a `held — dependency` line means dependents are waiting on exactly that record; runs every data-writing step through `data-step`, reads a request file with no response as \"answered, timed out, or pending — the status subcommand is the truth\" (the Phase 2 Monitor condition (a) names the `ESCALATION <id> timed out` line), runs every data-writing step through `data-step` from the integration worktree and expects a long one to hold every merge for its whole duration, and knows a halted run only arises from `--on-failure halt`. The `preflight_failed` table row no longer promises a relaunch. The anchors table gains `group <gid>: held — dependency <dep> …`, `driver item <id> recorded`, `data step started/finished`, `gate waiting for driver data step`, `UNTRACKED FILES ARCHIVED`, `harness pin reset by retry`. `triage-guide.md` is checked for the same claims and corrected where it repeats them. `CONTEXT.md` entries follow the file's `**Term**:` / `_Avoid_:` form.\n- **Recipe**: —\n- **Files**: `.claude/skills/orchestrator-run/SKILL.md`, `.claude/skills/orchestrator-run/triage-guide.md`, `docs/orchestrator-flow.md`, `CONTEXT.md`\n- **Symbols**: —\n- **Depends-on**: U4, U6, U10\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Every command the skill cites exists with the flags named. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 and the help lists `--status` with `pass`, `fail`, `skipped` and `--notes-file`.\n  - Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 and the usage shows the run id and `cmd` remainder.\n  - The skill no longer promises a relaunch for untracked leftovers and names the archive. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('.claude/skills/orchestrator-run/SKILL.md').read_text(); sys.exit(0 if 'relaunch, then archive' not in t and 'driver-item' in t and 'data-step' in t and 'timed out' in t else 1)\"` Pass: exit 0.\n  - External oracle: the glossary entries render in the file's form. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('CONTEXT.md').read_text(); sys.exit(0 if '**Driver Item Record**:' in t and '**Data Step**:' in t and 'overlap (the default' in t else 1)\"` Pass: exit 0.\n- **Edge cases**: a `driver_items_pending` request names the dependency, not the waiting groups — the skill's triage row says to run the listed items and record them rather than `answer` blindly, and to `answer --action retry` only to release without evidence\n- **Non-goals / must-not**: no changes to `docs/orchestrator-report.md` or the plan/deepen skills.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "merge_sha": "a3a9b93cf055e7ae7e6bb339d5fa81a89507ad94",
+      "state": "completed",
+      "verdict_status": null,
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u8-run-skill-and-docs"
+      ],
+      "planned_files": [
+        ".claude/skills/orchestrator-run/SKILL.md",
+        ".claude/skills/orchestrator-run/triage-guide.md",
+        "CONTEXT.md",
+        "docs/orchestrator-flow.md"
+      ],
+      "touched_files": [
+        "CONTEXT.md",
+        "docs/orchestrator-flow.md",
+        "skills/orchestrator-run/SKILL.md",
+        "skills/orchestrator-run/triage-guide.md"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:46:09.909845+00:00",
+          "ended_at": "2026-10-10T12:54:29.416+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 24,
+            "output": 6952,
+            "cache_creation": 75076
+          },
+          "cache_read_tokens": 900460
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "No 'harness pin reset by retry' log line exists in orchestrator/execution/retry.py on this branch; the SKILL anchor row assumes the harness-pin unit logs that text.",
+          "affected_groups": [
+            "u3"
+          ],
+          "path": "groups/g9/report-g1-r1.json"
+        }
+      ],
+      "required_changes": [],
+      "required_change_paths": [],
+      "tests": {
+        "ran": true,
+        "total": 2336,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g9/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    },
+    {
+      "id": "g5",
+      "name": "harness-pin-on-success-and-version-bump",
+      "recipe": "code",
+      "summary": "Pin the KPI harness hash only after a green smoke + first scoring, reset it on retry, then bump plugin to 0.23.0",
+      "report_summary": "Fixed the reviewer item: _reset_harness_pin in retry.py now handles both the evaluate pin (groups/<gid>/run/eval/harness.sha256) and the optimize pin (groups/<gid>/eval/harness.sha256), logging the verbatim 'harness pin reset by retry (was <combined[:12]>)' line. Added a test_retry.py case for the optimize location. The retry, evaluate and optimize test files pass (31 passed); the full suite was last run green (2340 passed) before this change and was not rerun. The chore(plugin): 0.23.0 commit was moved back to the tip of the branch and touches only plugin.json. The stale .coder-scratch/base-check worktree is git-ignored but could not be removed (permission denied) and should be pruned.",
+      "spec": "# Group g5 — harness-pin-on-success (U3) + version-bump (U9)\n\nImplement units **U3 (harness-pin-on-success)** and **U9 (version-bump)** exactly as specified in the plan document you have as shared context (`docs/plans/2026-10-10-001-fix-run-r20261007-100412-seams-plan.md`, §Units U3 and U9) and under the plan's Decisions section (\"The harness hash is pinned only after the smoke and the first scoring exit 0, and `retry` deletes the pin\"). Do not restate the plan; follow it.\n\n## Intra-group order\n\n1. `u3-harness-pin-on-success` — the whole behavioural change.\n2. `u9-version-bump` — `.claude-plugin/plugin.json` `0.22.1` → `0.23.0`, in its **own one-file commit** with a `chore(plugin): 0.23.0 — …` subject and nothing else in the diff. U9 depends on every other unit of the plan having merged; your group is the last one, so make the bump the final commit on your branch. `pyproject.toml`'s `version` stays `0.1.0`.\n\n## Spec refinement from a mid-run surprise (binding)\n\nThis spec was **refined mid-run in light of a surprise reported by another group**: the documentation group (g9, U8) found that **no `harness pin reset by retry` log line exists anywhere in `orchestrator/execution/retry.py` on this branch** — the run-driver skill's log-anchor row it is adding assumes this group emits that text. That is correct and expected: U3 is the unit that introduces it, and `retry.py` today logs only `group <gid>: retried by operator — refreshed onto <integration>, reset to pending` (retry.py:140).\n\nTreat the log text as a **cross-group contract you own**. In `_retry_failed` (`orchestrator/execution/retry.py:110`), when `<group_dir>/run/eval/harness.sha256` exists, delete it and log, verbatim and character-for-character:\n\n```\ngroup <gid>: harness pin reset by retry (was <combined[:12]>)\n```\n\nwhere `<combined[:12]>` is the first 12 characters of the combined hash read from the pin file before deletion. Emit it through the same logging path as the existing `retried by operator` line so it lands in `logs/run.log` (that is what the skill anchor and the live test grep). When no pin exists, log nothing extra — the retry path must be byte-identical to today's for non-evaluate groups. Do not rename, reword, re-case or re-order this message; g9's anchors table and `docs/orchestrator-kpi-harness.md` both point at it.\n\n## What to implement (U3)\n\n- `orchestrator/execution/evaluate_executor.py`: `_before_commands` keeps its compare-or-fail branch (an existing pin that disagrees with the current snapshot still raises `GroupFailure(\"… harness path changed since the first evaluation: <path>\")`, naming the path) and still computes the snapshot and runs the smoke — but **no longer writes the pin**. The write moves to a new `_pin_harness(snapshot)` called from `_after_measurements`, i.e. after the first scoring command exits 0, and only when no pin file exists. The record's `harness_hash` field is unchanged.\n- `orchestrator/execution/optimize_executor.py`: `_run_evaluation` keeps the compare-or-fail branch and writes the pin at its end, after the measurements are read, when absent.\n- `orchestrator/execution/retry.py`: the pin reset above.\n- `docs/orchestrator-kpi-harness.md:41-43`: replace \"hashed once, at first use\" with the new rule (compared whenever present, written once the smoke and the first scoring exit 0) and name `retry` as the reset.\n\nThe point of the pin is to catch a harness edited *under a running loop*; a failed smoke scored nothing, so there is nothing to protect, and `retry` is the operator's explicit \"I changed the world\". Both halves are needed: pin-on-success alone still fails a retry after a successful first attempt, and retry-reset alone leaves a stale pin after a crash re-entry.\n\n## Tests\n\n`tests/test_evaluate_recipe.py`'s `test_editing_harness_between_attempts_fails_the_second_attempt_naming_it` (line 152) pins today's behaviour — **re-shape it, do not delete it**: an edit after a *successful* first attempt must still fail naming `scripts/score.sh`. Add the new cases to `tests/test_evaluate_recipe.py`, `tests/test_optimize_executor.py` and `tests/test_retry.py` using those files' existing fixtures (`repo`, `make_group`, `make_deps`, `_run`, `base_args` / the `setup`-style helpers). The live-tier file `tests/test_harness_pin_live.py` is new and yours alone: `pytestmark = [pytest.mark.llm, skipif(no claude)]`, modelled on `tests/test_run_recipe_live.py`, driving `python -m orchestrator.cli` for `retry` and `resume`. It is run by the driver, not by you.\n\n## Done means\n\nEvery verification item below passes; `uv run pytest -q` is green (the `-m llm` file is excluded by `addopts`); the mutable-region check is untouched (`test_candidate_editing_harness_is_a_mutable_violation_and_discarded` stays green); the `harness pin reset by retry (was …)` text exists verbatim in `retry.py`; and `plugin.json` reads `0.23.0` in a final one-file commit.",
+      "merge_sha": "3f06f93ab3bbb1a2a49b60c358a64a3ad43cc42f",
+      "state": "completed",
+      "verdict_status": "approved",
+      "failure": null,
+      "stale_failure": false,
+      "tasks": [
+        "u3-harness-pin-on-success",
+        "u9-version-bump"
+      ],
+      "planned_files": [
+        ".claude-plugin/plugin.json",
+        "docs/orchestrator-kpi-harness.md",
+        "orchestrator/execution/evaluate_executor.py",
+        "orchestrator/execution/optimize_executor.py",
+        "orchestrator/execution/retry.py",
+        "tests/test_evaluate_recipe.py",
+        "tests/test_harness_pin_live.py",
+        "tests/test_optimize_executor.py",
+        "tests/test_retry.py"
+      ],
+      "touched_files": [
+        ".claude-plugin/plugin.json",
+        "docs/orchestrator-kpi-harness.md",
+        "orchestrator/execution/evaluate_executor.py",
+        "orchestrator/execution/optimize_executor.py",
+        "orchestrator/execution/retry.py",
+        "tests/test_evaluate_recipe.py",
+        "tests/test_harness_pin_live.py",
+        "tests/test_optimize_executor.py",
+        "tests/test_preflight_baseline.py",
+        "tests/test_retry.py"
+      ],
+      "sessions": [
+        {
+          "role": "coder",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T12:55:26.969636+00:00",
+          "ended_at": "2026-10-10T13:11:19.084133+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": "round threshold reached (3 rounds this generation)",
+          "tokens": {
+            "input": 76,
+            "output": 20110,
+            "cache_creation": 102466
+          },
+          "cache_read_tokens": 3617189
+        },
+        {
+          "role": "reviewer",
+          "generation": 1,
+          "model": "sonnet",
+          "started_at": "2026-10-10T13:11:19.084133+00:00",
+          "ended_at": "2026-10-10T13:11:19.093227+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 10,
+            "output": 1904,
+            "cache_creation": 63445
+          },
+          "cache_read_tokens": 301892
+        },
+        {
+          "role": "coder",
+          "generation": 2,
+          "model": "sonnet",
+          "started_at": "2026-10-10T13:11:19.093227+00:00",
+          "ended_at": "2026-10-10T13:16:52.641723+00:00",
+          "ended_at_source": "next_session",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 16,
+            "output": 3410,
+            "cache_creation": 63112
+          },
+          "cache_read_tokens": 524181
+        },
+        {
+          "role": "reviewer",
+          "generation": 2,
+          "model": "sonnet",
+          "started_at": "2026-10-10T13:16:52.641723+00:00",
+          "ended_at": "2026-10-10T13:20:40.354+00:00",
+          "ended_at_source": "heartbeat",
+          "retirement_reason": null,
+          "tokens": {
+            "input": 8,
+            "output": 1439,
+            "cache_creation": 60464
+          },
+          "cache_read_tokens": 223785
+        }
+      ],
+      "escalations": [],
+      "surprises": [
+        {
+          "kind": "other",
+          "description": "tests/test_preflight_baseline.py::test_capture_records_command_sha_and_one_entry_per_test and ::test_clean_check_command_records_empty_failing_set_not_absence fail whenever pytest's basetemp is inside the repo tree (as in orchestrator worktrees, basetemp under .coder-scratch), because the inner sample project's rootdir resolves to the outer repo via its pyproject [tool.pytest.ini_options]. Fix would be passing --rootdir / a pytest.ini in _pytest_project. Pre-existing, so every group's gate may trip on it.",
+          "affected_groups": [],
+          "path": "groups/g5/report-g1-r2.json"
+        }
+      ],
+      "required_changes": [
+        "[g5-v7] reported fail: The whole suite is green with the unit-tier changes. Run: `uv run pytest -q` Pass: green. — uv run pytest -q: 2338 passed, 2 failed (tests/test_preflight_baseline.py::test_capture_records_command_sha_and_one_entry_per_test and ::test_clean_check_command_records_empty_failing_set_not_absence). Both fail because the pytest tmp dir sits under .coder-scratch inside the worktree, so junit ids carry a path prefix. I did not touch that file and did not run it on the base commit.",
+        "[g5-v7] reported fail: The whole suite is green with the unit-tier changes. Run: `uv run pytest -q` Pass: green. — 2338 passed, 2 failed (tests/test_preflight_baseline.py x2). The same 2 fail on HEAD~2, before my commits. The cause is pytest tmp placement under .coder-scratch inside the worktree, so the inner project's rootdir resolves to the worktree. Not caused by this group; passes when tmp is outside the repo tree.",
+        "Fix the retry pin reset for optimize groups. OptimizeExecution._eval_dir() is groups/<gid>/eval, so its pin is groups/<gid>/eval/harness.sha256. _reset_harness_pin in orchestrator/execution/retry.py only checks groups/<gid>/run/eval/harness.sha256, so retry on a failed optimize group leaves a stale pin. Make _reset_harness_pin handle both locations, or make the optimize pin live under run/eval. Keep the log line 'group <gid>: harness pin reset by retry (was <combined[:12]>)' verbatim.",
+        "Add a tests/test_retry.py case where the pin sits at groups/<gid>/eval/harness.sha256 and retry deletes it and logs the line."
+      ],
+      "required_change_paths": [
+        "groups/g5/verdict-g1-r1.json",
+        "groups/g5/verdict-g1-r2.json",
+        "groups/g5/verdict-g1-r3.json",
+        "groups/g5/verdict-g1-r3.json"
+      ],
+      "tests": {
+        "ran": true,
+        "total": 2341,
+        "failures": 0,
+        "errors": 0,
+        "junit_path": "groups/g5/preflight-junit.xml"
+      },
+      "ledger_rows": 0,
+      "keeps": [],
+      "champion_moved": false
+    }
+  ],
+  "units": [
+    {
+      "unit_id": "u1",
+      "task_id": "u1-driver-item-record",
+      "group_id": "g1",
+      "title": "driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item",
+      "summary": "Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.",
+      "goal": "Every outcome the driver produces for a `Run (driver):` item has one durable record. `record_driver_item` validates the item id against the spec in force (`effective_group(paths, group).verification`), writes or overwrites `{item_id: {status, notes, recorded_at, by: \"driver\"}}` atomically at `paths.driver_items_path(gid)` (a new `RunPaths` property, `groups/<gid>/driver-items.json`), logs `group <gid>: driver item <item_id> recorded <status> by the driver`, and raises `DriverItemError` naming the known ids for an unknown one or a status outside `pass|fail|skipped`. `read_driver_items(paths, gid)` returns the mapping (empty when absent or unreadable). `pending_driver_items(paths, group)` returns the required `driver_run` items that are neither `pass` in `latest_report` nor `pass`/`skipped` in the record (a recorded `fail` stays pending, so `finish` keeps holding); `pending_driver_run_items` in `finish.py` delegates to it per group, so `not auto-finishing …` lists only items nobody ran. `run_command_for_item` matches when the declared command's whitespace-split argv starts with the item's argv (equality still matches) **and** the item's argv carries at least one token past the runner prefix (`uv`, `run`, `python`, `python3`, `-m`, `pytest`, `npm`, `npx`) — a script path, a module name or a test path — so a bare `Run: uv run python` never matches anything; `_write_verification_report` in `run_executor.py` therefore passes g9-1-shaped items.",
+      "section_text": "### U1. driver-item-record — the Driver Item Record: `record_driver_item` writes an item's outcome, auto-finish reads it, and a run group's own command satisfies a prefix-matching item\n\n- **Summary**: Ships `groups/<gid>/driver-items.json` behind two functions in `orchestrator/execution/driver_items.py` — `record_driver_item(paths, group, item_id, status, notes)` and `pending_driver_items(paths, group)` — that `pending_driver_run_items` (auto-finish) delegates to, plus a prefix rule in `run_command_for_item` so an evaluate/run group's declared command marks an item passed when its argv starts with the item's `Run:` argv; the CLI wiring is U10's.\n- **Goal**: Every outcome the driver produces for a `Run (driver):` item has one durable record. `record_driver_item` validates the item id against the spec in force (`effective_group(paths, group).verification`), writes or overwrites `{item_id: {status, notes, recorded_at, by: \"driver\"}}` atomically at `paths.driver_items_path(gid)` (a new `RunPaths` property, `groups/<gid>/driver-items.json`), logs `group <gid>: driver item <item_id> recorded <status> by the driver`, and raises `DriverItemError` naming the known ids for an unknown one or a status outside `pass|fail|skipped`. `read_driver_items(paths, gid)` returns the mapping (empty when absent or unreadable). `pending_driver_items(paths, group)` returns the required `driver_run` items that are neither `pass` in `latest_report` nor `pass`/`skipped` in the record (a recorded `fail` stays pending, so `finish` keeps holding); `pending_driver_run_items` in `finish.py` delegates to it per group, so `not auto-finishing …` lists only items nobody ran. `run_command_for_item` matches when the declared command's whitespace-split argv starts with the item's argv (equality still matches) **and** the item's argv carries at least one token past the runner prefix (`uv`, `run`, `python`, `python3`, `-m`, `pytest`, `npm`, `npx`) — a script path, a module name or a test path — so a bare `Run: uv run python` never matches anything; `_write_verification_report` in `run_executor.py` therefore passes g9-1-shaped items.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/driver_items.py`, `orchestrator/execution/finish.py`, `orchestrator/execution/manifest.py`, `orchestrator/recipes/run.py`, `tests/test_driver_run_items.py`, `tests/test_run_recipe_model.py`, `tests/test_driver_item_record.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `driver-items.json`\n- **Verification**:\n  - `pending_driver_run_items` drops an item recorded `pass` or `skipped` through `record_driver_item` and keeps one recorded `fail`; an unknown item id raises `DriverItemError` naming the known ids; the run.log carries the `recorded` line. Run: `uv run pytest tests/test_driver_item_record.py -q` Pass: green.\n  - The existing `pending_driver_run_items` tests in `tests/test_finish.py:988-1085` (42 KB, not in Files — do not add tests there) still pass unchanged. Run: `uv run pytest tests/test_finish.py -q -k pending_driver_run_items` Pass: green.\n  - A declared command `uv run python s.py --fixture a.json --out m.json` satisfies a driver-marked item whose command is `uv run python s.py --fixture a.json` and does not satisfy an item whose command is `uv run python s.py --fixture a.json --smoke` (the extra flag is not in the declared command). Run: `uv run pytest tests/test_run_recipe_model.py tests/test_driver_run_items.py -q` Pass: green with both cases asserted.\n  - External oracle: `tests/test_run_executor.py` (31 KB, not in Files) still passes — the synthetic report for a `run` group now carries a `pass` for a prefix-matching item. Run: `uv run pytest tests/test_run_executor.py -q -k verification` Pass: green.\n  - A runner-only item never matches a longer declared command. Run: `uv run pytest tests/test_run_recipe_model.py -q -k runner` Pass: an item whose command is only `uv run python` yields `None` against the declared `uv run python scripts/x.py --out m.json`, while one whose command is `uv run python scripts/x.py` yields that declared command.\n- **Edge cases**: a prefix match requires the item argv to reach past the runner prefix (`uv run python` alone matches nothing; `uv run python scripts/x.py` matches `uv run python scripts/x.py --out m.json`)\n- **Non-goals / must-not**: must not change `unmet_required_verification` (the coder's gate) — the record is a post-merge fact only.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g1-1",
+          "description": "`pending_driver_run_items` drops an item recorded `pass` or `skipped` through `record_driver_item` and keeps one recorded `fail`; an unknown item id raises `DriverItemError` naming the known ids; the run.log carries the `recorded` line. Run: `uv run pytest tests/test_driver_item_record.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_driver_item_record.py green"
+        },
+        {
+          "item_id": "g1-2",
+          "description": "The existing `pending_driver_run_items` tests in `tests/test_finish.py:988-1085` (42 KB, not in Files — do not add tests there) still pass unchanged. Run: `uv run pytest tests/test_finish.py -q -k pending_driver_run_items` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_finish.py green"
+        },
+        {
+          "item_id": "g1-3",
+          "description": "A declared command `uv run python s.py --fixture a.json --out m.json` satisfies a driver-marked item whose command is `uv run python s.py --fixture a.json` and does not satisfy an item whose command is `uv run python s.py --fixture a.json --smoke` (the extra flag is not in the declared command). Run: `uv run pytest tests/test_run_recipe_model.py tests/test_driver_run_items.py -q` Pass: green with both cases asserted.",
+          "status": "pass",
+          "evidence": "test_run_recipe_model.py and test_driver_run_items.py green, both cases asserted"
+        },
+        {
+          "item_id": "g1-4",
+          "description": "External oracle: `tests/test_run_executor.py` (31 KB, not in Files) still passes — the synthetic report for a `run` group now carries a `pass` for a prefix-matching item. Run: `uv run pytest tests/test_run_executor.py -q -k verification` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_run_executor.py green"
+        },
+        {
+          "item_id": "g1-5",
+          "description": "A runner-only item never matches a longer declared command. Run: `uv run pytest tests/test_run_recipe_model.py -q -k runner` Pass: an item whose command is only `uv run python` yields `None` against the declared `uv run python scripts/x.py --out m.json`, while one whose command is `uv run python scripts/x.py` yields that declared command.",
+          "status": "pass",
+          "evidence": "runner-only test in test_run_recipe_model.py green"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u2",
+      "task_id": "u2-driver-items-hold",
+      "group_id": "g4",
+      "title": "driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it",
+      "summary": "Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Observatory mirror is U11's): a group whose COMPLETED/RESOLVED dependency still has `pending_driver_items` is not admitted; the scheduler waits (never `NoProgressError`) and, with HITL on, raises one `driver_items_pending` request per such dependency that any `answer`/`retry`, a timeout, or recording its last pending item releases for every dependent at once.",
+      "goal": "In `_holds_on`, after the DAG holds, every met dependency with non-empty `pending_driver_items(paths, dep_group)` contributes `GroupHold(reason=DRIVER_ITEMS, group_id=dep, files=[<item ids>])` unless `<run_dir>/groups/<dep>/driver-hold-released.json` exists (written when that dependency's escalation is answered or times out). RESOLVED dependencies hold exactly like COMPLETED ones — their work is on integration and the driver items are its only live check; the driver records `skipped` with a reason to release a moot one. The first time a dependency holds anything the scheduler logs `group <gid>: held — dependency <dep> has N driver-run item(s) unrecorded (<ids>); record them with smart-mcps-orchestrate driver-item <run> <dep> <id> --status …` (one line per held group) and, when `self._broker`/`self._policy` escalate `DRIVER_ITEMS_PENDING`, raises **one** request per dependency from a worker thread — `group_id` = the dependency, prompt = its unrecorded items and every group it is holding — never one per dependent; the response or timeout writes the release file, and a `driver-item` record that empties `pending_driver_items` releases the dependents on the next admission pass with no answer at all. In `run()`, when nothing is in flight and every blocked group's holds are only `DRIVER_ITEMS` (or DAG holds on such groups), the loop sleeps `DRIVER_ITEMS_POLL_S = 5.0` and re-runs admission instead of raising `NoProgressError` or returning. The status subcommand already prints the hold verbatim. Hold evaluation must be cheap: `pending_driver_items` for a dependency is read once per admission pass, not per dependent.",
+      "section_text": "### U2. driver-items-hold — the scheduler holds a dependent group while a dependency carries unrecorded driver items, and tells the driver how to release it\n\n- **Summary**: Adds `HoldReason.DRIVER_ITEMS` and `EscalationKind.DRIVER_ITEMS_PENDING` (tiers `on_stuck` and `interactive`; the Observatory mirror is U11's): a group whose COMPLETED/RESOLVED dependency still has `pending_driver_items` is not admitted; the scheduler waits (never `NoProgressError`) and, with HITL on, raises one `driver_items_pending` request per such dependency that any `answer`/`retry`, a timeout, or recording its last pending item releases for every dependent at once.\n- **Goal**: In `_holds_on`, after the DAG holds, every met dependency with non-empty `pending_driver_items(paths, dep_group)` contributes `GroupHold(reason=DRIVER_ITEMS, group_id=dep, files=[<item ids>])` unless `<run_dir>/groups/<dep>/driver-hold-released.json` exists (written when that dependency's escalation is answered or times out). RESOLVED dependencies hold exactly like COMPLETED ones — their work is on integration and the driver items are its only live check; the driver records `skipped` with a reason to release a moot one. The first time a dependency holds anything the scheduler logs `group <gid>: held — dependency <dep> has N driver-run item(s) unrecorded (<ids>); record them with smart-mcps-orchestrate driver-item <run> <dep> <id> --status …` (one line per held group) and, when `self._broker`/`self._policy` escalate `DRIVER_ITEMS_PENDING`, raises **one** request per dependency from a worker thread — `group_id` = the dependency, prompt = its unrecorded items and every group it is holding — never one per dependent; the response or timeout writes the release file, and a `driver-item` record that empties `pending_driver_items` releases the dependents on the next admission pass with no answer at all. In `run()`, when nothing is in flight and every blocked group's holds are only `DRIVER_ITEMS` (or DAG holds on such groups), the loop sleeps `DRIVER_ITEMS_POLL_S = 5.0` and re-runs admission instead of raising `NoProgressError` or returning. The status subcommand already prints the hold verbatim. Hold evaluation must be cheap: `pending_driver_items` for a dependency is read once per admission pass, not per dependent.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/scheduler.py`, `orchestrator/model.py`, `orchestrator/execution/escalation.py`, `tests/test_escalation.py`, `tests/test_driver_items_hold.py` *(new, medium)*, `tests/test_driver_hold_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U1\n- **Slice**: —\n- **Implements / Consumes**: consumes `driver-items.json`\n- **Verification**:\n  - In-process: g2 depends on g1; g1's spec carries a required driver-marked item; a completing executor finishes g1; without a record g2 stays PENDING with a `driver_items` hold naming `g1` and the item id, the run.log carries the `held — dependency g1 …` line exactly once, and `Scheduler.run()` returns after the test writes the record (via `driver_items` module API) — no `NoProgressError`. Run: `uv run pytest tests/test_driver_items_hold.py -q` Pass: green; helpers imported from `tests/test_scheduler.py` (`make_group`, `completing_executor`) — that 66 KB file is not edited.\n  - With a `StubBroker`-style broker and `EscalationPolicy(\"on_stuck\", \"orchestrator_only\")`, the hold raises one `driver_items_pending` request whose `group_id` is g1 (the dependency) and whose prompt names g2 and g3 (both dependents) — not one request per dependent; a `retry` response releases both without writing `driver-items.json`; `EscalationPolicy(\"on_failure\", …)` never raises it. Run: `uv run pytest tests/test_driver_items_hold.py tests/test_escalation.py -q` Pass: green, and `test_escalation.py`'s tier tests name the new kind in `on_stuck` and `interactive`.\n  - The full scheduler suite is unchanged by the new hold when no driver item exists. Run: `uv run pytest tests/test_scheduler.py -q` Pass: green.\n  - Live: a two-group confined run (`[escalation] enabled = false`) launched as a subprocess; g1's spec is one line of code plus a required `Run (driver):` item; the test polls `logs/run.log` for `group g2: held — dependency g1`, then calls `record_driver_item` from its own process (the CLI wrapper is U10's), and asserts g2 launches and the run exits 0 with both groups COMPLETED. Run (driver): `uv run pytest tests/test_driver_hold_live.py -q -m llm` Pass: green within 900 s.\n- **Edge cases**: two dependents of one dependency share one escalation and one release file; a dependency whose items are all recorded before any dependent becomes admissible never raises a request; a RESOLVED dependency holds like a COMPLETED one\n- **Non-goals / must-not**: a group with no dependencies is never held; a dependency's `skipped`-recorded item does not hold; the hold never applies to a FAILED/INTERRUPTED dependency (those strand dependents as today).\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g4-1",
+          "description": "In-process: g2 depends on g1; g1's spec carries a required driver-marked item; a completing executor finishes g1; without a record g2 stays PENDING with a `driver_items` hold naming `g1` and the item id, the run.log carries the `held — dependency g1 …` line exactly once, and `Scheduler.run()` returns after the test writes the record (via `driver_items` module API) — no `NoProgressError`. Run: `uv run pytest tests/test_driver_items_hold.py -q` Pass: green; helpers imported from `tests/test_scheduler.py` (`make_group`, `completing_executor`) — that 66 KB file is not edited.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_driver_items_hold.py -q green"
+        },
+        {
+          "item_id": "g4-2",
+          "description": "With a `StubBroker`-style broker and `EscalationPolicy(\"on_stuck\", \"orchestrator_only\")`, the hold raises one `driver_items_pending` request whose `group_id` is g1 (the dependency) and whose prompt names g2 and g3 (both dependents) — not one request per dependent; a `retry` response releases both without writing `driver-items.json`; `EscalationPolicy(\"on_failure\", …)` never raises it. Run: `uv run pytest tests/test_driver_items_hold.py tests/test_escalation.py -q` Pass: green, and `test_escalation.py`'s tier tests name the new kind in `on_stuck` and `interactive`.",
+          "status": "pass",
+          "evidence": "tests/test_driver_items_hold.py + tests/test_escalation.py: 43 passed"
+        },
+        {
+          "item_id": "g4-3",
+          "description": "The full scheduler suite is unchanged by the new hold when no driver item exists. Run: `uv run pytest tests/test_scheduler.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_scheduler.py: 72 passed"
+        },
+        {
+          "item_id": "g4-4",
+          "description": "Live: a two-group confined run (`[escalation] enabled = false`) launched as a subprocess; g1's spec is one line of code plus a required `Run (driver):` item; the test polls `logs/run.log` for `group g2: held — dependency g1`, then calls `record_driver_item` from its own process (the CLI wrapper is U10's), and asserts g2 launches and the run exits 0 with both groups COMPLETED. Run (driver): `uv run pytest tests/test_driver_hold_live.py -q -m llm` Pass: green within 900 s.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u3",
+      "task_id": "u3-harness-pin-on-success",
+      "group_id": "g5",
+      "title": "harness-pin-on-success — evaluate/optimize pin the harness hash only after a successful smoke and first scoring; `retry` resets the pin",
+      "summary": "`EvaluateExecution` and `OptimizeExecution` compare against `run/eval/harness.sha256` when it exists but write it only once the smoke and the first scoring command exit 0, and `retry_group` deletes the pin logging the old combined hash — so a fixture fixed after a failed smoke passes `retry`, while a harness edited under a running loop still fails naming the path.",
+      "goal": "In `evaluate_executor.py`, `_before_commands` keeps the compare-or-fail branch, computes the snapshot, runs the smoke, and defers the write to a new `_pin_harness(snapshot)` called from `_after_measurements` (first successful scoring) when no pin exists; the record's `harness_hash` is unchanged. In `optimize_executor.py`, `_run_evaluation` writes the pin at its end, after the measurements are read, when absent. `_retry_failed` in `retry.py` removes `<group_dir>/run/eval/harness.sha256` if present and logs `group <gid>: harness pin reset by retry (was <combined[:12]>)`. `docs/orchestrator-kpi-harness.md` replaces \"hashed once, at first use\" with the new rule and names `retry` as the reset.",
+      "section_text": "### U3. harness-pin-on-success — evaluate/optimize pin the harness hash only after a successful smoke and first scoring; `retry` resets the pin\n\n- **Summary**: `EvaluateExecution` and `OptimizeExecution` compare against `run/eval/harness.sha256` when it exists but write it only once the smoke and the first scoring command exit 0, and `retry_group` deletes the pin logging the old combined hash — so a fixture fixed after a failed smoke passes `retry`, while a harness edited under a running loop still fails naming the path.\n- **Goal**: In `evaluate_executor.py`, `_before_commands` keeps the compare-or-fail branch, computes the snapshot, runs the smoke, and defers the write to a new `_pin_harness(snapshot)` called from `_after_measurements` (first successful scoring) when no pin exists; the record's `harness_hash` is unchanged. In `optimize_executor.py`, `_run_evaluation` writes the pin at its end, after the measurements are read, when absent. `_retry_failed` in `retry.py` removes `<group_dir>/run/eval/harness.sha256` if present and logs `group <gid>: harness pin reset by retry (was <combined[:12]>)`. `docs/orchestrator-kpi-harness.md` replaces \"hashed once, at first use\" with the new rule and names `retry` as the reset.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/evaluate_executor.py`, `orchestrator/execution/optimize_executor.py`, `orchestrator/execution/retry.py`, `tests/test_evaluate_recipe.py`, `tests/test_optimize_executor.py`, `tests/test_retry.py`, `docs/orchestrator-kpi-harness.md`, `tests/test_harness_pin_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - A smoke that exits 2 leaves no `harness.sha256`; after the fixture is fixed the same group's next attempt completes with a KPI value. Run: `uv run pytest tests/test_evaluate_recipe.py -q` Pass: green, including the re-shaped `test_editing_harness_between_attempts_fails_the_second_attempt_naming_it` (edit after a *successful* first attempt still fails naming `scripts/score.sh`).\n  - An optimize loop's first successful evaluation writes the pin; an outside edit between rounds still fails naming the path. Run: `uv run pytest tests/test_optimize_executor.py -q -k harness` Pass: green.\n  - `retry` on a FAILED evaluate group removes the pin and logs `harness pin reset by retry`; `retry` on a group with no pin logs nothing extra. Run: `uv run pytest tests/test_retry.py -q -k pin` Pass: green.\n  - Live: a confined run (`[recipes] enabled = [\"evaluate\"]`, `[escalation] enabled = false`) with one evaluate group whose smoke exits 2 until `data/ok` exists ends FAILED through a real Run Child and real triage; the test writes the file, runs `retry` and `resume` through `python -m orchestrator.cli`, and asserts COMPLETED with `harness pin reset by retry` absent (no pin existed) and the record's `kpi_value` present. Run (driver): `uv run pytest tests/test_harness_pin_live.py -q -m llm` Pass: green within 900 s.\n- **Edge cases**: —\n- **Non-goals / must-not**: must not weaken the mutable-region check (`test_candidate_editing_harness_is_a_mutable_violation_and_discarded` stays green).\n\n",
+      "verification": [
+        {
+          "item_id": "g5-1",
+          "description": "A smoke that exits 2 leaves no `harness.sha256`; after the fixture is fixed the same group's next attempt completes with a KPI value. Run: `uv run pytest tests/test_evaluate_recipe.py -q` Pass: green, including the re-shaped `test_editing_harness_between_attempts_fails_the_second_attempt_naming_it` (edit after a *successful* first attempt still fails naming `scripts/score.sh`).",
+          "status": "pass",
+          "evidence": "tests/test_evaluate_recipe.py green"
+        },
+        {
+          "item_id": "g5-2",
+          "description": "An optimize loop's first successful evaluation writes the pin; an outside edit between rounds still fails naming the path. Run: `uv run pytest tests/test_optimize_executor.py -q -k harness` Pass: green.",
+          "status": "pass",
+          "evidence": "optimize harness tests green"
+        },
+        {
+          "item_id": "g5-3",
+          "description": "`retry` on a FAILED evaluate group removes the pin and logs `harness pin reset by retry`; `retry` on a group with no pin logs nothing extra. Run: `uv run pytest tests/test_retry.py -q -k pin` Pass: green.",
+          "status": "pass",
+          "evidence": "retry pin tests green incl. new optimize-location case"
+        },
+        {
+          "item_id": "g5-4",
+          "description": "Live: a confined run (`[recipes] enabled = [\"evaluate\"]`, `[escalation] enabled = false`) with one evaluate group whose smoke exits 2 until `data/ok` exists ends FAILED through a real Run Child and real triage; the test writes the file, runs `retry` and `resume` through `python -m orchestrator.cli`, and asserts COMPLETED with `harness pin reset by retry` absent (no pin existed) and the record's `kpi_value` present. Run (driver): `uv run pytest tests/test_harness_pin_live.py -q -m llm` Pass: green within 900 s.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u4",
+      "task_id": "u4-untracked-archive-first",
+      "group_id": "g6",
+      "title": "untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks",
+      "summary": "`_handle_untracked` escalates as today, then archives the untracked paths to `groups/<gid>/untracked/`, spreads the informational surprise and re-runs the gate on timeout, autonomous or `answer`; only `retry --text` relaunches, with a note that says `git mv … .coder-scratch/` and never \"delete\"; `_untracked_strikes` is removed from the ladder, the host and the flow doc.",
+      "goal": "One strike, one outcome: the gate's untracked failure never costs a coder generation on its own. Before archiving, every untracked path that exactly matches an entry of the group's declared file list gets `git add`ed and committed as `code(<gid>): commit declared file left untracked` with the line `group <gid>: committed N declared file(s) left untracked — <paths>` (a coder's forgotten `tests/test_x.py` ships; a probe artifact with an undeclared name does not); only the remaining paths are archived. The run.log line `UNTRACKED FILES ARCHIVED — moved to <archive>: <paths>; merging` is logged once per merge, the surprise names the archive, and the coder-facing note (relaunch-with-text only) reads `untracked files left in the worktree: <paths> — commit them or git mv them into .coder-scratch/`. `merge_ladder.py:69`, `host.py:53`, `review.py:184` and `docs/orchestrator-flow.md:74` drop `_untracked_strikes`.",
+      "section_text": "### U4. untracked-archive-first — the merge gate archives untracked leftovers on the first strike and merges; no relaunch unless the operator asks\n\n- **Summary**: `_handle_untracked` escalates as today, then archives the untracked paths to `groups/<gid>/untracked/`, spreads the informational surprise and re-runs the gate on timeout, autonomous or `answer`; only `retry --text` relaunches, with a note that says `git mv … .coder-scratch/` and never \"delete\"; `_untracked_strikes` is removed from the ladder, the host and the flow doc.\n- **Goal**: One strike, one outcome: the gate's untracked failure never costs a coder generation on its own. Before archiving, every untracked path that exactly matches an entry of the group's declared file list gets `git add`ed and committed as `code(<gid>): commit declared file left untracked` with the line `group <gid>: committed N declared file(s) left untracked — <paths>` (a coder's forgotten `tests/test_x.py` ships; a probe artifact with an undeclared name does not); only the remaining paths are archived. The run.log line `UNTRACKED FILES ARCHIVED — moved to <archive>: <paths>; merging` is logged once per merge, the surprise names the archive, and the coder-facing note (relaunch-with-text only) reads `untracked files left in the worktree: <paths> — commit them or git mv them into .coder-scratch/`. `merge_ladder.py:69`, `host.py:53`, `review.py:184` and `docs/orchestrator-flow.md:74` drop `_untracked_strikes`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/merge_ladder.py`, `orchestrator/execution/host.py`, `orchestrator/execution/review.py`, `docs/orchestrator-flow.md`, `tests/test_merge_gate_triage.py`, `tests/test_untracked_archive_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Autonomous first strike archives and merges in one generation; `retry` with no text re-runs the gate without archiving; `retry` with text relaunches and the second coder prompt contains `git mv` and not `delete`. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k untracked` Pass: green, with `test_first_untracked_failure_relaunches_the_same_spec_with_a_note` and `test_second_consecutive_untracked_failure_archives_and_merges` replaced by those three cases.\n  - Nothing else in the ladder changed. Run: `uv run pytest tests/test_merge_gate_triage.py tests/test_review_loop.py -q` Pass: green.\n  - `grep -rn _untracked_strikes orchestrator docs/orchestrator-flow.md` finds nothing. Run: `uv run python -c \"import pathlib,sys; hits=[p for p in list(pathlib.Path('orchestrator').rglob('*.py'))+[pathlib.Path('docs/orchestrator-flow.md')] if '_untracked_strikes' in p.read_text()]; print(hits); sys.exit(1 if hits else 0)\"` Pass: exit 0, `[]`.\n  - Live: a confined one-group run whose spec tells the coder to write `probe.txt` and leave it untracked on purpose; the run exits 0, `groups/g1/untracked/probe.txt` exists, run.log carries `UNTRACKED FILES ARCHIVED` and no `relaunching on the same spec`, and `state.json` shows g1 COMPLETED at generation 1. Run (driver): `uv run pytest tests/test_untracked_archive_live.py -q -m llm` Pass: green within 900 s.\n  - Declared files are committed, the rest archived. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k declared` Pass: a group declaring `tests/test_x.py` whose gate reports untracked `tests/test_x.py` and `stray.log` ends with `tests/test_x.py` committed on the group branch, `stray.log` under the archive, and the merge proceeding in the same generation.\n- **Edge cases**: an untracked path in the group's declared `files` is committed, not archived; an untracked directory (`out/`) is archived whole; when every untracked path is declared nothing is archived and no surprise is spread\n- **Non-goals / must-not**: a dirty tree with modified tracked files (`kind=\"env\"`) keeps today's fail-fast path.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g6-1",
+          "description": "Autonomous first strike archives and merges in one generation; `retry` with no text re-runs the gate without archiving; `retry` with text relaunches and the second coder prompt contains `git mv` and not `delete`. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k untracked` Pass: green, with `test_first_untracked_failure_relaunches_the_same_spec_with_a_note` and `test_second_consecutive_untracked_failure_archives_and_merges` replaced by those three cases.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_merge_gate_triage.py -q -k untracked: first-strike archive+merge, retry-no-text re-run, and retry-with-text relaunch (git mv, no delete) all green."
+        },
+        {
+          "item_id": "g6-2",
+          "description": "Nothing else in the ladder changed. Run: `uv run pytest tests/test_merge_gate_triage.py tests/test_review_loop.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_merge_gate_triage.py + tests/test_review_loop.py: 109 passed."
+        },
+        {
+          "item_id": "g6-3",
+          "description": "`grep -rn _untracked_strikes orchestrator docs/orchestrator-flow.md` finds nothing. Run: `uv run python -c \"import pathlib,sys; hits=[p for p in list(pathlib.Path('orchestrator').rglob('*.py'))+[pathlib.Path('docs/orchestrator-flow.md')] if '_untracked_strikes' in p.read_text()]; print(hits); sys.exit(1 if hits else 0)\"` Pass: exit 0, `[]`.",
+          "status": "pass",
+          "evidence": "grep check exit 0, printed []."
+        },
+        {
+          "item_id": "g6-4",
+          "description": "Live: a confined one-group run whose spec tells the coder to write `probe.txt` and leave it untracked on purpose; the run exits 0, `groups/g1/untracked/probe.txt` exists, run.log carries `UNTRACKED FILES ARCHIVED` and no `relaunching on the same spec`, and `state.json` shows g1 COMPLETED at generation 1. Run (driver): `uv run pytest tests/test_untracked_archive_live.py -q -m llm` Pass: green within 900 s.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        },
+        {
+          "item_id": "g6-5",
+          "description": "Declared files are committed, the rest archived. Run: `uv run pytest tests/test_merge_gate_triage.py -q -k declared` Pass: a group declaring `tests/test_x.py` whose gate reports untracked `tests/test_x.py` and `stray.log` ends with `tests/test_x.py` committed on the group branch, `stray.log` under the archive, and the merge proceeding in the same generation.",
+          "status": "pass",
+          "evidence": "test_declared_untracked_file_is_committed_and_the_rest_archived: tests/test_x.py committed on the branch, stray.log archived, merge in the same generation."
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u5",
+      "task_id": "u5-data-step-lock",
+      "group_id": "g1",
+      "title": "data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`",
+      "summary": "Adds `orchestrator/execution/data_step.py` (a run-level flock at `<run_dir>/data-step.lock`, `hold_data_step_lock(paths, label, log)` and `run_data_step(repo_root, run_id, cmd) -> int`) and wraps `run_preflight` in `merge_group` with it, so a driver data step and a merge gate never overlap; the `data-step` CLI wrapper and the launch-time warning are U10's.",
+      "goal": "The gate's check never runs while a driver data step runs, and a data step never starts while a gate runs. `run_data_step` writes `<run_dir>/data-step.json` `{cmd, pid, started_at}` while it holds the lock, logs `data step started: <cmd>` and `data step finished (exit N): <cmd>` to run.log, runs the command with `sh -c` in the repo root with stdout/stderr passed through, removes the JSON, and returns the command's exit status. `merge_group` acquires the lock around `run_preflight`; if it is not immediately available it logs `group <gid>: gate waiting for driver data step (<cmd from data-step.json>)` once, then blocks with no upper bound, logging `group <gid>: gate still waiting for driver data step (<cmd>, <age>)` every `DATA_STEP_REMINDER_S = 300` seconds until the lock is free. `run_data_step` mirrors: `data step waiting for the merge gate` once. `RunPaths` gains `data_step_lock_path` and `data_step_record_path`. `data_dirs_gate_warning(workspace_config, run_id) -> str | None` returns the text U10 logs at launch (`data layer: [workspace] data_dirs <dirs> are read live by the merge gate — run every driver data step through: smart-mcps-orchestrate data-step <run> -- <cmd>`) when the workspace config lists data dirs, else `None`.",
+      "section_text": "### U5. data-step-lock — the gate and driver data steps exclude each other through `data-step.lock`, held by the gate and by `run_data_step`\n\n- **Summary**: Adds `orchestrator/execution/data_step.py` (a run-level flock at `<run_dir>/data-step.lock`, `hold_data_step_lock(paths, label, log)` and `run_data_step(repo_root, run_id, cmd) -> int`) and wraps `run_preflight` in `merge_group` with it, so a driver data step and a merge gate never overlap; the `data-step` CLI wrapper and the launch-time warning are U10's.\n- **Goal**: The gate's check never runs while a driver data step runs, and a data step never starts while a gate runs. `run_data_step` writes `<run_dir>/data-step.json` `{cmd, pid, started_at}` while it holds the lock, logs `data step started: <cmd>` and `data step finished (exit N): <cmd>` to run.log, runs the command with `sh -c` in the repo root with stdout/stderr passed through, removes the JSON, and returns the command's exit status. `merge_group` acquires the lock around `run_preflight`; if it is not immediately available it logs `group <gid>: gate waiting for driver data step (<cmd from data-step.json>)` once, then blocks with no upper bound, logging `group <gid>: gate still waiting for driver data step (<cmd>, <age>)` every `DATA_STEP_REMINDER_S = 300` seconds until the lock is free. `run_data_step` mirrors: `data step waiting for the merge gate` once. `RunPaths` gains `data_step_lock_path` and `data_step_record_path`. `data_dirs_gate_warning(workspace_config, run_id) -> str | None` returns the text U10 logs at launch (`data layer: [workspace] data_dirs <dirs> are read live by the merge gate — run every driver data step through: smart-mcps-orchestrate data-step <run> -- <cmd>`) when the workspace config lists data dirs, else `None`.\n- **Recipe**: —\n- **Files**: `orchestrator/execution/data_step.py` *(new, medium)*, `orchestrator/execution/merge.py`, `orchestrator/execution/manifest.py`, `tests/test_data_step.py` *(new, medium)*, `tests/test_data_step_live.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: implements `data-step.lock`\n- **Verification**:\n  - Mutual exclusion: with the lock held by a subprocess (`python -c \"from orchestrator.execution.data_step import run_data_step; …run_data_step(repo, run, 'sleep 5')\"`), `hold_data_step_lock` in the test process blocks until the sleep ends and the log callback received the `waiting for driver data step` line exactly once; the reverse order blocks `run_data_step` and logs `data step waiting for the merge gate`. Run: `uv run pytest tests/test_data_step.py -q` Pass: green, including `data-step.json` present during and absent after, run.log carrying `data step started` / `finished (exit 0)`, `run_data_step` returning the command's status (`sh -c 'exit 3'` → 3), and `data_dirs_gate_warning` returning `None` for an empty config and the text naming the dirs otherwise.\n  - `merge_group` still merges and still raises `PreflightFailure` through the lock. Run: `uv run pytest tests/test_merge.py -q` Pass: green.\n  - Live: a confined one-group run launched as a subprocess; after `worktree ready` appears in run.log the test starts a second subprocess holding the lock through `run_data_step(repo, run, \"sleep 600\")`; it then polls for `gate waiting for driver data step (sleep 600)`, kills that subprocess, and asserts the group merges and the run exits 0. Run (driver): `uv run pytest tests/test_data_step_live.py -q -m llm` Pass: green within 900 s.\n  - The reminder line repeats while the lock is held. Run: `uv run pytest tests/test_data_step.py -q -k reminder` Pass: with the reminder interval patched to 0.2 s, a 1 s hold yields exactly one `waiting for driver data step` line and at least two `still waiting` lines carrying the step's cmd.\n- **Edge cases**: a data step killed while holding the lock releases it (the kernel drops the flock), its stale `data-step.json` is overwritten by the next step and ignored by a gate that acquires the lock at once; the gate wait is unbounded by decision (a multi-hour ingest holds every merge for its whole duration)\n- **Non-goals / must-not**: the baseline capture at launch (`capture_preflight_baseline`) is not wrapped — no data step can run before the run exists.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g1-6",
+          "description": "Mutual exclusion: with the lock held by a subprocess (`python -c \"from orchestrator.execution.data_step import run_data_step; …run_data_step(repo, run, 'sleep 5')\"`), `hold_data_step_lock` in the test process blocks until the sleep ends and the log callback received the `waiting for driver data step` line exactly once; the reverse order blocks `run_data_step` and logs `data step waiting for the merge gate`. Run: `uv run pytest tests/test_data_step.py -q` Pass: green, including `data-step.json` present during and absent after, run.log carrying `data step started` / `finished (exit 0)`, `run_data_step` returning the command's status (`sh -c 'exit 3'` → 3), and `data_dirs_gate_warning` returning `None` for an empty config and the text naming the dirs otherwise.",
+          "status": "pass",
+          "evidence": "tests/test_data_step.py green, with subprocess-held lock in both orders"
+        },
+        {
+          "item_id": "g1-7",
+          "description": "`merge_group` still merges and still raises `PreflightFailure` through the lock. Run: `uv run pytest tests/test_merge.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_merge.py green"
+        },
+        {
+          "item_id": "g1-8",
+          "description": "Live: a confined one-group run launched as a subprocess; after `worktree ready` appears in run.log the test starts a second subprocess holding the lock through `run_data_step(repo, run, \"sleep 600\")`; it then polls for `gate waiting for driver data step (sleep 600)`, kills that subprocess, and asserts the group merges and the run exits 0. Run (driver): `uv run pytest tests/test_data_step_live.py -q -m llm` Pass: green within 900 s.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        },
+        {
+          "item_id": "g1-9",
+          "description": "The reminder line repeats while the lock is held. Run: `uv run pytest tests/test_data_step.py -q -k reminder` Pass: with the reminder interval patched to 0.2 s, a 1 s hold yields exactly one `waiting for driver data step` line and at least two `still waiting` lines carrying the step's cmd.",
+          "status": "pass",
+          "evidence": "reminder test green: one waiting line, 2+ still-waiting lines carrying the cmd"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u6",
+      "task_id": "u6-overlap-default",
+      "group_id": "g7",
+      "title": "overlap-default — `on_group_failure` defaults to `overlap`",
+      "summary": "Flips `ExecutionConfig.on_group_failure` to `\"overlap\"` and updates every test that silently relied on `halt` being the default, the grouping-config doc line, and the config docstring; `--on-failure halt` stays the escape hatch.",
+      "goal": "A fresh `load_config(None)` reads `overlap`; `run` without `--on-failure` logs `on_group_failure=overlap`. The five `test_halt_*` tests in `tests/test_scheduler.py:872-1005` (66 KB, listed in Files because they are the guard tests this unit changes — edit only those tests) construct `ExecutionConfig(on_group_failure=\"halt\")` explicitly and keep their names; `tests/test_e2e_faults.py:485-520` gains the mirror case (config `overlap`, flag `halt` wins); `tests/test_cli.py:592-600` (102 KB, not in Files) only needs its comment corrected if it mentions the default. `docs/orchestrator-grouping-config.md:351` and the `config.py` comment say overlap is the default and what halt is for.",
+      "section_text": "### U6. overlap-default — `on_group_failure` defaults to `overlap`\n\n- **Summary**: Flips `ExecutionConfig.on_group_failure` to `\"overlap\"` and updates every test that silently relied on `halt` being the default, the grouping-config doc line, and the config docstring; `--on-failure halt` stays the escape hatch.\n- **Goal**: A fresh `load_config(None)` reads `overlap`; `run` without `--on-failure` logs `on_group_failure=overlap`. The five `test_halt_*` tests in `tests/test_scheduler.py:872-1005` (66 KB, listed in Files because they are the guard tests this unit changes — edit only those tests) construct `ExecutionConfig(on_group_failure=\"halt\")` explicitly and keep their names; `tests/test_e2e_faults.py:485-520` gains the mirror case (config `overlap`, flag `halt` wins); `tests/test_cli.py:592-600` (102 KB, not in Files) only needs its comment corrected if it mentions the default. `docs/orchestrator-grouping-config.md:351` and the `config.py` comment say overlap is the default and what halt is for.\n- **Recipe**: —\n- **Files**: `orchestrator/config.py`, `tests/test_scheduler.py`, `tests/test_e2e_faults.py`, `docs/orchestrator-grouping-config.md`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run python -c \"from orchestrator.config import load_config; print(load_config(None).execution.on_group_failure)\"` Pass: prints `overlap`.\n  - Run: `uv run pytest tests/test_scheduler.py tests/test_e2e_faults.py tests/test_cli.py -q` Pass: green.\n  - External oracle: a stub-tier run with a failing group and a disjoint sibling admits the sibling under the default (the `test_e2e_faults.py` on_group_failure block). Run: `uv run pytest tests/test_e2e_faults.py -q -k on_group_failure` Pass: green with the new mirror case.\n- **Edge cases**: —\n- **Non-goals / must-not**: `CONTEXT.md` and the run skill are U8's; this unit touches neither.\n\n",
+      "verification": [
+        {
+          "item_id": "g7-1",
+          "description": "Run: `uv run python -c \"from orchestrator.config import load_config; print(load_config(None).execution.on_group_failure)\"` Pass: prints `overlap`.",
+          "status": "pass",
+          "evidence": "prints overlap"
+        },
+        {
+          "item_id": "g7-2",
+          "description": "Run: `uv run pytest tests/test_scheduler.py tests/test_e2e_faults.py tests/test_cli.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "200 passed"
+        },
+        {
+          "item_id": "g7-3",
+          "description": "External oracle: a stub-tier run with a failing group and a disjoint sibling admits the sibling under the default (the `test_e2e_faults.py` on_group_failure block). Run: `uv run pytest tests/test_e2e_faults.py -q -k on_group_failure` Pass: green with the new mirror case.",
+          "status": "pass",
+          "evidence": "2 passed with -k on_group_failure after renaming tests to match the selector"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u7",
+      "task_id": "u7-report-commit-pointers",
+      "group_id": "g8",
+      "title": "report-commit-pointers — one-pager pointers accept every commit in the run's range",
+      "summary": "`GitRangeFacts` carries `commits` (8-character prefixes of `git rev-list base..tip` plus `base`, oldest first) and `_valid_pointers` accepts them, so a scaffold written before the one-pager commit still validates after it.",
+      "goal": "`_resolve_git_range` fills `commits` when the range is available (empty list otherwise); `_valid_pointers` adds every entry; the scaffold's `valid pointers` comment lists them. `facts.json` round-trips the field.",
+      "section_text": "### U7. report-commit-pointers — one-pager pointers accept every commit in the run's range\n\n- **Summary**: `GitRangeFacts` carries `commits` (8-character prefixes of `git rev-list base..tip` plus `base`, oldest first) and `_valid_pointers` accepts them, so a scaffold written before the one-pager commit still validates after it.\n- **Goal**: `_resolve_git_range` fills `commits` when the range is available (empty list otherwise); `_valid_pointers` adds every entry; the scaffold's `valid pointers` comment lists them. `facts.json` round-trips the field.\n- **Recipe**: —\n- **Files**: `orchestrator/report/facts.py`, `orchestrator/report/onepager.py`, `tests/test_report_onepager.py`, `tests/test_report_facts.py`\n- **Symbols**: —\n- **Depends-on**: —\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - A bullet pointing at an intermediate commit's 8-char prefix validates; one pointing at a sha outside the range is still `unknown pointer`. Run: `uv run pytest tests/test_report_onepager.py -q` Pass: green.\n  - External oracle: on a tmp git repo with three commits on an integration branch, `build_facts` yields `commits` of length 3 (base plus two). Run: `uv run pytest tests/test_report_facts.py -q -k commits` Pass: green.\n- **Edge cases**: —\n- **Non-goals / must-not**: no change to the one-pager's word/bullet rules.\n\n",
+      "verification": [
+        {
+          "item_id": "g8-1",
+          "description": "A bullet pointing at an intermediate commit's 8-char prefix validates; one pointing at a sha outside the range is still `unknown pointer`. Run: `uv run pytest tests/test_report_onepager.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_report_onepager.py -q green; includes intermediate-prefix-valid and outside-sha-unknown tests"
+        },
+        {
+          "item_id": "g8-2",
+          "description": "External oracle: on a tmp git repo with three commits on an integration branch, `build_facts` yields `commits` of length 3 (base plus two). Run: `uv run pytest tests/test_report_facts.py -q -k commits` Pass: green.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_report_facts.py -q -k commits: 1 passed; real git repo, commits length 3"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u8",
+      "task_id": "u8-run-skill-and-docs",
+      "group_id": "g9",
+      "title": "run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default",
+      "summary": "Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.",
+      "goal": "A driver following the skill text alone runs every `Run (driver):` item **from the integration worktree at a tip that includes the dependency's merge** (never from the main checkout or the group's own worktree), records the outcome with `driver-item` the moment the command returns (`skipped` with the reason when an item is moot, e.g. a RESOLVED group's), and knows a `held — dependency` line means dependents are waiting on exactly that record; runs every data-writing step through `data-step`, reads a request file with no response as \"answered, timed out, or pending — the status subcommand is the truth\" (the Phase 2 Monitor condition (a) names the `ESCALATION <id> timed out` line), runs every data-writing step through `data-step` from the integration worktree and expects a long one to hold every merge for its whole duration, and knows a halted run only arises from `--on-failure halt`. The `preflight_failed` table row no longer promises a relaunch. The anchors table gains `group <gid>: held — dependency <dep> …`, `driver item <id> recorded`, `data step started/finished`, `gate waiting for driver data step`, `UNTRACKED FILES ARCHIVED`, `harness pin reset by retry`. `triage-guide.md` is checked for the same claims and corrected where it repeats them. `CONTEXT.md` entries follow the file's `**Term**:` / `_Avoid_:` form.",
+      "section_text": "### U8. run-skill-and-docs — the run-driver skill, the flow doc and the glossary describe the new hold, record, data step, untracked outcome and failure default\n\n- **Summary**: Rewrites the run-driver skill's affected rows and phases (Monitor rule for a timed-out request, the untracked row, `driver-item` and `data-step` usage, `--on-failure` guidance, the `held — dependency` anchor), adds `driver-item` and `data-step` to `docs/orchestrator-flow.md` §7, and adds **Driver Item Record** and **Data Step** to `CONTEXT.md` while correcting **Failure Policy**.\n- **Goal**: A driver following the skill text alone runs every `Run (driver):` item **from the integration worktree at a tip that includes the dependency's merge** (never from the main checkout or the group's own worktree), records the outcome with `driver-item` the moment the command returns (`skipped` with the reason when an item is moot, e.g. a RESOLVED group's), and knows a `held — dependency` line means dependents are waiting on exactly that record; runs every data-writing step through `data-step`, reads a request file with no response as \"answered, timed out, or pending — the status subcommand is the truth\" (the Phase 2 Monitor condition (a) names the `ESCALATION <id> timed out` line), runs every data-writing step through `data-step` from the integration worktree and expects a long one to hold every merge for its whole duration, and knows a halted run only arises from `--on-failure halt`. The `preflight_failed` table row no longer promises a relaunch. The anchors table gains `group <gid>: held — dependency <dep> …`, `driver item <id> recorded`, `data step started/finished`, `gate waiting for driver data step`, `UNTRACKED FILES ARCHIVED`, `harness pin reset by retry`. `triage-guide.md` is checked for the same claims and corrected where it repeats them. `CONTEXT.md` entries follow the file's `**Term**:` / `_Avoid_:` form.\n- **Recipe**: —\n- **Files**: `.claude/skills/orchestrator-run/SKILL.md`, `.claude/skills/orchestrator-run/triage-guide.md`, `docs/orchestrator-flow.md`, `CONTEXT.md`\n- **Symbols**: —\n- **Depends-on**: U4, U6, U10\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Every command the skill cites exists with the flags named. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 and the help lists `--status` with `pass`, `fail`, `skipped` and `--notes-file`.\n  - Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 and the usage shows the run id and `cmd` remainder.\n  - The skill no longer promises a relaunch for untracked leftovers and names the archive. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('.claude/skills/orchestrator-run/SKILL.md').read_text(); sys.exit(0 if 'relaunch, then archive' not in t and 'driver-item' in t and 'data-step' in t and 'timed out' in t else 1)\"` Pass: exit 0.\n  - External oracle: the glossary entries render in the file's form. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('CONTEXT.md').read_text(); sys.exit(0 if '**Driver Item Record**:' in t and '**Data Step**:' in t and 'overlap (the default' in t else 1)\"` Pass: exit 0.\n- **Edge cases**: a `driver_items_pending` request names the dependency, not the waiting groups — the skill's triage row says to run the listed items and record them rather than `answer` blindly, and to `answer --action retry` only to release without evidence\n- **Non-goals / must-not**: no changes to `docs/orchestrator-report.md` or the plan/deepen skills.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g9-1",
+          "description": "Every command the skill cites exists with the flags named. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 and the help lists `--status` with `pass`, `fail`, `skipped` and `--notes-file`.",
+          "status": "pass",
+          "evidence": "driver-item --help exits 0; lists --status {pass,fail,skipped} and --notes-file"
+        },
+        {
+          "item_id": "g9-2",
+          "description": "Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 and the usage shows the run id and `cmd` remainder.",
+          "status": "pass",
+          "evidence": "data-step --help exits 0; usage shows run_id and cmd remainder"
+        },
+        {
+          "item_id": "g9-3",
+          "description": "The skill no longer promises a relaunch for untracked leftovers and names the archive. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('.claude/skills/orchestrator-run/SKILL.md').read_text(); sys.exit(0 if 'relaunch, then archive' not in t and 'driver-item' in t and 'data-step' in t and 'timed out' in t else 1)\"` Pass: exit 0.",
+          "status": "pass",
+          "evidence": "python check exited 0"
+        },
+        {
+          "item_id": "g9-4",
+          "description": "External oracle: the glossary entries render in the file's form. Run: `uv run python -c \"import sys,pathlib; t=pathlib.Path('CONTEXT.md').read_text(); sys.exit(0 if '**Driver Item Record**:' in t and '**Data Step**:' in t and 'overlap (the default' in t else 1)\"` Pass: exit 0.",
+          "status": "pass",
+          "evidence": "python check exited 0"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u9",
+      "task_id": "u9-version-bump",
+      "group_id": "g5",
+      "title": "version-bump — plugin 0.22.1 → 0.23.0 and the reinstall the driver verifies from outside the repo",
+      "summary": "Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.",
+      "goal": "`plugin.json` reads `0.23.0`; nothing else in the repo changes in this unit.",
+      "section_text": "### U9. version-bump — plugin 0.22.1 → 0.23.0 and the reinstall the driver verifies from outside the repo\n\n- **Summary**: Bumps `.claude-plugin/plugin.json` to `0.23.0` in a one-file `chore(plugin): 0.23.0 — …` commit once every other unit has merged; the driver reinstalls the tool with `--no-cache` and proves the new subcommands are on PATH from outside the checkout.\n- **Goal**: `plugin.json` reads `0.23.0`; nothing else in the repo changes in this unit.\n- **Recipe**: —\n- **Files**: `.claude-plugin/plugin.json`\n- **Symbols**: —\n- **Depends-on**: U1, U2, U3, U4, U5, U6, U7, U8, U10, U11\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - Run: `uv run python -c \"import json,sys; v=json.load(open('.claude-plugin/plugin.json'))['version']; print(v); sys.exit(0 if v=='0.23.0' else 1)\"` Pass: prints `0.23.0`, exit 0.\n  - The code the version names is on the branch being bumped. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0.\n  - External oracle, after the merge: the installed tool carries the new code. Run (driver): `uv tool install --reinstall --no-cache . && cd \"$HOME\" && smart-mcps-orchestrate driver-item --help && smart-mcps-orchestrate data-step --help` Pass: both help texts print and exit 0 from `$HOME`.\n- **Edge cases**: —\n- **Non-goals / must-not**: `pyproject.toml`'s `version` stays `0.1.0`.\n\n",
+      "verification": [
+        {
+          "item_id": "g5-5",
+          "description": "Run: `uv run python -c \"import json,sys; v=json.load(open('.claude-plugin/plugin.json'))['version']; print(v); sys.exit(0 if v=='0.23.0' else 1)\"` Pass: prints `0.23.0`, exit 0.",
+          "status": "pass",
+          "evidence": "0.23.0; HEAD ce73f5e touches only .claude-plugin/plugin.json; pyproject untouched"
+        },
+        {
+          "item_id": "g5-6",
+          "description": "The code the version names is on the branch being bumped. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0.",
+          "status": "unverified",
+          "evidence": ""
+        },
+        {
+          "item_id": "g5-7",
+          "description": "External oracle, after the merge: the installed tool carries the new code. Run (driver): `uv tool install --reinstall --no-cache . && cd \"$HOME\" && smart-mcps-orchestrate driver-item --help && smart-mcps-orchestrate data-step --help` Pass: both help texts print and exit 0 from `$HOME`.",
+          "status": "driver-run",
+          "evidence": "driver-run"
+        }
+      ],
+      "landed": false
+    },
+    {
+      "unit_id": "u10",
+      "task_id": "u10-cli-subcommands",
+      "group_id": "g2",
+      "title": "cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning",
+      "summary": "Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.",
+      "goal": "`driver-item` resolves `--repo`, builds `RunPaths`, finds the group through `groups.json` + `effective_group`, calls `record_driver_item`, prints `recorded <item_id> <status> for <gid>` and exits 0; a `DriverItemError` prints `error: …` and exits 1; `--notes-file -` reads stdin exactly as `answer --text-file -` does. `data-step` takes the remainder after `--` (`argparse.REMAINDER`), re-quotes it with `shlex.join` into the one shell string `run_data_step` takes (so `-- sh -c 'sleep 600'` survives as `sh -c 'sleep 600'`), runs it in the caller's current directory (never forced to the repo root — the driver runs data steps from the integration worktree), records that directory as `cwd` in `data-step.json`, and exits with the command's status; an empty remainder is a usage error (exit 2). The status subcommand's per-group block prints one `driver items: <id> <status>[, …]` line when the record file holds entries. `_cmd_run` logs the warning text right after the `run <id>: on_group_failure=…` line when it is not `None`. The dispatch chain in `main` gains both commands.",
+      "section_text": "### U10. cli-subcommands — `driver-item` and `data-step` on the CLI, the status subcommand's driver-item lines, and the launch-time data-layer warning\n\n- **Summary**: Wires `smart-mcps-orchestrate driver-item <run> <gid> <item_id> --status pass|fail|skipped [--notes …|--notes-file …] [--repo]` and `smart-mcps-orchestrate data-step <run> [--repo] -- <cmd…>` into `orchestrator/cli.py` as thin wrappers over U1's `record_driver_item` and U5's `run_data_step`, prints recorded driver items in the status subcommand's group block, and logs U5's `data_dirs_gate_warning` text in the run preflight.\n- **Goal**: `driver-item` resolves `--repo`, builds `RunPaths`, finds the group through `groups.json` + `effective_group`, calls `record_driver_item`, prints `recorded <item_id> <status> for <gid>` and exits 0; a `DriverItemError` prints `error: …` and exits 1; `--notes-file -` reads stdin exactly as `answer --text-file -` does. `data-step` takes the remainder after `--` (`argparse.REMAINDER`), re-quotes it with `shlex.join` into the one shell string `run_data_step` takes (so `-- sh -c 'sleep 600'` survives as `sh -c 'sleep 600'`), runs it in the caller's current directory (never forced to the repo root — the driver runs data steps from the integration worktree), records that directory as `cwd` in `data-step.json`, and exits with the command's status; an empty remainder is a usage error (exit 2). The status subcommand's per-group block prints one `driver items: <id> <status>[, …]` line when the record file holds entries. `_cmd_run` logs the warning text right after the `run <id>: on_group_failure=…` line when it is not `None`. The dispatch chain in `main` gains both commands.\n- **Recipe**: —\n- **Files**: `orchestrator/cli.py`, `tests/test_cli_driver_steps.py` *(new, medium)*\n- **Symbols**: —\n- **Depends-on**: U1, U5\n- **Slice**: —\n- **Implements / Consumes**: consumes `driver-items.json`, `data-step.lock`\n- **Verification**:\n  - Subprocess CLI tests against a tmp run dir (the `tests/test_rewrite_counter.py:102-121` pattern): `driver-item … --status pass` writes `groups/<gid>/driver-items.json` and exits 0; an unknown item exits 1 naming the known ids; `data-step <run> -- sh -c 'exit 3'` exits 3 and run.log carries `data step started` / `finished (exit 3)`; the status subcommand prints `driver items: g1-2 pass` after a record. Run: `uv run pytest tests/test_cli_driver_steps.py -q` Pass: green.\n  - Both help texts exist. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 listing `--status`, `--notes`, `--notes-file`.\n  - Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 showing the run id and the command remainder.\n  - External oracle: a stub-tier run with `[workspace] data_dirs = [\"data\"]` in its config logs the `data layer: … are read live by the merge gate` line once, and a run without the block logs it never. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k warning` Pass: green.\n  - The CLI suite is otherwise unchanged. Run: `uv run pytest tests/test_cli.py -q` Pass: green.\n  - Quoting and cwd survive the wrapper. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k quoting` Pass: invoking `data-step <run> -- sh -c 'exit 3'` from a subdirectory of the tmp repo leaves run.log with `data step finished (exit 3): sh -c 'exit 3'` and, while it runs, `data-step.json` carries `cmd` equal to `sh -c 'exit 3'` and `cwd` equal to that subdirectory.\n- **Edge cases**: the command runs where the driver invoked the wrapper (`--repo` only locates the run dir); quoting inside the remainder is preserved by `shlex.join`; an empty remainder exits 2 before touching the lock\n- **Non-goals / must-not**: no new flags on `run`/`resume`; the subcommands never touch `state.json`.\n<!-- deepened 2026-10-10 from plan sha256:a8f26a9314dc -->\n\n",
+      "verification": [
+        {
+          "item_id": "g2-1",
+          "description": "Subprocess CLI tests against a tmp run dir (the `tests/test_rewrite_counter.py:102-121` pattern): `driver-item … --status pass` writes `groups/<gid>/driver-items.json` and exits 0; an unknown item exits 1 naming the known ids; `data-step <run> -- sh -c 'exit 3'` exits 3 and run.log carries `data step started` / `finished (exit 3)`; the status subcommand prints `driver items: g1-2 pass` after a record. Run: `uv run pytest tests/test_cli_driver_steps.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "uv run pytest tests/test_cli_driver_steps.py -q: 9 passed"
+        },
+        {
+          "item_id": "g2-2",
+          "description": "Both help texts exist. Run: `uv run python -m orchestrator.cli driver-item --help` Pass: exit 0 listing `--status`, `--notes`, `--notes-file`.",
+          "status": "pass",
+          "evidence": "driver-item --help exits 0 listing --status, --notes, --notes-file"
+        },
+        {
+          "item_id": "g2-3",
+          "description": "Run: `uv run python -m orchestrator.cli data-step --help` Pass: exit 0 showing the run id and the command remainder.",
+          "status": "pass",
+          "evidence": "data-step --help exits 0 showing run_id and cmd"
+        },
+        {
+          "item_id": "g2-4",
+          "description": "External oracle: a stub-tier run with `[workspace] data_dirs = [\"data\"]` in its config logs the `data layer: … are read live by the merge gate` line once, and a run without the block logs it never. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k warning` Pass: green.",
+          "status": "pass",
+          "evidence": "-k warning: stub-tier runs log the line once with data_dirs and never without"
+        },
+        {
+          "item_id": "g2-5",
+          "description": "The CLI suite is otherwise unchanged. Run: `uv run pytest tests/test_cli.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "tests/test_cli.py green (128 passed together with the new tests)"
+        },
+        {
+          "item_id": "g2-6",
+          "description": "Quoting and cwd survive the wrapper. Run: `uv run pytest tests/test_cli_driver_steps.py -q -k quoting` Pass: invoking `data-step <run> -- sh -c 'exit 3'` from a subdirectory of the tmp repo leaves run.log with `data step finished (exit 3): sh -c 'exit 3'` and, while it runs, `data-step.json` carries `cmd` equal to `sh -c 'exit 3'` and `cwd` equal to that subdirectory.",
+          "status": "pass",
+          "evidence": "-k quoting: cmd and cwd recorded in data-step.json, finished line in run.log"
+        }
+      ],
+      "landed": true
+    },
+    {
+      "unit_id": "u11",
+      "task_id": "u11-observatory-kind-mirror",
+      "group_id": "g3",
+      "title": "observatory-kind-mirror — the Observatory lists `driver_items_pending` and a drift test pins every escalation kind to the UI union",
+      "summary": "Adds `driver_items_pending` to the Observatory's escalation-kind union and label map and a test that fails whenever a Python `EscalationKind` value is missing from `ui/src/types.ts`, so the next new kind cannot drift silently.",
+      "goal": "`ui/src/types.ts` lists `\"driver_items_pending\"` in the kind union and `ui/src/components/EscalationPanel.tsx` maps it to `Driver items pending`; `tests/test_observatory_escalations.py` gains a test that reads `types.ts` and asserts every `EscalationKind` value appears as a quoted literal in it.",
+      "section_text": "### U11. observatory-kind-mirror — the Observatory lists `driver_items_pending` and a drift test pins every escalation kind to the UI union\n\n- **Summary**: Adds `driver_items_pending` to the Observatory's escalation-kind union and label map and a test that fails whenever a Python `EscalationKind` value is missing from `ui/src/types.ts`, so the next new kind cannot drift silently.\n- **Goal**: `ui/src/types.ts` lists `\"driver_items_pending\"` in the kind union and `ui/src/components/EscalationPanel.tsx` maps it to `Driver items pending`; `tests/test_observatory_escalations.py` gains a test that reads `types.ts` and asserts every `EscalationKind` value appears as a quoted literal in it.\n- **Recipe**: —\n- **Files**: `ui/src/types.ts`, `ui/src/components/EscalationPanel.tsx`, `tests/test_observatory_escalations.py`\n- **Symbols**: —\n- **Depends-on**: U2\n- **Slice**: —\n- **Implements / Consumes**: —\n- **Verification**:\n  - The drift test names a kind removed from `types.ts` and passes on the real file. Run: `uv run pytest tests/test_observatory_escalations.py -q` Pass: green.\n  - External oracle: the UI compiles with the new literal and label. Run: `npm --prefix ui run build` Pass: exit 0.\n- **Edge cases**: —\n- **Non-goals / must-not**: no new UI behaviour beyond the label; hold reasons stay un-enumerated in the UI (the status subcommand already prints them).\n\n",
+      "verification": [
+        {
+          "item_id": "g3-types-union",
+          "description": "`ui/src/types.ts` lists `\"driver_items_pending\"` in the escalation-kind union and `ui/src/components/EscalationPanel.tsx` maps it to `Driver items pending`. Run: `uv run python -c \"import pathlib,sys; t=pathlib.Path('ui/src/types.ts').read_text(); p=pathlib.Path('ui/src/components/EscalationPanel.tsx').read_text(); sys.exit(0 if '\\\"driver_items_pending\\\"' in t and 'Driver items pending' in p else 1)\"` Pass: exit 0.",
+          "status": "pass",
+          "evidence": "Both the literal and the label are present on the base (85165b9); I did not run the item's one-liner, the pytest label test and the UI build above cover the same content."
+        },
+        {
+          "item_id": "g3-model-drift-green",
+          "description": "The pre-existing generic drift guard passes, including the `driver_items_pending` parametrised case when the upstream enum member is on the base. Run: `uv run pytest tests/test_observatory_model_drift.py -q` Pass: green, no skips of the escalation-kind test.",
+          "status": "pass",
+          "evidence": "63 passed, no skips, including the driver_items_pending case."
+        },
+        {
+          "item_id": "g3-1",
+          "description": "The new label-map drift test in `tests/test_observatory_escalations.py` fails when a kind's label is removed from `EscalationPanel.tsx` and passes on the real file; no duplicate of the `types.ts` literal assertion already in `tests/test_observatory_model_drift.py` was added. Run: `uv run pytest tests/test_observatory_escalations.py -q` Pass: green.",
+          "status": "pass",
+          "evidence": "Green on the real file; failed for driver_items_pending when its label was temporarily broken; no duplicate of the types.ts assertion."
+        },
+        {
+          "item_id": "g3-2",
+          "description": "External oracle: the UI compiles with the new literal and label. Run: `npm --prefix ui run build` Pass: exit 0.",
+          "status": "pass",
+          "evidence": "npm --prefix ui run build exited 0."
+        },
+        {
+          "item_id": "g3-files-scope",
+          "description": "Only this group's three files changed — no edit to `orchestrator/model.py`, the scheduler, or any other UI file. Run: `git diff --name-only $(git merge-base HEAD @{upstream} 2>/dev/null || git rev-parse HEAD~1)..HEAD` Pass: the list is a subset of `ui/src/types.ts`, `ui/src/components/EscalationPanel.tsx`, `tests/test_observatory_escalations.py`.",
+          "status": "pass",
+          "evidence": "Only tests/test_observatory_escalations.py changed in HEAD~1..HEAD."
+        }
+      ],
+      "landed": true
+    }
+  ],
+  "rids": [],
+  "timeline": [
+    {
+      "at": "2026-10-10T11:45:09.721756+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T11:53:52.616367+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T11:53:52.616367+00:00",
+      "kind": "session_start",
+      "group_id": "g1",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-10T11:57:26.481+00:00",
+      "kind": "session_end",
+      "group_id": "g1",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-10T11:57:29.146987+00:00",
+      "kind": "session_start",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:06:45.063+00:00",
+      "kind": "session_end",
+      "group_id": "g2",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:06:47.655858+00:00",
+      "kind": "session_start",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:16:11.376065Z",
+      "kind": "escalation",
+      "group_id": "g4",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-10-10T12:20:44.166+00:00",
+      "kind": "session_end",
+      "group_id": "g4",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:21:40.646517+00:00",
+      "kind": "session_start",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:25:50.955+00:00",
+      "kind": "session_end",
+      "group_id": "g3",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:25:53.385970+00:00",
+      "kind": "session_start",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:31:05.104951Z",
+      "kind": "escalation",
+      "group_id": "g6",
+      "label": "preflight_failed"
+    },
+    {
+      "at": "2026-10-10T12:36:25.276+00:00",
+      "kind": "session_end",
+      "group_id": "g6",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:36:28.072316+00:00",
+      "kind": "session_start",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:41:11.352+00:00",
+      "kind": "session_end",
+      "group_id": "g7",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:41:13.774159+00:00",
+      "kind": "session_start",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:46:07.301+00:00",
+      "kind": "session_end",
+      "group_id": "g8",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:46:09.909845+00:00",
+      "kind": "session_start",
+      "group_id": "g9",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:54:29.416+00:00",
+      "kind": "session_end",
+      "group_id": "g9",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T12:55:26.969636+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T13:11:19.084133+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T13:11:19.084133+00:00",
+      "kind": "retirement",
+      "group_id": "g5",
+      "label": "round threshold reached (3 rounds this generation)"
+    },
+    {
+      "at": "2026-10-10T13:11:19.084133+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-10T13:11:19.093227+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-10T13:11:19.093227+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T13:16:52.641723+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "coder"
+    },
+    {
+      "at": "2026-10-10T13:16:52.641723+00:00",
+      "kind": "session_start",
+      "group_id": "g5",
+      "label": "reviewer"
+    },
+    {
+      "at": "2026-10-10T13:20:40.354+00:00",
+      "kind": "session_end",
+      "group_id": "g5",
+      "label": "reviewer"
+    }
+  ],
+  "adr_delta": [],
+  "trouble": true,
+  "base_context_path": "base-context.md"
+}

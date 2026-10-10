@@ -535,12 +535,6 @@ class OptimizeExecution(_GroupExecution):
                 message = f"group {self.gid}: harness path changed since the first evaluation: {first_diff}"
                 log_event(self.deps.store.paths, f"group {self.gid}: optimize failure — {message}")
                 raise GroupFailure(message)
-        else:
-            baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(
-                baseline_path,
-                json.dumps({"combined": combined, "paths": snapshot}, indent=2) + "\n",
-            )
         self._harness_hash = combined
         await self._run_smoke(attempt_dir)
 
@@ -575,6 +569,12 @@ class OptimizeExecution(_GroupExecution):
             if not isinstance(guard_value, (int, float)) or isinstance(guard_value, bool):
                 raise _EvalCrash(f"measurements missing guard key {guard.key!r}")
             values[guard.key] = float(guard_value)
+        if not baseline_path.is_file():
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                baseline_path,
+                json.dumps({"combined": combined, "paths": snapshot}, indent=2) + "\n",
+            )
         return values
 
     def _archive_measurements(self, attempt_dir: Path) -> None:

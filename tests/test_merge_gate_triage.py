@@ -8,6 +8,7 @@ zero subprocesses.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -355,9 +356,33 @@ def _untracked(*paths: str) -> PreflightFailure:
 
 
 @pytest.mark.asyncio
-async def test_first_untracked_failure_relaunches_the_same_spec_with_a_note(tmp_path):
-    """Rung 1 of the untracked ladder: attributable, but a relaunch (fresh
-    coder, unchanged spec, note naming the paths) — never a rewrite."""
+async def test_first_untracked_failure_archives_and_merges_in_one_generation(tmp_path):
+    """One strike, one outcome: the leftovers are moved to the group's
+    `untracked/` archive, a surprise is spread, the gate re-runs and merges —
+    no relaunch, no rewrite."""
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
+    harness = Harness(tmp_path, runner)
+    (harness.workspace / "out").mkdir()
+    (harness.workspace / "out" / "verify.log").write_text("13k lines of scratch\n")
+    (harness.workspace / "tmp_probe.py").write_text("print('probe')\n")
+    harness.merge_failures.append(_untracked("out/", "tmp_probe.py"))
+    state = await harness.run(make_group())
+    assert state == GroupState.COMPLETED
+    assert harness.merged == ["g1"]
+    assert harness.generations == []
+    assert harness.rewritten == []
+    archive = harness.store.paths.untracked_archive_dir("g1")
+    assert (archive / "out" / "verify.log").read_text() == "13k lines of scratch\n"
+    assert (archive / "tmp_probe.py").is_file()
+    assert not (harness.workspace / "out").exists()
+    log = harness.store.paths.event_log_path.read_text()
+    assert log.count("UNTRACKED FILES ARCHIVED") == 1
+
+
+@pytest.mark.asyncio
+async def test_untracked_failure_with_operator_retry_text_relaunches_with_git_mv_note(tmp_path):
+    broker = StubBroker({EscalationKind.PREFLIGHT_FAILED: retry("please tidy")})
+    policy = EscalationPolicy("on_stuck", "workers_via_orchestrator")
     runner = StubRunner(
         {
             "r1-g1-coder-g1": [coder_report()],
@@ -366,49 +391,47 @@ async def test_first_untracked_failure_relaunches_the_same_spec_with_a_note(tmp_
             "r1-g1-reviewer-g2": [verdict()],
         }
     )
-    harness = Harness(tmp_path, runner)
+    harness = Harness(tmp_path, runner, broker=broker, policy=policy)
     harness.merge_failures.append(_untracked("out/verify.log", "tmp_probe.py"))
     state = await harness.run(make_group())
     assert state == GroupState.COMPLETED
     assert harness.generations == [2]
     assert harness.rewritten == []
     second_prompt = runner.prompts[runner.session_ids["r1-g1-coder-g2"]][0]
-    assert "## Operator note" in second_prompt
     assert "untracked files left in the worktree: out/verify.log, tmp_probe.py" in second_prompt
-    assert ".coder-scratch/" in second_prompt
-    assert harness.merged == ["g1"]
+    assert "git mv" in second_prompt
+    assert "delete" not in second_prompt.lower().split("## operator note")[-1]
+    assert "please tidy" in second_prompt
 
 
 @pytest.mark.asyncio
-async def test_second_consecutive_untracked_failure_archives_and_merges(tmp_path):
-    """Rung 2: the relaunched coder left the litter again — move it to the
-    group's `untracked/` archive, surface a surprise, re-run the gate, merge."""
-    runner = StubRunner(
-        {
-            "r1-g1-coder-g1": [coder_report()],
-            "r1-g1-reviewer-g1": [verdict()],
-            "r1-g1-coder-g2": [coder_report()],
-            "r1-g1-reviewer-g2": [verdict()],
-        }
-    )
+async def test_declared_untracked_file_is_committed_and_the_rest_archived(tmp_path):
+    runner = StubRunner({"r1-g1-coder-g1": [coder_report()], "r1-g1-reviewer-g1": [verdict()]})
     harness = Harness(tmp_path, runner)
-    (harness.workspace / "out").mkdir()
-    (harness.workspace / "out" / "verify.log").write_text("13k lines of scratch\n")
-    (harness.workspace / "tmp_probe.py").write_text("print('probe')\n")
-    harness.merge_failures.append(_untracked("out/", "tmp_probe.py"))
-    harness.merge_failures.append(_untracked("out/", "tmp_probe.py"))
-    state = await harness.run(make_group())
+    ws = harness.workspace
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+        ["commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=ws, check=True)
+    (ws / "tests").mkdir()
+    (ws / "tests" / "test_x.py").write_text("def test_x(): pass\n")
+    (ws / "stray.log").write_text("noise\n")
+    harness.merge_failures.append(_untracked("tests/test_x.py", "stray.log"))
+    state = await harness.run(make_group(files=["tests/test_x.py"]))
     assert state == GroupState.COMPLETED
     assert harness.merged == ["g1"]
-    assert harness.generations == [2]  # one relaunch, then archived — no third coder
-    assert harness.rewritten == []
+    assert harness.generations == []
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ws, capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert "tests/test_x.py" in tracked
+    assert "stray.log" not in tracked
     archive = harness.store.paths.untracked_archive_dir("g1")
-    assert (archive / "out" / "verify.log").read_text() == "13k lines of scratch\n"
-    assert (archive / "tmp_probe.py").is_file()
-    assert not (harness.workspace / "out").exists()
-    assert not (harness.workspace / "tmp_probe.py").exists()
-    log = harness.store.paths.event_log_path.read_text()
-    assert "UNTRACKED FILES ARCHIVED" in log
+    assert (archive / "stray.log").is_file()
+    assert not (archive / "tests").exists()
 
 
 @pytest.mark.asyncio

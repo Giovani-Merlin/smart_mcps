@@ -289,6 +289,22 @@ def test_unknown_pointer_trips_only_that_rule() -> None:
     ]
 
 
+def test_intermediate_commit_prefix_validates_and_outside_sha_does_not() -> None:
+    facts = make_facts()
+    facts.git_range.commits = ["deadbeef", "1234abcd", "cafebabe"]
+    old = "- Watch the widget file for regressions next run (foo.py)\n"
+    inside = _replace_once(
+        _CLEAN_TEXT, old, "- Watch the widget file for regressions next run (1234abcd)\n"
+    )
+    assert validate(inside, facts) == []
+    outside = _replace_once(
+        _CLEAN_TEXT, old, "- Watch the widget file for regressions next run (99999999)\n"
+    )
+    violations = validate(outside, facts)
+    assert len(violations) == 1
+    assert "unknown pointer '99999999'" in violations[0]
+
+
 # -------------------------------------------------------------- word cap
 
 

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from orchestrator.config import BreakerConfig, ExecutionConfig
 from orchestrator.execution.artifacts import ArtifactEntry, ArtifactManifestStore
+from orchestrator.execution.driver_items import pending_driver_items
 from orchestrator.execution.escalation import EscalationBroker, EscalationPolicy
 from orchestrator.execution.manifest import RunPaths, atomic_write_text, log_event
 from orchestrator.execution.sessions import ReportError
@@ -35,6 +36,7 @@ from orchestrator.execution.worktrees import group_branch, worktree_path
 from orchestrator.model import (
     EscalationKind,
     EscalationRequest,
+    EscalationResponse,
     Group,
     HumanAction,
 )
@@ -147,6 +149,11 @@ ACTIVE_STATES = frozenset(
 )
 
 
+#: Seconds the scheduler sleeps before re-checking admission while every blocked
+#: group waits only on the run driver recording driver items.
+DRIVER_ITEMS_POLL_S = 5.0
+
+
 class HoldReason(StrEnum):
     """Why a group is not admissible right now (plan U9 keeps these distinct)."""
 
@@ -154,6 +161,9 @@ class HoldReason(StrEnum):
     FAILURE_GATE = "failure_gate"  # U2: overlaps a failed/interrupted group
     FILE_OVERLAP = "file_overlap"  # U9: overlaps a *healthy* in-flight group
     RUN_HALTED = "run_halted"  # U3/R41: on_group_failure=halt, admission paused
+    # A completed dependency still has `Run (driver):` items the driver has not
+    # recorded; `files` carries the item ids and `group_id` the dependency.
+    DRIVER_ITEMS = "driver_items"
 
 
 class GroupHold(BaseModel):
@@ -336,6 +346,13 @@ class Scheduler:
         for group in groups:
             for dep in group.dependencies:
                 self._dependents[dep].append(group.id)
+        # Driver-item hold: per-cycle cache of each dependency's unrecorded items,
+        # the held-line dedupe, and the one escalation per dependency.
+        self._driver_pending: dict[str, list[str]] = {}
+        self._driver_logged: set[tuple[str, str]] = set()
+        self._driver_requests: dict[str, str] = {}
+        self._driver_tasks: dict[str, asyncio.Task[None]] = {}
+        self._driver_abort = False
         if resume:
             raw = json.loads(self.paths.state_path.read_text())
             found_version = raw.get("schema_version")
@@ -529,6 +546,10 @@ class Scheduler:
 
         try:
             while True:
+                self._driver_pending = {}
+                self._driver_hold_pass()
+                if self._driver_abort:
+                    raise RunAbort("operator aborted the run at a driver-items hold")
                 # Admissibility is recomputed fresh every cycle, never cached
                 # (plan U2): a group already sitting in a "ready" queue from an
                 # earlier cycle must still be re-checked, because a sibling that
@@ -570,6 +591,15 @@ class Scheduler:
                         # outside _blocked_by_failure()'s DAG/overlap reachability
                         # entirely, so that check must not gate this return.
                         return {gid: entry.state for gid, entry in self.state.groups.items()}
+                    if any(
+                        hold.reason == HoldReason.DRIVER_ITEMS
+                        for gid in blocked
+                        for hold in self.state.groups[gid].holds
+                    ):
+                        # Waiting on the run driver, not wedged: recording the
+                        # items (or an answered/timed-out request) releases them.
+                        await asyncio.sleep(DRIVER_ITEMS_POLL_S)
+                        continue
                     failed_reachable = self._blocked_by_failure()
                     if all(gid in failed_reachable for gid in blocked):
                         # Not a wedge: upstream failures legitimately strand dependents.
@@ -593,6 +623,7 @@ class Scheduler:
             # persisted state carries the resume.
             for task in in_flight:
                 task.cancel()
+            self._settle_driver_requests(everything=True)
 
     def _unmet_deps(self, gid: str) -> list[str]:
         # RESOLVED releases dependents the same as COMPLETED (plan U2): its
@@ -652,7 +683,100 @@ class Scheduler:
             )
             for other in sorted(self._excluded_by(gid))
         ]
+        for dep in self.groups[gid].dependencies:
+            ids = self._pending_driver_ids(dep)
+            if ids:
+                holds.append(GroupHold(reason=HoldReason.DRIVER_ITEMS, group_id=dep, files=ids))
         return holds
+
+    # ------------------------------------------------- driver-item holds
+
+    def _driver_release_path(self, dep: str) -> Path:
+        return self.paths.group_dir(dep) / "driver-hold-released.json"
+
+    def _pending_driver_ids(self, dep: str) -> list[str]:
+        """Unrecorded driver items of a COMPLETED/RESOLVED dependency, read once
+        per admission cycle; empty once released or for any other state."""
+        if self.state.groups[dep].state not in (GroupState.COMPLETED, GroupState.RESOLVED):
+            return []
+        cached = self._driver_pending.get(dep)
+        if cached is None:
+            if self._driver_release_path(dep).is_file():
+                cached = []
+            else:
+                cached = pending_driver_items(self.paths, self.groups[dep])
+            self._driver_pending[dep] = cached
+        return cached
+
+    def _driver_dependents(self, dep: str) -> list[str]:
+        return [
+            gid
+            for gid in self._dependents[dep]
+            if self.state.groups[gid].state in (GroupState.PENDING, GroupState.READY)
+        ]
+
+    def _driver_hold_pass(self) -> None:
+        """Once per cycle: settle requests whose items were recorded, and raise
+        one ``driver_items_pending`` request per still-held dependency."""
+        self._settle_driver_requests()
+        for dep in sorted(self.groups):
+            ids = self._pending_driver_ids(dep)
+            dependents = self._driver_dependents(dep) if ids else []
+            if not dependents:
+                continue
+            if (
+                dep in self._driver_requests
+                or self._broker is None
+                or self._policy is None
+                or not self._policy.should_escalate(EscalationKind.DRIVER_ITEMS_PENDING)
+            ):
+                continue
+            request = EscalationRequest(
+                id=uuid.uuid4().hex[:12],
+                run_id=self.paths.run_id,
+                group_id=dep,
+                generation=self.state.groups[dep].generation,
+                kind=EscalationKind.DRIVER_ITEMS_PENDING,
+                prompt=(
+                    f"group {dep} has {len(ids)} unrecorded driver-run item(s) "
+                    f"({', '.join(ids)}); holding group(s) {', '.join(dependents)}. Run them and "
+                    f"record with `smart-mcps-orchestrate driver-item {self.paths.run_id} {dep} "
+                    "<id> --status pass|fail|skipped`, or answer to release without recording"
+                ),
+            )
+            self._driver_requests[dep] = request.id
+            self._driver_tasks[dep] = asyncio.create_task(
+                self._await_driver_release(dep, request), name=f"driver-hold-{dep}"
+            )
+
+    async def _await_driver_release(self, dep: str, request: EscalationRequest) -> None:
+        assert self._broker is not None
+        response = await asyncio.to_thread(self._broker.raise_escalation, request)
+        if response is not None and response.action == HumanAction.ABORT:
+            self._broker.trigger_abort()
+            self._driver_abort = True
+            return
+        if response is not None and response.action == HumanAction.SKIP:
+            return  # the hold stays; the driver records the items or answers again
+        atomic_write_text(
+            self._driver_release_path(dep),
+            json.dumps({"released_by": response.action.value if response else "timeout"}) + "\n",
+        )
+
+    def _settle_driver_requests(self, everything: bool = False) -> None:
+        """Answer (``retry``) requests whose dependency has nothing left pending,
+        so the blocked broker thread returns instead of waiting out its timeout."""
+        for dep, request_id in list(self._driver_requests.items()):
+            if not everything and self._pending_driver_ids(dep):
+                continue
+            response = self.paths.escalations_dir / f"response-{request_id}.json"
+            if not response.is_file():
+                atomic_write_text(
+                    response,
+                    EscalationResponse(id=request_id, action=HumanAction.RETRY).model_dump_json()
+                    + "\n",
+                )
+            del self._driver_requests[dep]
 
     def _excluded_by(self, gid: str) -> set[str]:
         """U9's mutual exclusion: healthy in-flight groups sharing a declared
@@ -683,6 +807,18 @@ class Scheduler:
             entry.holds = holds
             self._persist()
         for hold in fresh:
+            if hold.reason == HoldReason.DRIVER_ITEMS:
+                if (gid, hold.group_id) in self._driver_logged:
+                    continue
+                self._driver_logged.add((gid, hold.group_id))
+                log_event(
+                    self.paths,
+                    f"group {gid}: held — dependency {hold.group_id} has {len(hold.files)} "
+                    f"driver-run item(s) unrecorded ({', '.join(hold.files)}); record them with "
+                    f"smart-mcps-orchestrate driver-item {self.paths.run_id} {hold.group_id} "
+                    "<id> --status pass|fail|skipped",
+                )
+                continue
             shared = f" on {', '.join(hold.files)}" if hold.files else ""
             log_event(
                 self.paths, f"group {gid}: held ({hold.reason.value}) by {hold.group_id}{shared}"

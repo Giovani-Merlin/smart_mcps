@@ -181,7 +181,6 @@ class _GroupExecution(
         # cheap same-spec relaunch with a note; a second, consecutive one has
         # the leftovers archived out of the tree and the merge proceeds. Counts
         # per group across generations (a relaunch advances the generation).
-        self._untracked_strikes = 0
         # One automatic gate re-run per generation on an attributable
         # regression in autonomous mode, before a rewrite is spent on a flake.
         self._flake_reruns = 0

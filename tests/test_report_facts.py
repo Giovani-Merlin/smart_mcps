@@ -417,3 +417,42 @@ def test_optimize_group_zero_hit_reports_no_keeps_and_still_lands(tmp_path: Path
     assert group.champion_moved is False
     (unit,) = facts.units
     assert unit.landed is True
+
+
+def test_git_range_commits_lists_base_plus_every_commit_to_the_tip(tmp_path: Path) -> None:
+    import subprocess
+
+    from orchestrator.execution.worktrees import integration_branch
+    from orchestrator.report.facts import build_facts
+
+    paths = _build_run(tmp_path, with_baseline=False)
+    repo = paths.repo_root
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", integration_branch(RUN_ID))
+    shas = []
+    for name in ("one", "two"):
+        (repo / f"{name}.txt").write_text(name)
+        git("add", "-A")
+        git("commit", "-q", "-m", name)
+        shas.append(git("rev-parse", "HEAD"))
+    atomic_write_text(
+        paths.preflight_baseline_path,
+        json.dumps({"command": [], "commit_sha": base, "exit_code": 0, "captured": True}) + "\n",
+    )
+
+    facts = build_facts(repo, RUN_ID, run_dir=paths.run_dir)
+
+    assert facts.git_range.available is True
+    assert facts.git_range.commits == [sha[:8] for sha in [base, *shas]]
+    assert len(facts.git_range.commits) == 3

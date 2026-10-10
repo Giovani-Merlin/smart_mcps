@@ -237,3 +237,15 @@ class TestSharedWithTheCli:
         for field in set(http_body) - {"id", "answered_at"}:
             assert http_body[field] == cli_body[field], field
         assert http_body["id"] == "via-http" and cli_body["id"] == "via-cli"
+
+
+@pytest.mark.parametrize("kind", list(EscalationKind), ids=lambda kind: kind.value)
+def test_every_escalation_kind_has_a_label_in_the_panel(kind: EscalationKind) -> None:
+    """The type union alone is not enough: the panel needs a human-readable label."""
+    source = (
+        Path(__file__).resolve().parents[1] / "ui/src/components/EscalationPanel.tsx"
+    ).read_text()
+    assert f"  {kind.value}: " in source, (
+        f"EscalationKind {kind.value!r} has no label in KIND_LABELS "
+        "(ui/src/components/EscalationPanel.tsx)"
+    )

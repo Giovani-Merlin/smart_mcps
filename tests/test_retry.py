@@ -430,3 +430,52 @@ def test_retry_cli_then_status_shows_release(repo, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "failure: released by operator at" in out
+
+
+# ------------------------------------------------------------- harness pin
+
+
+def _failed_group_with_worktree(repo, run_id="r1"):
+    group = make_group("g1")
+    paths = RunPaths(repo, run_id)
+    write_grouping(paths, group)
+    make_integration_branch(repo, run_id)
+    make_group_worktree(repo, run_id, group, integration_branch(run_id))
+    write_state(paths, run_id, group.id, GroupRunState(state=GroupState.FAILED, failure="boom"))
+    return paths, group
+
+
+def test_retry_deletes_the_harness_pin_and_logs_it(repo):
+    paths, group = _failed_group_with_worktree(repo)
+    pin = paths.group_dir(group.id) / "run" / "eval" / "harness.sha256"
+    pin.parent.mkdir(parents=True)
+    pin.write_text('{"combined": "abcdef0123456789ffff", "paths": {}}\n')
+
+    retry_group(repo, "r1", group.id)
+
+    assert not pin.exists()
+    log = (paths.run_dir / "logs" / "run.log").read_text()
+    assert "group g1: harness pin reset by retry (was abcdef012345)" in log
+
+
+def test_retry_deletes_an_optimize_groups_harness_pin(repo):
+    paths, group = _failed_group_with_worktree(repo)
+    pin = paths.group_dir(group.id) / "eval" / "harness.sha256"
+    pin.parent.mkdir(parents=True)
+    pin.write_text('{"combined": "0123456789abffff", "paths": {}}\n')
+
+    retry_group(repo, "r1", group.id)
+
+    assert not pin.exists()
+    log = (paths.run_dir / "logs" / "run.log").read_text()
+    assert "group g1: harness pin reset by retry (was 0123456789ab)" in log
+
+
+def test_retry_without_a_pin_logs_no_pin_reset(repo):
+    paths, group = _failed_group_with_worktree(repo)
+
+    retry_group(repo, "r1", group.id)
+
+    log = (paths.run_dir / "logs" / "run.log").read_text()
+    assert "retried by operator" in log
+    assert "harness pin reset" not in log

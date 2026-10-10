@@ -243,7 +243,7 @@ and `live again` lines in `logs/run.log` (plan U2/U3). Three cases:
 ## When a terminal `failed` line appears without an escalation
 
 `group $GID: terminal failed — branch …, worktree …, retry with: smart-mcps-orchestrate retry $RUN $GID` means the group hit its re-entry
-cap or `on_group_failure=halt` classed it terminal. Resumes after you stopped
+cap or an explicit `on_group_failure=halt` (no longer the default) classed it terminal. Resumes after you stopped
 the driver with `kill -INT`/`-TERM` do not count toward that cap — only
 resumes after a crash or reboot do. `status` keeps showing the old failure
 line after `retry` until the next `resume` picks the group up. That `retry` is the
