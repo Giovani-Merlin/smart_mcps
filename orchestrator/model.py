@@ -485,6 +485,9 @@ class EscalationKind(StrEnum):
     GROUP_START = "group_start"  # interactive: approve before launch
     RESPAWN = "respawn"  # interactive: approve a breaker respawn
     MERGE_APPROVE = "merge_approve"  # interactive: approve before merge
+    # A completed dependency still has `Run (driver):` items nobody recorded, so
+    # its dependents are held (scheduler DRIVER_ITEMS hold); one request per dependency.
+    DRIVER_ITEMS_PENDING = "driver_items_pending"
 
 
 class HumanAction(StrEnum):
