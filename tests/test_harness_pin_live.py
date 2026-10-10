@@ -140,8 +140,13 @@ def test_failed_smoke_then_retry_resume_completes_without_a_pin_reset(live_repo:
 
     state = json.loads(paths.state_path.read_text())
     assert state["groups"]["g1"]["state"] == "completed", state
+    # The artifact manifest carries the record's ``measurements`` (the KPI key
+    # among them), not ``EvaluationRecord.kpi_value`` itself — ``_register_artifact``
+    # never wrote that field (pre-existing; found by the driver on r20261010-134127).
     manifest = paths.run_dir.joinpath("artifacts.json")
     if manifest.is_file():
-        assert '"kpi_value"' in manifest.read_text()
+        entry = json.loads(manifest.read_text())["entries"]["g1"]
+        assert entry["schema"] == "EvaluationRecord", entry
+        assert entry["measurements"].get("score") == 3, entry
     log = (paths.run_dir / "logs" / "run.log").read_text()
     assert "harness pin reset by retry" not in log
